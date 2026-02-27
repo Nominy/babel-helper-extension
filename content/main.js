@@ -29,11 +29,19 @@
       !event.metaKey &&
       !event.altKey &&
       !event.shiftKey &&
-      helper.getCurrentRow()
+      helper.getCurrentRow({ allowFallback: false })
     ) {
+      const row = helper.getCurrentRow({ allowFallback: false });
+      if (!row) {
+        return;
+      }
+
       event.preventDefault();
       event.stopPropagation();
-      void helper.runRowAction('deleteSegment');
+      void helper.runRowAction('deleteSegment', {
+        row,
+        allowFallback: false
+      });
       return;
     }
 

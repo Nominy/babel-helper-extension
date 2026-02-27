@@ -28,17 +28,208 @@
       : null;
   };
 
-  helper.getCurrentRow = function getCurrentRow() {
+  function getReactInternalValue(element, prefix) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    for (const name of Object.getOwnPropertyNames(element)) {
+      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
+        return element[name];
+      }
+    }
+
+    return null;
+  }
+
+  function getReactFiber(element) {
+    return getReactInternalValue(element, '__reactFiber$');
+  }
+
+  helper.getRowIdentity = function getRowIdentity(row) {
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const identity = {
+      annotationId: null,
+      isActive: false,
+      startText: '',
+      endText: ''
+    };
+
+    const startCell = row.children[2];
+    const endCell = row.children[3];
+    identity.startText = startCell instanceof HTMLElement ? helper.normalizeText(startCell) : '';
+    identity.endText = endCell instanceof HTMLElement ? helper.normalizeText(endCell) : '';
+
+    let fiber = getReactFiber(row);
+    if (!fiber) {
+      const textarea = helper.getRowTextarea(row);
+      fiber = getReactFiber(textarea);
+    }
+
+    let current = fiber;
+    let depth = 0;
+    while (current && typeof current === 'object' && depth < 12) {
+      const props = current.memoizedProps;
+      if (props && typeof props === 'object' && typeof props.isActive === 'boolean') {
+        identity.isActive = props.isActive;
+      }
+
+      const annotation =
+        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
+          ? props.annotation
+          : null;
+      if (annotation && typeof annotation.id === 'string' && annotation.id) {
+        identity.annotationId = annotation.id;
+        break;
+      }
+
+      current = current.return;
+      depth += 1;
+    }
+
+    if (!identity.annotationId && !identity.startText && !identity.endText) {
+      return null;
+    }
+
+    return identity;
+  };
+
+  helper.findActiveRowByReactState = function findActiveRowByReactState() {
+    const rows = helper.getTranscriptRows();
+    return (
+      rows.find((row) => {
+        const identity = helper.getRowIdentity(row);
+        return Boolean(identity && identity.isActive);
+      }) || null
+    );
+  };
+
+  helper.findActiveRowByDomState = function findActiveRowByDomState() {
+    const rows = helper.getTranscriptRows();
+    return (
+      rows.find((row) => {
+        if (!(row instanceof HTMLElement)) {
+          return false;
+        }
+
+        const classes = row.classList;
+        return (
+          classes.contains('bg-neutral-100') &&
+          classes.contains('ring-1') &&
+          classes.contains('ring-neutral-300')
+        );
+      }) || null
+    );
+  };
+
+  helper.rowMatchesIdentity = function rowMatchesIdentity(row, identity) {
+    if (!(row instanceof HTMLElement) || !identity || typeof identity !== 'object') {
+      return false;
+    }
+
+    const rowIdentity = helper.getRowIdentity(row);
+    if (!rowIdentity) {
+      return false;
+    }
+
+    if (
+      identity.annotationId &&
+      rowIdentity.annotationId &&
+      identity.annotationId === rowIdentity.annotationId
+    ) {
+      return true;
+    }
+
+    return Boolean(
+      identity.startText &&
+      identity.endText &&
+      identity.startText === rowIdentity.startText &&
+      identity.endText === rowIdentity.endText
+    );
+  };
+
+  helper.findRowByIdentity = function findRowByIdentity(identity) {
+    if (!identity || typeof identity !== 'object') {
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    if (identity.annotationId) {
+      const byAnnotation = rows.find((row) => {
+        const rowIdentity = helper.getRowIdentity(row);
+        return rowIdentity && rowIdentity.annotationId === identity.annotationId;
+      });
+      if (byAnnotation) {
+        return byAnnotation;
+      }
+    }
+
+    if (identity.startText && identity.endText) {
+      return (
+        rows.find((row) => {
+          const rowIdentity = helper.getRowIdentity(row);
+          return (
+            rowIdentity &&
+            rowIdentity.startText === identity.startText &&
+            rowIdentity.endText === identity.endText
+          );
+        }) || null
+      );
+    }
+
+    return null;
+  };
+
+  helper.getCurrentRow = function getCurrentRow(options) {
+    const settings = options || {};
+    const allowFallback = settings.allowFallback !== false;
+
     const active = document.activeElement;
     if (active instanceof HTMLElement) {
       const activeRow = active.closest('tr');
       if (activeRow && activeRow.querySelector(helper.config.rowTextareaSelector)) {
+        helper.setCurrentRow(activeRow);
         return activeRow;
       }
     }
 
-    if (helper.state.currentRow && helper.state.currentRow.isConnected) {
-      return helper.state.currentRow;
+    const activeRowByDom = helper.findActiveRowByDomState();
+    if (activeRowByDom) {
+      helper.setCurrentRow(activeRowByDom);
+      return activeRowByDom;
+    }
+
+    const activeRowByState = helper.findActiveRowByReactState();
+    if (activeRowByState) {
+      helper.setCurrentRow(activeRowByState);
+      return activeRowByState;
+    }
+
+    const cachedRow = helper.state.currentRow;
+    const cachedIdentity =
+      helper.state.currentRowIdentity ||
+      (cachedRow instanceof HTMLElement ? helper.getRowIdentity(cachedRow) : null);
+
+    if (cachedRow instanceof HTMLElement && cachedRow.isConnected) {
+      if (!cachedIdentity || helper.rowMatchesIdentity(cachedRow, cachedIdentity)) {
+        return cachedRow;
+      }
+    }
+
+    if (cachedIdentity) {
+      const resolved = helper.findRowByIdentity(cachedIdentity);
+      if (resolved) {
+        helper.state.currentRow = resolved;
+        helper.state.currentRowIdentity = helper.getRowIdentity(resolved);
+        return resolved;
+      }
+    }
+
+    if (!allowFallback) {
+      return null;
     }
 
     const rows = helper.getTranscriptRows();
@@ -54,8 +245,10 @@
   helper.setCurrentRow = function setCurrentRow(row) {
     if (row && row.isConnected) {
       helper.state.currentRow = row;
+      helper.state.currentRowIdentity = helper.getRowIdentity(row);
     } else {
       helper.state.currentRow = null;
+      helper.state.currentRowIdentity = null;
     }
   };
 
@@ -122,8 +315,12 @@
     return fallback;
   };
 
-  helper.findMenuAction = function findMenuAction(actionName) {
-    const candidates = helper.collectMenuCandidates();
+  helper.findMenuAction = function findMenuAction(actionName, options) {
+    const settings = options || {};
+    const exclude = settings.exclude instanceof Set ? settings.exclude : null;
+    const candidates = helper
+      .collectMenuCandidates()
+      .filter((candidate) => !(exclude && exclude.has(candidate)));
     const patterns = helper.config.actionPatterns[actionName] || [];
     for (const pattern of patterns) {
       const found = candidates.find((candidate) => pattern.test(helper.normalizeText(candidate)));
@@ -144,8 +341,14 @@
     return null;
   };
 
-  helper.runRowAction = async function runRowAction(actionName) {
-    const row = helper.getCurrentRow();
+  helper.runRowAction = async function runRowAction(actionName, options) {
+    const settings = options || {};
+    const row =
+      settings.row instanceof HTMLElement
+        ? settings.row
+        : helper.getCurrentRow({
+            allowFallback: settings.allowFallback !== false
+          });
     if (!row) {
       return false;
     }
@@ -159,9 +362,25 @@
     const originalIndex = rows.indexOf(row);
     helper.setCurrentRow(row);
 
+    const previousCandidates = new Set(helper.collectMenuCandidates());
     helper.dispatchClick(actionTrigger);
 
-    const actionItem = await helper.waitFor(() => helper.findMenuAction(actionName), 1000, 50);
+    await helper.waitFor(
+      () =>
+        actionTrigger.getAttribute('aria-expanded') === 'true' ||
+        actionTrigger.getAttribute('data-state') === 'open',
+      250,
+      25
+    );
+
+    const actionItem = await helper.waitFor(
+      () =>
+        helper.findMenuAction(actionName, {
+          exclude: previousCandidates
+        }) || helper.findMenuAction(actionName),
+      1000,
+      50
+    );
     if (!(actionItem instanceof HTMLElement)) {
       helper.dispatchClick(actionTrigger);
       return false;

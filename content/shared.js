@@ -47,6 +47,7 @@
     },
     state: {
       currentRow: null,
+      currentRowIdentity: null,
       lastBlur: null,
       blurRestorePending: false
     }

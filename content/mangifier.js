@@ -501,17 +501,6 @@
     regionsLayer.style.zIndex = "3";
     viewport.appendChild(regionsLayer);
 
-    const centerLine = document.createElement("div");
-    centerLine.style.position = "absolute";
-    centerLine.style.top = "0";
-    centerLine.style.bottom = "0";
-    centerLine.style.left = "50%";
-    centerLine.style.width = "2px";
-    centerLine.style.background = "rgba(15, 23, 42, 0.92)";
-    centerLine.style.transform = "translateX(-50%)";
-    centerLine.style.zIndex = "4";
-    viewport.appendChild(centerLine);
-
     const badge = document.createElement("div");
     badge.style.position = "absolute";
     badge.style.left = "6px";
@@ -529,17 +518,6 @@
     badge.textContent = `${SCALE}x`;
     element.appendChild(badge);
 
-    const stem = document.createElement("div");
-    stem.style.position = "absolute";
-    stem.style.bottom = "0";
-    stem.style.width = "2px";
-    stem.style.height = "12px";
-    stem.style.borderRadius = "999px";
-    stem.style.background = "rgba(15, 23, 42, 0.9)";
-    stem.style.transform = "translate(-50%, 100%)";
-    stem.style.zIndex = "5";
-    element.appendChild(stem);
-
     context.container.appendChild(element);
 
     const hostMarker = nextMarker("host");
@@ -555,7 +533,6 @@
       mount,
       regionsLayer,
       badge,
-      stem,
       hostMarker,
       mountMarker,
       bridgeInstanceId: null,
@@ -664,18 +641,11 @@
         INSET,
         Math.max(INSET, containerRect.width - width - INSET),
       );
-      const stemX = clamp(target.x - left, 4, width - 4);
-      const stemHeight = Math.max(
-        8,
-        Math.min(18, Math.round(containerRect.height - height - INSET * 2)),
-      );
 
       magnifier.element.style.left = left + "px";
       magnifier.element.style.top = INSET + "px";
       magnifier.element.style.width = width + "px";
       magnifier.element.style.height = height + "px";
-      magnifier.stem.style.left = stemX + "px";
-      magnifier.stem.style.height = stemHeight + "px";
 
       if (!magnifier.bridgeInstanceId) {
         const ensureResult = await callBridge("ensure", {
