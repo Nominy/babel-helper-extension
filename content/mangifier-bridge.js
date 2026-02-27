@@ -1209,22 +1209,97 @@
     return { ok: true };
   }
 
-  function getSourceWaveForLoop(hostMarker) {
+  function findExactWaveCandidate(host) {
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const trackProps = getTrackPropsForHost(host);
+    const trackId =
+      trackProps &&
+      trackProps.track &&
+      typeof trackProps.track === 'object' &&
+      trackProps.track.id != null
+        ? String(trackProps.track.id)
+        : null;
+    const registryMatches = collectRegistryCandidates(host);
+    let wrapperMatch = null;
+    let trackMatch = null;
+
+    for (const record of registryMatches) {
+      if (!record || !record.value || !isUsableWaveCandidate(record.value, host)) {
+        continue;
+      }
+
+      const wave = record.value;
+      const container = getCandidateContainer(wave);
+      const wrapper = safe(() => (typeof wave.getWrapper === 'function' ? wave.getWrapper() : null), null);
+      const wrapperRoot = wrapper && typeof wrapper.getRootNode === 'function' ? wrapper.getRootNode() : null;
+      const containerMatches = container === host;
+      const wrapperMatches = wrapperRoot instanceof ShadowRoot && wrapperRoot.host === host;
+      const pathMatchesTrack =
+        trackId && typeof record.path === 'string'
+          ? record.path.indexOf('.' + trackId + '.wavesurfer') !== -1
+          : false;
+
+      if ((containerMatches || wrapperMatches) && pathMatchesTrack) {
+        return record;
+      }
+
+      if ((containerMatches || wrapperMatches) && !wrapperMatch) {
+        wrapperMatch = record;
+      }
+
+      if (pathMatchesTrack && !trackMatch) {
+        trackMatch = record;
+      }
+    }
+
+    return wrapperMatch || trackMatch || null;
+  }
+
+  function getVisibleWaveHosts() {
+    return Array.from(document.querySelectorAll('div')).filter((element) => {
+      if (!(element instanceof HTMLElement) || !element.shadowRoot) {
+        return false;
+      }
+
+      return Boolean(
+        element.shadowRoot.querySelector('[part="wrapper"]') &&
+        element.shadowRoot.querySelector('[part="scroll"]')
+      );
+    });
+  }
+
+  function getLoopWaveSet(hostMarker) {
     const host = findLoopHostElement(hostMarker);
     if (!(host instanceof HTMLElement)) {
       return null;
     }
 
-    const selection = findWaveCandidate(host);
-    const record = selection.candidate || selection.fallback || null;
-    const wave = record ? record.value : null;
-    if (!wave || typeof wave !== 'object') {
+    const seen = new Set();
+    const orderedHosts = [host, ...getVisibleWaveHosts().filter((candidate) => candidate !== host)];
+    const waves = [];
+
+    for (const candidateHost of orderedHosts) {
+      const record = findExactWaveCandidate(candidateHost);
+      const wave = record ? record.value : null;
+      if (!wave || typeof wave !== 'object' || seen.has(wave)) {
+        continue;
+      }
+
+      seen.add(wave);
+      waves.push(wave);
+    }
+
+    if (!waves.length) {
       return null;
     }
 
     return {
       host,
-      wave
+      wave: waves[0],
+      waves
     };
   }
 
@@ -1259,7 +1334,7 @@
       return { ok: false, reason: 'invalid-range' };
     }
 
-    const resolved = getSourceWaveForLoop(hostMarker);
+    const resolved = getLoopWaveSet(hostMarker);
     if (!resolved) {
       return { ok: false, reason: 'missing-wave' };
     }
@@ -1269,6 +1344,7 @@
     const loop = {
       hostMarker,
       wave: resolved.wave,
+      waves: resolved.waves,
       startSeconds,
       endSeconds,
       lastTime: Number(safe(() => resolved.wave.getCurrentTime(), startSeconds)) || startSeconds,
@@ -1276,7 +1352,9 @@
       timer: null
     };
 
-    playWaveRange(loop.wave, loop.startSeconds, loop.endSeconds);
+    for (const wave of loop.waves) {
+      playWaveRange(wave, loop.startSeconds, loop.endSeconds);
+    }
     loop.lastTime = loop.startSeconds;
 
     loop.timer = setInterval(() => {
@@ -1305,7 +1383,9 @@
 
       if (currentTime >= loop.endSeconds - 0.03) {
         loop.internalSeekUntil = now + 220;
-        playWaveRange(loop.wave, loop.startSeconds, loop.endSeconds);
+        for (const wave of loop.waves) {
+          playWaveRange(wave, loop.startSeconds, loop.endSeconds);
+        }
         loop.lastTime = loop.startSeconds;
         return;
       }
