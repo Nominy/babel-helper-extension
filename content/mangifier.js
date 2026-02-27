@@ -24,10 +24,10 @@
   let markerId = 0;
 
   helper.state.magnifier = null;
-  helper.state.magnifierPointer = null;
+  helper.state.magnifierDrag = null;
   helper.config.hotkeysHelpRows.unshift([
-    "Shift + Hover",
-    `Show ${SCALE}x waveform magnifier`,
+    "Drag Segment Edge",
+    `Show ${SCALE}x waveform magnifier while trimming`,
   ]);
 
   function clamp(value, min, max) {
@@ -49,27 +49,94 @@
       return null;
     }
 
-    const secondsMatch = trimmed.match(/(-?\d+(?:\.\d+)?)\s*s\b/i);
-    if (secondsMatch) {
-      const numeric = Number(secondsMatch[1]);
-      return Number.isFinite(numeric) ? numeric : null;
-    }
+    const normalized = trimmed.toLowerCase();
 
-    const parts = trimmed.split(":");
-    if (parts.length < 2) {
-      return null;
+    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
+    if (timestampMatch) {
+      const parts = timestampMatch[0].split(":");
+      let total = 0;
+      for (const part of parts) {
+        const numeric = Number(part);
+        if (!Number.isFinite(numeric)) {
+          return null;
+        }
+        total = total * 60 + numeric;
+      }
+      return total;
     }
 
     let total = 0;
-    for (const part of parts) {
-      const numeric = Number(part);
+    let foundUnit = false;
+    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
+    for (const match of normalized.matchAll(unitPattern)) {
+      const numeric = Number(match[1]);
       if (!Number.isFinite(numeric)) {
         return null;
       }
-      total = total * 60 + numeric;
+
+      foundUnit = true;
+      const unit = match[2];
+      if (unit === "h") {
+        total += numeric * 3600;
+      } else if (unit === "m") {
+        total += numeric * 60;
+      } else {
+        total += numeric;
+      }
     }
 
-    return total;
+    if (foundUnit) {
+      return total;
+    }
+
+    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!numericMatch) {
+      return null;
+    }
+
+    const numeric = Number(numericMatch[0]);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function getPartTokens(element) {
+    const part = element instanceof Element ? element.getAttribute("part") : "";
+    return part ? part.split(/\s+/).filter(Boolean) : [];
+  }
+
+  function getHandleSide(element) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    const tokens = getPartTokens(element);
+    if (
+      tokens.includes("region-handle-left") ||
+      (tokens.includes("region-handle") && tokens.includes("region-handle-left"))
+    ) {
+      return "left";
+    }
+
+    if (
+      tokens.includes("region-handle-right") ||
+      (tokens.includes("region-handle") && tokens.includes("region-handle-right"))
+    ) {
+      return "right";
+    }
+
+    return null;
+  }
+
+  function getOwningRegion(element) {
+    let current = element instanceof HTMLElement ? element : null;
+    while (current instanceof HTMLElement) {
+      const tokens = getPartTokens(current);
+      if (tokens.includes("region")) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    return null;
   }
 
   function isWaveformScope(scope) {
@@ -168,10 +235,97 @@
     };
   }
 
-  function isGestureActive(event) {
-    return Boolean(
-      event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey,
-    );
+  function getRegionBoundaryTime(region, side) {
+    if (!(region instanceof HTMLElement)) {
+      return null;
+    }
+
+    const selector =
+      side === "left"
+        ? ".wavesurfer-region-tooltip-start"
+        : ".wavesurfer-region-tooltip-end";
+    const node = region.querySelector(selector);
+    const text = helper.normalizeText(node);
+    const timeSeconds = parseSeconds(text);
+    if (!Number.isFinite(timeSeconds)) {
+      return null;
+    }
+
+    return {
+      text,
+      timeSeconds,
+    };
+  }
+
+  function getDragContextFromEvent(event) {
+    if (!event || event.button !== 0) {
+      return null;
+    }
+
+    const path =
+      typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      const side = getHandleSide(node);
+      if (!side) {
+        continue;
+      }
+
+      const handle = node instanceof HTMLElement ? node : null;
+      const region = getOwningRegion(handle);
+      const waveform = getWaveformContextFromEvent(event);
+      if (
+        handle instanceof HTMLElement &&
+        region instanceof HTMLElement &&
+        waveform
+      ) {
+        return {
+          pointerId: typeof event.pointerId === "number" ? event.pointerId : 1,
+          handle,
+          region,
+          side,
+          scope: waveform.scope,
+          container: waveform.container,
+          host: waveform.host,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function getDragData(drag, containerRect) {
+    if (
+      !drag ||
+      !(drag.handle instanceof HTMLElement) ||
+      !(drag.region instanceof HTMLElement) ||
+      !(drag.container instanceof HTMLElement) ||
+      !drag.handle.isConnected ||
+      !drag.region.isConnected
+    ) {
+      return null;
+    }
+
+    const rect = drag.handle.getBoundingClientRect();
+    const x = clamp(rect.left + rect.width / 2 - containerRect.left, 0, containerRect.width);
+    const boundary = getRegionBoundaryTime(drag.region, drag.side);
+    if (boundary) {
+      return {
+        x,
+        text: boundary.text,
+        timeSeconds: boundary.timeSeconds,
+      };
+    }
+
+    const hover = getHoverData(drag.scope, containerRect);
+    if (hover) {
+      return {
+        x,
+        text: hover.text,
+        timeSeconds: hover.timeSeconds,
+      };
+    }
+
+    return null;
   }
 
   function injectBridge() {
@@ -490,8 +644,9 @@
       }
 
       const containerRect = magnifier.container.getBoundingClientRect();
-      const hover = getHoverData(magnifier.scope, containerRect);
-      if (!hover || containerRect.width <= 0 || containerRect.height <= 0) {
+      const drag = helper.state.magnifierDrag;
+      const target = getDragData(drag, containerRect);
+      if (!target || containerRect.width <= 0 || containerRect.height <= 0) {
         setStatus(magnifier, `${SCALE} waiting`);
         return;
       }
@@ -505,11 +660,11 @@
         Math.min(MAX_HEIGHT, Math.round(containerRect.height - INSET * 2)),
       );
       const left = clamp(
-        hover.x - width / 2,
+        target.x - width / 2,
         INSET,
         Math.max(INSET, containerRect.width - width - INSET),
       );
-      const stemX = clamp(hover.x - left, 4, width - 4);
+      const stemX = clamp(target.x - left, 4, width - 4);
       const stemHeight = Math.max(
         8,
         Math.min(18, Math.round(containerRect.height - height - INSET * 2)),
@@ -540,7 +695,7 @@
 
       const updateResult = await callBridge("update", {
         instanceId: magnifier.bridgeInstanceId,
-        time: hover.timeSeconds,
+        time: target.timeSeconds,
         width,
         height,
         scale: SCALE,
@@ -551,7 +706,7 @@
         return;
       }
 
-      setStatus(magnifier, `${SCALE}x @ ` + hover.text);
+      setStatus(magnifier, `${SCALE}x @ ` + target.text);
       renderRegions(
         magnifier,
         Array.isArray(updateResult.regions) ? updateResult.regions : [],
@@ -578,44 +733,45 @@
     void syncMagnifier(magnifier);
   }
 
+  function handlePointerDown(event) {
+    const drag = getDragContextFromEvent(event);
+    helper.state.magnifierDrag = drag;
+    if (drag) {
+      showMagnifier(drag);
+    }
+  }
+
   function handlePointerMove(event) {
-    const context = getWaveformContextFromEvent(event);
-    if (context) {
-      helper.state.magnifierPointer = context;
-    } else if (!event.buttons) {
-      helper.state.magnifierPointer = null;
+    const drag = helper.state.magnifierDrag;
+    if (!drag) {
+      return;
     }
 
-    if (!isGestureActive(event)) {
+    const pointerId = typeof event.pointerId === "number" ? event.pointerId : 1;
+    if (drag.pointerId !== pointerId) {
+      return;
+    }
+
+    if (!event.buttons) {
+      helper.state.magnifierDrag = null;
       helper.clearMagnifier();
       return;
     }
 
-    if (context) {
-      showMagnifier(context);
-    }
+    showMagnifier(drag);
   }
 
-  function handleKeyDown(event) {
-    if (event.key !== "Shift" || !isGestureActive(event)) {
-      return;
-    }
-
-    const context = helper.state.magnifierPointer;
-    if (!context) {
-      return;
-    }
-
-    showMagnifier(context);
-  }
-
-  function handleKeyUp(event) {
-    if (event.key === "Shift") {
+  function handlePointerEnd(event) {
+    const drag = helper.state.magnifierDrag;
+    const pointerId = typeof event.pointerId === "number" ? event.pointerId : 1;
+    if (drag && drag.pointerId === pointerId) {
+      helper.state.magnifierDrag = null;
       helper.clearMagnifier();
     }
   }
 
+  document.addEventListener("pointerdown", handlePointerDown, true);
   document.addEventListener("pointermove", handlePointerMove, true);
-  document.addEventListener("keydown", handleKeyDown, true);
-  document.addEventListener("keyup", handleKeyUp, true);
+  document.addEventListener("pointerup", handlePointerEnd, true);
+  document.addEventListener("pointercancel", handlePointerEnd, true);
 })();

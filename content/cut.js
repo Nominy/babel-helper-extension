@@ -17,6 +17,8 @@
   helper.state.cutPreview = null;
   helper.state.cutCommitPending = false;
   helper.state.cutLastContainer = null;
+  helper.state.smartSplitClickDraft = null;
+  helper.state.smartSplitClickContext = null;
   helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
   helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a cut preview across the waveform lane']);
   helper.config.hotkeysHelpRows.unshift(['Enter', 'Commit cut preview if it is at least 1 second']);
@@ -24,29 +26,6 @@
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
-  }
-
-  function setSmartSplitStatus(stage, details) {
-    try {
-      const root = document.documentElement;
-      if (!(root instanceof HTMLElement)) {
-        return;
-      }
-
-      root.setAttribute('data-babel-helper-smart-split-stage', String(stage || ''));
-      if (typeof details === 'undefined') {
-        root.removeAttribute('data-babel-helper-smart-split-info');
-        return;
-      }
-
-      const serialized = JSON.stringify(details);
-      root.setAttribute(
-        'data-babel-helper-smart-split-info',
-        typeof serialized === 'string' ? serialized.slice(0, 1200) : ''
-      );
-    } catch (_error) {
-      // Ignore debug state failures.
-    }
   }
 
   function parseTimestamp(value) {
@@ -148,6 +127,28 @@
 
     const tokens = getRegionPartTokens(element);
     return tokens.includes('region');
+  }
+
+  function getOwningRegionBody(element) {
+    let current = element instanceof HTMLElement ? element : null;
+    while (current instanceof HTMLElement) {
+      if (isRegionBody(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  function isSmartSplitClickEvent(event) {
+    return Boolean(
+      event &&
+      event.button === 0 &&
+      !event.altKey &&
+      event.shiftKey &&
+      (event.ctrlKey || event.metaKey)
+    );
   }
 
   function getPreviewHostFromEvent(event) {
@@ -1111,10 +1112,6 @@
 
   async function waitForSmartSplitRows(sourceRow, sourceRowIndex, previousRowCount) {
     if (sourceRowIndex < 0 || !Number.isFinite(previousRowCount)) {
-      setSmartSplitStatus('rows-invalid-plan', {
-        sourceRowIndex,
-        previousRowCount
-      });
       return null;
     }
 
@@ -1126,6 +1123,110 @@
 
       return getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex);
     }, 1200, 40);
+  }
+
+  function captureRowSnapshot() {
+    return helper.getTranscriptRows().map((row) => {
+      const labels = getRowTimeLabels(row) || {
+        startText: '',
+        endText: ''
+      };
+      return {
+        row,
+        startText: labels.startText,
+        endText: labels.endText,
+        text: helper.getRowTextValue(row).trim()
+      };
+    });
+  }
+
+  function getRowSignature(entry) {
+    if (!entry) {
+      return '';
+    }
+
+    return [entry.startText || '', entry.endText || '', entry.text || ''].join('|');
+  }
+
+  function findNewDuplicateSplitRows(previousRows) {
+    const previousList = Array.isArray(previousRows) ? previousRows : [];
+    const previousSignatures = new Set(previousList.map((entry) => getRowSignature(entry)));
+    const rows = helper.getTranscriptRows();
+
+    for (let index = 0; index < rows.length - 1; index += 1) {
+      const leftRow = rows[index];
+      const rightRow = rows[index + 1];
+      const leftText = helper.getRowTextValue(leftRow).trim();
+      const rightText = helper.getRowTextValue(rightRow).trim();
+      if (!leftText || leftText !== rightText) {
+        continue;
+      }
+
+      const leftLabels = getRowTimeLabels(leftRow);
+      const rightLabels = getRowTimeLabels(rightRow);
+      const leftSignature = getRowSignature({
+        startText: leftLabels ? leftLabels.startText : '',
+        endText: leftLabels ? leftLabels.endText : '',
+        text: leftText
+      });
+      const rightSignature = getRowSignature({
+        startText: rightLabels ? rightLabels.startText : '',
+        endText: rightLabels ? rightLabels.endText : '',
+        text: rightText
+      });
+
+      if (previousSignatures.has(leftSignature) && previousSignatures.has(rightSignature)) {
+        continue;
+      }
+
+      const leftRange = getRowTimeRange(leftRow);
+      const rightRange = getRowTimeRange(rightRow);
+      if (!leftRange || !rightRange) {
+        continue;
+      }
+
+      const leftDuration = leftRange.endSeconds - leftRange.startSeconds;
+      const rightDuration = rightRange.endSeconds - rightRange.startSeconds;
+      const totalDuration = leftDuration + rightDuration;
+      if (!(leftDuration > 0) || !(rightDuration > 0) || !(totalDuration > 0)) {
+        continue;
+      }
+
+      return {
+        leftRow,
+        rightRow,
+        sourceText: leftText,
+        ratio: leftDuration / totalDuration
+      };
+    }
+
+    return null;
+  }
+
+  async function applySmartSplitFromDuplicateRows(context) {
+    if (!context || !Number.isFinite(context.rowCount)) {
+      return false;
+    }
+
+    const detected = await helper.waitFor(() => {
+      const rows = helper.getTranscriptRows();
+      if (rows.length < context.rowCount + 1) {
+        return null;
+      }
+
+      return findNewDuplicateSplitRows(context.rows);
+    }, 1200, 40);
+
+    if (!detected) {
+      return false;
+    }
+
+    return helper.applySmartSplitToRows(
+      detected.leftRow,
+      detected.rightRow,
+      detected.sourceText,
+      detected.ratio
+    );
   }
 
   async function waitForSmartSplitTextReady(rows, sourceText) {
@@ -1159,38 +1260,16 @@
 
   async function applySmartSplit(plan) {
     if (!plan || !plan.sourceText) {
-      setSmartSplitStatus('apply-invalid-plan', {
-        hasPlan: Boolean(plan),
-        hasText: Boolean(plan && plan.sourceText)
-      });
       return false;
     }
-
-    setSmartSplitStatus('apply-start', {
-      rowCount: plan.rowCount,
-      sourceRowIndex: plan.sourceRowIndex,
-      ratio: plan.ratio
-    });
 
     const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount);
     if (!rows) {
-      setSmartSplitStatus('rows-timeout', {
-        rowCount: plan.rowCount,
-        currentRowCount: helper.getTranscriptRows().length
-      });
       return false;
     }
 
-    setSmartSplitStatus('rows-ready', {
-      leftStart: getRowTimeLabels(rows.leftRow)?.startText || '',
-      rightStart: getRowTimeLabels(rows.rightRow)?.startText || ''
-    });
-
     const parts = helper.splitTextByWordRatio(plan.sourceText, plan.ratio);
     if (!parts.wordCount) {
-      setSmartSplitStatus('split-empty', {
-        sourceText: plan.sourceText
-      });
       return false;
     }
 
@@ -1203,41 +1282,21 @@
       helper.applySmartSplitToRows(rows.leftRow, rows.rightRow, plan.sourceText, plan.ratio);
 
     if (!applyOnce()) {
-      setSmartSplitStatus('apply-write-failed', {
-        leftConnected: rows.leftRow.isConnected,
-        rightConnected: rows.rightRow.isConnected
-      });
       return false;
     }
-
-    setSmartSplitStatus('apply-written', {
-      leftText: helper.getRowTextValue(rows.leftRow).trim().slice(0, 120),
-      rightText: helper.getRowTextValue(rows.rightRow).trim().slice(0, 120)
-    });
 
     await helper.sleep(140);
 
     const leftCurrent = helper.getRowTextValue(rows.leftRow).trim();
     const rightCurrent = helper.getRowTextValue(rows.rightRow).trim();
     if (leftCurrent !== parts.firstText || rightCurrent !== parts.secondText) {
-      const reapplied = applyOnce();
-      setSmartSplitStatus(reapplied ? 'apply-reapplied' : 'apply-reapply-failed', {
-        leftText: helper.getRowTextValue(rows.leftRow).trim().slice(0, 120),
-        rightText: helper.getRowTextValue(rows.rightRow).trim().slice(0, 120)
-      });
-      return reapplied;
+      return applyOnce();
     }
-
-    setSmartSplitStatus('apply-done', {
-      leftText: leftCurrent.slice(0, 120),
-      rightText: rightCurrent.slice(0, 120)
-    });
     return true;
   }
 
   function buildSmartSplitPlanForRegion(entry, pivotPx, container) {
     if (!entry) {
-      setSmartSplitStatus('plan-no-entry');
       return null;
     }
 
@@ -1253,25 +1312,17 @@
     }
 
     if (!(sourceRow instanceof HTMLTableRowElement)) {
-      setSmartSplitStatus('plan-no-row', {
-        startText: entry.startText,
-        endText: entry.endText,
-        leftPx: Math.round(entry.leftPx * 10) / 10,
-        rightPx: Math.round(entry.rightPx * 10) / 10
-      });
       return null;
     }
 
     const rows = helper.getTranscriptRows();
     const sourceRowIndex = rows.indexOf(sourceRow);
     if (sourceRowIndex < 0) {
-      setSmartSplitStatus('plan-row-missing-index');
       return null;
     }
 
     const sourceText = helper.getRowTextValue(sourceRow).trim();
     if (!sourceText) {
-      setSmartSplitStatus('plan-empty-text');
       return null;
     }
 
@@ -1438,13 +1489,15 @@
             commitPlan.container
           )
         : null;
-
-    if (useSmartSplit) {
-      setSmartSplitStatus(smartSplitPlan ? 'preview-plan-ready' : 'preview-plan-missing', {
-        splitRequired: initialOverlapPlan.splitRequired,
-        overlappingCount: initialOverlapPlan.overlapping.length
-      });
-    }
+    const smartSplitFallbackContext =
+      useSmartSplit &&
+      initialOverlapPlan.splitRequired &&
+      initialOverlapPlan.overlapping.length === 1
+        ? {
+            rowCount: helper.getTranscriptRows().length,
+            rows: captureRowSnapshot()
+          }
+        : null;
 
     const previewElement = preview.element instanceof HTMLElement ? preview.element : null;
     const originalOpacity = previewElement ? previewElement.style.opacity : '';
@@ -1550,6 +1603,9 @@
       if (smartSplitPlan) {
         await helper.sleep(64);
         void applySmartSplit(smartSplitPlan);
+      } else if (smartSplitFallbackContext) {
+        await helper.sleep(64);
+        void applySmartSplitFromDuplicateRows(smartSplitFallbackContext);
       }
 
       helper.clearCutPreview();
@@ -1630,6 +1686,8 @@
       return;
     }
 
+    captureSmartSplitClickDraft(event);
+
     if (beginPreviewDrag(event)) {
       return;
     }
@@ -1693,11 +1751,7 @@
 
   function getSmartSplitClickDraft(event) {
     if (
-      event.defaultPrevented ||
-      event.button !== 0 ||
-      event.altKey ||
-      !event.shiftKey ||
-      (!event.ctrlKey && !event.metaKey)
+      !isSmartSplitClickEvent(event)
     ) {
       return null;
     }
@@ -1711,8 +1765,19 @@
         continue;
       }
 
-      if (node.hasAttribute(CUT_PREVIEW_ATTR) || isRegionHandle(node)) {
+      if (node.hasAttribute(CUT_PREVIEW_ATTR)) {
         return null;
+      }
+
+      if (!sourceRegion && isRegionHandle(node)) {
+        const owningRegion = getOwningRegionBody(node);
+        if (owningRegion) {
+          sourceRegion = owningRegion;
+          if (owningRegion.parentElement instanceof HTMLElement) {
+            container = owningRegion.parentElement;
+          }
+        }
+        continue;
       }
 
       if (!sourceRegion && isRegionBody(node)) {
@@ -1725,9 +1790,26 @@
       if (!container && getRegionElements(node).length) {
         container = node;
       }
+
+      if (
+        !container &&
+        node instanceof HTMLElement &&
+        node.parentElement instanceof HTMLElement &&
+        getRegionElements(node.parentElement).length
+      ) {
+        container = node.parentElement;
+      }
     }
 
-    if (!(sourceRegion instanceof HTMLElement) || !(container instanceof HTMLElement)) {
+    if (
+      !(container instanceof HTMLElement) &&
+      helper.state.cutLastContainer instanceof HTMLElement &&
+      helper.state.cutLastContainer.isConnected
+    ) {
+      container = helper.state.cutLastContainer;
+    }
+
+    if (!(container instanceof HTMLElement)) {
       return null;
     }
 
@@ -1736,14 +1818,58 @@
       return null;
     }
 
-    const entry = snapshot.bounds.find((candidate) => candidate.region === sourceRegion);
+    const localX = clamp(event.clientX - snapshot.containerRect.left, 0, snapshot.containerRect.width);
+    let entry =
+      sourceRegion instanceof HTMLElement
+        ? snapshot.bounds.find((candidate) => candidate.region === sourceRegion) || null
+        : null;
+
+    if (!entry) {
+      const tolerance = 2;
+      entry =
+        snapshot.bounds.find(
+          (candidate) =>
+            localX >= candidate.leftPx - tolerance && localX <= candidate.rightPx + tolerance
+        ) || null;
+    }
+
+    if (!entry) {
+      let bestEntry = null;
+      let bestDistance = Infinity;
+      for (const candidate of snapshot.bounds) {
+        const center = (candidate.leftPx + candidate.rightPx) / 2;
+        const distance = Math.abs(center - localX);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestEntry = candidate;
+        }
+      }
+      entry = bestEntry;
+    }
+
     if (!entry) {
       return null;
     }
 
-    const pivotPx = clamp(event.clientX - snapshot.containerRect.left, entry.leftPx, entry.rightPx);
-    const plan = buildSmartSplitPlanForRegion(entry, pivotPx, container);
-    return plan;
+    const pivotPx = clamp(localX, entry.leftPx, entry.rightPx);
+    return buildSmartSplitPlanForRegion(entry, pivotPx, container);
+  }
+
+  function captureSmartSplitClickDraft(event) {
+    if (!isSmartSplitClickEvent(event)) {
+      helper.state.smartSplitClickDraft = null;
+      helper.state.smartSplitClickContext = null;
+      return null;
+    }
+
+    helper.state.smartSplitClickContext = {
+      rowCount: helper.getTranscriptRows().length,
+      rows: captureRowSnapshot()
+    };
+
+    const draft = getSmartSplitClickDraft(event);
+    helper.state.smartSplitClickDraft = draft || null;
+    return draft;
   }
 
   function handleSmartSplitClick(event) {
@@ -1751,24 +1877,20 @@
       return;
     }
 
-    const draft = getSmartSplitClickDraft(event);
+    const context = helper.state.smartSplitClickContext;
+    const draft =
+      (isSmartSplitClickEvent(event) ? helper.state.smartSplitClickDraft : null) ||
+      getSmartSplitClickDraft(event);
+    helper.state.smartSplitClickDraft = null;
+    helper.state.smartSplitClickContext = null;
     if (!draft) {
-      if (
-        event.button === 0 &&
-        event.shiftKey &&
-        !event.altKey &&
-        (event.ctrlKey || event.metaKey)
-      ) {
-        setSmartSplitStatus('click-no-draft');
+      if (isSmartSplitClickEvent(event)) {
+        if (context) {
+          void applySmartSplitFromDuplicateRows(context);
+        }
       }
       return;
     }
-
-    setSmartSplitStatus('click-draft-ready', {
-      sourceRowIndex: draft.sourceRowIndex,
-      rowCount: draft.rowCount,
-      ratio: draft.ratio
-    });
     void applySmartSplit(draft);
   }
 
