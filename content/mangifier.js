@@ -6,19 +6,19 @@
 
   helper.__mangifierRegistered = true;
 
-  const MANGIFIER_ATTR = 'data-babel-helper-mangifier';
-  const HOST_MARKER_ATTR = 'data-babel-helper-mangifier-host';
-  const MOUNT_MARKER_ATTR = 'data-babel-helper-mangifier-mount';
-  const BRIDGE_REQUEST_EVENT = 'babel-helper-magnifier-request';
-  const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const BRIDGE_SCRIPT_PATH = 'content/mangifier-bridge.js';
-  const SCALE = 10;
+  const MANGIFIER_ATTR = "data-babel-helper-mangifier";
+  const HOST_MARKER_ATTR = "data-babel-helper-mangifier-host";
+  const MOUNT_MARKER_ATTR = "data-babel-helper-mangifier-mount";
+  const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
+  const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
+  const BRIDGE_SCRIPT_PATH = "content/mangifier-bridge.js";
+  const SCALE = 3;
   const WIDTH = 180;
   const MAX_HEIGHT = 150;
   const INSET = 6;
   const BRIDGE_TIMEOUT_MS = 700;
-  const DIAGNOSTIC_PREFIX = '[Babel Helper] Magnifier diagnostic';
-  const BINDING_PREFIX = '[Babel Helper] Magnifier binding';
+  const DIAGNOSTIC_PREFIX = "[Babel Helper] Magnifier diagnostic";
+  const BINDING_PREFIX = "[Babel Helper] Magnifier binding";
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
@@ -29,7 +29,10 @@
   helper.state.magnifierPointer = null;
   helper.state.magnifierDiagnostic = null;
   helper.state.magnifierBinding = null;
-  helper.config.hotkeysHelpRows.unshift(['Shift + Hover', 'Show 10x waveform magnifier']);
+  helper.config.hotkeysHelpRows.unshift([
+    "Shift + Hover",
+    `Show ${SCALE}x waveform magnifier`,
+  ]);
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
@@ -37,11 +40,11 @@
 
   function nextMarker(prefix) {
     markerId += 1;
-    return prefix + '-' + Date.now() + '-' + markerId;
+    return prefix + "-" + Date.now() + "-" + markerId;
   }
 
   function parseSeconds(value) {
-    if (typeof value !== 'string') {
+    if (typeof value !== "string") {
       return null;
     }
 
@@ -56,7 +59,7 @@
       return Number.isFinite(numeric) ? numeric : null;
     }
 
-    const parts = trimmed.split(':');
+    const parts = trimmed.split(":");
     if (parts.length < 2) {
       return null;
     }
@@ -74,24 +77,27 @@
   }
 
   function getPartTokens(element) {
-    const part = element instanceof Element ? element.getAttribute('part') : '';
+    const part = element instanceof Element ? element.getAttribute("part") : "";
     return part ? part.split(/\s+/).filter(Boolean) : [];
   }
 
   function isRegionElement(element) {
-    return element instanceof HTMLElement && getPartTokens(element).includes('region');
+    return (
+      element instanceof HTMLElement &&
+      getPartTokens(element).includes("region")
+    );
   }
 
   function isWaveformScope(scope) {
-    if (!scope || typeof scope.querySelector !== 'function') {
+    if (!scope || typeof scope.querySelector !== "function") {
       return false;
     }
 
     return Boolean(
       scope.querySelector('[part="regions-container"]') &&
-        scope.querySelector('[part="hover"]') &&
-        scope.querySelector('[part="wrapper"]') &&
-        scope.querySelector('[part="scroll"]')
+      scope.querySelector('[part="hover"]') &&
+      scope.querySelector('[part="wrapper"]') &&
+      scope.querySelector('[part="scroll"]'),
     );
   }
 
@@ -109,7 +115,10 @@
       current = current.parentElement;
     }
 
-    const root = node && typeof node.getRootNode === 'function' ? node.getRootNode() : null;
+    const root =
+      node && typeof node.getRootNode === "function"
+        ? node.getRootNode()
+        : null;
     if (root instanceof ShadowRoot && isWaveformScope(root)) {
       return root;
     }
@@ -118,7 +127,8 @@
   }
 
   function getWaveformContextFromEvent(event) {
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    const path =
+      typeof event.composedPath === "function" ? event.composedPath() : [];
     for (const node of path) {
       const scope = getWaveformScopeFromNode(node);
       if (!scope) {
@@ -131,7 +141,7 @@
         return {
           scope,
           container,
-          host
+          host,
         };
       }
     }
@@ -140,7 +150,7 @@
   }
 
   function getHoverData(scope, containerRect) {
-    if (!scope || typeof scope.querySelector !== 'function') {
+    if (!scope || typeof scope.querySelector !== "function") {
       return null;
     }
 
@@ -149,14 +159,14 @@
       return null;
     }
 
-    const transform = hover.style.transform || '';
+    const transform = hover.style.transform || "";
     const match = transform.match(/translateX\((-?\d+(?:\.\d+)?)px\)/i);
     if (!match) {
       return null;
     }
 
     const hoverStyle = window.getComputedStyle(hover);
-    if (Number(hoverStyle.opacity || '1') <= 0) {
+    if (Number(hoverStyle.opacity || "1") <= 0) {
       return null;
     }
 
@@ -170,7 +180,7 @@
     return {
       x: clamp(Number(match[1]), 0, containerRect.width),
       text,
-      timeSeconds
+      timeSeconds,
     };
   }
 
@@ -183,10 +193,14 @@
       .filter((child) => isRegionElement(child))
       .map((region) => {
         const start = parseSeconds(
-          helper.normalizeText(region.querySelector('.wavesurfer-region-tooltip-start'))
+          helper.normalizeText(
+            region.querySelector(".wavesurfer-region-tooltip-start"),
+          ),
         );
         const end = parseSeconds(
-          helper.normalizeText(region.querySelector('.wavesurfer-region-tooltip-end'))
+          helper.normalizeText(
+            region.querySelector(".wavesurfer-region-tooltip-end"),
+          ),
         );
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
           return null;
@@ -196,18 +210,21 @@
         return {
           start,
           end,
-          backgroundColor: styles.backgroundColor || 'rgba(176, 131, 255, 0.25)',
+          backgroundColor:
+            styles.backgroundColor || "rgba(176, 131, 255, 0.25)",
           borderLeft: styles.borderLeft,
           borderRight: styles.borderRight,
-          borderRadius: styles.borderRadius || '2px',
-          filter: styles.filter
+          borderRadius: styles.borderRadius || "2px",
+          filter: styles.filter,
         };
       })
       .filter(Boolean);
   }
 
   function isGestureActive(event) {
-    return Boolean(event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey);
+    return Boolean(
+      event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey,
+    );
   }
 
   function injectBridge() {
@@ -223,16 +240,16 @@
       const parent = document.documentElement || document.head || document.body;
       if (
         !parent ||
-        typeof chrome === 'undefined' ||
+        typeof chrome === "undefined" ||
         !chrome.runtime ||
-        typeof chrome.runtime.getURL !== 'function'
+        typeof chrome.runtime.getURL !== "function"
       ) {
         bridgeLoadPromise = null;
         resolve(false);
         return;
       }
 
-      const script = document.createElement('script');
+      const script = document.createElement("script");
       script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
       script.async = false;
       script.onload = () => {
@@ -260,7 +277,7 @@
 
     return new Promise((resolve) => {
       bridgeRequestId += 1;
-      const id = 'request-' + bridgeRequestId;
+      const id = "request-" + bridgeRequestId;
       let settled = false;
 
       const finish = (result) => {
@@ -281,16 +298,19 @@
         finish(detail.result || null);
       };
 
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
+      const timeoutId = window.setTimeout(
+        () => finish(null),
+        BRIDGE_TIMEOUT_MS,
+      );
       window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
       window.dispatchEvent(
         new CustomEvent(BRIDGE_REQUEST_EVENT, {
           detail: {
             id,
             operation,
-            payload: payload || {}
-          }
-        })
+            payload: payload || {},
+          },
+        }),
       );
     });
   }
@@ -302,7 +322,7 @@
   }
 
   function logDiagnostic(diagnostic) {
-    if (!diagnostic || typeof diagnostic !== 'object') {
+    if (!diagnostic || typeof diagnostic !== "object") {
       return;
     }
 
@@ -320,14 +340,14 @@
     try {
       console.log(JSON.stringify(diagnostic, null, 2));
     } catch (error) {
-      console.log(DIAGNOSTIC_PREFIX + ' (non-serializable)', String(error));
+      console.log(DIAGNOSTIC_PREFIX + " (non-serializable)", String(error));
     }
 
     console.groupEnd();
   }
 
   function logBinding(binding) {
-    if (!binding || typeof binding !== 'object') {
+    if (!binding || typeof binding !== "object") {
       return;
     }
 
@@ -345,19 +365,27 @@
     try {
       console.log(JSON.stringify(binding, null, 2));
     } catch (error) {
-      console.log(BINDING_PREFIX + ' (non-serializable)', String(error));
+      console.log(BINDING_PREFIX + " (non-serializable)", String(error));
     }
 
     console.groupEnd();
   }
 
-  async function reportDiagnostic(magnifier, failureReason, bridgeResult, extra) {
+  async function reportDiagnostic(
+    magnifier,
+    failureReason,
+    bridgeResult,
+    extra,
+  ) {
     if (!magnifier) {
       return;
     }
 
-    const diagnosticKey = String(failureReason || 'unknown');
-    if (magnifier.diagnosticPending || magnifier.lastDiagnosticKey === diagnosticKey) {
+    const diagnosticKey = String(failureReason || "unknown");
+    if (
+      magnifier.diagnosticPending ||
+      magnifier.lastDiagnosticKey === diagnosticKey
+    ) {
       return;
     }
 
@@ -365,36 +393,43 @@
 
     try {
       let diagnostic =
-        bridgeResult && bridgeResult.diagnostic && typeof bridgeResult.diagnostic === 'object'
+        bridgeResult &&
+        bridgeResult.diagnostic &&
+        typeof bridgeResult.diagnostic === "object"
           ? Object.assign({}, bridgeResult.diagnostic)
           : null;
 
       if (!diagnostic) {
-        const response = await callBridge('diagnose', {
+        const response = await callBridge("diagnose", {
           hostMarker: magnifier.hostMarker,
           mountMarker: magnifier.mountMarker,
           instanceId: magnifier.bridgeInstanceId,
           extra: Object.assign(
             {
-              phase: 'content-script'
+              phase: "content-script",
             },
-            extra || {}
-          )
+            extra || {},
+          ),
         });
 
-        if (response && response.ok && response.diagnostic && typeof response.diagnostic === 'object') {
+        if (
+          response &&
+          response.ok &&
+          response.diagnostic &&
+          typeof response.diagnostic === "object"
+        ) {
           diagnostic = Object.assign({}, response.diagnostic);
         }
       }
 
       if (!diagnostic) {
         diagnostic = {
-          bridgeReachable: false
+          bridgeReachable: false,
         };
       }
 
-      diagnostic.failureReason = failureReason || 'unknown';
-      if (extra && typeof extra === 'object') {
+      diagnostic.failureReason = failureReason || "unknown";
+      if (extra && typeof extra === "object") {
         diagnostic.content = Object.assign({}, extra);
       }
 
@@ -413,21 +448,26 @@
     magnifier.bindingPending = true;
 
     try {
-      const response = await callBridge('diagnose', {
+      const response = await callBridge("diagnose", {
         hostMarker: magnifier.hostMarker,
         mountMarker: magnifier.mountMarker,
         instanceId: magnifier.bridgeInstanceId,
         extra: Object.assign(
           {
-            phase: 'binding'
+            phase: "binding",
           },
-          extra || {}
-        )
+          extra || {},
+        ),
       });
 
-      if (response && response.ok && response.diagnostic && typeof response.diagnostic === 'object') {
+      if (
+        response &&
+        response.ok &&
+        response.diagnostic &&
+        typeof response.diagnostic === "object"
+      ) {
         const binding = Object.assign({}, response.diagnostic);
-        if (extra && typeof extra === 'object') {
+        if (extra && typeof extra === "object") {
           binding.content = Object.assign({}, extra);
         }
         logBinding(binding);
@@ -438,7 +478,14 @@
     }
   }
 
-  function renderRegions(magnifier, entries, windowStart, windowEnd, width, height) {
+  function renderRegions(
+    magnifier,
+    entries,
+    windowStart,
+    windowEnd,
+    width,
+    height,
+  ) {
     if (!(magnifier.regionsLayer instanceof HTMLElement)) {
       return;
     }
@@ -456,14 +503,15 @@
         continue;
       }
 
-      const region = document.createElement('div');
-      region.style.position = 'absolute';
-      region.style.top = '0';
-      region.style.left = ((visibleStart - windowStart) / span) * width + 'px';
-      region.style.width = Math.max(2, ((visibleEnd - visibleStart) / span) * width) + 'px';
-      region.style.height = height + 'px';
-      region.style.boxSizing = 'border-box';
-      region.style.pointerEvents = 'none';
+      const region = document.createElement("div");
+      region.style.position = "absolute";
+      region.style.top = "0";
+      region.style.left = ((visibleStart - windowStart) / span) * width + "px";
+      region.style.width =
+        Math.max(2, ((visibleEnd - visibleStart) / span) * width) + "px";
+      region.style.height = height + "px";
+      region.style.boxSizing = "border-box";
+      region.style.pointerEvents = "none";
       region.style.borderRadius = entry.borderRadius;
       region.style.backgroundColor = entry.backgroundColor;
       region.style.borderLeft = entry.borderLeft;
@@ -474,83 +522,84 @@
   }
 
   function createMagnifier(context) {
-    const element = document.createElement('div');
-    element.setAttribute(MANGIFIER_ATTR, 'true');
-    element.style.position = 'absolute';
-    element.style.top = INSET + 'px';
-    element.style.left = INSET + 'px';
-    element.style.width = WIDTH + 'px';
-    element.style.height = '80px';
-    element.style.zIndex = '9';
-    element.style.pointerEvents = 'none';
-    element.style.overflow = 'hidden';
-    element.style.border = '1px solid rgba(15, 23, 42, 0.78)';
-    element.style.borderRadius = '6px';
-    element.style.background = 'rgba(255, 255, 255, 0.98)';
-    element.style.boxShadow = '0 10px 20px rgba(15, 23, 42, 0.20)';
+    const element = document.createElement("div");
+    element.setAttribute(MANGIFIER_ATTR, "true");
+    element.style.position = "absolute";
+    element.style.top = INSET + "px";
+    element.style.left = INSET + "px";
+    element.style.width = WIDTH + "px";
+    element.style.height = "80px";
+    element.style.zIndex = "9";
+    element.style.pointerEvents = "none";
+    element.style.overflow = "hidden";
+    element.style.border = "1px solid rgba(15, 23, 42, 0.78)";
+    element.style.borderRadius = "6px";
+    element.style.background = "rgba(255, 255, 255, 0.98)";
+    element.style.boxShadow = "0 10px 20px rgba(15, 23, 42, 0.20)";
 
-    const viewport = document.createElement('div');
-    viewport.style.position = 'absolute';
-    viewport.style.inset = '0';
-    viewport.style.pointerEvents = 'none';
-    viewport.style.overflow = 'hidden';
+    const viewport = document.createElement("div");
+    viewport.style.position = "absolute";
+    viewport.style.inset = "0";
+    viewport.style.pointerEvents = "none";
+    viewport.style.overflow = "hidden";
     element.appendChild(viewport);
 
-    const mount = document.createElement('div');
-    mount.style.position = 'absolute';
-    mount.style.inset = '0';
-    mount.style.pointerEvents = 'none';
+    const mount = document.createElement("div");
+    mount.style.position = "absolute";
+    mount.style.inset = "0";
+    mount.style.pointerEvents = "none";
     viewport.appendChild(mount);
 
-    const regionsLayer = document.createElement('div');
-    regionsLayer.style.position = 'absolute';
-    regionsLayer.style.inset = '0';
-    regionsLayer.style.pointerEvents = 'none';
-    regionsLayer.style.zIndex = '3';
+    const regionsLayer = document.createElement("div");
+    regionsLayer.style.position = "absolute";
+    regionsLayer.style.inset = "0";
+    regionsLayer.style.pointerEvents = "none";
+    regionsLayer.style.zIndex = "3";
     viewport.appendChild(regionsLayer);
 
-    const centerLine = document.createElement('div');
-    centerLine.style.position = 'absolute';
-    centerLine.style.top = '0';
-    centerLine.style.bottom = '0';
-    centerLine.style.left = '50%';
-    centerLine.style.width = '2px';
-    centerLine.style.background = 'rgba(15, 23, 42, 0.92)';
-    centerLine.style.transform = 'translateX(-50%)';
-    centerLine.style.zIndex = '4';
+    const centerLine = document.createElement("div");
+    centerLine.style.position = "absolute";
+    centerLine.style.top = "0";
+    centerLine.style.bottom = "0";
+    centerLine.style.left = "50%";
+    centerLine.style.width = "2px";
+    centerLine.style.background = "rgba(15, 23, 42, 0.92)";
+    centerLine.style.transform = "translateX(-50%)";
+    centerLine.style.zIndex = "4";
     viewport.appendChild(centerLine);
 
-    const badge = document.createElement('div');
-    badge.style.position = 'absolute';
-    badge.style.left = '6px';
-    badge.style.top = '5px';
-    badge.style.padding = '2px 6px';
-    badge.style.borderRadius = '999px';
-    badge.style.fontSize = '10px';
-    badge.style.fontWeight = '700';
-    badge.style.lineHeight = '1.2';
-    badge.style.fontFamily = 'ui-monospace, SFMono-Regular, Consolas, monospace';
-    badge.style.color = '#e2e8f0';
-    badge.style.background = 'rgba(15, 23, 42, 0.82)';
-    badge.style.zIndex = '5';
-    badge.textContent = '10x';
+    const badge = document.createElement("div");
+    badge.style.position = "absolute";
+    badge.style.left = "6px";
+    badge.style.top = "5px";
+    badge.style.padding = "2px 6px";
+    badge.style.borderRadius = "999px";
+    badge.style.fontSize = "10px";
+    badge.style.fontWeight = "700";
+    badge.style.lineHeight = "1.2";
+    badge.style.fontFamily =
+      "ui-monospace, SFMono-Regular, Consolas, monospace";
+    badge.style.color = "#e2e8f0";
+    badge.style.background = "rgba(15, 23, 42, 0.82)";
+    badge.style.zIndex = "5";
+    badge.textContent = `${SCALE}x`;
     element.appendChild(badge);
 
-    const stem = document.createElement('div');
-    stem.style.position = 'absolute';
-    stem.style.bottom = '0';
-    stem.style.width = '2px';
-    stem.style.height = '12px';
-    stem.style.borderRadius = '999px';
-    stem.style.background = 'rgba(15, 23, 42, 0.9)';
-    stem.style.transform = 'translate(-50%, 100%)';
-    stem.style.zIndex = '5';
+    const stem = document.createElement("div");
+    stem.style.position = "absolute";
+    stem.style.bottom = "0";
+    stem.style.width = "2px";
+    stem.style.height = "12px";
+    stem.style.borderRadius = "999px";
+    stem.style.background = "rgba(15, 23, 42, 0.9)";
+    stem.style.transform = "translate(-50%, 100%)";
+    stem.style.zIndex = "5";
     element.appendChild(stem);
 
     context.container.appendChild(element);
 
-    const hostMarker = nextMarker('host');
-    const mountMarker = nextMarker('mount');
+    const hostMarker = nextMarker("host");
+    const mountMarker = nextMarker("mount");
     context.host.setAttribute(HOST_MARKER_ATTR, hostMarker);
     mount.setAttribute(MOUNT_MARKER_ATTR, mountMarker);
 
@@ -571,7 +620,7 @@
       diagnosticPending: false,
       lastDiagnosticKey: null,
       bindingPending: false,
-      bindingLogged: false
+      bindingLogged: false,
     };
   }
 
@@ -581,8 +630,8 @@
     }
 
     if (magnifier.bridgeInstanceId) {
-      await callBridge('destroy', {
-        instanceId: magnifier.bridgeInstanceId
+      await callBridge("destroy", {
+        instanceId: magnifier.bridgeInstanceId,
       });
     }
   }
@@ -601,7 +650,10 @@
     if (magnifier.mount instanceof HTMLElement) {
       magnifier.mount.removeAttribute(MOUNT_MARKER_ATTR);
     }
-    if (magnifier.element instanceof HTMLElement && magnifier.element.isConnected) {
+    if (
+      magnifier.element instanceof HTMLElement &&
+      magnifier.element.isConnected
+    ) {
       magnifier.element.remove();
     }
 
@@ -654,51 +706,57 @@
       const containerRect = magnifier.container.getBoundingClientRect();
       const hover = getHoverData(magnifier.scope, containerRect);
       if (!hover || containerRect.width <= 0 || containerRect.height <= 0) {
-        setStatus(magnifier, '10x waiting');
+        setStatus(magnifier, `${SCALE} waiting`);
         return;
       }
 
-      const width = Math.min(WIDTH, Math.max(80, Math.round(containerRect.width - INSET * 2)));
-      const height = Math.max(48, Math.min(MAX_HEIGHT, Math.round(containerRect.height - INSET * 2)));
+      const width = Math.min(
+        WIDTH,
+        Math.max(80, Math.round(containerRect.width - INSET * 2)),
+      );
+      const height = Math.max(
+        48,
+        Math.min(MAX_HEIGHT, Math.round(containerRect.height - INSET * 2)),
+      );
       const left = clamp(
         hover.x - width / 2,
         INSET,
-        Math.max(INSET, containerRect.width - width - INSET)
+        Math.max(INSET, containerRect.width - width - INSET),
       );
       const stemX = clamp(hover.x - left, 4, width - 4);
       const stemHeight = Math.max(
         8,
-        Math.min(18, Math.round(containerRect.height - height - INSET * 2))
+        Math.min(18, Math.round(containerRect.height - height - INSET * 2)),
       );
 
-      magnifier.element.style.left = left + 'px';
-      magnifier.element.style.top = INSET + 'px';
-      magnifier.element.style.width = width + 'px';
-      magnifier.element.style.height = height + 'px';
-      magnifier.stem.style.left = stemX + 'px';
-      magnifier.stem.style.height = stemHeight + 'px';
+      magnifier.element.style.left = left + "px";
+      magnifier.element.style.top = INSET + "px";
+      magnifier.element.style.width = width + "px";
+      magnifier.element.style.height = height + "px";
+      magnifier.stem.style.left = stemX + "px";
+      magnifier.stem.style.height = stemHeight + "px";
 
       if (!magnifier.bridgeInstanceId) {
-        const ensureResult = await callBridge('ensure', {
+        const ensureResult = await callBridge("ensure", {
           hostMarker: magnifier.hostMarker,
           mountMarker: magnifier.mountMarker,
           height,
-          scale: SCALE
+          scale: SCALE,
         });
 
         if (!ensureResult || !ensureResult.ok || !ensureResult.id) {
-          setStatus(magnifier, '10x unavailable');
+          setStatus(magnifier, `${SCALE} unavailable`);
           void reportDiagnostic(
             magnifier,
-            (ensureResult && ensureResult.reason) || 'ensure-failed',
+            (ensureResult && ensureResult.reason) || "ensure-failed",
             ensureResult,
             {
-              stage: 'ensure',
+              stage: "ensure",
               hoverTime: hover.timeSeconds,
               hoverLabel: hover.text,
               width,
-              height
-            }
+              height,
+            },
           );
           return;
         }
@@ -706,47 +764,47 @@
         magnifier.bridgeInstanceId = ensureResult.id;
       }
 
-      const updateResult = await callBridge('update', {
+      const updateResult = await callBridge("update", {
         instanceId: magnifier.bridgeInstanceId,
         time: hover.timeSeconds,
         width,
         height,
-        scale: SCALE
+        scale: SCALE,
       });
 
       if (!updateResult || !updateResult.ok) {
-        setStatus(magnifier, '10x unavailable');
+        setStatus(magnifier, `${SCALE} unavailable`);
         void reportDiagnostic(
           magnifier,
-          (updateResult && updateResult.reason) || 'update-failed',
+          (updateResult && updateResult.reason) || "update-failed",
           updateResult,
           {
-            stage: 'update',
+            stage: "update",
             hoverTime: hover.timeSeconds,
             hoverLabel: hover.text,
             width,
-            height
-          }
+            height,
+          },
         );
         return;
       }
 
       void reportBinding(magnifier, {
-        stage: 'success',
+        stage: "success",
         hoverTime: hover.timeSeconds,
         hoverLabel: hover.text,
         width,
-        height
+        height,
       });
 
-      setStatus(magnifier, '10x @ ' + hover.text);
+      setStatus(magnifier, "10x @ " + hover.text);
       renderRegions(
         magnifier,
         getRegionEntries(magnifier.container),
         Number(updateResult.windowStart) || 0,
         Number(updateResult.windowEnd) || 0,
         width,
-        height
+        height,
       );
     } finally {
       if (!magnifier || helper.state.magnifier !== magnifier) {
@@ -785,7 +843,7 @@
   }
 
   function handleKeyDown(event) {
-    if (event.key !== 'Shift' || !isGestureActive(event)) {
+    if (event.key !== "Shift" || !isGestureActive(event)) {
       return;
     }
 
@@ -798,12 +856,12 @@
   }
 
   function handleKeyUp(event) {
-    if (event.key === 'Shift') {
+    if (event.key === "Shift") {
       helper.clearMagnifier();
     }
   }
 
-  document.addEventListener('pointermove', handlePointerMove, true);
-  document.addEventListener('keydown', handleKeyDown, true);
-  document.addEventListener('keyup', handleKeyUp, true);
+  document.addEventListener("pointermove", handlePointerMove, true);
+  document.addEventListener("keydown", handleKeyDown, true);
+  document.addEventListener("keyup", handleKeyUp, true);
 })();
