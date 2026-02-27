@@ -16,6 +16,11 @@
     return row ? row.querySelector(helper.config.rowTextareaSelector) : null;
   };
 
+  helper.getRowTextValue = function getRowTextValue(row) {
+    const textarea = helper.getRowTextarea(row);
+    return textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
+  };
+
   helper.getActiveRowTextarea = function getActiveRowTextarea() {
     const active = document.activeElement;
     return active instanceof HTMLTextAreaElement && active.matches(helper.config.rowTextareaSelector)
@@ -261,6 +266,51 @@
     }
 
     return before + ' ' + after;
+  };
+
+  helper.splitTextByWordRatio = function splitTextByWordRatio(text, ratio) {
+    const source = typeof text === 'string' ? text : String(text ?? '');
+    const words = source.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      return {
+        firstText: '',
+        secondText: '',
+        splitCount: 0,
+        wordCount: 0
+      };
+    }
+
+    const clampedRatio = Math.min(Math.max(Number(ratio) || 0, 0), 1);
+    let splitCount = Math.round(words.length * clampedRatio);
+    if (clampedRatio > 0 && clampedRatio < 1 && words.length > 1) {
+      splitCount = Math.max(1, Math.min(words.length - 1, splitCount));
+    } else {
+      splitCount = Math.max(0, Math.min(words.length, splitCount));
+    }
+
+    return {
+      firstText: words.slice(0, splitCount).join(' '),
+      secondText: words.slice(splitCount).join(' '),
+      splitCount,
+      wordCount: words.length
+    };
+  };
+
+  helper.applySmartSplitToRows = function applySmartSplitToRows(leftRow, rightRow, sourceText, ratio) {
+    const leftTextarea = helper.getRowTextarea(leftRow);
+    const rightTextarea = helper.getRowTextarea(rightRow);
+    if (!(leftTextarea instanceof HTMLTextAreaElement) || !(rightTextarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const parts = helper.splitTextByWordRatio(sourceText, ratio);
+    if (!parts.wordCount) {
+      return false;
+    }
+
+    const wroteLeft = helper.setEditableValue(leftTextarea, parts.firstText);
+    const wroteRight = helper.setEditableValue(rightTextarea, parts.secondText);
+    return Boolean(wroteLeft && wroteRight);
   };
 
   helper.moveTextToAdjacentSegment = function moveTextToAdjacentSegment(offset) {

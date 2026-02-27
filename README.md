@@ -9,11 +9,13 @@ What the snapshot shows today:
 
 What this version adds:
 - Keyboard shortcuts plus an `Alt + Drag` cut preview, with no persistent injected UI:
-  - `Shift + Hover` over the waveform: show a temporary 10x magnifier above the hover handle
+  - `Shift + Hover` over the waveform: show a temporary 3x magnifier above the hover handle
   - `Alt + Drag` inside an existing waveform segment: create a temporary cut preview
   - `Enter`: commit the cut preview by replaying the native split gesture at both cut boundaries
+  - `Shift + Enter`: commit the cut preview, then smart-split words when one segment becomes two
+  - `Shift + Ctrl/Cmd + Click`: use Babel's native split, then smart-split words across the new pair
   - `Esc`: cancel the cut preview, or toggle blur and restore focus when no preview exists
-  - `Alt+[ / Alt+]` (same physical keys as `Alt+Х / Alt+Ъ` on RU layout): move text before / after the caret into the previous / next segment
+  - `Alt+[ / Alt+]` (same physical bracket keys on RU layout): move text before / after the caret into the previous / next segment
   - `Alt+Shift+Up / Alt+Shift+Down`: merge with previous / next
   - `Del`: delete the current segment
 
@@ -24,6 +26,7 @@ Implementation notes:
 - The waveform magnifier is transient and non-interactive, so native region handles still receive pointer events while it is visible.
 - The cut preview only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
 - The cut preview is temporary extension UI: `Esc` cancels it, and `Enter` commits it only when the preview spans at least 1 second. Shorter previews stay visible until you cancel or resize them.
+- Smart splitting is additive: Babel still performs the real split, and the extension only redistributes words afterward using a simple word-count ratio based on the split position.
 - Delete and merge actions are triggered by opening the page's own action menu and clicking the matching menu item, so the existing React workflow remains in control.
 - Cut commits are performed by replaying a synthetic modified `click` at the preview edges, which is intended to mirror the product's split interaction without low-level pointer injection.
 - The menu item lookup is text-based and intentionally tolerant (`delete/remove`, `merge/combine/join`) because the exact menu labels were not present in the closed snapshot.

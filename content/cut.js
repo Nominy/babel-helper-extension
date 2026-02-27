@@ -17,11 +17,36 @@
   helper.state.cutPreview = null;
   helper.state.cutCommitPending = false;
   helper.state.cutLastContainer = null;
+  helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
   helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a cut preview across the waveform lane']);
   helper.config.hotkeysHelpRows.unshift(['Enter', 'Commit cut preview if it is at least 1 second']);
+  helper.config.hotkeysHelpRows.unshift(['Shift + Enter', 'Commit cut preview with smart split when one segment becomes two']);
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  function setSmartSplitStatus(stage, details) {
+    try {
+      const root = document.documentElement;
+      if (!(root instanceof HTMLElement)) {
+        return;
+      }
+
+      root.setAttribute('data-babel-helper-smart-split-stage', String(stage || ''));
+      if (typeof details === 'undefined') {
+        root.removeAttribute('data-babel-helper-smart-split-info');
+        return;
+      }
+
+      const serialized = JSON.stringify(details);
+      root.setAttribute(
+        'data-babel-helper-smart-split-info',
+        typeof serialized === 'string' ? serialized.slice(0, 1200) : ''
+      );
+    } catch (_error) {
+      // Ignore debug state failures.
+    }
   }
 
   function parseTimestamp(value) {
@@ -171,18 +196,78 @@
     };
   }
 
+  function getRowTimeRange(row) {
+    const labels = getRowTimeLabels(row);
+    if (!labels) {
+      return null;
+    }
+
+    const startSeconds = parseTimestamp(labels.startText);
+    const endSeconds = parseTimestamp(labels.endText);
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return null;
+    }
+
+    return {
+      startSeconds,
+      endSeconds
+    };
+  }
+
+  function findRowByTimeRange(startSeconds, endSeconds) {
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    let bestRow = null;
+    let bestScore = -Infinity;
+
+    for (const row of rows) {
+      const range = getRowTimeRange(row);
+      if (!range) {
+        continue;
+      }
+
+      const overlap = Math.max(
+        0,
+        Math.min(endSeconds, range.endSeconds) - Math.max(startSeconds, range.startSeconds)
+      );
+      const distance =
+        Math.abs(range.startSeconds - startSeconds) + Math.abs(range.endSeconds - endSeconds);
+      const score = overlap > 0 ? overlap * 100 - distance : -distance;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestRow = row;
+      }
+    }
+
+    return bestRow;
+  }
+
   function findRowByTimeLabels(startText, endText) {
     if (!startText || !endText) {
       return null;
     }
 
     const rows = helper.getTranscriptRows();
-    return (
+    const exactMatch =
       rows.find((row) => {
         const labels = getRowTimeLabels(row);
         return labels && labels.startText === startText && labels.endText === endText;
-      }) || null
-    );
+      }) || null;
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    const targetStart = parseTimestamp(startText);
+    const targetEnd = parseTimestamp(endText);
+    if (!Number.isFinite(targetStart) || !Number.isFinite(targetEnd) || targetEnd <= targetStart) {
+      return null;
+    }
+
+    return findRowByTimeRange(targetStart, targetEnd);
   }
 
   async function deleteRegionByTimeLabels(startText, endText) {
@@ -873,6 +958,17 @@
     return updated || collectRegionSnapshot(container);
   }
 
+  async function waitForRegionChange(container, previousSignature) {
+    return helper.waitFor(() => {
+      const snapshot = collectRegionSnapshot(container);
+      if (!snapshot) {
+        return null;
+      }
+
+      return getSnapshotSignature(snapshot) !== previousSignature ? snapshot : null;
+    }, 900, 40);
+  }
+
   function collectOverlapPlan(snapshot, cutLeftPx, cutRightPx) {
     if (!snapshot || !Array.isArray(snapshot.bounds) || !snapshot.bounds.length) {
       return null;
@@ -966,6 +1062,230 @@
       containerRect,
       previous,
       next
+    };
+  }
+
+  function getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex) {
+    const rows = helper.getTranscriptRows();
+    if (!rows.length || sourceRowIndex < 0 || sourceRowIndex >= rows.length) {
+      return null;
+    }
+
+    if (sourceRow instanceof HTMLTableRowElement && sourceRow.isConnected) {
+      const liveIndex = rows.indexOf(sourceRow);
+      if (liveIndex >= 0) {
+        if (liveIndex > sourceRowIndex && rows[liveIndex - 1] instanceof HTMLTableRowElement) {
+          return {
+            leftRow: rows[liveIndex - 1],
+            rightRow: sourceRow
+          };
+        }
+
+        if (rows[liveIndex + 1] instanceof HTMLTableRowElement) {
+          return {
+            leftRow: sourceRow,
+            rightRow: rows[liveIndex + 1]
+          };
+        }
+
+        if (liveIndex > 0 && rows[liveIndex - 1] instanceof HTMLTableRowElement) {
+          return {
+            leftRow: rows[liveIndex - 1],
+            rightRow: sourceRow
+          };
+        }
+      }
+    }
+
+    const leftRow = rows[sourceRowIndex];
+    const rightRow = rows[sourceRowIndex + 1];
+    if (!(leftRow instanceof HTMLTableRowElement) || !(rightRow instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    return {
+      leftRow,
+      rightRow
+    };
+  }
+
+  async function waitForSmartSplitRows(sourceRow, sourceRowIndex, previousRowCount) {
+    if (sourceRowIndex < 0 || !Number.isFinite(previousRowCount)) {
+      setSmartSplitStatus('rows-invalid-plan', {
+        sourceRowIndex,
+        previousRowCount
+      });
+      return null;
+    }
+
+    return helper.waitFor(() => {
+      const rows = helper.getTranscriptRows();
+      if (rows.length < previousRowCount + 1) {
+        return null;
+      }
+
+      return getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex);
+    }, 1200, 40);
+  }
+
+  async function waitForSmartSplitTextReady(rows, sourceText) {
+    if (!rows || !sourceText) {
+      return null;
+    }
+
+    return helper.waitFor(() => {
+      const leftText = helper.getRowTextValue(rows.leftRow).trim();
+      const rightText = helper.getRowTextValue(rows.rightRow).trim();
+      if (!leftText && !rightText) {
+        return null;
+      }
+
+      // Let Babel finish its own duplicated-text write before we overwrite it.
+      if (leftText === sourceText || rightText === sourceText || leftText === rightText) {
+        return {
+          leftText,
+          rightText,
+          duplicated: true
+        };
+      }
+
+      return {
+        leftText,
+        rightText,
+        duplicated: false
+      };
+    }, 800, 40);
+  }
+
+  async function applySmartSplit(plan) {
+    if (!plan || !plan.sourceText) {
+      setSmartSplitStatus('apply-invalid-plan', {
+        hasPlan: Boolean(plan),
+        hasText: Boolean(plan && plan.sourceText)
+      });
+      return false;
+    }
+
+    setSmartSplitStatus('apply-start', {
+      rowCount: plan.rowCount,
+      sourceRowIndex: plan.sourceRowIndex,
+      ratio: plan.ratio
+    });
+
+    const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount);
+    if (!rows) {
+      setSmartSplitStatus('rows-timeout', {
+        rowCount: plan.rowCount,
+        currentRowCount: helper.getTranscriptRows().length
+      });
+      return false;
+    }
+
+    setSmartSplitStatus('rows-ready', {
+      leftStart: getRowTimeLabels(rows.leftRow)?.startText || '',
+      rightStart: getRowTimeLabels(rows.rightRow)?.startText || ''
+    });
+
+    const parts = helper.splitTextByWordRatio(plan.sourceText, plan.ratio);
+    if (!parts.wordCount) {
+      setSmartSplitStatus('split-empty', {
+        sourceText: plan.sourceText
+      });
+      return false;
+    }
+
+    const readyState = await waitForSmartSplitTextReady(rows, plan.sourceText);
+    if (readyState && readyState.duplicated) {
+      await helper.sleep(80);
+    }
+
+    const applyOnce = () =>
+      helper.applySmartSplitToRows(rows.leftRow, rows.rightRow, plan.sourceText, plan.ratio);
+
+    if (!applyOnce()) {
+      setSmartSplitStatus('apply-write-failed', {
+        leftConnected: rows.leftRow.isConnected,
+        rightConnected: rows.rightRow.isConnected
+      });
+      return false;
+    }
+
+    setSmartSplitStatus('apply-written', {
+      leftText: helper.getRowTextValue(rows.leftRow).trim().slice(0, 120),
+      rightText: helper.getRowTextValue(rows.rightRow).trim().slice(0, 120)
+    });
+
+    await helper.sleep(140);
+
+    const leftCurrent = helper.getRowTextValue(rows.leftRow).trim();
+    const rightCurrent = helper.getRowTextValue(rows.rightRow).trim();
+    if (leftCurrent !== parts.firstText || rightCurrent !== parts.secondText) {
+      const reapplied = applyOnce();
+      setSmartSplitStatus(reapplied ? 'apply-reapplied' : 'apply-reapply-failed', {
+        leftText: helper.getRowTextValue(rows.leftRow).trim().slice(0, 120),
+        rightText: helper.getRowTextValue(rows.rightRow).trim().slice(0, 120)
+      });
+      return reapplied;
+    }
+
+    setSmartSplitStatus('apply-done', {
+      leftText: leftCurrent.slice(0, 120),
+      rightText: rightCurrent.slice(0, 120)
+    });
+    return true;
+  }
+
+  function buildSmartSplitPlanForRegion(entry, pivotPx, container) {
+    if (!entry) {
+      setSmartSplitStatus('plan-no-entry');
+      return null;
+    }
+
+    let sourceRow = findRowByTimeLabels(entry.startText, entry.endText);
+
+    if (!(sourceRow instanceof HTMLTableRowElement) && container instanceof HTMLElement) {
+      const laneTimeScale = getLaneTimeScale(container);
+      if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
+        const startSeconds = laneTimeScale.offsetSeconds + entry.leftPx * laneTimeScale.secondsPerPx;
+        const endSeconds = laneTimeScale.offsetSeconds + entry.rightPx * laneTimeScale.secondsPerPx;
+        sourceRow = findRowByTimeRange(startSeconds, endSeconds);
+      }
+    }
+
+    if (!(sourceRow instanceof HTMLTableRowElement)) {
+      setSmartSplitStatus('plan-no-row', {
+        startText: entry.startText,
+        endText: entry.endText,
+        leftPx: Math.round(entry.leftPx * 10) / 10,
+        rightPx: Math.round(entry.rightPx * 10) / 10
+      });
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    const sourceRowIndex = rows.indexOf(sourceRow);
+    if (sourceRowIndex < 0) {
+      setSmartSplitStatus('plan-row-missing-index');
+      return null;
+    }
+
+    const sourceText = helper.getRowTextValue(sourceRow).trim();
+    if (!sourceText) {
+      setSmartSplitStatus('plan-empty-text');
+      return null;
+    }
+
+    const width = entry.rightPx - entry.leftPx;
+    const ratio =
+      width > 0 ? clamp((pivotPx - entry.leftPx) / width, 0, 1) : 0.5;
+
+    return {
+      sourceRow,
+      sourceRowIndex,
+      rowCount: rows.length,
+      sourceText,
+      pivotPx,
+      ratio
     };
   }
 
@@ -1068,11 +1388,14 @@
     return true;
   }
 
-  helper.commitCutPreview = async function commitCutPreview() {
+  helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
     if (!preview || helper.state.cutCommitPending) {
       return false;
     }
+
+    const settings = options || {};
+    const useSmartSplit = Boolean(settings.smartSplit);
 
     if (cancelCutPreviewIfZoomChanged()) {
       return false;
@@ -1102,6 +1425,25 @@
     const initialOverlapPlan = collectOverlapPlan(beforeSnapshot, commitPlan.leftPx, commitPlan.rightPx);
     if (!beforeSnapshot || !initialOverlapPlan || !initialOverlapPlan.overlapping.length) {
       return false;
+    }
+
+    const smartSplitPlan =
+      useSmartSplit &&
+      initialOverlapPlan.splitRequired &&
+      initialOverlapPlan.overlapping.length === 1 &&
+      initialOverlapPlan.splitRegion
+        ? buildSmartSplitPlanForRegion(
+            initialOverlapPlan.splitRegion,
+            (commitPlan.leftPx + commitPlan.rightPx) / 2,
+            commitPlan.container
+          )
+        : null;
+
+    if (useSmartSplit) {
+      setSmartSplitStatus(smartSplitPlan ? 'preview-plan-ready' : 'preview-plan-missing', {
+        splitRequired: initialOverlapPlan.splitRequired,
+        overlappingCount: initialOverlapPlan.overlapping.length
+      });
     }
 
     const previewElement = preview.element instanceof HTMLElement ? preview.element : null;
@@ -1205,6 +1547,11 @@
         }
       }
 
+      if (smartSplitPlan) {
+        await helper.sleep(64);
+        void applySmartSplit(smartSplitPlan);
+      }
+
       helper.clearCutPreview();
       return true;
     } finally {
@@ -1254,6 +1601,15 @@
       event.preventDefault();
       event.stopPropagation();
       void helper.commitCutPreview();
+      return true;
+    }
+
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.commitCutPreview({
+        smartSplit: true
+      });
       return true;
     }
 
@@ -1335,10 +1691,92 @@
     }
   }
 
+  function getSmartSplitClickDraft(event) {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.altKey ||
+      !event.shiftKey ||
+      (!event.ctrlKey && !event.metaKey)
+    ) {
+      return null;
+    }
+
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    let sourceRegion = null;
+    let container = null;
+
+    for (const node of path) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (node.hasAttribute(CUT_PREVIEW_ATTR) || isRegionHandle(node)) {
+        return null;
+      }
+
+      if (!sourceRegion && isRegionBody(node)) {
+        sourceRegion = node;
+        if (node.parentElement instanceof HTMLElement) {
+          container = node.parentElement;
+        }
+      }
+
+      if (!container && getRegionElements(node).length) {
+        container = node;
+      }
+    }
+
+    if (!(sourceRegion instanceof HTMLElement) || !(container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const snapshot = collectRegionSnapshot(container);
+    if (!snapshot) {
+      return null;
+    }
+
+    const entry = snapshot.bounds.find((candidate) => candidate.region === sourceRegion);
+    if (!entry) {
+      return null;
+    }
+
+    const pivotPx = clamp(event.clientX - snapshot.containerRect.left, entry.leftPx, entry.rightPx);
+    const plan = buildSmartSplitPlanForRegion(entry, pivotPx, container);
+    return plan;
+  }
+
+  function handleSmartSplitClick(event) {
+    if (helper.state.cutCommitPending) {
+      return;
+    }
+
+    const draft = getSmartSplitClickDraft(event);
+    if (!draft) {
+      if (
+        event.button === 0 &&
+        event.shiftKey &&
+        !event.altKey &&
+        (event.ctrlKey || event.metaKey)
+      ) {
+        setSmartSplitStatus('click-no-draft');
+      }
+      return;
+    }
+
+    setSmartSplitStatus('click-draft-ready', {
+      sourceRowIndex: draft.sourceRowIndex,
+      rowCount: draft.rowCount,
+      ratio: draft.ratio
+    });
+    void applySmartSplit(draft);
+  }
+
   helper.bindCutPreview = function bindCutPreview() {
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('pointermove', handlePointerMove, true);
     document.addEventListener('pointerup', handlePointerEnd, true);
     document.addEventListener('pointercancel', handlePointerEnd, true);
+    document.addEventListener('click', handleSmartSplitClick, true);
   };
 })();
