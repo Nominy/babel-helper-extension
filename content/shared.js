@@ -47,7 +47,8 @@
     },
     state: {
       currentRow: null,
-      lastBlur: null
+      lastBlur: null,
+      blurRestorePending: false
     }
   };
 

@@ -12,6 +12,7 @@
       "js": [
         "content/shared.js",
         "content/rows.js",
+        "content/cut.js",
         "content/hotkeys.js",
         "content/main.js"
       ],

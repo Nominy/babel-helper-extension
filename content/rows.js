@@ -274,14 +274,23 @@
         selectionEnd: active.selectionEnd,
         direction: active.selectionDirection || 'none'
       };
+      helper.state.blurRestorePending = true;
 
       return helper.clearActiveFocus();
     }
 
     const remembered = helper.state.lastBlur;
+    if (!helper.state.blurRestorePending) {
+      return false;
+    }
+
     const currentRow = helper.getCurrentRow();
     if (!remembered) {
-      return helper.focusRow(currentRow, { cursor: 'start' });
+      const focused = helper.focusRow(currentRow, { cursor: 'start' });
+      if (focused) {
+        helper.state.blurRestorePending = false;
+      }
+      return focused;
     }
 
     const rememberedRow = remembered.row;
@@ -292,12 +301,16 @@
       currentRow === rememberedRow;
 
     if (rememberedRowStillCurrent) {
-      return helper.focusRow(rememberedRow, {
+      const focused = helper.focusRow(rememberedRow, {
         activateRow: false,
         selectionStart: remembered.selectionStart,
         selectionEnd: remembered.selectionEnd,
         direction: remembered.direction
       });
+      if (focused) {
+        helper.state.blurRestorePending = false;
+      }
+      return focused;
     }
 
     const fallbackRow =
@@ -309,9 +322,13 @@
       return false;
     }
 
-    return helper.focusRow(fallbackRow, {
+    const focused = helper.focusRow(fallbackRow, {
       activateRow: false,
       cursor: 'start'
     });
+    if (focused) {
+      helper.state.blurRestorePending = false;
+    }
+    return focused;
   };
 })();

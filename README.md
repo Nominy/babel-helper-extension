@@ -8,19 +8,24 @@ What the snapshot shows today:
 - Deleting or merging a segment appears to be routed through the row action dropdown, which is the workflow bottleneck this helper targets first.
 
 What this version adds:
-- Keyboard shortcuts only, with no injected UI:
-  - `Esc`: toggle blur and restore focus
+- Keyboard shortcuts plus an `Alt + Drag` cut preview, with no persistent injected UI:
+  - `Alt + Drag` inside an existing waveform segment: create a temporary cut preview
+  - `Enter`: commit the cut preview by replaying the native split gesture at both cut boundaries
+  - `Esc`: cancel the cut preview, or toggle blur and restore focus when no preview exists
   - `Alt+Up / Alt+Down`: move focus between transcript rows
   - `Alt+Shift+Up / Alt+Shift+Down`: merge with previous / next
   - `Del`: delete the current segment
 
 Implementation notes:
-- The extension does not inject buttons, panels, badges, or any other visible interface.
+- The extension does not inject buttons, panels, badges, or any other persistent visible interface.
 - The extension augments the existing Babel `Hotkeys` dialog when it opens so these custom shortcuts are visible in the platform's own help window.
 - The extension does not mutate transcript state directly.
+- The cut preview only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
+- The cut preview is temporary extension UI: `Esc` cancels it, and `Enter` commits it only when the preview spans at least 1 second. Shorter previews stay visible until you cancel or resize them.
 - Delete and merge actions are triggered by opening the page's own action menu and clicking the matching menu item, so the existing React workflow remains in control.
+- Cut commits are performed by replaying a synthetic modified `click` at the preview edges, which is intended to mirror the product's split interaction without low-level pointer injection.
 - The menu item lookup is text-based and intentionally tolerant (`delete/remove`, `merge/combine/join`) because the exact menu labels were not present in the closed snapshot.
-- `Esc` is stateful: the first press blurs and remembers the caret location; the next press restores focus to the same segment and cursor position unless the active segment changed, in which case it focuses the current segment at the start.
+- `Esc` is stateful: if a cut preview exists, it dismisses the preview; otherwise it blurs and remembers the caret location, and the next press restores focus to the same segment and cursor position unless the active segment changed, in which case it focuses the current segment at the start.
 
 Install:
 1. Open `chrome://extensions`.

@@ -11,6 +11,10 @@
       return;
     }
 
+    if (typeof helper.handleCutPreviewKeydown === 'function' && helper.handleCutPreviewKeydown(event)) {
+      return;
+    }
+
     if (event.key === 'Escape') {
       if (helper.toggleEditorFocus()) {
         event.preventDefault();
@@ -92,6 +96,9 @@
 
   helper.init = function init() {
     helper.bindRowTracking();
+    if (typeof helper.bindCutPreview === 'function') {
+      helper.bindCutPreview();
+    }
     helper.enhanceHotkeysDialog();
     document.addEventListener('keydown', helper.handleKeydown, true);
 
