@@ -10,7 +10,10 @@
         "https://dashboard.babel.audio/transcription/*"
       ],
       "js": [
-        "content.js"
+        "content/shared.js",
+        "content/rows.js",
+        "content/hotkeys.js",
+        "content/main.js"
       ],
       "run_at": "document_idle"
     }
