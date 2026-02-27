@@ -957,6 +957,55 @@
     return rendered;
   }
 
+  function getSourceRegionEntries(sourceWave) {
+    if (!sourceWave || !sourceWave.plugins || typeof sourceWave.plugins !== 'object') {
+      return [];
+    }
+
+    const regionPlugin = Object.values(sourceWave.plugins).find(
+      (plugin) =>
+        plugin &&
+        (typeof plugin.getRegions === 'function' ||
+          (plugin.regions && typeof plugin.regions === 'object'))
+    );
+    if (!regionPlugin) {
+      return [];
+    }
+
+    const sourceRegions = safe(
+      () =>
+        typeof regionPlugin.getRegions === 'function'
+          ? regionPlugin.getRegions()
+          : Object.values(regionPlugin.regions || {}),
+      []
+    );
+
+    return sourceRegions
+      .map((region) => {
+        const start = Number(region && region.start);
+        const end = Number(region && region.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+          return null;
+        }
+
+        const element = region && region.element instanceof HTMLElement ? region.element : null;
+        const styles = element ? window.getComputedStyle(element) : null;
+        return {
+          start,
+          end,
+          backgroundColor:
+            (region && typeof region.color === 'string' && region.color) ||
+            (styles && styles.backgroundColor) ||
+            'rgba(176, 131, 255, 0.25)',
+          borderLeft: (styles && styles.borderLeft) || '',
+          borderRight: (styles && styles.borderRight) || '',
+          borderRadius: (styles && styles.borderRadius) || '2px',
+          filter: (styles && styles.filter) || ''
+        };
+      })
+      .filter(Boolean);
+  }
+
   function collectDiagnostics(host, mount, extra) {
     const selection = findWaveCandidate(host);
     const best = selection.candidate;
@@ -1024,13 +1073,7 @@
     const host = findHostElement(hostMarker);
     const mount = findMountElement(host, mountMarker);
     if (!(host instanceof HTMLElement) || !(mount instanceof HTMLElement)) {
-      return {
-        ok: false,
-        reason: 'missing-dom',
-        diagnostic: collectDiagnostics(host, mount, {
-          phase: 'ensure'
-        })
-      };
+      return { ok: false, reason: 'missing-dom' };
     }
 
     for (const [id, record] of instances.entries()) {
@@ -1050,13 +1093,7 @@
         ? sourceWave.constructor.create.bind(sourceWave.constructor)
         : null;
     if (!sourceWave || !factory) {
-      return {
-        ok: false,
-        reason: 'no-wave-instance',
-        diagnostic: collectDiagnostics(host, mount, {
-          phase: 'ensure'
-        })
-      };
+      return { ok: false, reason: 'no-wave-instance' };
     }
 
     let createError = null;
@@ -1069,14 +1106,7 @@
       }
     }, null);
     if (!wave) {
-      return {
-        ok: false,
-        reason: 'create-failed',
-        diagnostic: collectDiagnostics(host, mount, {
-          phase: 'ensure',
-          createError
-        })
-      };
+      return { ok: false, reason: 'create-failed', error: createError || null };
     }
 
     const id = 'lens-' + Date.now() + '-' + Math.random().toString(36).slice(2);
@@ -1093,41 +1123,6 @@
     instances.set(id, record);
 
     return { ok: true, id };
-  }
-
-  function diagnoseLens(hostMarker, mountMarker, instanceId, extra) {
-    const host = hostMarker ? findHostElement(hostMarker) : null;
-    const mount = mountMarker ? findMountElement(host, mountMarker) : null;
-    const record = instanceId ? instances.get(instanceId) : null;
-    const diagnostics = collectDiagnostics(
-      record && record.host instanceof HTMLElement ? record.host : host,
-      record && record.mount instanceof HTMLElement ? record.mount : mount,
-      Object.assign(
-        {
-          phase: 'diagnose',
-          instanceId: instanceId || null,
-          hasRecord: Boolean(record)
-        },
-        extra && typeof extra === 'object' ? extra : {}
-      )
-    );
-
-    if (record) {
-      diagnostics.instance = {
-        sourcePath: record.sourcePath || null,
-        sourceMetrics: record.sourceMetrics || null,
-        sourceCtor: getCtorName(record.sourceWave),
-        sourceDuration: getDuration(record.sourceWave),
-        sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
-        lensCtor: getCtorName(record.wave),
-        lensDuration: getDuration(record.wave)
-      };
-    }
-
-    return {
-      ok: true,
-      diagnostic: diagnostics
-    };
   }
 
   function updateLens(id, time, width, height, scale) {
@@ -1193,7 +1188,8 @@
     return {
       ok: true,
       windowStart: scrollLeft / targetPixelsPerSecond,
-      windowEnd: (scrollLeft + width) / targetPixelsPerSecond
+      windowEnd: (scrollLeft + width) / targetPixelsPerSecond,
+      regions: getSourceRegionEntries(record.sourceWave)
     };
   }
 
@@ -1228,14 +1224,6 @@
 
     if (operation === 'destroy') {
       respond(id, destroyLens(payload.instanceId));
-      return;
-    }
-
-    if (operation === 'diagnose') {
-      respond(
-        id,
-        diagnoseLens(payload.hostMarker, payload.mountMarker, payload.instanceId, payload.extra)
-      );
     }
   });
 

@@ -17,8 +17,6 @@
   const MAX_HEIGHT = 150;
   const INSET = 6;
   const BRIDGE_TIMEOUT_MS = 700;
-  const DIAGNOSTIC_PREFIX = "[Babel Helper] Magnifier diagnostic";
-  const BINDING_PREFIX = "[Babel Helper] Magnifier binding";
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
@@ -27,8 +25,6 @@
 
   helper.state.magnifier = null;
   helper.state.magnifierPointer = null;
-  helper.state.magnifierDiagnostic = null;
-  helper.state.magnifierBinding = null;
   helper.config.hotkeysHelpRows.unshift([
     "Shift + Hover",
     `Show ${SCALE}x waveform magnifier`,
@@ -74,18 +70,6 @@
     }
 
     return total;
-  }
-
-  function getPartTokens(element) {
-    const part = element instanceof Element ? element.getAttribute("part") : "";
-    return part ? part.split(/\s+/).filter(Boolean) : [];
-  }
-
-  function isRegionElement(element) {
-    return (
-      element instanceof HTMLElement &&
-      getPartTokens(element).includes("region")
-    );
   }
 
   function isWaveformScope(scope) {
@@ -182,43 +166,6 @@
       text,
       timeSeconds,
     };
-  }
-
-  function getRegionEntries(container) {
-    if (!(container instanceof HTMLElement)) {
-      return [];
-    }
-
-    return Array.from(container.children)
-      .filter((child) => isRegionElement(child))
-      .map((region) => {
-        const start = parseSeconds(
-          helper.normalizeText(
-            region.querySelector(".wavesurfer-region-tooltip-start"),
-          ),
-        );
-        const end = parseSeconds(
-          helper.normalizeText(
-            region.querySelector(".wavesurfer-region-tooltip-end"),
-          ),
-        );
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-          return null;
-        }
-
-        const styles = window.getComputedStyle(region);
-        return {
-          start,
-          end,
-          backgroundColor:
-            styles.backgroundColor || "rgba(176, 131, 255, 0.25)",
-          borderLeft: styles.borderLeft,
-          borderRight: styles.borderRight,
-          borderRadius: styles.borderRadius || "2px",
-          filter: styles.filter,
-        };
-      })
-      .filter(Boolean);
   }
 
   function isGestureActive(event) {
@@ -318,163 +265,6 @@
   function setStatus(magnifier, text) {
     if (magnifier && magnifier.badge instanceof HTMLElement) {
       magnifier.badge.textContent = text;
-    }
-  }
-
-  function logDiagnostic(diagnostic) {
-    if (!diagnostic || typeof diagnostic !== "object") {
-      return;
-    }
-
-    helper.state.magnifierDiagnostic = diagnostic;
-
-    try {
-      window.__babelHelperMagnifierLastDiagnostic = diagnostic;
-    } catch (error) {
-      // Ignore assignment failures from locked globals.
-    }
-
-    console.groupCollapsed(DIAGNOSTIC_PREFIX);
-    console.log(diagnostic);
-
-    try {
-      console.log(JSON.stringify(diagnostic, null, 2));
-    } catch (error) {
-      console.log(DIAGNOSTIC_PREFIX + " (non-serializable)", String(error));
-    }
-
-    console.groupEnd();
-  }
-
-  function logBinding(binding) {
-    if (!binding || typeof binding !== "object") {
-      return;
-    }
-
-    helper.state.magnifierBinding = binding;
-
-    try {
-      window.__babelHelperMagnifierLastBinding = binding;
-    } catch (error) {
-      // Ignore assignment failures from locked globals.
-    }
-
-    console.groupCollapsed(BINDING_PREFIX);
-    console.log(binding);
-
-    try {
-      console.log(JSON.stringify(binding, null, 2));
-    } catch (error) {
-      console.log(BINDING_PREFIX + " (non-serializable)", String(error));
-    }
-
-    console.groupEnd();
-  }
-
-  async function reportDiagnostic(
-    magnifier,
-    failureReason,
-    bridgeResult,
-    extra,
-  ) {
-    if (!magnifier) {
-      return;
-    }
-
-    const diagnosticKey = String(failureReason || "unknown");
-    if (
-      magnifier.diagnosticPending ||
-      magnifier.lastDiagnosticKey === diagnosticKey
-    ) {
-      return;
-    }
-
-    magnifier.diagnosticPending = true;
-
-    try {
-      let diagnostic =
-        bridgeResult &&
-        bridgeResult.diagnostic &&
-        typeof bridgeResult.diagnostic === "object"
-          ? Object.assign({}, bridgeResult.diagnostic)
-          : null;
-
-      if (!diagnostic) {
-        const response = await callBridge("diagnose", {
-          hostMarker: magnifier.hostMarker,
-          mountMarker: magnifier.mountMarker,
-          instanceId: magnifier.bridgeInstanceId,
-          extra: Object.assign(
-            {
-              phase: "content-script",
-            },
-            extra || {},
-          ),
-        });
-
-        if (
-          response &&
-          response.ok &&
-          response.diagnostic &&
-          typeof response.diagnostic === "object"
-        ) {
-          diagnostic = Object.assign({}, response.diagnostic);
-        }
-      }
-
-      if (!diagnostic) {
-        diagnostic = {
-          bridgeReachable: false,
-        };
-      }
-
-      diagnostic.failureReason = failureReason || "unknown";
-      if (extra && typeof extra === "object") {
-        diagnostic.content = Object.assign({}, extra);
-      }
-
-      logDiagnostic(diagnostic);
-      magnifier.lastDiagnosticKey = diagnosticKey;
-    } finally {
-      magnifier.diagnosticPending = false;
-    }
-  }
-
-  async function reportBinding(magnifier, extra) {
-    if (!magnifier || magnifier.bindingLogged || magnifier.bindingPending) {
-      return;
-    }
-
-    magnifier.bindingPending = true;
-
-    try {
-      const response = await callBridge("diagnose", {
-        hostMarker: magnifier.hostMarker,
-        mountMarker: magnifier.mountMarker,
-        instanceId: magnifier.bridgeInstanceId,
-        extra: Object.assign(
-          {
-            phase: "binding",
-          },
-          extra || {},
-        ),
-      });
-
-      if (
-        response &&
-        response.ok &&
-        response.diagnostic &&
-        typeof response.diagnostic === "object"
-      ) {
-        const binding = Object.assign({}, response.diagnostic);
-        if (extra && typeof extra === "object") {
-          binding.content = Object.assign({}, extra);
-        }
-        logBinding(binding);
-        magnifier.bindingLogged = true;
-      }
-    } finally {
-      magnifier.bindingPending = false;
     }
   }
 
@@ -617,10 +407,6 @@
       bridgeInstanceId: null,
       syncPending: false,
       syncQueued: false,
-      diagnosticPending: false,
-      lastDiagnosticKey: null,
-      bindingPending: false,
-      bindingLogged: false,
     };
   }
 
@@ -746,18 +532,6 @@
 
         if (!ensureResult || !ensureResult.ok || !ensureResult.id) {
           setStatus(magnifier, `${SCALE} unavailable`);
-          void reportDiagnostic(
-            magnifier,
-            (ensureResult && ensureResult.reason) || "ensure-failed",
-            ensureResult,
-            {
-              stage: "ensure",
-              hoverTime: hover.timeSeconds,
-              hoverLabel: hover.text,
-              width,
-              height,
-            },
-          );
           return;
         }
 
@@ -774,33 +548,13 @@
 
       if (!updateResult || !updateResult.ok) {
         setStatus(magnifier, `${SCALE} unavailable`);
-        void reportDiagnostic(
-          magnifier,
-          (updateResult && updateResult.reason) || "update-failed",
-          updateResult,
-          {
-            stage: "update",
-            hoverTime: hover.timeSeconds,
-            hoverLabel: hover.text,
-            width,
-            height,
-          },
-        );
         return;
       }
 
-      void reportBinding(magnifier, {
-        stage: "success",
-        hoverTime: hover.timeSeconds,
-        hoverLabel: hover.text,
-        width,
-        height,
-      });
-
-      setStatus(magnifier, "10x @ " + hover.text);
+      setStatus(magnifier, `${SCALE}x @ ` + hover.text);
       renderRegions(
         magnifier,
-        getRegionEntries(magnifier.container),
+        Array.isArray(updateResult.regions) ? updateResult.regions : [],
         Number(updateResult.windowStart) || 0,
         Number(updateResult.windowEnd) || 0,
         width,
