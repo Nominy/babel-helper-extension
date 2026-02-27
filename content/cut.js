@@ -12,6 +12,11 @@
   const CUT_PREVIEW_MIN_WIDTH = 8;
   const CUT_PREVIEW_DRAG_THRESHOLD = 5;
   const CUT_PREVIEW_HANDLE_HIT_WIDTH = 12;
+  const SELECTION_LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
+  const BRIDGE_REQUEST_EVENT = 'babel-helper-magnifier-request';
+  const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
+  const BRIDGE_SCRIPT_PATH = 'content/mangifier-bridge.js';
+  const BRIDGE_TIMEOUT_MS = 700;
 
   helper.state.cutDraft = null;
   helper.state.cutPreview = null;
@@ -19,10 +24,38 @@
   helper.state.cutLastContainer = null;
   helper.state.smartSplitClickDraft = null;
   helper.state.smartSplitClickContext = null;
+  helper.state.selectionLoop = null;
   helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
-  helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a cut preview across the waveform lane']);
-  helper.config.hotkeysHelpRows.unshift(['Enter', 'Commit cut preview if it is at least 1 second']);
-  helper.config.hotkeysHelpRows.unshift(['Shift + Enter', 'Commit cut preview with smart split when one segment becomes two']);
+  helper.config.hotkeysHelpRows.unshift(['L', 'Loop the selected range until playback caret moves']);
+  helper.config.hotkeysHelpRows.unshift(['Shift + S', 'Split the selected range']);
+  helper.config.hotkeysHelpRows.unshift(['S', 'Smart-split the selected range']);
+  helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a timeline selection']);
+
+  let bridgeInjected = false;
+  let bridgeLoadPromise = null;
+  let bridgeRequestId = 0;
+
+  function setSelectionLoopDebug(stage, details) {
+    const root = document.documentElement;
+    if (!(root instanceof HTMLElement)) {
+      return;
+    }
+
+    root.dataset.babelHelperSelectionLoopStage = stage || '';
+    if (details && typeof details === 'object') {
+      try {
+        root.dataset.babelHelperSelectionLoopInfo = JSON.stringify(details);
+      } catch (error) {
+        root.dataset.babelHelperSelectionLoopInfo = String(error && error.message ? error.message : error);
+      }
+    } else {
+      delete root.dataset.babelHelperSelectionLoopInfo;
+    }
+  }
+
+  function nextLoopMarker() {
+    return 'selection-loop-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
@@ -100,6 +133,24 @@
 
     const numeric = Number(match[1]);
     return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function getReactInternalValue(element, prefix) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    for (const name of Object.getOwnPropertyNames(element)) {
+      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
+        return element[name];
+      }
+    }
+
+    return null;
+  }
+
+  function getReactFiber(element) {
+    return getReactInternalValue(element, '__reactFiber$');
   }
 
   function getRegionPartTokens(element) {
@@ -511,6 +562,329 @@
     return null;
   }
 
+  function getPreviewTimeRange(preview) {
+    if (!preview) {
+      return null;
+    }
+
+    const previewWidth = preview.rightPx - preview.leftPx;
+    if (previewWidth <= 0) {
+      return null;
+    }
+
+    const waveformEntry = getWaveformEntryForContainer(preview.container);
+    const wavesurfer =
+      waveformEntry && typeof waveformEntry === 'object' ? waveformEntry.wavesurfer : null;
+    if (wavesurfer && typeof wavesurfer === 'object') {
+      const pixelsPerSecond =
+        Number(
+          wavesurfer.options && typeof wavesurfer.options === 'object'
+            ? wavesurfer.options.minPxPerSec
+            : NaN
+        ) ||
+        (typeof wavesurfer.getWidth === 'function' &&
+        typeof wavesurfer.getDuration === 'function' &&
+        Number.isFinite(wavesurfer.getWidth()) &&
+        Number.isFinite(wavesurfer.getDuration()) &&
+        wavesurfer.getDuration() > 0
+          ? wavesurfer.getWidth() / wavesurfer.getDuration()
+          : NaN);
+      const scrollPx =
+        typeof wavesurfer.getScroll === 'function' ? Number(wavesurfer.getScroll()) : 0;
+      if (Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0) {
+        const startSeconds = (scrollPx + preview.leftPx) / pixelsPerSecond;
+        const endSeconds = (scrollPx + preview.rightPx) / pixelsPerSecond;
+        if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
+          return {
+            startSeconds,
+            endSeconds
+          };
+        }
+      }
+    }
+
+    const laneTimeScale = preview.timeScale || getLaneTimeScale(preview.container);
+    if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
+      const startSeconds = laneTimeScale.offsetSeconds + preview.leftPx * laneTimeScale.secondsPerPx;
+      const endSeconds = laneTimeScale.offsetSeconds + preview.rightPx * laneTimeScale.secondsPerPx;
+      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
+        return {
+          startSeconds,
+          endSeconds
+        };
+      }
+    }
+
+    const laneSecondsPerPixel = getLaneSecondsPerPixelFromRegions(preview.container);
+    if (Number.isFinite(laneSecondsPerPixel) && laneSecondsPerPixel > 0) {
+      const startSeconds = preview.leftPx * laneSecondsPerPixel;
+      const endSeconds = preview.rightPx * laneSecondsPerPixel;
+      if (endSeconds > startSeconds) {
+        return {
+          startSeconds,
+          endSeconds
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function getSelectionAudioElement() {
+    const audio = document.querySelector('audio');
+    return audio instanceof HTMLMediaElement ? audio : null;
+  }
+
+  function injectSelectionBridge() {
+    if (bridgeInjected && window.__babelHelperMagnifierBridge) {
+      return Promise.resolve(true);
+    }
+
+    if (bridgeLoadPromise) {
+      return bridgeLoadPromise;
+    }
+
+    bridgeLoadPromise = new Promise((resolve) => {
+      const parent = document.documentElement || document.head || document.body;
+      if (
+        !parent ||
+        typeof chrome === 'undefined' ||
+        !chrome.runtime ||
+        typeof chrome.runtime.getURL !== 'function'
+      ) {
+        bridgeLoadPromise = null;
+        resolve(false);
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
+      script.async = false;
+      script.onload = () => {
+        script.remove();
+        bridgeInjected = true;
+        resolve(true);
+      };
+      script.onerror = () => {
+        script.remove();
+        bridgeLoadPromise = null;
+        resolve(false);
+      };
+
+      parent.appendChild(script);
+    });
+
+    return bridgeLoadPromise;
+  }
+
+  async function callSelectionBridge(operation, payload) {
+    const ready = await injectSelectionBridge();
+    if (!ready) {
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      bridgeRequestId += 1;
+      const id = 'cut-loop-request-' + bridgeRequestId;
+      let settled = false;
+
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
+        window.clearTimeout(timeoutId);
+        resolve(result || null);
+      };
+
+      const handleResponse = (event) => {
+        const detail = event.detail || {};
+        if (detail.id !== id) {
+          return;
+        }
+
+        finish(detail.result || null);
+      };
+
+      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
+      window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
+      window.dispatchEvent(
+        new CustomEvent(BRIDGE_REQUEST_EVENT, {
+          detail: {
+            id,
+            operation,
+            payload: payload || {}
+          }
+        })
+      );
+    });
+  }
+
+  function getWaveformHostFromContainer(container) {
+    if (!(container instanceof HTMLElement) || typeof container.getRootNode !== 'function') {
+      return null;
+    }
+
+    const root = container.getRootNode();
+    return root instanceof ShadowRoot && root.host instanceof HTMLElement ? root.host : null;
+  }
+
+  function getWaveformRegistryFromHost(host) {
+    let fiber = getReactFiber(host);
+    if (!fiber && host instanceof HTMLElement) {
+      fiber = getReactFiber(host.parentElement);
+    }
+
+    let owner = fiber;
+    let ownerDepth = 0;
+    while (owner && typeof owner === 'object' && ownerDepth < 16) {
+      let hook = owner.memoizedState;
+      let hookIndex = 0;
+      while (hook && typeof hook === 'object' && hookIndex < 24) {
+        const value = hook.memoizedState;
+        const current =
+          value && typeof value === 'object' && !Array.isArray(value) && value.current
+            ? value.current
+            : null;
+        if (current && typeof current === 'object' && !Array.isArray(current)) {
+          const keys = Object.keys(current);
+          const hasWaveEntry = keys.some((key) => {
+            const entry = current[key];
+            return entry && typeof entry === 'object' && entry.wavesurfer;
+          });
+          if (hasWaveEntry) {
+            return current;
+          }
+        }
+
+        hook = hook.next;
+        hookIndex += 1;
+      }
+
+      owner = owner.return;
+      ownerDepth += 1;
+    }
+
+    return null;
+  }
+
+  function getWaveformEntryForContainer(container) {
+    const host = getWaveformHostFromContainer(container);
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const registry = getWaveformRegistryFromHost(host);
+    if (!registry || typeof registry !== 'object') {
+      return null;
+    }
+
+    let fallbackEntry = null;
+    for (const key of Object.keys(registry)) {
+      const entry = registry[key];
+      const wavesurfer =
+        entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+      if (!wavesurfer || typeof wavesurfer !== 'object') {
+        continue;
+      }
+
+      if (!fallbackEntry) {
+        fallbackEntry = entry;
+      }
+
+      const wrapper =
+        typeof wavesurfer.getWrapper === 'function' ? wavesurfer.getWrapper() : null;
+      const wrapperHost =
+        wrapper && typeof wrapper.getRootNode === 'function'
+          ? wrapper.getRootNode().host
+          : null;
+      if (
+        wavesurfer.container === host ||
+        wavesurfer.container === container ||
+        wrapper === container ||
+        wrapperHost === host
+      ) {
+        return entry;
+      }
+    }
+
+    return fallbackEntry;
+  }
+
+  function getSelectionPlaybackTarget(preview) {
+    const entry = getWaveformEntryForContainer(preview && preview.container);
+    const wavesurfer =
+      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    if (
+      wavesurfer &&
+      typeof wavesurfer.getCurrentTime === 'function' &&
+      typeof wavesurfer.setTime === 'function'
+    ) {
+      return {
+        kind: 'wavesurfer',
+        getCurrentTime() {
+          const time = Number(wavesurfer.getCurrentTime());
+          return Number.isFinite(time) ? time : null;
+        },
+        setTime(seconds) {
+          wavesurfer.setTime(seconds);
+        },
+        play() {
+          if (typeof wavesurfer.play === 'function') {
+            return wavesurfer.play();
+          }
+          return null;
+        },
+        playRange(startSeconds, endSeconds) {
+          if (typeof wavesurfer.play === 'function') {
+            return wavesurfer.play(startSeconds, endSeconds);
+          }
+          wavesurfer.setTime(startSeconds);
+          if (typeof wavesurfer.play === 'function') {
+            return wavesurfer.play();
+          }
+          return null;
+        },
+        isPaused() {
+          if (typeof wavesurfer.isPlaying === 'function') {
+            return !wavesurfer.isPlaying();
+          }
+          if (wavesurfer.media && 'paused' in wavesurfer.media) {
+            return Boolean(wavesurfer.media.paused);
+          }
+          return false;
+        }
+      };
+    }
+
+    const audio = getSelectionAudioElement();
+    if (!(audio instanceof HTMLMediaElement)) {
+      return null;
+    }
+
+    return {
+      kind: 'audio',
+      getCurrentTime() {
+        const time = Number(audio.currentTime);
+        return Number.isFinite(time) ? time : null;
+      },
+      setTime(seconds) {
+        audio.currentTime = seconds;
+      },
+      play() {
+        return typeof audio.play === 'function' ? audio.play() : null;
+      },
+      playRange(startSeconds) {
+        audio.currentTime = startSeconds;
+        return typeof audio.play === 'function' ? audio.play() : null;
+      },
+      isPaused() {
+        return Boolean(audio.paused);
+      }
+    };
+  }
+
   function updatePreviewElement() {
     const preview = helper.state.cutPreview;
     if (!preview || !(preview.element instanceof HTMLElement)) {
@@ -531,7 +905,7 @@
     if (label instanceof HTMLElement) {
       label.textContent = Number.isFinite(duration)
         ? duration.toFixed(2) + 's'
-        : 'Cut';
+        : 'Selection';
       label.style.background = tooShort ? 'rgba(127, 29, 29, 0.92)' : 'rgba(15, 23, 42, 0.82)';
     }
   }
@@ -546,8 +920,36 @@
     }
   }
 
+  helper.stopSelectionLoop = function stopSelectionLoop() {
+    const loop = helper.state.selectionLoop;
+    if (!loop) {
+      return;
+    }
+
+    if (loop.timer) {
+      window.clearInterval(loop.timer);
+    }
+
+    if (loop.hostMarker) {
+      void callSelectionBridge('loop-stop', {
+        hostMarker: loop.hostMarker
+      });
+    }
+
+    if (
+      loop.host instanceof HTMLElement &&
+      loop.hostMarker &&
+      loop.host.getAttribute(SELECTION_LOOP_HOST_ATTR) === loop.hostMarker
+    ) {
+      loop.host.removeAttribute(SELECTION_LOOP_HOST_ATTR);
+    }
+
+    helper.state.selectionLoop = null;
+  };
+
   helper.clearCutPreview = function clearCutPreview() {
     const preview = helper.state.cutPreview;
+    helper.stopSelectionLoop();
     if (preview && preview.zoomObserver) {
       preview.zoomObserver.disconnect();
     }
@@ -559,6 +961,183 @@
     helper.state.cutPreview = null;
     helper.state.cutCommitPending = false;
     clearCutDraft();
+  };
+
+  helper.startSelectionLoop = async function startSelectionLoop() {
+    const preview = helper.state.cutPreview;
+    if (!preview || helper.state.cutCommitPending) {
+      setSelectionLoopDebug(!preview ? 'no-preview' : 'commit-pending');
+      return false;
+    }
+
+    const timeRange = getPreviewTimeRange(preview);
+    if (!timeRange) {
+      setSelectionLoopDebug('no-time-range');
+      return false;
+    }
+
+    const playback = getSelectionPlaybackTarget(preview);
+    if (!playback) {
+      setSelectionLoopDebug('no-playback');
+      return false;
+    }
+
+    const existing = helper.state.selectionLoop;
+    if (
+      existing &&
+      existing.preview === preview &&
+      Math.abs(existing.startSeconds - timeRange.startSeconds) < 0.01 &&
+      Math.abs(existing.endSeconds - timeRange.endSeconds) < 0.01
+    ) {
+      setSelectionLoopDebug('toggle-off', {
+        startSeconds: timeRange.startSeconds,
+        endSeconds: timeRange.endSeconds,
+        kind: playback.kind || 'unknown'
+      });
+      helper.stopSelectionLoop();
+      return true;
+    }
+
+    helper.stopSelectionLoop();
+
+    const host = getWaveformHostFromContainer(preview.container);
+    if (host instanceof HTMLElement) {
+      const hostMarker = nextLoopMarker();
+      host.setAttribute(SELECTION_LOOP_HOST_ATTR, hostMarker);
+      const bridgeResult = await callSelectionBridge('loop-start', {
+        hostMarker,
+        startSeconds: timeRange.startSeconds,
+        endSeconds: timeRange.endSeconds
+      });
+      if (bridgeResult && bridgeResult.ok) {
+        helper.state.selectionLoop = {
+          preview,
+          host,
+          hostMarker,
+          startSeconds: timeRange.startSeconds,
+          endSeconds: timeRange.endSeconds,
+          timer: null
+        };
+        setSelectionLoopDebug('started', {
+          startSeconds: timeRange.startSeconds,
+          endSeconds: timeRange.endSeconds,
+          kind: 'bridge'
+        });
+        return true;
+      }
+
+      host.removeAttribute(SELECTION_LOOP_HOST_ATTR);
+      if (bridgeResult && bridgeResult.reason) {
+        setSelectionLoopDebug('bridge-' + bridgeResult.reason);
+      } else {
+        setSelectionLoopDebug('bridge-failed');
+      }
+    }
+
+    const loop = {
+      preview,
+      playback,
+      startSeconds: timeRange.startSeconds,
+      endSeconds: timeRange.endSeconds,
+      lastTime: playback.getCurrentTime() || 0,
+      internalSeekUntil: 0,
+      timer: null
+    };
+
+    const runTick = () => {
+      if (helper.state.selectionLoop !== loop) {
+        return;
+      }
+
+      const activePreview = helper.state.cutPreview;
+      if (!activePreview || activePreview !== preview) {
+        setSelectionLoopDebug('lost-preview');
+        helper.stopSelectionLoop();
+        return;
+      }
+
+      const currentRange = getPreviewTimeRange(activePreview);
+      if (!currentRange) {
+        setSelectionLoopDebug('lost-range');
+        helper.stopSelectionLoop();
+        return;
+      }
+
+      loop.startSeconds = currentRange.startSeconds;
+      loop.endSeconds = currentRange.endSeconds;
+
+      const currentTime = loop.playback.getCurrentTime();
+      if (!Number.isFinite(currentTime)) {
+        return;
+      }
+
+      const now = Date.now();
+      const delta = currentTime - loop.lastTime;
+      if (now > loop.internalSeekUntil) {
+        if (currentTime < loop.startSeconds - 0.08 || currentTime > loop.endSeconds + 0.08) {
+          setSelectionLoopDebug('escaped-range', {
+            currentTime,
+            startSeconds: loop.startSeconds,
+            endSeconds: loop.endSeconds,
+            delta
+          });
+          helper.stopSelectionLoop();
+          return;
+        }
+
+        if (delta < -0.08 || delta > 0.35) {
+          setSelectionLoopDebug('user-move', {
+            currentTime,
+            startSeconds: loop.startSeconds,
+            endSeconds: loop.endSeconds,
+            delta
+          });
+          helper.stopSelectionLoop();
+          return;
+        }
+      }
+
+      if (currentTime >= loop.endSeconds - 0.03) {
+        loop.internalSeekUntil = now + 220;
+        const playResult =
+          typeof loop.playback.playRange === 'function'
+            ? loop.playback.playRange(loop.startSeconds, loop.endSeconds)
+            : (loop.playback.setTime(loop.startSeconds), loop.playback.play());
+        if (playResult && typeof playResult.catch === 'function') {
+          playResult.catch(() => {});
+        }
+        loop.lastTime = loop.startSeconds;
+        return;
+      }
+
+      loop.lastTime = currentTime;
+    };
+
+    if (
+      !Number.isFinite(loop.lastTime) ||
+      loop.lastTime < loop.startSeconds ||
+      loop.lastTime > loop.endSeconds
+    ) {
+      loop.internalSeekUntil = Date.now() + 220;
+      loop.lastTime = loop.startSeconds;
+    }
+
+    const playResult =
+      typeof loop.playback.playRange === 'function'
+        ? loop.playback.playRange(loop.startSeconds, loop.endSeconds)
+        : (loop.playback.setTime(loop.startSeconds), loop.playback.play());
+    if (playResult && typeof playResult.catch === 'function') {
+      playResult.catch(() => {});
+    }
+
+    loop.timer = window.setInterval(runTick, 40);
+    helper.state.selectionLoop = loop;
+    setSelectionLoopDebug('started', {
+      startSeconds: loop.startSeconds,
+      endSeconds: loop.endSeconds,
+      kind: loop.playback.kind || 'unknown'
+    });
+    return true;
   };
 
   function cancelCutPreviewIfZoomChanged() {
@@ -658,7 +1237,7 @@
 
     const modeBadge = document.createElement('div');
     modeBadge.setAttribute('data-babel-helper-cut-mode', 'true');
-    modeBadge.textContent = 'Cut Mode';
+    modeBadge.textContent = 'Selection';
     modeBadge.style.position = 'absolute';
     modeBadge.style.left = '6px';
     modeBadge.style.top = '4px';
@@ -721,6 +1300,7 @@
     preview.dragStartClientX = event.clientX;
     preview.originLeftPx = preview.leftPx;
     preview.originRightPx = preview.rightPx;
+    helper.stopSelectionLoop();
     if (nearLeftEdge && !nearRightEdge) {
       preview.dragMode = 'resize-left';
     } else if (nearRightEdge) {
@@ -1445,6 +2025,8 @@
       return false;
     }
 
+    helper.stopSelectionLoop();
+
     const settings = options || {};
     const useSmartSplit = Boolean(settings.smartSplit);
 
@@ -1622,6 +2204,9 @@
 
   helper.handleCutPreviewKeydown = function handleCutPreviewKeydown(event) {
     if (!helper.state.cutPreview) {
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyL') {
+        setSelectionLoopDebug('no-preview-key');
+      }
       return false;
     }
 
@@ -1634,7 +2219,8 @@
     if (helper.state.cutCommitPending) {
       if (
         event.key === 'Escape' ||
-        event.key === 'Enter' ||
+        event.key.toLowerCase() === 's' ||
+        event.key.toLowerCase() === 'l' ||
         event.key === 'Delete' ||
         (event.altKey && !event.ctrlKey && !event.metaKey)
       ) {
@@ -1653,19 +2239,26 @@
       return true;
     }
 
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === 'Enter') {
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyS') {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.commitCutPreview({
+        smartSplit: true
+      });
+      return true;
+    }
+
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.code === 'KeyS') {
       event.preventDefault();
       event.stopPropagation();
       void helper.commitCutPreview();
       return true;
     }
 
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.key === 'Enter') {
+    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyL') {
       event.preventDefault();
       event.stopPropagation();
-      void helper.commitCutPreview({
-        smartSplit: true
-      });
+      void helper.startSelectionLoop();
       return true;
     }
 

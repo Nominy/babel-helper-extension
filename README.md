@@ -8,13 +8,14 @@ What the snapshot shows today:
 - Deleting or merging a segment appears to be routed through the row action dropdown, which is the workflow bottleneck this helper targets first.
 
 What this version adds:
-- Keyboard shortcuts plus an `Alt + Drag` cut preview, with no persistent injected UI:
-  - `Shift + Hover` over the waveform: show a temporary 3x magnifier above the hover handle
-  - `Alt + Drag` inside an existing waveform segment: create a temporary cut preview
-  - `Enter`: commit the cut preview by replaying the native split gesture at both cut boundaries
-  - `Shift + Enter`: commit the cut preview, then smart-split words when one segment becomes two
+- Keyboard shortcuts plus an `Alt + Drag` timeline selection, with no persistent injected UI:
+  - Drag a segment edge: show a temporary 10x magnifier above the active handle
+  - `Alt + Drag` inside an existing waveform segment: create a temporary selection range
+  - `S`: smart-split the selected range by replaying the native split gesture at both boundaries, then redistributing words
+  - `Shift + S`: split the selected range without smart word redistribution
+  - `L`: loop the selected range until playback is moved outside it
   - `Shift + Ctrl/Cmd + Click`: use Babel's native split, then smart-split words across the new pair
-  - `Esc`: cancel the cut preview, or toggle blur and restore focus when no preview exists
+  - `Esc`: clear the selection, or toggle blur and restore focus when no selection exists
   - `Alt+[ / Alt+]` (same physical bracket keys on RU layout): move text before / after the caret into the previous / next segment
   - `Alt+Shift+Up / Alt+Shift+Down`: merge with previous / next
   - `Del`: delete the current segment
@@ -24,13 +25,13 @@ Implementation notes:
 - The extension augments the existing Babel `Hotkeys` dialog when it opens so these custom shortcuts are visible in the platform's own help window.
 - The extension edits transcript textareas by dispatching native `input` events so React keeps the page state in sync.
 - The waveform magnifier is transient and non-interactive, so native region handles still receive pointer events while it is visible.
-- The cut preview only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
-- The cut preview is temporary extension UI: `Esc` cancels it, and `Enter` commits it only when the preview spans at least 1 second. Shorter previews stay visible until you cancel or resize them.
+- The selection overlay only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
+- The selection is temporary extension UI: `Esc` clears it, `S` / `Shift + S` commit it only when the selected span is at least 1 second, and `L` loops it until playback is moved outside the selection. Shorter selections stay visible until you cancel or resize them.
 - Smart splitting is additive: Babel still performs the real split, and the extension only redistributes words afterward using a simple word-count ratio based on the split position.
 - Delete and merge actions are triggered by opening the page's own action menu and clicking the matching menu item, so the existing React workflow remains in control.
-- Cut commits are performed by replaying a synthetic modified `click` at the preview edges, which is intended to mirror the product's split interaction without low-level pointer injection.
+- Selection splits are performed by replaying a synthetic modified `click` at the selection edges, which is intended to mirror the product's split interaction without low-level pointer injection.
 - The menu item lookup is text-based and intentionally tolerant (`delete/remove`, `merge/combine/join`) because the exact menu labels were not present in the closed snapshot.
-- `Esc` is stateful: if a cut preview exists, it dismisses the preview; otherwise it blurs and remembers the caret location, and the next press restores focus to the same segment and cursor position unless the active segment changed, in which case it focuses the current segment at the start.
+- `Esc` is stateful: if a selection exists, it dismisses the selection; otherwise it blurs and remembers the caret location, and the next press restores focus to the same segment and cursor position unless the active segment changed, in which case it focuses the current segment at the start.
 
 Install:
 1. Open `chrome://extensions`.

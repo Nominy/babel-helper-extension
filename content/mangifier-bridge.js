@@ -7,7 +7,9 @@
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
   const HOST_ATTR = 'data-babel-helper-mangifier-host';
   const MOUNT_ATTR = 'data-babel-helper-mangifier-mount';
+  const LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
   const instances = new Map();
+  const loops = new Map();
   const MAX_CANDIDATES = 12;
 
   function safe(callback, fallbackValue) {
@@ -141,6 +143,11 @@
 
   function findHostElement(hostMarker) {
     const host = queryMarker(document, HOST_ATTR, hostMarker);
+    return host instanceof HTMLElement ? host : null;
+  }
+
+  function findLoopHostElement(hostMarker) {
+    const host = queryMarker(document, LOOP_HOST_ATTR, hostMarker);
     return host instanceof HTMLElement ? host : null;
   }
 
@@ -1202,6 +1209,117 @@
     return { ok: true };
   }
 
+  function getSourceWaveForLoop(hostMarker) {
+    const host = findLoopHostElement(hostMarker);
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const selection = findWaveCandidate(host);
+    const record = selection.candidate || selection.fallback || null;
+    const wave = record ? record.value : null;
+    if (!wave || typeof wave !== 'object') {
+      return null;
+    }
+
+    return {
+      host,
+      wave
+    };
+  }
+
+  function playWaveRange(wave, start, end) {
+    if (!wave || typeof wave.play !== 'function') {
+      return;
+    }
+
+    try {
+      const result = wave.play(start, end);
+      if (result && typeof result.catch === 'function') {
+        result.catch(() => {});
+      }
+    } catch (error) {
+      // Ignore playback exceptions; caller will surface a bridge failure if needed.
+    }
+  }
+
+  function stopLoop(hostMarker) {
+    const loop = loops.get(hostMarker);
+    if (loop && loop.timer) {
+      clearInterval(loop.timer);
+    }
+    loops.delete(hostMarker);
+    return { ok: true };
+  }
+
+  function startLoop(hostMarker, start, end) {
+    const startSeconds = Number(start);
+    const endSeconds = Number(end);
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return { ok: false, reason: 'invalid-range' };
+    }
+
+    const resolved = getSourceWaveForLoop(hostMarker);
+    if (!resolved) {
+      return { ok: false, reason: 'missing-wave' };
+    }
+
+    stopLoop(hostMarker);
+
+    const loop = {
+      hostMarker,
+      wave: resolved.wave,
+      startSeconds,
+      endSeconds,
+      lastTime: Number(safe(() => resolved.wave.getCurrentTime(), startSeconds)) || startSeconds,
+      internalSeekUntil: 0,
+      timer: null
+    };
+
+    playWaveRange(loop.wave, loop.startSeconds, loop.endSeconds);
+    loop.lastTime = loop.startSeconds;
+
+    loop.timer = setInterval(() => {
+      if (loops.get(hostMarker) !== loop) {
+        return;
+      }
+
+      const currentTime = Number(safe(() => loop.wave.getCurrentTime(), NaN));
+      if (!Number.isFinite(currentTime)) {
+        return;
+      }
+
+      const now = Date.now();
+      const delta = currentTime - loop.lastTime;
+      if (now > loop.internalSeekUntil) {
+        if (currentTime < loop.startSeconds - 0.08 || currentTime > loop.endSeconds + 0.08) {
+          stopLoop(hostMarker);
+          return;
+        }
+
+        if (delta < -0.08 || delta > 0.35) {
+          stopLoop(hostMarker);
+          return;
+        }
+      }
+
+      if (currentTime >= loop.endSeconds - 0.03) {
+        loop.internalSeekUntil = now + 220;
+        playWaveRange(loop.wave, loop.startSeconds, loop.endSeconds);
+        loop.lastTime = loop.startSeconds;
+        return;
+      }
+
+      loop.lastTime = currentTime;
+    }, 40);
+
+    loops.set(hostMarker, loop);
+
+    return {
+      ok: true
+    };
+  }
+
   window.addEventListener(REQUEST_EVENT, (event) => {
     const detail = event.detail || {};
     const id = detail.id;
@@ -1224,8 +1342,18 @@
 
     if (operation === 'destroy') {
       respond(id, destroyLens(payload.instanceId));
+      return;
+    }
+
+    if (operation === 'loop-start') {
+      respond(id, startLoop(payload.hostMarker, payload.startSeconds, payload.endSeconds));
+      return;
+    }
+
+    if (operation === 'loop-stop') {
+      respond(id, stopLoop(payload.hostMarker));
     }
   });
 
-  window.__babelHelperMagnifierBridge = { instances };
+  window.__babelHelperMagnifierBridge = { instances, loops };
 })();
