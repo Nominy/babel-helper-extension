@@ -9,6 +9,8 @@
   const CUT_PREVIEW_ATTR = 'data-babel-helper-cut-preview';
   const CUT_PREVIEW_HANDLE_ATTR = 'data-babel-helper-cut-handle';
   const CUT_PREVIEW_MIN_SECONDS = 1;
+  const CUT_PREVIEW_SAFETY_MIN_SECONDS = 0.008;
+  const CUT_PREVIEW_SAFETY_MAX_SECONDS = 0.03;
   const CUT_PREVIEW_MIN_WIDTH = 8;
   const CUT_PREVIEW_DRAG_THRESHOLD = 5;
   const CUT_PREVIEW_HANDLE_HIT_WIDTH = 12;
@@ -61,50 +63,83 @@
     return Math.min(Math.max(value, min), max);
   }
 
+  function parseTimeValue(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = trimmed.toLowerCase();
+
+    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
+    if (timestampMatch) {
+      const parts = timestampMatch[0].split(':');
+      let total = 0;
+      for (const part of parts) {
+        const numeric = Number(part);
+        if (!Number.isFinite(numeric)) {
+          return null;
+        }
+        total = total * 60 + numeric;
+      }
+
+      return total;
+    }
+
+    let total = 0;
+    let foundUnit = false;
+    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
+    for (const match of normalized.matchAll(unitPattern)) {
+      const numeric = Number(match[1]);
+      if (!Number.isFinite(numeric)) {
+        return null;
+      }
+
+      foundUnit = true;
+      const unit = match[2];
+      if (unit === 'h') {
+        total += numeric * 3600;
+      } else if (unit === 'm') {
+        total += numeric * 60;
+      } else {
+        total += numeric;
+      }
+    }
+
+    if (foundUnit) {
+      return total;
+    }
+
+    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!numericMatch) {
+      return null;
+    }
+
+    const numeric = Number(numericMatch[0]);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
   function parseTimestamp(value) {
     if (typeof value !== 'string') {
       return null;
     }
 
     const trimmed = value.trim();
-    if (!trimmed) {
+    if (!trimmed || trimmed.indexOf(':') === -1) {
       return null;
     }
 
-    const parts = trimmed.split(':');
-    if (parts.length < 2) {
-      return null;
-    }
-
-    let total = 0;
-    for (const part of parts) {
-      const numeric = Number(part);
-      if (!Number.isFinite(numeric)) {
-        return null;
-      }
-      total = total * 60 + numeric;
-    }
-
-    return total;
+    const parsed = parseTimeValue(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   function parseSecondsLabel(value) {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const secondsMatch = trimmed.match(/(-?\d+(?:\.\d+)?)\s*s\b/i);
-    if (secondsMatch) {
-      const numeric = Number(secondsMatch[1]);
-      return Number.isFinite(numeric) ? numeric : null;
-    }
-
-    return parseTimestamp(trimmed);
+    const parsed = parseTimeValue(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   function parsePixels(value) {
@@ -219,8 +254,8 @@
       return null;
     }
 
-    const start = parseTimestamp(helper.normalizeText(row.children[2]));
-    const end = parseTimestamp(helper.normalizeText(row.children[3]));
+    const start = parseTimeValue(helper.normalizeText(row.children[2]));
+    const end = parseTimeValue(helper.normalizeText(row.children[3]));
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
       return null;
     }
@@ -254,8 +289,8 @@
       return null;
     }
 
-    const startSeconds = parseTimestamp(labels.startText);
-    const endSeconds = parseTimestamp(labels.endText);
+    const startSeconds = parseTimeValue(labels.startText);
+    const endSeconds = parseTimeValue(labels.endText);
     if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
       return null;
     }
@@ -313,8 +348,8 @@
       return exactMatch;
     }
 
-    const targetStart = parseTimestamp(startText);
-    const targetEnd = parseTimestamp(endText);
+    const targetStart = parseTimeValue(startText);
+    const targetEnd = parseTimeValue(endText);
     if (!Number.isFinite(targetStart) || !Number.isFinite(targetEnd) || targetEnd <= targetStart) {
       return null;
     }
@@ -502,8 +537,8 @@
   function getLaneSecondsPerPixelFromRegions(container) {
     const ratios = getRegionElements(container)
       .map((region) => {
-        const start = parseTimestamp(getRegionTimeText(region, '.wavesurfer-region-tooltip-start'));
-        const end = parseTimestamp(getRegionTimeText(region, '.wavesurfer-region-tooltip-end'));
+        const start = parseTimeValue(getRegionTimeText(region, '.wavesurfer-region-tooltip-start'));
+        const end = parseTimeValue(getRegionTimeText(region, '.wavesurfer-region-tooltip-end'));
         const width = region.getBoundingClientRect().width;
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || width <= 0) {
           return null;
@@ -526,37 +561,131 @@
     return (ratios[middle - 1] + ratios[middle]) / 2;
   }
 
+  function getSnapshotTimeEntries(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.bounds)) {
+      return [];
+    }
+
+    return snapshot.bounds
+      .map((entry) => {
+        const startSeconds = parseTimeValue(entry.startText);
+        const endSeconds = parseTimeValue(entry.endText);
+        const widthPx = entry.rightPx - entry.leftPx;
+        if (
+          !Number.isFinite(startSeconds) ||
+          !Number.isFinite(endSeconds) ||
+          !(endSeconds > startSeconds) ||
+          !(widthPx > 0)
+        ) {
+          return null;
+        }
+
+        return {
+          leftPx: entry.leftPx,
+          rightPx: entry.rightPx,
+          widthPx,
+          startSeconds,
+          endSeconds,
+          secondsPerPx: (endSeconds - startSeconds) / widthPx
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.leftPx - right.leftPx);
+  }
+
+  function projectSelectionXToSeconds(entries, x) {
+    if (!Array.isArray(entries) || !entries.length || !Number.isFinite(x)) {
+      return null;
+    }
+
+    const containing =
+      entries.find((entry) => x >= entry.leftPx && x <= entry.rightPx) || null;
+    if (containing) {
+      const ratio = (x - containing.leftPx) / containing.widthPx;
+      return containing.startSeconds + (containing.endSeconds - containing.startSeconds) * ratio;
+    }
+
+    let left = null;
+    let right = null;
+    for (const entry of entries) {
+      if (entry.rightPx < x) {
+        left = entry;
+        continue;
+      }
+
+      if (entry.leftPx > x) {
+        right = entry;
+        break;
+      }
+    }
+
+    if (left && right) {
+      const gapPx = right.leftPx - left.rightPx;
+      const gapSeconds = right.startSeconds - left.endSeconds;
+      if (gapPx > 0 && gapSeconds >= 0) {
+        const ratio = (x - left.rightPx) / gapPx;
+        return left.endSeconds + gapSeconds * clamp(ratio, 0, 1);
+      }
+    }
+
+    if (left && left.secondsPerPx > 0) {
+      return left.endSeconds + (x - left.rightPx) * left.secondsPerPx;
+    }
+
+    if (right && right.secondsPerPx > 0) {
+      return right.startSeconds - (right.leftPx - x) * right.secondsPerPx;
+    }
+
+    return null;
+  }
+
+  function getPreviewCommitSafetySeconds(preview) {
+    if (!preview || !(preview.container instanceof HTMLElement)) {
+      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
+    }
+
+    const snapshot = collectRegionSnapshot(preview.container);
+    const entries = getSnapshotTimeEntries(snapshot);
+    if (!entries.length) {
+      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
+    }
+
+    const relevant = entries.filter(
+      (entry) => entry.rightPx >= preview.leftPx - 1 && entry.leftPx <= preview.rightPx + 1
+    );
+    const source = relevant.length ? relevant : entries;
+    let maxSecondsPerPx = 0;
+
+    for (const entry of source) {
+      if (Number.isFinite(entry.secondsPerPx) && entry.secondsPerPx > maxSecondsPerPx) {
+        maxSecondsPerPx = entry.secondsPerPx;
+      }
+    }
+
+    if (!(maxSecondsPerPx > 0)) {
+      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
+    }
+
+    return clamp(
+      maxSecondsPerPx * 2,
+      CUT_PREVIEW_SAFETY_MIN_SECONDS,
+      CUT_PREVIEW_SAFETY_MAX_SECONDS
+    );
+  }
+
   function getPreviewDurationSeconds(preview) {
     if (!preview) {
       return null;
     }
 
-    const previewWidth = preview.rightPx - preview.leftPx;
-    if (previewWidth <= 0) {
-      return null;
-    }
-
-    const laneTimeScale = preview.timeScale || getLaneTimeScale(preview.container);
-    if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
-      const startSeconds = laneTimeScale.offsetSeconds + preview.leftPx * laneTimeScale.secondsPerPx;
-      const endSeconds = laneTimeScale.offsetSeconds + preview.rightPx * laneTimeScale.secondsPerPx;
-      const duration = endSeconds - startSeconds;
-      if (duration > 0) {
-        return duration;
-      }
-    }
-
-    const laneSecondsPerPixel = getLaneSecondsPerPixelFromRegions(preview.container);
-    if (Number.isFinite(laneSecondsPerPixel) && laneSecondsPerPixel > 0) {
-      return previewWidth * laneSecondsPerPixel;
-    }
-
-    if (preview.sourceRegion instanceof HTMLElement && preview.sourceRegion.isConnected) {
-      const sourceDuration = parseRowDurationSeconds();
-      const sourceWidth = preview.sourceRegion.getBoundingClientRect().width;
-      if (Number.isFinite(sourceDuration) && sourceDuration > 0 && sourceWidth > 0) {
-        return sourceDuration * (previewWidth / sourceWidth);
-      }
+    const timeRange = getPreviewTimeRange(preview);
+    if (
+      timeRange &&
+      Number.isFinite(timeRange.startSeconds) &&
+      Number.isFinite(timeRange.endSeconds) &&
+      timeRange.endSeconds > timeRange.startSeconds
+    ) {
+      return timeRange.endSeconds - timeRange.startSeconds;
     }
 
     return null;
@@ -572,25 +701,25 @@
       return null;
     }
 
+    const snapshot = collectRegionSnapshot(preview.container);
+    const snapshotEntries = getSnapshotTimeEntries(snapshot);
+    if (snapshotEntries.length) {
+      const startSeconds = projectSelectionXToSeconds(snapshotEntries, preview.leftPx);
+      const endSeconds = projectSelectionXToSeconds(snapshotEntries, preview.rightPx);
+      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
+        return {
+          startSeconds,
+          endSeconds
+        };
+      }
+    }
+
     const waveformEntry = getWaveformEntryForContainer(preview.container);
     const wavesurfer =
       waveformEntry && typeof waveformEntry === 'object' ? waveformEntry.wavesurfer : null;
     if (wavesurfer && typeof wavesurfer === 'object') {
-      const pixelsPerSecond =
-        Number(
-          wavesurfer.options && typeof wavesurfer.options === 'object'
-            ? wavesurfer.options.minPxPerSec
-            : NaN
-        ) ||
-        (typeof wavesurfer.getWidth === 'function' &&
-        typeof wavesurfer.getDuration === 'function' &&
-        Number.isFinite(wavesurfer.getWidth()) &&
-        Number.isFinite(wavesurfer.getDuration()) &&
-        wavesurfer.getDuration() > 0
-          ? wavesurfer.getWidth() / wavesurfer.getDuration()
-          : NaN);
-      const scrollPx =
-        typeof wavesurfer.getScroll === 'function' ? Number(wavesurfer.getScroll()) : 0;
+      const pixelsPerSecond = getWaveformPixelsPerSecond(waveformEntry, preview.container);
+      const scrollPx = getWaveformScrollLeft(waveformEntry, preview.container);
       if (Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0) {
         const startSeconds = (scrollPx + preview.leftPx) / pixelsPerSecond;
         const endSeconds = (scrollPx + preview.rightPx) / pixelsPerSecond;
@@ -769,6 +898,35 @@
     return null;
   }
 
+  function getTrackIdForHost(host) {
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    let fiber = getReactFiber(host);
+    if (!fiber && host.parentElement instanceof HTMLElement) {
+      fiber = getReactFiber(host.parentElement);
+    }
+
+    let owner = fiber;
+    let ownerDepth = 0;
+    while (owner && typeof owner === 'object' && ownerDepth < 20) {
+      const props = owner.memoizedProps;
+      const track =
+        props && typeof props === 'object' && props.track && typeof props.track === 'object'
+          ? props.track
+          : null;
+      if (track && track.id != null) {
+        return String(track.id);
+      }
+
+      owner = owner.return;
+      ownerDepth += 1;
+    }
+
+    return null;
+  }
+
   function getWaveformEntryForContainer(container) {
     const host = getWaveformHostFromContainer(container);
     if (!(host instanceof HTMLElement)) {
@@ -780,7 +938,9 @@
       return null;
     }
 
-    let fallbackEntry = null;
+    const trackId = getTrackIdForHost(host);
+    let wrapperMatch = null;
+    let trackMatch = null;
     for (const key of Object.keys(registry)) {
       const entry = registry[key];
       const wavesurfer =
@@ -789,27 +949,125 @@
         continue;
       }
 
-      if (!fallbackEntry) {
-        fallbackEntry = entry;
-      }
-
       const wrapper =
         typeof wavesurfer.getWrapper === 'function' ? wavesurfer.getWrapper() : null;
       const wrapperHost =
         wrapper && typeof wrapper.getRootNode === 'function'
           ? wrapper.getRootNode().host
           : null;
-      if (
+      const containerMatches =
         wavesurfer.container === host ||
         wavesurfer.container === container ||
         wrapper === container ||
-        wrapperHost === host
-      ) {
+        wrapperHost === host;
+      const keyMatchesTrack = trackId && String(key) === trackId;
+
+      if (containerMatches && keyMatchesTrack) {
         return entry;
+      }
+
+      if (containerMatches && !wrapperMatch) {
+        wrapperMatch = entry;
+      }
+
+      if (keyMatchesTrack && !trackMatch) {
+        trackMatch = entry;
       }
     }
 
-    return fallbackEntry;
+    return wrapperMatch || trackMatch || null;
+  }
+
+  function getWaveformDurationSeconds(wavesurfer) {
+    if (!wavesurfer || typeof wavesurfer !== 'object') {
+      return 0;
+    }
+
+    const direct =
+      typeof wavesurfer.getDuration === 'function' ? Number(wavesurfer.getDuration()) : NaN;
+    if (Number.isFinite(direct) && direct > 0) {
+      return direct;
+    }
+
+    const optionValue = Number(
+      wavesurfer.options && typeof wavesurfer.options === 'object'
+        ? wavesurfer.options.duration
+        : NaN
+    );
+    return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
+  }
+
+  function getWaveformWrapperForEntry(entry, container) {
+    const wavesurfer =
+      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    const directWrapper =
+      wavesurfer && typeof wavesurfer.getWrapper === 'function' ? wavesurfer.getWrapper() : null;
+    if (directWrapper instanceof HTMLElement) {
+      return directWrapper;
+    }
+
+    const host = getWaveformHostFromContainer(container);
+    const shadowWrapper =
+      host && host.shadowRoot ? host.shadowRoot.querySelector('[part="wrapper"]') : null;
+    return shadowWrapper instanceof HTMLElement ? shadowWrapper : null;
+  }
+
+  function getWaveformScrollElementForEntry(entry, container) {
+    const wrapper = getWaveformWrapperForEntry(entry, container);
+    if (wrapper instanceof HTMLElement) {
+      const root = typeof wrapper.getRootNode === 'function' ? wrapper.getRootNode() : null;
+      const scroll =
+        root && typeof root.querySelector === 'function' ? root.querySelector('[part="scroll"]') : null;
+      if (scroll instanceof HTMLElement) {
+        return scroll;
+      }
+    }
+
+    const host = getWaveformHostFromContainer(container);
+    const shadowScroll =
+      host && host.shadowRoot ? host.shadowRoot.querySelector('[part="scroll"]') : null;
+    return shadowScroll instanceof HTMLElement ? shadowScroll : null;
+  }
+
+  function getWaveformPixelsPerSecond(entry, container) {
+    const wavesurfer =
+      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    const duration = getWaveformDurationSeconds(wavesurfer);
+    if (!(duration > 0)) {
+      return 0;
+    }
+
+    const wrapper = getWaveformWrapperForEntry(entry, container);
+    const wrapperWidth =
+      wrapper instanceof HTMLElement
+        ? parsePixels(wrapper.style.width || '') || wrapper.getBoundingClientRect().width
+        : 0;
+    if (Number.isFinite(wrapperWidth) && wrapperWidth > 0) {
+      return wrapperWidth / duration;
+    }
+
+    const optionValue = Number(
+      wavesurfer && wavesurfer.options && typeof wavesurfer.options === 'object'
+        ? wavesurfer.options.minPxPerSec
+        : NaN
+    );
+    return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
+  }
+
+  function getWaveformScrollLeft(entry, container) {
+    const scroll = getWaveformScrollElementForEntry(entry, container);
+    if (scroll instanceof HTMLElement) {
+      const scrollLeft = Number(scroll.scrollLeft);
+      if (Number.isFinite(scrollLeft) && scrollLeft >= 0) {
+        return scrollLeft;
+      }
+    }
+
+    const wavesurfer =
+      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    const direct =
+      wavesurfer && typeof wavesurfer.getScroll === 'function' ? Number(wavesurfer.getScroll()) : NaN;
+    return Number.isFinite(direct) && direct >= 0 ? direct : 0;
   }
 
   function getSelectionPlaybackTarget(preview) {
@@ -895,8 +1153,10 @@
     preview.element.style.width = Math.max(CUT_PREVIEW_MIN_WIDTH, preview.rightPx - preview.leftPx) + 'px';
 
     const duration = getPreviewDurationSeconds(preview);
+    const safetyMargin = getPreviewCommitSafetySeconds(preview);
+    const requiredDuration = CUT_PREVIEW_MIN_SECONDS + safetyMargin;
     const label = preview.element.querySelector('[data-babel-helper-cut-label]');
-    const tooShort = Number.isFinite(duration) && duration < CUT_PREVIEW_MIN_SECONDS;
+    const tooShort = Number.isFinite(duration) && duration < requiredDuration;
     preview.element.style.background = tooShort
       ? 'rgba(239, 68, 68, 0.18)'
       : 'rgba(14, 165, 233, 0.16)';
@@ -2035,7 +2295,9 @@
     }
 
     const duration = getPreviewDurationSeconds(preview);
-    if (Number.isFinite(duration) && duration < CUT_PREVIEW_MIN_SECONDS) {
+    const safetyMargin = getPreviewCommitSafetySeconds(preview);
+    const requiredDuration = CUT_PREVIEW_MIN_SECONDS + safetyMargin;
+    if (Number.isFinite(duration) && duration < requiredDuration) {
       return false;
     }
 
