@@ -1,0 +1,1087 @@
+(function initBabelHelperMangifierBridge() {
+  if (window.__babelHelperMagnifierBridge) {
+    return;
+  }
+
+  const REQUEST_EVENT = 'babel-helper-magnifier-request';
+  const RESPONSE_EVENT = 'babel-helper-magnifier-response';
+  const HOST_ATTR = 'data-babel-helper-mangifier-host';
+  const MOUNT_ATTR = 'data-babel-helper-mangifier-mount';
+  const instances = new Map();
+  const MAX_CANDIDATES = 12;
+
+  function safe(callback, fallbackValue) {
+    try {
+      const value = callback();
+      return value == null ? fallbackValue : value;
+    } catch (error) {
+      return fallbackValue;
+    }
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function parsePixels(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const match = value.match(/(-?\d+(?:\.\d+)?)px/i);
+    if (!match) {
+      return null;
+    }
+
+    const numeric = Number(match[1]);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function respond(id, result) {
+    window.dispatchEvent(
+      new CustomEvent(RESPONSE_EVENT, {
+        detail: {
+          id,
+          result
+        }
+      })
+    );
+  }
+
+  function getCtorName(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return null;
+    }
+
+    const ctor = safe(() => value.constructor, null);
+    const name = ctor && typeof ctor.name === 'string' ? ctor.name : '';
+    return name || null;
+  }
+
+  function getMethodNames(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return [];
+    }
+
+    const methods = [];
+    for (const name of safe(() => Object.getOwnPropertyNames(value), [])) {
+      if (!name || name === 'constructor') {
+        continue;
+      }
+
+      if (typeof safe(() => value[name], null) === 'function') {
+        methods.push(name);
+      }
+    }
+
+    return methods.slice(0, 10);
+  }
+
+  function getPreviewKeys(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return [];
+    }
+
+    return safe(() => Object.getOwnPropertyNames(value), [])
+      .filter(Boolean)
+      .slice(0, 14);
+  }
+
+  function scoreCandidate(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return 0;
+    }
+
+    let score = 0;
+    if (typeof value.zoom === 'function') score += 4;
+    if (typeof value.getDuration === 'function') score += 4;
+    if (typeof value.exportPeaks === 'function') score += 3;
+    if (typeof value.setOptions === 'function') score += 2;
+    if (typeof value.setTime === 'function') score += 2;
+    if (typeof value.getCurrentTime === 'function') score += 2;
+    if (typeof value.registerPlugin === 'function') score += 2;
+    if (typeof value.play === 'function') score += 1;
+    if (typeof value.pause === 'function') score += 1;
+    if (value.options && typeof value.options === 'object') score += 3;
+    if (value.renderer && typeof value.renderer === 'object') score += 1;
+    if (value.plugins && typeof value.plugins === 'object') score += 1;
+    if (value.regions && typeof value.regions === 'object') score += 1;
+    if (value.container instanceof HTMLElement) score += 1;
+    if (value.constructor && typeof value.constructor.create === 'function') score += 2;
+    return score;
+  }
+
+  function getOwnValues(target) {
+    if (!target || (typeof target !== 'object' && typeof target !== 'function')) {
+      return [];
+    }
+
+    const values = [];
+    for (const name of safe(() => Object.getOwnPropertyNames(target), [])) {
+      if (!name || name === 'window' || name === 'self' || name === 'frames') {
+        continue;
+      }
+      values.push(safe(() => target[name], null));
+    }
+
+    for (const symbol of safe(() => Object.getOwnPropertySymbols(target), [])) {
+      values.push(safe(() => target[symbol], null));
+    }
+
+    return values;
+  }
+
+  function queryMarker(root, attr, marker) {
+    if (!marker || !root || typeof root.querySelector !== 'function') {
+      return null;
+    }
+
+    return safe(() => root.querySelector('[' + attr + '="' + marker + '"]'), null);
+  }
+
+  function findHostElement(hostMarker) {
+    const host = queryMarker(document, HOST_ATTR, hostMarker);
+    return host instanceof HTMLElement ? host : null;
+  }
+
+  function findMountElement(host, mountMarker) {
+    let mount = queryMarker(document, MOUNT_ATTR, mountMarker);
+    if (mount instanceof HTMLElement) {
+      return mount;
+    }
+
+    if (host instanceof HTMLElement && host.shadowRoot) {
+      mount = queryMarker(host.shadowRoot, MOUNT_ATTR, mountMarker);
+      if (mount instanceof HTMLElement) {
+        return mount;
+      }
+    }
+
+    const root = host && typeof host.getRootNode === 'function' ? host.getRootNode() : null;
+    if (root instanceof ShadowRoot) {
+      mount = queryMarker(root, MOUNT_ATTR, mountMarker);
+      if (mount instanceof HTMLElement) {
+        return mount;
+      }
+    }
+
+    return null;
+  }
+
+  function getElementSearchSeeds(host) {
+    if (!(host instanceof HTMLElement)) {
+      return [];
+    }
+
+    const seeds = [];
+    let current = host;
+    let depth = 0;
+
+    while (current instanceof HTMLElement && depth < 8) {
+      seeds.push({
+        value: current,
+        path: depth === 0 ? 'host' : 'host^' + depth
+      });
+
+      if (current.parentElement instanceof HTMLElement) {
+        current = current.parentElement;
+        depth += 1;
+        continue;
+      }
+
+      const root = current.getRootNode();
+      if (root instanceof ShadowRoot && root.host instanceof HTMLElement && root.host !== current) {
+        current = root.host;
+        depth += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    return seeds;
+  }
+
+  function getReactInternalValue(element, prefix) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    for (const name of safe(() => Object.getOwnPropertyNames(element), [])) {
+      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
+        return safe(() => element[name], null);
+      }
+    }
+
+    return null;
+  }
+
+  function getReactFiber(element) {
+    return getReactInternalValue(element, '__reactFiber$');
+  }
+
+  function getReactProps(element) {
+    return getReactInternalValue(element, '__reactProps$');
+  }
+
+  function pushSearchSeed(seeds, seenValues, value, path) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return;
+    }
+
+    if (seenValues.has(value)) {
+      return;
+    }
+
+    seenValues.add(value);
+    seeds.push({
+      value,
+      path
+    });
+  }
+
+  function getReactHookValues(fiber, fiberPath) {
+    if (!fiber || typeof fiber !== 'object') {
+      return [];
+    }
+
+    const seeds = [];
+    const seenHooks = new Set();
+    let hook = safe(() => fiber.memoizedState, null);
+    let index = 0;
+
+    while (hook && typeof hook === 'object' && !seenHooks.has(hook) && index < 12) {
+      seenHooks.add(hook);
+
+      const hookPath = fiberPath + '.memoizedState[' + index + ']';
+      const memoizedState = safe(() => hook.memoizedState, null);
+      if (memoizedState && (typeof memoizedState === 'object' || typeof memoizedState === 'function')) {
+        seeds.push({
+          value: memoizedState,
+          path: hookPath
+        });
+
+        const current = safe(() => memoizedState.current, null);
+        if (current && (typeof current === 'object' || typeof current === 'function')) {
+          seeds.push({
+            value: current,
+            path: hookPath + '.current'
+          });
+        }
+
+        const value = safe(() => memoizedState.value, null);
+        if (value && (typeof value === 'object' || typeof value === 'function')) {
+          seeds.push({
+            value,
+            path: hookPath + '.value'
+          });
+        }
+      }
+
+      hook = safe(() => hook.next, null);
+      index += 1;
+    }
+
+    return seeds;
+  }
+
+  function getReactOwnerFibers(fiber, fiberPath) {
+    if (!fiber || typeof fiber !== 'object') {
+      return [];
+    }
+
+    const owners = [];
+    const seen = new Set();
+    let current = safe(() => fiber.return, null);
+    let depth = 0;
+
+    while (current && typeof current === 'object' && !seen.has(current) && depth < 10) {
+      seen.add(current);
+      owners.push({
+        fiber: current,
+        path: fiberPath + '.return^' + (depth + 1)
+      });
+      current = safe(() => current.return, null);
+      depth += 1;
+    }
+
+    return owners;
+  }
+
+  function getSearchSeeds(host) {
+    const elementSeeds = getElementSearchSeeds(host);
+    const seeds = [];
+    const seenValues = new Set();
+
+    for (const seed of elementSeeds) {
+      pushSearchSeed(seeds, seenValues, seed.value, seed.path);
+
+      const reactProps = getReactProps(seed.value);
+      pushSearchSeed(seeds, seenValues, reactProps, seed.path + '.__reactProps$');
+
+      const fiber = getReactFiber(seed.value);
+      const fiberPath = seed.path + '.__reactFiber$';
+      pushSearchSeed(seeds, seenValues, fiber, fiberPath);
+      const relatedFibers = [{ fiber, path: fiberPath }].concat(getReactOwnerFibers(fiber, fiberPath));
+
+      for (const related of relatedFibers) {
+        const relatedFiber = related.fiber;
+        const relatedPath = related.path;
+        pushSearchSeed(
+          seeds,
+          seenValues,
+          safe(() => relatedFiber.stateNode, null),
+          relatedPath + '.stateNode'
+        );
+        pushSearchSeed(seeds, seenValues, safe(() => relatedFiber.ref, null), relatedPath + '.ref');
+        pushSearchSeed(
+          seeds,
+          seenValues,
+          safe(() => relatedFiber.ref.current, null),
+          relatedPath + '.ref.current'
+        );
+        pushSearchSeed(
+          seeds,
+          seenValues,
+          safe(() => relatedFiber.memoizedProps, null),
+          relatedPath + '.memoizedProps'
+        );
+        pushSearchSeed(
+          seeds,
+          seenValues,
+          safe(() => relatedFiber.memoizedProps.ref, null),
+          relatedPath + '.memoizedProps.ref'
+        );
+        pushSearchSeed(
+          seeds,
+          seenValues,
+          safe(() => relatedFiber.memoizedProps.ref.current, null),
+          relatedPath + '.memoizedProps.ref.current'
+        );
+
+        for (const hookSeed of getReactHookValues(relatedFiber, relatedPath)) {
+          pushSearchSeed(seeds, seenValues, hookSeed.value, hookSeed.path);
+        }
+      }
+    }
+
+    return seeds;
+  }
+
+  function collectRegistryCandidates(host) {
+    if (!(host instanceof HTMLElement)) {
+      return [];
+    }
+
+    const matches = [];
+    const seenMaps = new Set();
+
+    for (const seed of getSearchSeeds(host)) {
+      const value = seed && seed.value;
+      if (!value || typeof value !== 'object' || seenMaps.has(value)) {
+        continue;
+      }
+
+      seenMaps.add(value);
+      const keys = safe(() => Object.keys(value), []);
+      if (!keys.length || keys.length > 64) {
+        continue;
+      }
+
+      for (const key of keys) {
+        const entry = safe(() => value[key], null);
+        if (!entry || typeof entry !== 'object') {
+          continue;
+        }
+
+        const wave = safe(() => entry.wavesurfer, null);
+        if (!wave || (typeof wave !== 'object' && typeof wave !== 'function')) {
+          continue;
+        }
+
+        const entryKeys = getPreviewKeys(entry);
+        if (!entryKeys.includes('wavesurfer')) {
+          continue;
+        }
+
+        matches.push({
+          value: wave,
+          path: seed.path + '.' + key + '.wavesurfer',
+          depth: 2,
+          score: scoreCandidate(wave) + 10
+        });
+      }
+    }
+
+    matches.sort((left, right) => right.score - left.score);
+    return matches;
+  }
+
+  function getCandidateContainer(value) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return null;
+    }
+
+    const direct = safe(() => value.container, null);
+    if (direct instanceof HTMLElement) {
+      return direct;
+    }
+
+    const rendererContainer = safe(() => value.renderer.container, null);
+    if (rendererContainer instanceof HTMLElement) {
+      return rendererContainer;
+    }
+
+    const optionContainer = safe(() => value.options.container, null);
+    if (optionContainer instanceof HTMLElement) {
+      return optionContainer;
+    }
+
+    return null;
+  }
+
+  function elementsOverlapContext(host, element) {
+    if (!(host instanceof HTMLElement) || !(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (host === element || host.contains(element) || element.contains(host)) {
+      return true;
+    }
+
+    if (host.shadowRoot && host.shadowRoot.contains(element)) {
+      return true;
+    }
+
+    if (element.shadowRoot && element.shadowRoot.contains(host)) {
+      return true;
+    }
+
+    const hostRoot = typeof host.getRootNode === 'function' ? host.getRootNode() : null;
+    const elementRoot = typeof element.getRootNode === 'function' ? element.getRootNode() : null;
+    if (hostRoot instanceof ShadowRoot && hostRoot.host === element) {
+      return true;
+    }
+    if (elementRoot instanceof ShadowRoot && elementRoot.host === host) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function isUsableWaveCandidate(value, host) {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return false;
+    }
+
+    if (typeof value.getDuration !== 'function') {
+      return false;
+    }
+
+    if (
+      !(
+        typeof value.setOptions === 'function' ||
+        typeof value.zoom === 'function' ||
+        typeof value.constructor?.create === 'function'
+      )
+    ) {
+      return false;
+    }
+
+    const container = getCandidateContainer(value);
+    if (container && !elementsOverlapContext(host, container)) {
+      return false;
+    }
+
+    const duration = getDuration(value);
+    if (!(duration > 0)) {
+      return false;
+    }
+
+    const pixelsPerSecond = getSourcePixelsPerSecond(value);
+    if (!(pixelsPerSecond > 0)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function summarizeCandidateRecord(record, host) {
+    if (!record || !record.value) {
+      return null;
+    }
+
+    const value = record.value;
+    const container = getCandidateContainer(value);
+    return {
+      path: record.path || null,
+      depth: Number.isFinite(record.depth) ? record.depth : null,
+      score: record.score,
+      valid: isUsableWaveCandidate(value, host),
+      ctor: getCtorName(value),
+      methods: getMethodNames(value),
+      keys: getPreviewKeys(value),
+      duration: getDuration(value) || 0,
+      pixelsPerSecond: getSourcePixelsPerSecond(value) || 0,
+      containerCtor: getCtorName(container),
+      containerMatchesHost: container ? elementsOverlapContext(host, container) : null
+    };
+  }
+
+  function findWaveCandidate(host) {
+    if (!(host instanceof HTMLElement)) {
+      return {
+        candidate: null,
+        fallback: null
+      };
+    }
+
+    const registryMatches = collectRegistryCandidates(host);
+    const registryValid = registryMatches.find((record) => isUsableWaveCandidate(record.value, host)) || null;
+    if (registryValid) {
+      return {
+        candidate: registryValid,
+        fallback: registryMatches.find((record) => record !== registryValid) || null
+      };
+    }
+
+    const queue = getSearchSeeds(host).map((seed) => ({
+      value: seed.value,
+      path: seed.path,
+      depth: 0
+    }));
+    const seen = new Set();
+    let bestValid = null;
+    let bestValidScore = 0;
+    let bestAny = null;
+    let bestAnyScore = 0;
+
+    while (queue.length && seen.size < 320) {
+      const current = queue.shift();
+      const value = current && current.value;
+      if (!value || seen.has(value)) {
+        continue;
+      }
+
+      seen.add(value);
+      const score = scoreCandidate(value);
+      const record = {
+        value,
+        path: current.path,
+        depth: current.depth,
+        score
+      };
+
+      if (score > bestAnyScore) {
+        bestAny = record;
+        bestAnyScore = score;
+      }
+
+      if (score >= 6 && isUsableWaveCandidate(value, host) && score > bestValidScore) {
+        bestValid = record;
+        bestValidScore = score;
+      }
+
+      for (const name of safe(() => Object.getOwnPropertyNames(value), [])) {
+        if (!name || name === 'window' || name === 'self' || name === 'frames') {
+          continue;
+        }
+
+        const next = safe(() => value[name], null);
+        if (!next || seen.has(next)) {
+          continue;
+        }
+
+        const nestedScore = scoreCandidate(next);
+        if (nestedScore >= 2) {
+          queue.push({
+            value: next,
+            path: current.path + '.' + name,
+            depth: current.depth + 1
+          });
+        }
+      }
+
+      for (const symbol of safe(() => Object.getOwnPropertySymbols(value), [])) {
+        const next = safe(() => value[symbol], null);
+        if (!next || seen.has(next)) {
+          continue;
+        }
+
+        const nestedScore = scoreCandidate(next);
+        if (nestedScore >= 2) {
+          queue.push({
+            value: next,
+            path: current.path + '[' + String(symbol) + ']',
+            depth: current.depth + 1
+          });
+        }
+      }
+    }
+
+    return {
+      candidate: bestValid,
+      fallback: bestAny
+    };
+  }
+
+  function describeHost(host) {
+    if (!(host instanceof HTMLElement)) {
+      return {
+        present: false
+      };
+    }
+
+    return {
+      present: true,
+      tagName: host.tagName,
+      id: host.id || null,
+      className: typeof host.className === 'string' ? host.className || null : null,
+      ownPropertyCount: safe(() => Object.getOwnPropertyNames(host).length, 0),
+      ownPropertySample: getPreviewKeys(host),
+      hasShadowRoot: Boolean(host.shadowRoot)
+    };
+  }
+
+  function insertCandidate(list, candidate) {
+    if (!candidate || !(candidate.score > 0)) {
+      return;
+    }
+
+    list.push(candidate);
+    list.sort((left, right) => right.score - left.score);
+    if (list.length > MAX_CANDIDATES) {
+      list.length = MAX_CANDIDATES;
+    }
+  }
+
+  function collectWaveCandidates(host) {
+    if (!(host instanceof HTMLElement)) {
+      return [];
+    }
+
+    const queue = getSearchSeeds(host).map((seed) => ({
+      value: seed.value,
+      path: seed.path,
+      depth: 0
+    }));
+    const seen = new Set();
+    const candidates = [];
+
+    while (queue.length && seen.size < 260) {
+      const current = queue.shift();
+      const value = current && current.value;
+      if (!value || seen.has(value)) {
+        continue;
+      }
+
+      seen.add(value);
+      const score = scoreCandidate(value);
+      insertCandidate(candidates, {
+        path: current.path,
+        depth: current.depth,
+        score,
+        ctor: getCtorName(value),
+        methods: getMethodNames(value),
+        keys: getPreviewKeys(value)
+      });
+
+      if (current.depth >= 2) {
+        continue;
+      }
+
+      for (const name of safe(() => Object.getOwnPropertyNames(value), [])) {
+        if (!name || name === 'window' || name === 'self' || name === 'frames') {
+          continue;
+        }
+
+        const next = safe(() => value[name], null);
+        if (!next || seen.has(next)) {
+          continue;
+        }
+
+        queue.push({
+          value: next,
+          path: current.path + '.' + name,
+          depth: current.depth + 1
+        });
+      }
+
+      for (const symbol of safe(() => Object.getOwnPropertySymbols(value), [])) {
+        const next = safe(() => value[symbol], null);
+        if (!next || seen.has(next)) {
+          continue;
+        }
+
+        queue.push({
+          value: next,
+          path: current.path + '[' + String(symbol) + ']',
+          depth: current.depth + 1
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  function describeReactPath(path, element) {
+    const fiber = getReactFiber(element);
+    const baseFiberPath = path + '.__reactFiber$';
+    const relatedFibers = fiber
+      ? [{ fiber, path: baseFiberPath }].concat(getReactOwnerFibers(fiber, baseFiberPath))
+      : [];
+    const describedFibers = relatedFibers.slice(0, 6).map((entry) => {
+      const hooks = getReactHookValues(entry.fiber, entry.path)
+        .slice(0, 6)
+        .map((hookEntry) => ({
+          path: hookEntry.path,
+          score: scoreCandidate(hookEntry.value),
+          ctor: getCtorName(hookEntry.value),
+          keys: getPreviewKeys(hookEntry.value)
+        }));
+
+      return {
+        path: entry.path,
+        tag: Number.isFinite(Number(safe(() => entry.fiber.tag, null))) ? Number(entry.fiber.tag) : null,
+        typeName:
+          safe(() => entry.fiber.type.displayName, null) ||
+          safe(() => entry.fiber.type.name, null) ||
+          safe(() => entry.fiber.elementType.displayName, null) ||
+          safe(() => entry.fiber.elementType.name, null) ||
+          null,
+        stateNodeCtor: getCtorName(safe(() => entry.fiber.stateNode, null)),
+        refCurrentCtor: getCtorName(safe(() => entry.fiber.ref.current, null)),
+        memoizedPropsKeys: getPreviewKeys(safe(() => entry.fiber.memoizedProps, null)),
+        hookCount: hooks.length,
+        hooks
+      };
+    });
+
+    return {
+      path,
+      reactPropsKeys: getPreviewKeys(getReactProps(element)),
+      fiber: describedFibers.length ? describedFibers[0] : null,
+      owners: describedFibers.slice(1)
+    };
+  }
+
+  function getDuration(wave) {
+    return safe(() => wave.getDuration(), 0) || safe(() => wave.options.duration, 0) || 0;
+  }
+
+  function getSourcePixelsPerSecond(wave) {
+    const duration = getDuration(wave);
+    if (!(duration > 0)) {
+      return 0;
+    }
+
+    const container = wave.container instanceof HTMLElement ? wave.container : null;
+    const scope = container && container.shadowRoot ? container.shadowRoot : null;
+    const wrapper = scope && scope.querySelector ? scope.querySelector('[part="wrapper"]') : null;
+    const width =
+      wrapper instanceof HTMLElement
+        ? parsePixels(wrapper.style.width || '') || safe(() => wrapper.getBoundingClientRect().width, 0)
+        : 0;
+
+    if (width > 0) {
+      return width / duration;
+    }
+
+    const optionValue = Number(wave.options && wave.options.minPxPerSec);
+    return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
+  }
+
+  function buildLensOptions(sourceWave, mount, height, scale) {
+    const options =
+      sourceWave && sourceWave.options && typeof sourceWave.options === 'object'
+        ? Object.assign({}, sourceWave.options)
+        : {};
+
+    delete options.container;
+    delete options.plugins;
+    delete options.media;
+    delete options.url;
+
+    options.container = mount;
+    options.interact = false;
+    options.dragToSeek = false;
+    options.autoScroll = false;
+    options.autoCenter = false;
+    options.hideScrollbar = true;
+    options.height = height;
+    options.minPxPerSec = Math.max(1, (getSourcePixelsPerSecond(sourceWave) || 1) * scale);
+
+    const peaks = safe(() => sourceWave.exportPeaks(), null) || options.peaks || null;
+    const duration = getDuration(sourceWave);
+    if (peaks && duration > 0) {
+      options.peaks = peaks;
+      options.duration = duration;
+    }
+
+    return options;
+  }
+
+  function collectDiagnostics(host, mount, extra) {
+    const selection = findWaveCandidate(host);
+    const best = selection.candidate;
+    const diagnostics = {
+      bridgeReady: true,
+      host: describeHost(host),
+      mountPresent: mount instanceof HTMLElement,
+      windowWaveSurfer: {
+        present: Boolean(window.WaveSurfer),
+        ctor: getCtorName(window.WaveSurfer),
+        create: typeof safe(() => window.WaveSurfer.create, null) === 'function'
+      },
+      bestCandidate: best
+        ? summarizeCandidateRecord(best, host)
+        : null,
+      fallbackCandidate:
+        selection.fallback && selection.fallback !== best
+          ? summarizeCandidateRecord(selection.fallback, host)
+          : null,
+      registryCandidates: collectRegistryCandidates(host)
+        .slice(0, 6)
+        .map((record) => summarizeCandidateRecord(record, host)),
+      candidates: collectWaveCandidates(host),
+      react: getElementSearchSeeds(host).slice(0, 8).map((seed) => describeReactPath(seed.path, seed.value))
+    };
+
+    if (extra && typeof extra === 'object') {
+      diagnostics.context = extra;
+    }
+
+    return diagnostics;
+  }
+
+  function getRenderRoot(element) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    if (element.shadowRoot && element.shadowRoot.querySelector('[part="scroll"]')) {
+      return element.shadowRoot;
+    }
+
+    if (element.querySelector('[part="scroll"]')) {
+      return element;
+    }
+
+    for (const child of Array.from(element.children)) {
+      if (!(child instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (child.shadowRoot && child.shadowRoot.querySelector('[part="scroll"]')) {
+        return child.shadowRoot;
+      }
+
+      if (child.querySelector('[part="scroll"]')) {
+        return child;
+      }
+    }
+
+    return null;
+  }
+
+  function ensureLens(hostMarker, mountMarker, height, scale) {
+    const host = findHostElement(hostMarker);
+    const mount = findMountElement(host, mountMarker);
+    if (!(host instanceof HTMLElement) || !(mount instanceof HTMLElement)) {
+      return {
+        ok: false,
+        reason: 'missing-dom',
+        diagnostic: collectDiagnostics(host, mount, {
+          phase: 'ensure'
+        })
+      };
+    }
+
+    for (const [id, record] of instances.entries()) {
+      if (record.host === host && record.mount === mount) {
+        return { ok: true, id };
+      }
+    }
+
+    const selection = findWaveCandidate(host);
+    const sourceRecord = selection.candidate;
+    const sourceWave = sourceRecord ? sourceRecord.value : null;
+    const factory =
+      sourceWave &&
+      sourceWave.constructor &&
+      typeof sourceWave.constructor.create === 'function'
+        ? sourceWave.constructor.create.bind(sourceWave.constructor)
+        : null;
+    if (!sourceWave || !factory) {
+      return {
+        ok: false,
+        reason: 'no-wave-instance',
+        diagnostic: collectDiagnostics(host, mount, {
+          phase: 'ensure'
+        })
+      };
+    }
+
+    let createError = null;
+    const wave = safe(() => {
+      try {
+        return factory(buildLensOptions(sourceWave, mount, height, scale));
+      } catch (error) {
+        createError = error instanceof Error ? error.message : String(error);
+        return null;
+      }
+    }, null);
+    if (!wave) {
+      return {
+        ok: false,
+        reason: 'create-failed',
+        diagnostic: collectDiagnostics(host, mount, {
+          phase: 'ensure',
+          createError
+        })
+      };
+    }
+
+    const id = 'lens-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    instances.set(id, {
+      host,
+      mount,
+      sourcePath: sourceRecord ? sourceRecord.path : null,
+      sourceWave,
+      wave
+    });
+
+    return { ok: true, id };
+  }
+
+  function diagnoseLens(hostMarker, mountMarker, instanceId, extra) {
+    const host = hostMarker ? findHostElement(hostMarker) : null;
+    const mount = mountMarker ? findMountElement(host, mountMarker) : null;
+    const record = instanceId ? instances.get(instanceId) : null;
+    const diagnostics = collectDiagnostics(
+      record && record.host instanceof HTMLElement ? record.host : host,
+      record && record.mount instanceof HTMLElement ? record.mount : mount,
+      Object.assign(
+        {
+          phase: 'diagnose',
+          instanceId: instanceId || null,
+          hasRecord: Boolean(record)
+        },
+        extra && typeof extra === 'object' ? extra : {}
+      )
+    );
+
+    if (record) {
+      diagnostics.instance = {
+        sourcePath: record.sourcePath || null,
+        sourceCtor: getCtorName(record.sourceWave),
+        sourceDuration: getDuration(record.sourceWave),
+        sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
+        lensCtor: getCtorName(record.wave),
+        lensDuration: getDuration(record.wave)
+      };
+    }
+
+    return {
+      ok: true,
+      diagnostic: diagnostics
+    };
+  }
+
+  function updateLens(id, time, width, height, scale) {
+    const record = instances.get(id);
+    if (!record) {
+      return { ok: false, reason: 'missing-instance' };
+    }
+
+    const targetPixelsPerSecond = Math.max(1, (getSourcePixelsPerSecond(record.sourceWave) || 1) * scale);
+
+    safe(() => {
+      if (record.wave && typeof record.wave.setOptions === 'function') {
+        record.wave.setOptions({
+          minPxPerSec: targetPixelsPerSecond,
+          height
+        });
+      } else if (record.wave && typeof record.wave.zoom === 'function') {
+        record.wave.zoom(targetPixelsPerSecond);
+      }
+    }, null);
+
+    const duration = getDuration(record.sourceWave) || getDuration(record.wave);
+    if (!(duration > 0)) {
+      return { ok: false, reason: 'missing-duration' };
+    }
+
+    const renderRoot = getRenderRoot(record.mount);
+    if (!renderRoot) {
+      return { ok: false, reason: 'missing-render-root' };
+    }
+
+    const wrapper = renderRoot.querySelector('[part="wrapper"]');
+    const scroll = renderRoot.querySelector('[part="scroll"]');
+    if (!(wrapper instanceof HTMLElement) || !(scroll instanceof HTMLElement)) {
+      return { ok: false, reason: 'missing-scroll' };
+    }
+
+    record.mount.style.width = width + 'px';
+    record.mount.style.height = height + 'px';
+
+    const wrapperWidth =
+      parsePixels(wrapper.style.width || '') ||
+      safe(() => wrapper.getBoundingClientRect().width, 0) ||
+      targetPixelsPerSecond * duration;
+    const maxScroll = Math.max(0, wrapperWidth - width);
+    const scrollLeft = clamp(time * targetPixelsPerSecond - width / 2, 0, maxScroll);
+    scroll.scrollLeft = scrollLeft;
+
+    return {
+      ok: true,
+      windowStart: scrollLeft / targetPixelsPerSecond,
+      windowEnd: (scrollLeft + width) / targetPixelsPerSecond
+    };
+  }
+
+  function destroyLens(id) {
+    const record = instances.get(id);
+    if (record && record.wave && typeof record.wave.destroy === 'function') {
+      safe(() => record.wave.destroy(), null);
+    }
+    instances.delete(id);
+    return { ok: true };
+  }
+
+  window.addEventListener(REQUEST_EVENT, (event) => {
+    const detail = event.detail || {};
+    const id = detail.id;
+    const operation = detail.operation;
+    const payload = detail.payload || {};
+
+    if (!id || !operation) {
+      return;
+    }
+
+    if (operation === 'ensure') {
+      respond(id, ensureLens(payload.hostMarker, payload.mountMarker, payload.height, payload.scale));
+      return;
+    }
+
+    if (operation === 'update') {
+      respond(id, updateLens(payload.instanceId, payload.time, payload.width, payload.height, payload.scale));
+      return;
+    }
+
+    if (operation === 'destroy') {
+      respond(id, destroyLens(payload.instanceId));
+      return;
+    }
+
+    if (operation === 'diagnose') {
+      respond(
+        id,
+        diagnoseLens(payload.hostMarker, payload.mountMarker, payload.instanceId, payload.extra)
+      );
+    }
+  });
+
+  window.__babelHelperMagnifierBridge = { instances };
+})();

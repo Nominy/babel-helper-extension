@@ -13,10 +13,21 @@
         "content/shared.js",
         "content/rows.js",
         "content/cut.js",
+        "content/mangifier.js",
         "content/hotkeys.js",
         "content/main.js"
       ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/mangifier-bridge.js"
+      ],
+      "matches": [
+        "https://dashboard.babel.audio/*"
+      ]
     }
   ]
 }

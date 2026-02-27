@@ -9,6 +9,7 @@ What the snapshot shows today:
 
 What this version adds:
 - Keyboard shortcuts plus an `Alt + Drag` cut preview, with no persistent injected UI:
+  - `Shift + Hover` over the waveform: show a temporary 10x magnifier above the hover handle
   - `Alt + Drag` inside an existing waveform segment: create a temporary cut preview
   - `Enter`: commit the cut preview by replaying the native split gesture at both cut boundaries
   - `Esc`: cancel the cut preview, or toggle blur and restore focus when no preview exists
@@ -20,6 +21,7 @@ Implementation notes:
 - The extension does not inject buttons, panels, badges, or any other persistent visible interface.
 - The extension augments the existing Babel `Hotkeys` dialog when it opens so these custom shortcuts are visible in the platform's own help window.
 - The extension does not mutate transcript state directly.
+- The waveform magnifier is transient and non-interactive, so native region handles still receive pointer events while it is visible.
 - The cut preview only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
 - The cut preview is temporary extension UI: `Esc` cancels it, and `Enter` commits it only when the preview spans at least 1 second. Shorter previews stay visible until you cancel or resize them.
 - Delete and merge actions are triggered by opening the page's own action menu and clicking the matching menu item, so the existing React workflow remains in control.
