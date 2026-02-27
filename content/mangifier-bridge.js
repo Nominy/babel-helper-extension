@@ -791,7 +791,99 @@
     return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
   }
 
-  function buildLensOptions(sourceWave, mount, height, scale) {
+  function findTrackFiber(startFiber) {
+    let current = startFiber;
+    let depth = 0;
+
+    while (current && typeof current === 'object' && depth < 20) {
+      const props = safe(() => current.memoizedProps, null);
+      if (props && typeof props === 'object' && props.track) {
+        return current;
+      }
+
+      current = safe(() => current.return, null);
+      depth += 1;
+    }
+
+    return null;
+  }
+
+  function getTrackPropsForHost(host) {
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const anchor = host.parentElement instanceof HTMLElement ? host.parentElement : host;
+    const fiber = getReactFiber(anchor);
+    const trackFiber = findTrackFiber(fiber);
+    const props = safe(() => trackFiber.memoizedProps, null);
+    return props && typeof props === 'object' ? props : null;
+  }
+
+  function getSourceCanvasMetrics(wave) {
+    const container = getCandidateContainer(wave);
+    const scope = container && container.shadowRoot ? container.shadowRoot : null;
+    const canvas =
+      scope && typeof scope.querySelector === 'function'
+        ? scope.querySelector('[part="canvases"] canvas')
+        : null;
+
+    const cssHeight =
+      canvas instanceof HTMLCanvasElement
+        ? parsePixels(canvas.style.height || '') || safe(() => canvas.getBoundingClientRect().height, 0)
+        : 0;
+    const intrinsicHeight =
+      canvas instanceof HTMLCanvasElement && Number.isFinite(canvas.height) ? canvas.height : 0;
+
+    return {
+      cssHeight: cssHeight > 0 ? cssHeight : 0,
+      intrinsicHeight: intrinsicHeight > 0 ? intrinsicHeight : 0,
+      pixelRatio:
+        cssHeight > 0 && intrinsicHeight > 0 ? intrinsicHeight / cssHeight : window.devicePixelRatio || 1
+    };
+  }
+
+  function getSourceRenderMetrics(sourceWave, host) {
+    const optionHeight = Number(safe(() => sourceWave.options.height, 0));
+    const rendererHeight = Number(
+      safe(() => {
+        const renderer = sourceWave && sourceWave.renderer;
+        if (!renderer || typeof renderer.getHeight !== 'function') {
+          return 0;
+        }
+
+        return renderer.getHeight();
+      }, 0)
+    );
+    const canvasMetrics = getSourceCanvasMetrics(sourceWave);
+    const trackProps = getTrackPropsForHost(host);
+    const trackHeight = Number(trackProps && trackProps.defaultTrackHeight);
+    const hostHeight = safe(() => host.getBoundingClientRect().height, 0);
+
+    const renderHeight =
+      (rendererHeight > 0 && rendererHeight) ||
+      (canvasMetrics.cssHeight > 0 && canvasMetrics.cssHeight) ||
+      (optionHeight > 0 && optionHeight) ||
+      (trackHeight > 0 && trackHeight) ||
+      (hostHeight > 0 && hostHeight) ||
+      1;
+
+    return {
+      renderHeight,
+      rendererHeight: rendererHeight > 0 ? rendererHeight : null,
+      optionHeight: optionHeight > 0 ? optionHeight : null,
+      canvasCssHeight: canvasMetrics.cssHeight > 0 ? canvasMetrics.cssHeight : null,
+      canvasIntrinsicHeight: canvasMetrics.intrinsicHeight > 0 ? canvasMetrics.intrinsicHeight : null,
+      pixelRatio:
+        Number.isFinite(canvasMetrics.pixelRatio) && canvasMetrics.pixelRatio > 0
+          ? canvasMetrics.pixelRatio
+          : 1,
+      verticalZoom: Number(trackProps && trackProps.verticalZoom) || null,
+      defaultTrackHeight: trackHeight > 0 ? trackHeight : null
+    };
+  }
+
+  function buildLensOptions(sourceWave, mount, scale, sourceMetrics) {
     const options =
       sourceWave && sourceWave.options && typeof sourceWave.options === 'object'
         ? Object.assign({}, sourceWave.options)
@@ -808,17 +900,61 @@
     options.autoScroll = false;
     options.autoCenter = false;
     options.hideScrollbar = true;
-    options.height = height;
+    options.height =
+      Number(sourceMetrics && sourceMetrics.renderHeight) > 0
+        ? Number(sourceMetrics.renderHeight)
+        : Math.max(1, Number(safe(() => sourceWave.options.height, 0)) || 1);
     options.minPxPerSec = Math.max(1, (getSourcePixelsPerSecond(sourceWave) || 1) * scale);
+    options.duration = getDuration(sourceWave);
 
-    const peaks = safe(() => sourceWave.exportPeaks(), null) || options.peaks || null;
-    const duration = getDuration(sourceWave);
-    if (peaks && duration > 0) {
-      options.peaks = peaks;
-      options.duration = duration;
-    }
+    delete options.peaks;
 
     return options;
+  }
+
+  function syncLensDecodedAudio(record) {
+    if (!record || !record.wave || !record.sourceWave) {
+      return false;
+    }
+
+    const decodedData =
+      safe(() => record.sourceWave.getDecodedData(), null) ||
+      safe(() => record.sourceWave.decodedData, null) ||
+      safe(() => record.sourceWave.renderer.audioData, null);
+
+    if (!decodedData) {
+      return false;
+    }
+
+    safe(() => {
+      record.wave.decodedData = decodedData;
+    }, null);
+    safe(() => {
+      record.wave.renderer.audioData = decodedData;
+    }, null);
+    safe(() => {
+      record.wave._duration = getDuration(record.sourceWave);
+    }, null);
+    safe(() => {
+      record.wave.options.duration = getDuration(record.sourceWave);
+    }, null);
+
+    const rendered = safe(() => {
+      if (record.wave.renderer && typeof record.wave.renderer.render === 'function') {
+        record.wave.renderer.render(decodedData);
+        return true;
+      }
+
+      return false;
+    }, false);
+
+    safe(() => {
+      if (rendered && record.wave.renderer && typeof record.wave.renderer.reRender === 'function') {
+        record.wave.renderer.reRender();
+      }
+    }, null);
+
+    return rendered;
   }
 
   function collectDiagnostics(host, mount, extra) {
@@ -906,6 +1042,7 @@
     const selection = findWaveCandidate(host);
     const sourceRecord = selection.candidate;
     const sourceWave = sourceRecord ? sourceRecord.value : null;
+    const sourceMetrics = sourceWave ? getSourceRenderMetrics(sourceWave, host) : null;
     const factory =
       sourceWave &&
       sourceWave.constructor &&
@@ -925,7 +1062,7 @@
     let createError = null;
     const wave = safe(() => {
       try {
-        return factory(buildLensOptions(sourceWave, mount, height, scale));
+        return factory(buildLensOptions(sourceWave, mount, scale, sourceMetrics));
       } catch (error) {
         createError = error instanceof Error ? error.message : String(error);
         return null;
@@ -943,13 +1080,17 @@
     }
 
     const id = 'lens-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    instances.set(id, {
+    const record = {
       host,
       mount,
       sourcePath: sourceRecord ? sourceRecord.path : null,
+      sourceMetrics,
       sourceWave,
       wave
-    });
+    };
+
+    syncLensDecodedAudio(record);
+    instances.set(id, record);
 
     return { ok: true, id };
   }
@@ -974,6 +1115,7 @@
     if (record) {
       diagnostics.instance = {
         sourcePath: record.sourcePath || null,
+        sourceMetrics: record.sourceMetrics || null,
         sourceCtor: getCtorName(record.sourceWave),
         sourceDuration: getDuration(record.sourceWave),
         sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
@@ -1000,12 +1142,17 @@
       if (record.wave && typeof record.wave.setOptions === 'function') {
         record.wave.setOptions({
           minPxPerSec: targetPixelsPerSecond,
-          height
+          height:
+            Number(record.sourceMetrics && record.sourceMetrics.renderHeight) > 0
+              ? Number(record.sourceMetrics.renderHeight)
+              : height
         });
       } else if (record.wave && typeof record.wave.zoom === 'function') {
         record.wave.zoom(targetPixelsPerSecond);
       }
     }, null);
+
+    syncLensDecodedAudio(record);
 
     const duration = getDuration(record.sourceWave) || getDuration(record.wave);
     if (!(duration > 0)) {
@@ -1023,8 +1170,17 @@
       return { ok: false, reason: 'missing-scroll' };
     }
 
+    const renderHeight =
+      Number(record.sourceMetrics && record.sourceMetrics.renderHeight) > 0
+        ? Number(record.sourceMetrics.renderHeight)
+        : height;
+    const verticalOffset = Math.round((height - renderHeight) / 2);
+
+    record.mount.style.inset = 'auto';
+    record.mount.style.left = '0';
+    record.mount.style.top = verticalOffset + 'px';
     record.mount.style.width = width + 'px';
-    record.mount.style.height = height + 'px';
+    record.mount.style.height = renderHeight + 'px';
 
     const wrapperWidth =
       parsePixels(wrapper.style.width || '') ||
