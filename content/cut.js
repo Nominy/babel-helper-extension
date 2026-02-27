@@ -301,16 +301,23 @@
     };
   }
 
-  function findRowByTimeRange(startSeconds, endSeconds) {
+  function findRowByTimeRange(startSeconds, endSeconds, options) {
     if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
       return null;
     }
 
+    const settings = options || {};
+    const speakerKey =
+      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
     const rows = helper.getTranscriptRows();
     let bestRow = null;
     let bestScore = -Infinity;
 
     for (const row of rows) {
+      if (speakerKey && helper.getRowSpeakerKey(row) !== speakerKey) {
+        continue;
+      }
+
       const range = getRowTimeRange(row);
       if (!range) {
         continue;
@@ -333,14 +340,21 @@
     return bestRow;
   }
 
-  function findRowByTimeLabels(startText, endText) {
+  function findRowByTimeLabels(startText, endText, options) {
     if (!startText || !endText) {
       return null;
     }
 
+    const settings = options || {};
+    const speakerKey =
+      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
     const rows = helper.getTranscriptRows();
     const exactMatch =
       rows.find((row) => {
+        if (speakerKey && helper.getRowSpeakerKey(row) !== speakerKey) {
+          return false;
+        }
+
         const labels = getRowTimeLabels(row);
         return labels && labels.startText === startText && labels.endText === endText;
       }) || null;
@@ -354,11 +368,13 @@
       return null;
     }
 
-    return findRowByTimeRange(targetStart, targetEnd);
+    return findRowByTimeRange(targetStart, targetEnd, {
+      speakerKey
+    });
   }
 
-  async function deleteRegionByTimeLabels(startText, endText) {
-    const row = findRowByTimeLabels(startText, endText);
+  async function deleteRegionByTimeLabels(startText, endText, options) {
+    const row = findRowByTimeLabels(startText, endText, options);
     if (!(row instanceof HTMLTableRowElement)) {
       return false;
     }
@@ -925,6 +941,15 @@
     }
 
     return null;
+  }
+
+  function getSpeakerKeyForContainer(container) {
+    const host = getWaveformHostFromContainer(container);
+    if (!(host instanceof HTMLElement)) {
+      return '';
+    }
+
+    return getTrackIdForHost(host) || '';
   }
 
   function getWaveformEntryForContainer(container) {
@@ -1906,41 +1931,53 @@
     };
   }
 
-  function getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex) {
+  function getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex, options) {
     const rows = helper.getTranscriptRows();
     if (!rows.length || sourceRowIndex < 0 || sourceRowIndex >= rows.length) {
       return null;
     }
 
-    if (sourceRow instanceof HTMLTableRowElement && sourceRow.isConnected) {
-      const liveIndex = rows.indexOf(sourceRow);
-      if (liveIndex >= 0) {
-        if (liveIndex > sourceRowIndex && rows[liveIndex - 1] instanceof HTMLTableRowElement) {
-          return {
-            leftRow: rows[liveIndex - 1],
-            rightRow: sourceRow
-          };
-        }
+    const settings = options || {};
+    const sourceSpeakerKey =
+      (typeof settings.speakerKey === 'string' && settings.speakerKey) ||
+      helper.getRowSpeakerKey(sourceRow);
+    const pairMatchesSpeaker = (leftRow, rightRow) => {
+      if (!(leftRow instanceof HTMLTableRowElement) || !(rightRow instanceof HTMLTableRowElement)) {
+        return false;
+      }
 
-        if (rows[liveIndex + 1] instanceof HTMLTableRowElement) {
-          return {
-            leftRow: sourceRow,
-            rightRow: rows[liveIndex + 1]
-          };
-        }
+      if (!helper.rowsShareSpeaker(leftRow, rightRow)) {
+        return false;
+      }
 
-        if (liveIndex > 0 && rows[liveIndex - 1] instanceof HTMLTableRowElement) {
-          return {
-            leftRow: rows[liveIndex - 1],
-            rightRow: sourceRow
-          };
-        }
+      return !sourceSpeakerKey || helper.getRowSpeakerKey(leftRow) === sourceSpeakerKey;
+    };
+
+    let leftRow = null;
+    for (let index = Math.min(sourceRowIndex, rows.length - 1); index >= 0; index -= 1) {
+      const candidate = rows[index];
+      if (
+        candidate instanceof HTMLTableRowElement &&
+        (!sourceSpeakerKey || helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
+      ) {
+        leftRow = candidate;
+        break;
       }
     }
 
-    const leftRow = rows[sourceRowIndex];
-    const rightRow = rows[sourceRowIndex + 1];
-    if (!(leftRow instanceof HTMLTableRowElement) || !(rightRow instanceof HTMLTableRowElement)) {
+    let rightRow = null;
+    for (let index = Math.max(0, sourceRowIndex + 1); index < rows.length; index += 1) {
+      const candidate = rows[index];
+      if (
+        candidate instanceof HTMLTableRowElement &&
+        (!sourceSpeakerKey || helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
+      ) {
+        rightRow = candidate;
+        break;
+      }
+    }
+
+    if (!pairMatchesSpeaker(leftRow, rightRow)) {
       return null;
     }
 
@@ -1950,7 +1987,7 @@
     };
   }
 
-  async function waitForSmartSplitRows(sourceRow, sourceRowIndex, previousRowCount) {
+  async function waitForSmartSplitRows(sourceRow, sourceRowIndex, previousRowCount, options) {
     if (sourceRowIndex < 0 || !Number.isFinite(previousRowCount)) {
       return null;
     }
@@ -1961,7 +1998,7 @@
         return null;
       }
 
-      return getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex);
+      return getRowsForCompletedSmartSplit(sourceRow, sourceRowIndex, options);
     }, 1200, 40);
   }
 
@@ -1973,6 +2010,7 @@
       };
       return {
         row,
+        speakerKey: helper.getRowSpeakerKey(row),
         startText: labels.startText,
         endText: labels.endText,
         text: helper.getRowTextValue(row).trim()
@@ -1985,17 +2023,31 @@
       return '';
     }
 
-    return [entry.startText || '', entry.endText || '', entry.text || ''].join('|');
+    return [entry.speakerKey || '', entry.startText || '', entry.endText || '', entry.text || ''].join('|');
   }
 
-  function findNewDuplicateSplitRows(previousRows) {
+  function findNewDuplicateSplitRows(previousRows, options) {
     const previousList = Array.isArray(previousRows) ? previousRows : [];
     const previousSignatures = new Set(previousList.map((entry) => getRowSignature(entry)));
-    const rows = helper.getTranscriptRows();
+    const settings = options || {};
+    const speakerKey =
+      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
+    const rows = speakerKey
+      ? helper.getTranscriptRows().filter((row) => helper.getRowSpeakerKey(row) === speakerKey)
+      : helper.getTranscriptRows();
 
     for (let index = 0; index < rows.length - 1; index += 1) {
       const leftRow = rows[index];
       const rightRow = rows[index + 1];
+      if (!helper.rowsShareSpeaker(leftRow, rightRow)) {
+        continue;
+      }
+
+      const pairSpeakerKey = helper.getRowSpeakerKey(leftRow);
+      if (speakerKey && pairSpeakerKey !== speakerKey) {
+        continue;
+      }
+
       const leftText = helper.getRowTextValue(leftRow).trim();
       const rightText = helper.getRowTextValue(rightRow).trim();
       if (!leftText || leftText !== rightText) {
@@ -2005,11 +2057,13 @@
       const leftLabels = getRowTimeLabels(leftRow);
       const rightLabels = getRowTimeLabels(rightRow);
       const leftSignature = getRowSignature({
+        speakerKey: pairSpeakerKey,
         startText: leftLabels ? leftLabels.startText : '',
         endText: leftLabels ? leftLabels.endText : '',
         text: leftText
       });
       const rightSignature = getRowSignature({
+        speakerKey: pairSpeakerKey,
         startText: rightLabels ? rightLabels.startText : '',
         endText: rightLabels ? rightLabels.endText : '',
         text: rightText
@@ -2035,6 +2089,7 @@
       return {
         leftRow,
         rightRow,
+        speakerKey: pairSpeakerKey,
         sourceText: leftText,
         ratio: leftDuration / totalDuration
       };
@@ -2054,7 +2109,9 @@
         return null;
       }
 
-      return findNewDuplicateSplitRows(context.rows);
+      return findNewDuplicateSplitRows(context.rows, {
+        speakerKey: context.speakerKey
+      });
     }, 1200, 40);
 
     if (!detected) {
@@ -2103,7 +2160,10 @@
       return false;
     }
 
-    const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount);
+    const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount, {
+      speakerKey: plan.speakerKey,
+      sourceSpeakerIndex: plan.sourceSpeakerIndex
+    });
     if (!rows) {
       return false;
     }
@@ -2140,14 +2200,19 @@
       return null;
     }
 
-    let sourceRow = findRowByTimeLabels(entry.startText, entry.endText);
+    const speakerKey = getSpeakerKeyForContainer(container);
+    let sourceRow = findRowByTimeLabels(entry.startText, entry.endText, {
+      speakerKey
+    });
 
     if (!(sourceRow instanceof HTMLTableRowElement) && container instanceof HTMLElement) {
       const laneTimeScale = getLaneTimeScale(container);
       if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
         const startSeconds = laneTimeScale.offsetSeconds + entry.leftPx * laneTimeScale.secondsPerPx;
         const endSeconds = laneTimeScale.offsetSeconds + entry.rightPx * laneTimeScale.secondsPerPx;
-        sourceRow = findRowByTimeRange(startSeconds, endSeconds);
+        sourceRow = findRowByTimeRange(startSeconds, endSeconds, {
+          speakerKey
+        });
       }
     }
 
@@ -2161,6 +2226,11 @@
       return null;
     }
 
+    const sameSpeakerRows = speakerKey
+      ? rows.filter((row) => helper.getRowSpeakerKey(row) === speakerKey)
+      : rows;
+    const sourceSpeakerIndex = sameSpeakerRows.indexOf(sourceRow);
+
     const sourceText = helper.getRowTextValue(sourceRow).trim();
     if (!sourceText) {
       return null;
@@ -2173,7 +2243,9 @@
     return {
       sourceRow,
       sourceRowIndex,
+      sourceSpeakerIndex,
       rowCount: rows.length,
+      speakerKey,
       sourceText,
       pivotPx,
       ratio
@@ -2339,6 +2411,7 @@
       initialOverlapPlan.overlapping.length === 1
         ? {
             rowCount: helper.getTranscriptRows().length,
+            speakerKey: getSpeakerKeyForContainer(commitPlan.container),
             rows: captureRowSnapshot()
           }
         : null;
@@ -2368,7 +2441,9 @@
 
       const deleteTargets = initialOverlapPlan.toDelete.slice();
       for (const entry of deleteTargets) {
-        const deleted = await deleteRegionByTimeLabels(entry.startText, entry.endText);
+        const deleted = await deleteRegionByTimeLabels(entry.startText, entry.endText, {
+          speakerKey: getSpeakerKeyForContainer(commitPlan.container)
+        });
         if (!deleted) {
           return false;
         }
@@ -2717,12 +2792,15 @@
       return null;
     }
 
+    const draft = getSmartSplitClickDraft(event);
     helper.state.smartSplitClickContext = {
       rowCount: helper.getTranscriptRows().length,
+      speakerKey:
+        (draft && typeof draft.speakerKey === 'string' && draft.speakerKey) ||
+        getSpeakerKeyForContainer(helper.state.cutLastContainer),
       rows: captureRowSnapshot()
     };
 
-    const draft = getSmartSplitClickDraft(event);
     helper.state.smartSplitClickDraft = draft || null;
     return draft;
   }

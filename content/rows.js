@@ -53,6 +53,9 @@
 
     const identity = {
       annotationId: null,
+      processedRecordingId: null,
+      trackLabel: '',
+      speakerKey: '',
       isActive: false,
       startText: '',
       endText: ''
@@ -83,6 +86,14 @@
           : null;
       if (annotation && typeof annotation.id === 'string' && annotation.id) {
         identity.annotationId = annotation.id;
+        identity.processedRecordingId =
+          annotation.processedRecordingId != null ? String(annotation.processedRecordingId) : null;
+        identity.trackLabel =
+          typeof annotation.trackLabel === 'string' ? annotation.trackLabel.trim() : '';
+        identity.speakerKey =
+          identity.processedRecordingId ||
+          identity.trackLabel ||
+          (row.children[1] instanceof HTMLElement ? helper.normalizeText(row.children[1]) : '');
         break;
       }
 
@@ -90,11 +101,62 @@
       depth += 1;
     }
 
-    if (!identity.annotationId && !identity.startText && !identity.endText) {
+    if (!identity.speakerKey) {
+      identity.speakerKey =
+        (row.children[1] instanceof HTMLElement ? helper.normalizeText(row.children[1]) : '') || '';
+    }
+
+    if (!identity.annotationId && !identity.startText && !identity.endText && !identity.speakerKey) {
       return null;
     }
 
     return identity;
+  };
+
+  helper.getRowSpeakerKey = function getRowSpeakerKey(row) {
+    const identity = helper.getRowIdentity(row);
+    return identity && typeof identity.speakerKey === 'string' ? identity.speakerKey : '';
+  };
+
+  helper.rowsShareSpeaker = function rowsShareSpeaker(leftRow, rightRow) {
+    const leftKey = helper.getRowSpeakerKey(leftRow);
+    const rightKey = helper.getRowSpeakerKey(rightRow);
+    return Boolean(leftKey && rightKey && leftKey === rightKey);
+  };
+
+  helper.findAdjacentRowBySpeaker = function findAdjacentRowBySpeaker(row, offset) {
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    const currentIndex = rows.indexOf(row);
+    if (currentIndex < 0 || !offset) {
+      return null;
+    }
+
+    const direction = offset < 0 ? -1 : 1;
+    const speakerKey = helper.getRowSpeakerKey(row);
+    if (!speakerKey) {
+      return null;
+    }
+
+    for (
+      let index = currentIndex + direction;
+      index >= 0 && index < rows.length;
+      index += direction
+    ) {
+      const candidate = rows[index];
+      if (!(candidate instanceof HTMLTableRowElement)) {
+        continue;
+      }
+
+      if (helper.getRowSpeakerKey(candidate) === speakerKey) {
+        return candidate;
+      }
+    }
+
+    return null;
   };
 
   helper.findActiveRowByReactState = function findActiveRowByReactState() {
@@ -144,10 +206,21 @@
     }
 
     return Boolean(
+      identity.speakerKey &&
+      rowIdentity.speakerKey &&
+      identity.speakerKey === rowIdentity.speakerKey &&
+      (
+        (
       identity.startText &&
       identity.endText &&
       identity.startText === rowIdentity.startText &&
       identity.endText === rowIdentity.endText
+        ) ||
+        (
+          !identity.startText &&
+          !identity.endText
+        )
+      )
     );
   };
 
@@ -173,6 +246,11 @@
           const rowIdentity = helper.getRowIdentity(row);
           return (
             rowIdentity &&
+            (
+              !identity.speakerKey ||
+              !rowIdentity.speakerKey ||
+              rowIdentity.speakerKey === identity.speakerKey
+            ) &&
             rowIdentity.startText === identity.startText &&
             rowIdentity.endText === identity.endText
           );
@@ -545,12 +623,16 @@
 
     const rows = helper.getTranscriptRows();
     const currentIndex = rows.indexOf(row);
-    const targetIndex = currentIndex + offset;
-    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= rows.length) {
+    if (currentIndex < 0) {
       return false;
     }
 
-    const targetTextarea = helper.getRowTextarea(rows[targetIndex]);
+    const targetRow = helper.findAdjacentRowBySpeaker(row, offset);
+    if (!(targetRow instanceof HTMLTableRowElement)) {
+      return false;
+    }
+
+    const targetTextarea = helper.getRowTextarea(targetRow);
     if (!(targetTextarea instanceof HTMLTextAreaElement)) {
       return false;
     }
