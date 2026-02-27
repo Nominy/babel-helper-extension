@@ -922,29 +922,48 @@
     };
   }
 
-  function findReconciliationTargets(snapshot, cutLeftPx) {
-    if (!snapshot || !Array.isArray(snapshot.bounds) || !snapshot.bounds.length) {
+  function findReconciliationTargets(snapshot, cutLeftPx, cutRightPx, options) {
+    const settings = options || {};
+    const includePrevious = settings.includePrevious !== false;
+    const includeNext = settings.includeNext !== false;
+    const containerRect =
+      snapshot && snapshot.containerRect
+        ? snapshot.containerRect
+        : settings.containerRect || null;
+
+    if (!containerRect) {
       return null;
     }
 
+    const bounds = snapshot && Array.isArray(snapshot.bounds) ? snapshot.bounds : [];
     let previous = null;
     let next = null;
-    for (const entry of snapshot.bounds) {
-      if (entry.rightPx <= cutLeftPx + 8) {
-        previous = entry;
-      }
 
-      if (!next && entry.leftPx >= cutLeftPx - 8) {
-        next = entry;
+    if (includePrevious) {
+      for (const entry of bounds) {
+        if (entry.leftPx >= cutLeftPx - 1) {
+          continue;
+        }
+
+        if (!previous || entry.rightPx > previous.rightPx) {
+          previous = entry;
+        }
       }
     }
 
-    if (!previous || !next) {
-      return null;
+    if (includeNext) {
+      for (const entry of bounds) {
+        if (entry.rightPx <= cutRightPx + 1) {
+          continue;
+        }
+
+        next = entry;
+        break;
+      }
     }
 
     return {
-      containerRect: snapshot.containerRect,
+      containerRect,
       previous,
       next
     };
@@ -1117,6 +1136,9 @@
         await helper.sleep(80);
       }
 
+      const shouldTrimPrevious = Boolean(initialOverlapPlan.trimLeft || initialOverlapPlan.splitRequired);
+      const shouldTrimNext = Boolean(initialOverlapPlan.trimRight || initialOverlapPlan.splitRequired);
+
       const refreshedSnapshot =
         initialOverlapPlan.splitRequired || deleteTargets.length
           ? await waitForRegionRefresh(
@@ -1126,26 +1148,38 @@
           : collectRegionSnapshot(commitPlan.container);
 
       const overlapPlan = collectOverlapPlan(refreshedSnapshot, commitPlan.leftPx, commitPlan.rightPx);
-      if (!overlapPlan) {
+      if (
+        (shouldTrimPrevious || shouldTrimNext) &&
+        (!overlapPlan || !refreshedSnapshot)
+      ) {
         return false;
       }
 
-      const liveSnapshot = overlapPlan.splitRequired
-        ? findReconciliationTargets(refreshedSnapshot, commitPlan.leftPx)
-        : {
-          containerRect: refreshedSnapshot ? refreshedSnapshot.containerRect : null,
-          previous: overlapPlan.trimLeft,
-          next: overlapPlan.trimRight
-        };
+      const liveSnapshot = findReconciliationTargets(
+        refreshedSnapshot,
+        commitPlan.leftPx,
+        commitPlan.rightPx,
+        {
+          includePrevious: shouldTrimPrevious,
+          includeNext: shouldTrimNext,
+          containerRect: refreshedSnapshot
+            ? refreshedSnapshot.containerRect
+            : commitPlan.container.getBoundingClientRect()
+        }
+      );
 
       if (!liveSnapshot || !liveSnapshot.containerRect) {
+        return false;
+      }
+
+      if ((shouldTrimPrevious && !liveSnapshot.previous) || (shouldTrimNext && !liveSnapshot.next)) {
         return false;
       }
 
       const targetStartClientX = liveSnapshot.containerRect.left + commitPlan.leftPx;
       const targetEndClientX = liveSnapshot.containerRect.left + commitPlan.rightPx;
 
-      if (liveSnapshot.previous) {
+      if (shouldTrimPrevious && liveSnapshot.previous) {
         const previousRightHandle = getHandle(liveSnapshot.previous.region, 'right');
         if (!(previousRightHandle instanceof HTMLElement)) {
           return false;
@@ -1159,7 +1193,7 @@
         await helper.sleep(48);
       }
 
-      if (liveSnapshot.next) {
+      if (shouldTrimNext && liveSnapshot.next) {
         const nextLeftHandle = getHandle(liveSnapshot.next.region, 'left');
         if (!(nextLeftHandle instanceof HTMLElement)) {
           return false;
