@@ -17,8 +17,8 @@
       ],
       hotkeysHelpRows: [
         ['Esc', 'Toggle blur and restore cursor'],
-        ['Alt + Up', 'Focus previous segment'],
-        ['Alt + Down', 'Focus next segment'],
+        ['Alt + [ (Х)', 'Move text before caret to previous segment'],
+        ['Alt + ] (Ъ)', 'Move text after caret to next segment'],
         ['Alt + Shift + Up', 'Merge with previous segment'],
         ['Alt + Shift + Down', 'Merge with next segment'],
         ['Del', 'Delete current segment']
@@ -84,6 +84,47 @@
     }
 
     return element.innerText.replace(/\s+/g, ' ').trim();
+  };
+
+  helper.setEditableValue = function setEditableValue(element, value) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const nextValue = typeof value === 'string' ? value : String(value ?? '');
+    const prototype =
+      element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : element instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : null;
+    const setter = prototype
+      ? Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+      : null;
+
+    if (typeof setter === 'function') {
+      setter.call(element, nextValue);
+    } else if ('value' in element) {
+      element.value = nextValue;
+    } else {
+      return false;
+    }
+
+    element.dispatchEvent(
+      typeof InputEvent === 'function'
+        ? new InputEvent('input', {
+            bubbles: true,
+            cancelable: false,
+            data: null,
+            inputType: 'insertText'
+          })
+        : new Event('input', {
+            bubbles: true,
+            cancelable: false
+          })
+    );
+
+    return true;
   };
 
   helper.dispatchClick = function dispatchClick(element) {

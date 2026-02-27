@@ -16,6 +16,13 @@
     return row ? row.querySelector(helper.config.rowTextareaSelector) : null;
   };
 
+  helper.getActiveRowTextarea = function getActiveRowTextarea() {
+    const active = document.activeElement;
+    return active instanceof HTMLTextAreaElement && active.matches(helper.config.rowTextareaSelector)
+      ? active
+      : null;
+  };
+
   helper.getCurrentRow = function getCurrentRow() {
     const active = document.activeElement;
     if (active instanceof HTMLElement) {
@@ -237,6 +244,97 @@
     }
 
     return helper.focusRow(rows[nextIndex]);
+  };
+
+  helper.joinSegmentText = function joinSegmentText(left, right) {
+    const before = typeof left === 'string' ? left : String(left ?? '');
+    const after = typeof right === 'string' ? right : String(right ?? '');
+    if (!before) {
+      return after;
+    }
+    if (!after) {
+      return before;
+    }
+
+    if (/\s$/.test(before) || /^\s/.test(after)) {
+      return before + after;
+    }
+
+    return before + ' ' + after;
+  };
+
+  helper.moveTextToAdjacentSegment = function moveTextToAdjacentSegment(offset) {
+    const textarea = helper.getActiveRowTextarea();
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const row = textarea.closest('tr');
+    if (!(row instanceof HTMLElement)) {
+      return false;
+    }
+
+    const rows = helper.getTranscriptRows();
+    const currentIndex = rows.indexOf(row);
+    const targetIndex = currentIndex + offset;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= rows.length) {
+      return false;
+    }
+
+    const targetTextarea = helper.getRowTextarea(rows[targetIndex]);
+    if (!(targetTextarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const currentValue = textarea.value || '';
+    const targetValue = targetTextarea.value || '';
+    const selectionStart =
+      typeof textarea.selectionStart === 'number' ? textarea.selectionStart : currentValue.length;
+    const selectionEnd =
+      typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : selectionStart;
+
+    if (offset < 0) {
+      const splitIndex = Math.max(0, Math.min(currentValue.length, selectionStart));
+      const movedText = currentValue.slice(0, splitIndex).replace(/^\s+/, '').replace(/\s+$/, '');
+      if (!movedText) {
+        return false;
+      }
+
+      const nextCurrentValue = currentValue.slice(splitIndex).replace(/^\s+/, '');
+      const nextTargetValue = helper.joinSegmentText(targetValue, movedText);
+      if (!helper.setEditableValue(targetTextarea, nextTargetValue)) {
+        return false;
+      }
+      if (!helper.setEditableValue(textarea, nextCurrentValue)) {
+        return false;
+      }
+
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(0, 0);
+      helper.setCurrentRow(row);
+      return true;
+    }
+
+    const splitIndex = Math.max(0, Math.min(currentValue.length, selectionEnd));
+    const movedText = currentValue.slice(splitIndex).replace(/^\s+/, '').replace(/\s+$/, '');
+    if (!movedText) {
+      return false;
+    }
+
+    const nextCurrentValue = currentValue.slice(0, splitIndex).replace(/\s+$/, '');
+    const nextTargetValue = helper.joinSegmentText(movedText, targetValue);
+    if (!helper.setEditableValue(textarea, nextCurrentValue)) {
+      return false;
+    }
+    if (!helper.setEditableValue(targetTextarea, nextTargetValue)) {
+      return false;
+    }
+
+    const caret = nextCurrentValue.length;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(caret, caret);
+    helper.setCurrentRow(row);
+    return true;
   };
 
   helper.clearActiveFocus = function clearActiveFocus() {

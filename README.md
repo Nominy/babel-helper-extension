@@ -13,14 +13,14 @@ What this version adds:
   - `Alt + Drag` inside an existing waveform segment: create a temporary cut preview
   - `Enter`: commit the cut preview by replaying the native split gesture at both cut boundaries
   - `Esc`: cancel the cut preview, or toggle blur and restore focus when no preview exists
-  - `Alt+Up / Alt+Down`: move focus between transcript rows
+  - `Alt+[ / Alt+]` (same physical keys as `Alt+Х / Alt+Ъ` on RU layout): move text before / after the caret into the previous / next segment
   - `Alt+Shift+Up / Alt+Shift+Down`: merge with previous / next
   - `Del`: delete the current segment
 
 Implementation notes:
 - The extension does not inject buttons, panels, badges, or any other persistent visible interface.
 - The extension augments the existing Babel `Hotkeys` dialog when it opens so these custom shortcuts are visible in the platform's own help window.
-- The extension does not mutate transcript state directly.
+- The extension edits transcript textareas by dispatching native `input` events so React keeps the page state in sync.
 - The waveform magnifier is transient and non-interactive, so native region handles still receive pointer events while it is visible.
 - The cut preview only activates on `Alt + Drag`, so normal waveform clicks are left to the native player and segment controls.
 - The cut preview is temporary extension UI: `Esc` cancels it, and `Enter` commits it only when the preview spans at least 1 second. Shorter previews stay visible until you cancel or resize them.

@@ -42,10 +42,10 @@
     }
 
     let handled = false;
-    if (!event.shiftKey && event.key === 'ArrowUp') {
-      handled = helper.moveFocus(-1);
-    } else if (!event.shiftKey && event.key === 'ArrowDown') {
-      handled = helper.moveFocus(1);
+    if (!event.shiftKey && event.code === 'BracketLeft') {
+      handled = helper.moveTextToAdjacentSegment(-1);
+    } else if (!event.shiftKey && event.code === 'BracketRight') {
+      handled = helper.moveTextToAdjacentSegment(1);
     } else if (event.shiftKey && event.key === 'ArrowUp') {
       handled = true;
       void helper.runRowAction('mergePrevious');
