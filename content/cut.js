@@ -16,7 +16,8 @@
   helper.state.cutDraft = null;
   helper.state.cutPreview = null;
   helper.state.cutCommitPending = false;
-  helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a cut preview inside a segment']);
+  helper.state.cutLastContainer = null;
+  helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a cut preview across the waveform lane']);
   helper.config.hotkeysHelpRows.unshift(['Enter', 'Commit cut preview if it is at least 1 second']);
 
   function clamp(value, min, max) {
@@ -48,6 +49,53 @@
     }
 
     return total;
+  }
+
+  function parseSecondsLabel(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const secondsMatch = trimmed.match(/(-?\d+(?:\.\d+)?)\s*s\b/i);
+    if (secondsMatch) {
+      const numeric = Number(secondsMatch[1]);
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    return parseTimestamp(trimmed);
+  }
+
+  function parsePixels(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const match = value.match(/(-?\d+(?:\.\d+)?)px/i);
+    if (!match) {
+      return null;
+    }
+
+    const numeric = Number(match[1]);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function parseTranslateXPixels(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const match = value.match(/translateX\((-?\d+(?:\.\d+)?)px\)/i);
+    if (!match) {
+      return null;
+    }
+
+    const numeric = Number(match[1]);
+    return Number.isFinite(numeric) ? numeric : null;
   }
 
   function getRegionPartTokens(element) {
@@ -103,36 +151,278 @@
     return end - start;
   }
 
+  function getRegionTimeText(region, selector) {
+    if (!(region instanceof HTMLElement)) {
+      return '';
+    }
+
+    const tooltip = region.querySelector(selector);
+    return tooltip instanceof HTMLElement ? helper.normalizeText(tooltip) : '';
+  }
+
+  function getRowTimeLabels(row) {
+    if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
+      return null;
+    }
+
+    return {
+      startText: helper.normalizeText(row.children[2]),
+      endText: helper.normalizeText(row.children[3])
+    };
+  }
+
+  function findRowByTimeLabels(startText, endText) {
+    if (!startText || !endText) {
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    return (
+      rows.find((row) => {
+        const labels = getRowTimeLabels(row);
+        return labels && labels.startText === startText && labels.endText === endText;
+      }) || null
+    );
+  }
+
+  async function deleteRegionByTimeLabels(startText, endText) {
+    const row = findRowByTimeLabels(startText, endText);
+    if (!(row instanceof HTMLTableRowElement)) {
+      return false;
+    }
+
+    helper.setCurrentRow(row);
+    return helper.runRowAction('deleteSegment');
+  }
+
+  function getWaveformScope(container) {
+    const timelineSelector = '[part~="timeline-notch-primary"], [part~="timeline-notch-secondary"]';
+    let scope = container instanceof HTMLElement ? container : null;
+
+    while (scope instanceof HTMLElement) {
+      if (scope.querySelectorAll(timelineSelector).length >= 2) {
+        return scope;
+      }
+      scope = scope.parentElement;
+    }
+
+    const root = container && typeof container.getRootNode === 'function' ? container.getRootNode() : null;
+    if (root && typeof root.querySelectorAll === 'function' && root.querySelectorAll(timelineSelector).length >= 2) {
+      return root;
+    }
+
+    return root && typeof root.querySelector === 'function' ? root : null;
+  }
+
+  function getZoomSliderElement() {
+    const selector =
+      '[role="slider"][data-orientation="horizontal"][aria-valuemin="10"][aria-valuemax="2000"]';
+    const slider = document.querySelector(selector);
+    return slider instanceof HTMLElement ? slider : null;
+  }
+
+  function getZoomSliderSignature() {
+    const slider = getZoomSliderElement();
+    if (!(slider instanceof HTMLElement)) {
+      return '';
+    }
+
+    const numericValue = Number(slider.getAttribute('aria-valuenow'));
+    if (Number.isFinite(numericValue)) {
+      return 'slider:' + numericValue;
+    }
+
+    const tooltip = slider.querySelector('div');
+    const label = parseSecondsLabel(helper.normalizeText(tooltip));
+    if (Number.isFinite(label)) {
+      return 'slider-label:' + Math.round(label * 1000) / 1000;
+    }
+
+    return '';
+  }
+
+  function getWaveformWrapperElement(container) {
+    const scope = getWaveformScope(container);
+    if (!scope || typeof scope.querySelector !== 'function') {
+      return null;
+    }
+
+    const wrapper = scope.querySelector('[part="wrapper"]');
+    return wrapper instanceof HTMLElement ? wrapper : null;
+  }
+
+  function getWaveformWrapperWidth(container) {
+    const wrapper = getWaveformWrapperElement(container);
+    if (!(wrapper instanceof HTMLElement)) {
+      return null;
+    }
+
+    const styleWidth = parsePixels(wrapper.style.width || '');
+    if (Number.isFinite(styleWidth) && styleWidth > 0) {
+      return styleWidth;
+    }
+
+    const rect = wrapper.getBoundingClientRect();
+    return rect.width > 0 ? rect.width : null;
+  }
+
+  function getLaneTimelinePoints(container) {
+    const scope = getWaveformScope(container);
+    if (!scope || typeof scope.querySelectorAll !== 'function') {
+      return [];
+    }
+
+    const notchSelector = '[part~="timeline-notch-primary"], [part~="timeline-notch-secondary"]';
+    return Array.from(scope.querySelectorAll(notchSelector))
+      .map((notch) => {
+        if (!(notch instanceof HTMLElement)) {
+          return null;
+        }
+
+        const seconds = parseSecondsLabel(helper.normalizeText(notch));
+        const leftPx = parsePixels(notch.style.left || '');
+        if (!Number.isFinite(seconds) || !Number.isFinite(leftPx)) {
+          return null;
+        }
+
+        return {
+          seconds,
+          leftPx
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.leftPx - right.leftPx);
+  }
+
+  function getLaneZoomSignature(container) {
+    const zoomSliderSignature = getZoomSliderSignature();
+    if (zoomSliderSignature) {
+      return zoomSliderSignature;
+    }
+
+    const wrapperWidth = getWaveformWrapperWidth(container);
+    if (Number.isFinite(wrapperWidth) && wrapperWidth > 0) {
+      return 'wrapper:' + Math.round(wrapperWidth * 10) / 10;
+    }
+
+    const timeScale = getLaneTimeScale(container);
+    if (timeScale && Number.isFinite(timeScale.secondsPerPx) && timeScale.secondsPerPx > 0) {
+      return 'scale:' + Math.round(timeScale.secondsPerPx * 1000000) / 1000000;
+    }
+
+    const regionSecondsPerPx = getLaneSecondsPerPixelFromRegions(container);
+    if (Number.isFinite(regionSecondsPerPx) && regionSecondsPerPx > 0) {
+      return 'region-scale:' + Math.round(regionSecondsPerPx * 1000000) / 1000000;
+    }
+
+    return '';
+  }
+
+  function getLaneTimeScale(container) {
+    const scope = getWaveformScope(container);
+    if (!scope || typeof scope.querySelector !== 'function') {
+      return null;
+    }
+
+    const points = getLaneTimelinePoints(container);
+
+    if (points.length >= 2) {
+      const first = points[0];
+      const last = points[points.length - 1];
+      const dx = last.leftPx - first.leftPx;
+      const dt = last.seconds - first.seconds;
+      if (dx !== 0 && dt > 0) {
+        const secondsPerPx = dt / dx;
+        return {
+          secondsPerPx,
+          offsetSeconds: first.seconds - first.leftPx * secondsPerPx
+        };
+      }
+    }
+
+    const hover = typeof scope.querySelector === 'function' ? scope.querySelector('[part="hover"]') : null;
+    const hoverLabel =
+      hover instanceof HTMLElement ? hover.querySelector('[part="hover-label"]') : null;
+    const hoverSeconds = parseSecondsLabel(helper.normalizeText(hoverLabel));
+    const hoverPx =
+      hover instanceof HTMLElement
+        ? parseTranslateXPixels(hover.style.transform || '')
+        : null;
+
+    if (Number.isFinite(hoverSeconds) && Number.isFinite(hoverPx)) {
+      const secondsPerPixel = getLaneSecondsPerPixelFromRegions(container);
+      if (Number.isFinite(secondsPerPixel) && secondsPerPixel > 0) {
+        return {
+          secondsPerPx: secondsPerPixel,
+          offsetSeconds: hoverSeconds - hoverPx * secondsPerPixel
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function getLaneSecondsPerPixelFromRegions(container) {
+    const ratios = getRegionElements(container)
+      .map((region) => {
+        const start = parseTimestamp(getRegionTimeText(region, '.wavesurfer-region-tooltip-start'));
+        const end = parseTimestamp(getRegionTimeText(region, '.wavesurfer-region-tooltip-end'));
+        const width = region.getBoundingClientRect().width;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || width <= 0) {
+          return null;
+        }
+
+        return (end - start) / width;
+      })
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => left - right);
+
+    if (!ratios.length) {
+      return null;
+    }
+
+    const middle = Math.floor(ratios.length / 2);
+    if (ratios.length % 2 === 1) {
+      return ratios[middle];
+    }
+
+    return (ratios[middle - 1] + ratios[middle]) / 2;
+  }
+
   function getPreviewDurationSeconds(preview) {
     if (!preview) {
       return null;
     }
 
-    const regionWidth = preview.regionRightPx - preview.regionLeftPx;
-    if (regionWidth <= 0) {
+    const previewWidth = preview.rightPx - preview.leftPx;
+    if (previewWidth <= 0) {
       return null;
     }
 
-    let sourceDuration = null;
-    if (preview.sourceRegion instanceof HTMLElement) {
-      const startTooltip = preview.sourceRegion.querySelector('.wavesurfer-region-tooltip-start');
-      const endTooltip = preview.sourceRegion.querySelector('.wavesurfer-region-tooltip-end');
-      const start = parseTimestamp(startTooltip ? startTooltip.textContent : '');
-      const end = parseTimestamp(endTooltip ? endTooltip.textContent : '');
-      if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-        sourceDuration = end - start;
+    const laneTimeScale = preview.timeScale || getLaneTimeScale(preview.container);
+    if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
+      const startSeconds = laneTimeScale.offsetSeconds + preview.leftPx * laneTimeScale.secondsPerPx;
+      const endSeconds = laneTimeScale.offsetSeconds + preview.rightPx * laneTimeScale.secondsPerPx;
+      const duration = endSeconds - startSeconds;
+      if (duration > 0) {
+        return duration;
       }
     }
 
-    if (!Number.isFinite(sourceDuration)) {
-      sourceDuration = parseRowDurationSeconds();
+    const laneSecondsPerPixel = getLaneSecondsPerPixelFromRegions(preview.container);
+    if (Number.isFinite(laneSecondsPerPixel) && laneSecondsPerPixel > 0) {
+      return previewWidth * laneSecondsPerPixel;
     }
 
-    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) {
-      return null;
+    if (preview.sourceRegion instanceof HTMLElement && preview.sourceRegion.isConnected) {
+      const sourceDuration = parseRowDurationSeconds();
+      const sourceWidth = preview.sourceRegion.getBoundingClientRect().width;
+      if (Number.isFinite(sourceDuration) && sourceDuration > 0 && sourceWidth > 0) {
+        return sourceDuration * (previewWidth / sourceWidth);
+      }
     }
 
-    return sourceDuration * ((preview.rightPx - preview.leftPx) / regionWidth);
+    return null;
   }
 
   function updatePreviewElement() {
@@ -164,8 +454,18 @@
     helper.state.cutDraft = null;
   }
 
+  function rememberCutContainer(container) {
+    if (container instanceof HTMLElement && container.isConnected) {
+      helper.state.cutLastContainer = container;
+    }
+  }
+
   helper.clearCutPreview = function clearCutPreview() {
     const preview = helper.state.cutPreview;
+    if (preview && preview.zoomObserver) {
+      preview.zoomObserver.disconnect();
+    }
+
     if (preview && preview.element && preview.element.isConnected) {
       preview.element.remove();
     }
@@ -174,6 +474,49 @@
     helper.state.cutCommitPending = false;
     clearCutDraft();
   };
+
+  function cancelCutPreviewIfZoomChanged() {
+    const preview = helper.state.cutPreview;
+    if (!preview || !preview.zoomSignature || !(preview.container instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (getLaneZoomSignature(preview.container) === preview.zoomSignature) {
+      return false;
+    }
+
+    helper.clearCutPreview();
+    return true;
+  }
+
+  function startCutPreviewZoomWatcher(preview) {
+    if (!preview || !(preview.container instanceof HTMLElement)) {
+      return;
+    }
+
+    const zoomSlider = getZoomSliderElement();
+    if (!(zoomSlider instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      const activePreview = helper.state.cutPreview;
+      if (!activePreview || activePreview !== preview || helper.state.cutCommitPending) {
+        return;
+      }
+
+      if (activePreview.zoomSignature && getLaneZoomSignature(activePreview.container) !== activePreview.zoomSignature) {
+        helper.clearCutPreview();
+      }
+    });
+
+    observer.observe(zoomSlider, {
+      attributes: true,
+      attributeFilter: ['aria-valuenow', 'style']
+    });
+
+    preview.zoomObserver = observer;
+  }
 
   function createPreviewFromDraft(draft, clientX) {
     const localX = clamp(clientX - draft.containerRect.left, draft.regionLeftPx, draft.regionRightPx);
@@ -227,10 +570,31 @@
     label.style.pointerEvents = 'none';
     label.style.whiteSpace = 'nowrap';
 
+    const modeBadge = document.createElement('div');
+    modeBadge.setAttribute('data-babel-helper-cut-mode', 'true');
+    modeBadge.textContent = 'Cut Mode';
+    modeBadge.style.position = 'absolute';
+    modeBadge.style.left = '6px';
+    modeBadge.style.top = '4px';
+    modeBadge.style.padding = '2px 6px';
+    modeBadge.style.borderRadius = '999px';
+    modeBadge.style.fontSize = '10px';
+    modeBadge.style.fontWeight = '700';
+    modeBadge.style.fontFamily = 'ui-monospace, SFMono-Regular, Consolas, monospace';
+    modeBadge.style.color = '#e0f2fe';
+    modeBadge.style.background = 'rgba(3, 105, 161, 0.88)';
+    modeBadge.style.pointerEvents = 'none';
+    modeBadge.style.whiteSpace = 'nowrap';
+
     preview.appendChild(leftHandle);
     preview.appendChild(rightHandle);
     preview.appendChild(label);
+    preview.appendChild(modeBadge);
     draft.container.appendChild(preview);
+    rememberCutContainer(draft.container);
+
+    const timeScale = getLaneTimeScale(draft.container);
+    const zoomSignature = getLaneZoomSignature(draft.container);
 
     helper.state.cutPreview = {
       pointerId: draft.pointerId,
@@ -242,6 +606,8 @@
       leftPx,
       rightPx,
       element: preview,
+      timeScale,
+      zoomSignature,
       dragMode: 'create',
       dragStartClientX: draft.startClientX,
       originLeftPx: leftPx,
@@ -249,6 +615,7 @@
     };
 
     clearCutDraft();
+    startCutPreviewZoomWatcher(helper.state.cutPreview);
     updatePreviewElement();
   }
 
@@ -354,6 +721,7 @@
 
     const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
     let sourceRegion = null;
+    let container = null;
 
     for (const node of path) {
       if (!(node instanceof HTMLElement)) {
@@ -370,27 +738,43 @@
 
       if (!sourceRegion && isRegionBody(node)) {
         sourceRegion = node;
+        if (node.parentElement instanceof HTMLElement) {
+          container = node.parentElement;
+        }
+      }
+
+      if (!container && getRegionElements(node).length) {
+        container = node;
+      }
+
+      if (
+        !container &&
+        helper.state.cutLastContainer instanceof HTMLElement &&
+        (node === helper.state.cutLastContainer || helper.state.cutLastContainer.contains(node))
+      ) {
+        container = helper.state.cutLastContainer;
       }
     }
 
-    if (!(sourceRegion instanceof HTMLElement) || !(sourceRegion.parentElement instanceof HTMLElement)) {
+    if (!(container instanceof HTMLElement)) {
       return null;
     }
 
-    const regionRect = sourceRegion.getBoundingClientRect();
-    const containerRect = sourceRegion.parentElement.getBoundingClientRect();
-    if (regionRect.width <= CUT_PREVIEW_MIN_WIDTH || containerRect.width <= 0) {
+    const containerRect = container.getBoundingClientRect();
+    if (containerRect.width <= 0) {
       return null;
     }
+
+    rememberCutContainer(container);
 
     return {
       pointerId: typeof event.pointerId === 'number' ? event.pointerId : 1,
       sourceRegion,
-      container: sourceRegion.parentElement,
+      container,
       containerRect,
-      regionLeftPx: clamp(regionRect.left - containerRect.left, 0, containerRect.width),
-      regionRightPx: clamp(regionRect.right - containerRect.left, 0, containerRect.width),
-      startClientX: clamp(event.clientX, regionRect.left, regionRect.right)
+      regionLeftPx: 0,
+      regionRightPx: containerRect.width,
+      startClientX: clamp(event.clientX, containerRect.left, containerRect.right)
     };
   }
 
@@ -435,7 +819,9 @@
       region,
       rect,
       leftPx: rect.left - containerRect.left,
-      rightPx: rect.right - containerRect.left
+      rightPx: rect.right - containerRect.left,
+      startText: getRegionTimeText(region, '.wavesurfer-region-tooltip-start'),
+      endText: getRegionTimeText(region, '.wavesurfer-region-tooltip-end')
     };
   }
 
@@ -485,6 +871,55 @@
     }, 900, 40);
 
     return updated || collectRegionSnapshot(container);
+  }
+
+  function collectOverlapPlan(snapshot, cutLeftPx, cutRightPx) {
+    if (!snapshot || !Array.isArray(snapshot.bounds) || !snapshot.bounds.length) {
+      return null;
+    }
+
+    const tolerance = 1;
+    const overlapping = snapshot.bounds.filter((entry) => entry.rightPx > cutLeftPx + tolerance && entry.leftPx < cutRightPx - tolerance);
+    if (!overlapping.length) {
+      return {
+        overlapping: [],
+        toDelete: [],
+        trimLeft: null,
+        trimRight: null,
+        splitRequired: false,
+        splitRegion: null
+      };
+    }
+
+    let trimLeft = null;
+    let trimRight = null;
+    let splitRegion = null;
+    const toDelete = [];
+
+    for (const entry of overlapping) {
+      const coversLeft = entry.leftPx < cutLeftPx - tolerance && entry.rightPx > cutLeftPx + tolerance;
+      const coversRight = entry.leftPx < cutRightPx - tolerance && entry.rightPx > cutRightPx + tolerance;
+      const fullyInside = entry.leftPx >= cutLeftPx - tolerance && entry.rightPx <= cutRightPx + tolerance;
+
+      if (coversLeft && coversRight) {
+        splitRegion = entry;
+      } else if (coversLeft) {
+        trimLeft = entry;
+      } else if (coversRight) {
+        trimRight = entry;
+      } else if (fullyInside) {
+        toDelete.push(entry);
+      }
+    }
+
+    return {
+      overlapping,
+      toDelete,
+      trimLeft,
+      trimRight,
+      splitRequired: Boolean(splitRegion),
+      splitRegion
+    };
   }
 
   function findReconciliationTargets(snapshot, cutLeftPx) {
@@ -620,13 +1055,16 @@
       return false;
     }
 
+    if (cancelCutPreviewIfZoomChanged()) {
+      return false;
+    }
+
     const duration = getPreviewDurationSeconds(preview);
     if (Number.isFinite(duration) && duration < CUT_PREVIEW_MIN_SECONDS) {
       return false;
     }
 
     const commitPlan = {
-      sourceRegion: preview.sourceRegion,
       container: preview.container,
       containerRect:
         preview.container instanceof HTMLElement
@@ -636,14 +1074,14 @@
       rightPx: preview.rightPx
     };
 
-    const target = commitPlan.sourceRegion;
     const containerRect = commitPlan.containerRect;
-    if (!(target instanceof HTMLElement) || !target.isConnected || containerRect.width <= 0) {
+    if (!(commitPlan.container instanceof HTMLElement) || containerRect.width <= 0) {
       return false;
     }
 
     const beforeSnapshot = collectRegionSnapshot(commitPlan.container);
-    if (!beforeSnapshot) {
+    const initialOverlapPlan = collectOverlapPlan(beforeSnapshot, commitPlan.leftPx, commitPlan.rightPx);
+    if (!beforeSnapshot || !initialOverlapPlan || !initialOverlapPlan.overlapping.length) {
       return false;
     }
 
@@ -657,39 +1095,80 @@
     helper.state.cutCommitPending = true;
 
     try {
-      const splitClientX = containerRect.left + commitPlan.leftPx;
-      const splitClientY = containerRect.top + containerRect.height / 2;
-      dispatchSplitClick(target, splitClientX, splitClientY);
+      const liveContainerRect = commitPlan.container.getBoundingClientRect();
 
-      const refreshedSnapshot = await waitForRegionRefresh(
-        commitPlan.container,
-        getSnapshotSignature(beforeSnapshot)
-      );
-      const neighbors = findReconciliationTargets(refreshedSnapshot, commitPlan.leftPx);
-      if (!neighbors) {
+      if (initialOverlapPlan.splitRequired) {
+        const splitClientX = liveContainerRect.left + commitPlan.leftPx;
+        const splitClientY = liveContainerRect.top + liveContainerRect.height / 2;
+        const splitTarget = initialOverlapPlan.splitRegion ? initialOverlapPlan.splitRegion.region : null;
+        if (!(splitTarget instanceof HTMLElement) || !splitTarget.isConnected) {
+          return false;
+        }
+
+        dispatchSplitClick(splitTarget, splitClientX, splitClientY);
+      }
+
+      const deleteTargets = initialOverlapPlan.toDelete.slice();
+      for (const entry of deleteTargets) {
+        const deleted = await deleteRegionByTimeLabels(entry.startText, entry.endText);
+        if (!deleted) {
+          return false;
+        }
+        await helper.sleep(80);
+      }
+
+      const refreshedSnapshot =
+        initialOverlapPlan.splitRequired || deleteTargets.length
+          ? await waitForRegionRefresh(
+            commitPlan.container,
+            getSnapshotSignature(beforeSnapshot)
+          )
+          : collectRegionSnapshot(commitPlan.container);
+
+      const overlapPlan = collectOverlapPlan(refreshedSnapshot, commitPlan.leftPx, commitPlan.rightPx);
+      if (!overlapPlan) {
         return false;
       }
 
-      const previousRightHandle = getHandle(neighbors.previous.region, 'right');
-      const nextLeftHandle = getHandle(neighbors.next.region, 'left');
-      if (!(previousRightHandle instanceof HTMLElement) || !(nextLeftHandle instanceof HTMLElement)) {
+      const liveSnapshot = overlapPlan.splitRequired
+        ? findReconciliationTargets(refreshedSnapshot, commitPlan.leftPx)
+        : {
+          containerRect: refreshedSnapshot ? refreshedSnapshot.containerRect : null,
+          previous: overlapPlan.trimLeft,
+          next: overlapPlan.trimRight
+        };
+
+      if (!liveSnapshot || !liveSnapshot.containerRect) {
         return false;
       }
 
-      const nextContainerRect = neighbors.containerRect;
-      const targetStartClientX = nextContainerRect.left + commitPlan.leftPx;
-      const targetEndClientX = nextContainerRect.left + commitPlan.rightPx;
+      const targetStartClientX = liveSnapshot.containerRect.left + commitPlan.leftPx;
+      const targetEndClientX = liveSnapshot.containerRect.left + commitPlan.rightPx;
 
-      const movedPrevious = await dragHandleToClientX(previousRightHandle, targetStartClientX);
-      if (!movedPrevious) {
-        return false;
+      if (liveSnapshot.previous) {
+        const previousRightHandle = getHandle(liveSnapshot.previous.region, 'right');
+        if (!(previousRightHandle instanceof HTMLElement)) {
+          return false;
+        }
+
+        const movedPrevious = await dragHandleToClientX(previousRightHandle, targetStartClientX);
+        if (!movedPrevious) {
+          return false;
+        }
+
+        await helper.sleep(48);
       }
 
-      await helper.sleep(48);
+      if (liveSnapshot.next) {
+        const nextLeftHandle = getHandle(liveSnapshot.next.region, 'left');
+        if (!(nextLeftHandle instanceof HTMLElement)) {
+          return false;
+        }
 
-      const movedNext = await dragHandleToClientX(nextLeftHandle, targetEndClientX);
-      if (!movedNext) {
-        return false;
+        const movedNext = await dragHandleToClientX(nextLeftHandle, targetEndClientX);
+        if (!movedNext) {
+          return false;
+        }
       }
 
       helper.clearCutPreview();
@@ -707,6 +1186,12 @@
   helper.handleCutPreviewKeydown = function handleCutPreviewKeydown(event) {
     if (!helper.state.cutPreview) {
       return false;
+    }
+
+    if (cancelCutPreviewIfZoomChanged()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
     }
 
     if (helper.state.cutCommitPending) {
