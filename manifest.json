@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Babel Audio Workflow Helper",
+  "version": "0.1.0",
+  "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://dashboard.babel.audio/transcription*",
+        "https://dashboard.babel.audio/transcription/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
