@@ -22,7 +22,7 @@
         ['Alt + Shift + Up', 'Merge with previous segment'],
         ['Alt + Shift + Down', 'Merge with next segment'],
         ['Del', 'Delete current segment'],
-        ['Ctrl + D', 'Delete current segment when not typing']
+        ['D', 'Delete current segment when not typing']
       ],
       actionPatterns: {
         deleteSegment: [

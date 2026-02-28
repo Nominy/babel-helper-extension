@@ -51,7 +51,7 @@
     }
 
     if (
-      event.ctrlKey &&
+      !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
       !event.shiftKey &&
