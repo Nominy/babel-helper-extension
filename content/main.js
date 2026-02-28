@@ -6,6 +6,21 @@
 
   helper.__mainInitialized = true;
 
+  function tryDeleteCurrentRow(event) {
+    const row = helper.getCurrentRow({ allowFallback: false });
+    if (!row) {
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    void helper.runRowAction('deleteSegment', {
+      row,
+      allowFallback: false
+    });
+    return true;
+  }
+
   helper.handleKeydown = function handleKeydown(event) {
     if (event.defaultPrevented) {
       return;
@@ -31,18 +46,21 @@
       !event.shiftKey &&
       helper.getCurrentRow({ allowFallback: false })
     ) {
-      const row = helper.getCurrentRow({ allowFallback: false });
-      if (!row) {
+      tryDeleteCurrentRow(event);
+      return;
+    }
+
+    if (
+      event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.code === 'KeyD' &&
+      !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)
+    ) {
+      if (tryDeleteCurrentRow(event)) {
         return;
       }
-
-      event.preventDefault();
-      event.stopPropagation();
-      void helper.runRowAction('deleteSegment', {
-        row,
-        allowFallback: false
-      });
-      return;
     }
 
     if (event.ctrlKey || event.metaKey || !event.altKey) {
