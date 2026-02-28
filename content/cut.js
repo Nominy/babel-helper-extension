@@ -59,6 +59,22 @@
     return 'selection-loop-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   }
 
+  function ensureSelectionHostMarker(container) {
+    const host = getWaveformHostFromContainer(container);
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+
+    const existing = host.getAttribute(SELECTION_LOOP_HOST_ATTR);
+    if (existing) {
+      return existing;
+    }
+
+    const marker = nextLoopMarker();
+    host.setAttribute(SELECTION_LOOP_HOST_ATTR, marker);
+    return marker;
+  }
+
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
   }
@@ -577,15 +593,82 @@
     return (ratios[middle - 1] + ratios[middle]) / 2;
   }
 
-  function getSnapshotTimeEntries(snapshot) {
+  function getWaveformRegionEntries(entry) {
+    const wavesurfer =
+      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    if (!wavesurfer || !wavesurfer.plugins || typeof wavesurfer.plugins !== 'object') {
+      return [];
+    }
+
+    const regionPlugin = Object.values(wavesurfer.plugins).find(
+      (plugin) =>
+        plugin &&
+        (typeof plugin.getRegions === 'function' ||
+          (plugin.regions && typeof plugin.regions === 'object'))
+    );
+    if (!regionPlugin) {
+      return [];
+    }
+
+    const sourceRegions =
+      typeof regionPlugin.getRegions === 'function'
+        ? regionPlugin.getRegions()
+        : Object.values(regionPlugin.regions || {});
+    if (!Array.isArray(sourceRegions)) {
+      return [];
+    }
+
+    return sourceRegions
+      .map((region) => {
+        const startSeconds = Number(region && region.start);
+        const endSeconds = Number(region && region.end);
+        const element = region && region.element instanceof HTMLElement ? region.element : null;
+        if (
+          !(element instanceof HTMLElement) ||
+          !Number.isFinite(startSeconds) ||
+          !Number.isFinite(endSeconds) ||
+          !(endSeconds > startSeconds)
+        ) {
+          return null;
+        }
+
+        return {
+          element,
+          startSeconds,
+          endSeconds
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function getSnapshotTimeEntries(snapshot, options) {
     if (!snapshot || !Array.isArray(snapshot.bounds)) {
       return [];
     }
 
+    const settings = options || {};
+    const runtimeEntries = Array.isArray(settings.runtimeEntries) ? settings.runtimeEntries : [];
+    const runtimeByElement = new Map();
+    for (const runtimeEntry of runtimeEntries) {
+      if (
+        runtimeEntry &&
+        runtimeEntry.element instanceof HTMLElement &&
+        Number.isFinite(runtimeEntry.startSeconds) &&
+        Number.isFinite(runtimeEntry.endSeconds)
+      ) {
+        runtimeByElement.set(runtimeEntry.element, runtimeEntry);
+      }
+    }
+
     return snapshot.bounds
       .map((entry) => {
-        const startSeconds = parseTimeValue(entry.startText);
-        const endSeconds = parseTimeValue(entry.endText);
+        const runtimeEntry = runtimeByElement.get(entry.region);
+        const startSeconds = runtimeEntry
+          ? runtimeEntry.startSeconds
+          : parseTimeValue(entry.startText);
+        const endSeconds = runtimeEntry
+          ? runtimeEntry.endSeconds
+          : parseTimeValue(entry.endText);
         const widthPx = entry.rightPx - entry.leftPx;
         if (
           !Number.isFinite(startSeconds) ||
@@ -660,30 +743,14 @@
       return CUT_PREVIEW_SAFETY_MIN_SECONDS;
     }
 
-    const snapshot = collectRegionSnapshot(preview.container);
-    const entries = getSnapshotTimeEntries(snapshot);
-    if (!entries.length) {
-      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
-    }
-
-    const relevant = entries.filter(
-      (entry) => entry.rightPx >= preview.leftPx - 1 && entry.leftPx <= preview.rightPx + 1
-    );
-    const source = relevant.length ? relevant : entries;
-    let maxSecondsPerPx = 0;
-
-    for (const entry of source) {
-      if (Number.isFinite(entry.secondsPerPx) && entry.secondsPerPx > maxSecondsPerPx) {
-        maxSecondsPerPx = entry.secondsPerPx;
-      }
-    }
-
-    if (!(maxSecondsPerPx > 0)) {
+    const waveformEntry = getWaveformEntryForContainer(preview.container);
+    const pixelsPerSecond = getWaveformPixelsPerSecond(waveformEntry, preview.container);
+    if (!(Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0)) {
       return CUT_PREVIEW_SAFETY_MIN_SECONDS;
     }
 
     return clamp(
-      maxSecondsPerPx * 2,
+      2 / pixelsPerSecond,
       CUT_PREVIEW_SAFETY_MIN_SECONDS,
       CUT_PREVIEW_SAFETY_MAX_SECONDS
     );
@@ -708,71 +775,84 @@
   }
 
   function getPreviewTimeRange(preview) {
-    if (!preview) {
+    if (
+      !preview ||
+      !preview.timeRange ||
+      !Number.isFinite(preview.timeRange.startSeconds) ||
+      !Number.isFinite(preview.timeRange.endSeconds) ||
+      !(preview.timeRange.endSeconds > preview.timeRange.startSeconds)
+    ) {
+      if (preview && !preview.timeRangeRequest) {
+        void refreshPreviewTimeRange(preview);
+      }
       return null;
     }
 
-    const previewWidth = preview.rightPx - preview.leftPx;
-    if (previewWidth <= 0) {
+    return preview.timeRange;
+  }
+
+  async function refreshPreviewTimeRange(preview, options) {
+    if (!preview || helper.state.cutPreview !== preview) {
       return null;
     }
 
-    const snapshot = collectRegionSnapshot(preview.container);
-    const snapshotEntries = getSnapshotTimeEntries(snapshot);
-    if (snapshotEntries.length) {
-      const startSeconds = projectSelectionXToSeconds(snapshotEntries, preview.leftPx);
-      const endSeconds = projectSelectionXToSeconds(snapshotEntries, preview.rightPx);
-      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
-        return {
-          startSeconds,
-          endSeconds
+    const settings = options || {};
+    if (preview.timeRangeRequest && !settings.force) {
+      return preview.timeRangeRequest;
+    }
+
+    const hostMarker =
+      preview.hostMarker ||
+      ensureSelectionHostMarker(preview.container);
+    if (!hostMarker) {
+      preview.timeRange = null;
+      return null;
+    }
+
+    preview.hostMarker = hostMarker;
+    const request = callSelectionBridge('selection-time-range', {
+      hostMarker,
+      leftPx: preview.leftPx,
+      rightPx: preview.rightPx
+    }).then((result) => {
+      if (preview.timeRangeRequest !== request) {
+        return preview.timeRange;
+      }
+
+      preview.timeRangeRequest = null;
+      if (
+        result &&
+        result.ok &&
+        Number.isFinite(result.startSeconds) &&
+        Number.isFinite(result.endSeconds) &&
+        result.endSeconds > result.startSeconds
+      ) {
+        preview.timeRange = {
+          startSeconds: result.startSeconds,
+          endSeconds: result.endSeconds
         };
+      } else {
+        preview.timeRange = null;
       }
+
+      if (helper.state.cutPreview === preview) {
+        updatePreviewElement();
+      }
+
+      return preview.timeRange;
+    });
+
+    preview.timeRangeRequest = request;
+    return request;
+  }
+
+  async function ensurePreviewTimeRange(preview) {
+    const cached = getPreviewTimeRange(preview);
+    if (cached) {
+      return cached;
     }
 
-    const waveformEntry = getWaveformEntryForContainer(preview.container);
-    const wavesurfer =
-      waveformEntry && typeof waveformEntry === 'object' ? waveformEntry.wavesurfer : null;
-    if (wavesurfer && typeof wavesurfer === 'object') {
-      const pixelsPerSecond = getWaveformPixelsPerSecond(waveformEntry, preview.container);
-      const scrollPx = getWaveformScrollLeft(waveformEntry, preview.container);
-      if (Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0) {
-        const startSeconds = (scrollPx + preview.leftPx) / pixelsPerSecond;
-        const endSeconds = (scrollPx + preview.rightPx) / pixelsPerSecond;
-        if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
-          return {
-            startSeconds,
-            endSeconds
-          };
-        }
-      }
-    }
-
-    const laneTimeScale = preview.timeScale || getLaneTimeScale(preview.container);
-    if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
-      const startSeconds = laneTimeScale.offsetSeconds + preview.leftPx * laneTimeScale.secondsPerPx;
-      const endSeconds = laneTimeScale.offsetSeconds + preview.rightPx * laneTimeScale.secondsPerPx;
-      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
-        return {
-          startSeconds,
-          endSeconds
-        };
-      }
-    }
-
-    const laneSecondsPerPixel = getLaneSecondsPerPixelFromRegions(preview.container);
-    if (Number.isFinite(laneSecondsPerPixel) && laneSecondsPerPixel > 0) {
-      const startSeconds = preview.leftPx * laneSecondsPerPixel;
-      const endSeconds = preview.rightPx * laneSecondsPerPixel;
-      if (endSeconds > startSeconds) {
-        return {
-          startSeconds,
-          endSeconds
-        };
-      }
-    }
-
-    return null;
+    return (await refreshPreviewTimeRange(preview, { force: true })) || null;
   }
 
   function getSelectionAudioElement() {
@@ -1057,18 +1137,21 @@
   function getWaveformPixelsPerSecond(entry, container) {
     const wavesurfer =
       entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+    const renderer =
+      wavesurfer && wavesurfer.renderer && typeof wavesurfer.renderer === 'object'
+        ? wavesurfer.renderer
+        : null;
+    const rendererWrapper =
+      renderer && renderer.wrapper instanceof HTMLElement ? renderer.wrapper : null;
     const duration = getWaveformDurationSeconds(wavesurfer);
-    if (!(duration > 0)) {
-      return 0;
-    }
-
-    const wrapper = getWaveformWrapperForEntry(entry, container);
-    const wrapperWidth =
-      wrapper instanceof HTMLElement
-        ? parsePixels(wrapper.style.width || '') || wrapper.getBoundingClientRect().width
-        : 0;
-    if (Number.isFinite(wrapperWidth) && wrapperWidth > 0) {
-      return wrapperWidth / duration;
+    const fullWidth =
+      rendererWrapper instanceof HTMLElement
+        ? Number(rendererWrapper.scrollWidth) ||
+          parsePixels(rendererWrapper.style.width || '') ||
+          Number(rendererWrapper.clientWidth)
+        : NaN;
+    if (Number.isFinite(fullWidth) && fullWidth > 0 && duration > 0) {
+      return fullWidth / duration;
     }
 
     const optionValue = Number(
@@ -1076,18 +1159,14 @@
         ? wavesurfer.options.minPxPerSec
         : NaN
     );
-    return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
+    if (Number.isFinite(optionValue) && optionValue > 0) {
+      return optionValue;
+    }
+
+    return 0;
   }
 
   function getWaveformScrollLeft(entry, container) {
-    const scroll = getWaveformScrollElementForEntry(entry, container);
-    if (scroll instanceof HTMLElement) {
-      const scrollLeft = Number(scroll.scrollLeft);
-      if (Number.isFinite(scrollLeft) && scrollLeft >= 0) {
-        return scrollLeft;
-      }
-    }
-
     const wavesurfer =
       entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
     const direct =
@@ -1221,10 +1300,17 @@
       });
     }
 
+    const activePreview = helper.state.cutPreview;
+    const previewOwnsMarker =
+      activePreview &&
+      activePreview.hostMarker &&
+      activePreview.hostMarker === loop.hostMarker;
+
     if (
       loop.host instanceof HTMLElement &&
       loop.hostMarker &&
-      loop.host.getAttribute(SELECTION_LOOP_HOST_ATTR) === loop.hostMarker
+      loop.host.getAttribute(SELECTION_LOOP_HOST_ATTR) === loop.hostMarker &&
+      !previewOwnsMarker
     ) {
       loop.host.removeAttribute(SELECTION_LOOP_HOST_ATTR);
     }
@@ -1243,6 +1329,16 @@
       preview.element.remove();
     }
 
+    if (preview && preview.hostMarker) {
+      const host = getWaveformHostFromContainer(preview.container);
+      if (
+        host instanceof HTMLElement &&
+        host.getAttribute(SELECTION_LOOP_HOST_ATTR) === preview.hostMarker
+      ) {
+        host.removeAttribute(SELECTION_LOOP_HOST_ATTR);
+      }
+    }
+
     helper.state.cutPreview = null;
     helper.state.cutCommitPending = false;
     clearCutDraft();
@@ -1255,7 +1351,7 @@
       return false;
     }
 
-    const timeRange = getPreviewTimeRange(preview);
+    const timeRange = await ensurePreviewTimeRange(preview);
     if (!timeRange) {
       setSelectionLoopDebug('no-time-range');
       return false;
@@ -1287,8 +1383,13 @@
 
     const host = getWaveformHostFromContainer(preview.container);
     if (host instanceof HTMLElement) {
-      const hostMarker = nextLoopMarker();
-      host.setAttribute(SELECTION_LOOP_HOST_ATTR, hostMarker);
+      const hostMarker =
+        preview.hostMarker ||
+        ensureSelectionHostMarker(preview.container);
+      if (!hostMarker) {
+        return false;
+      }
+      preview.hostMarker = hostMarker;
       const bridgeResult = await callSelectionBridge('loop-start', {
         hostMarker,
         startSeconds: timeRange.startSeconds,
@@ -1311,7 +1412,6 @@
         return true;
       }
 
-      host.removeAttribute(SELECTION_LOOP_HOST_ATTR);
       if (bridgeResult && bridgeResult.reason) {
         setSelectionLoopDebug('bridge-' + bridgeResult.reason);
       } else {
@@ -1545,6 +1645,7 @@
 
     const timeScale = getLaneTimeScale(draft.container);
     const zoomSignature = getLaneZoomSignature(draft.container);
+    const hostMarker = ensureSelectionHostMarker(draft.container);
 
     helper.state.cutPreview = {
       pointerId: draft.pointerId,
@@ -1558,6 +1659,9 @@
       element: preview,
       timeScale,
       zoomSignature,
+      hostMarker,
+      timeRange: null,
+      timeRangeRequest: null,
       dragMode: 'create',
       dragStartClientX: draft.startClientX,
       originLeftPx: leftPx,
@@ -1607,6 +1711,7 @@
     }
 
     const dx = event.clientX - preview.dragStartClientX;
+    preview.timeRange = null;
     const minWidth = CUT_PREVIEW_MIN_WIDTH;
     if (preview.dragMode === 'create') {
       const currentX = clamp(
@@ -2366,10 +2471,17 @@
       return false;
     }
 
-    const duration = getPreviewDurationSeconds(preview);
+    const timeRange = await ensurePreviewTimeRange(preview);
+    const duration =
+      timeRange &&
+      Number.isFinite(timeRange.startSeconds) &&
+      Number.isFinite(timeRange.endSeconds) &&
+      timeRange.endSeconds > timeRange.startSeconds
+        ? timeRange.endSeconds - timeRange.startSeconds
+        : null;
     const safetyMargin = getPreviewCommitSafetySeconds(preview);
     const requiredDuration = CUT_PREVIEW_MIN_SECONDS + safetyMargin;
-    if (Number.isFinite(duration) && duration < requiredDuration) {
+    if (!Number.isFinite(duration) || duration < requiredDuration) {
       return false;
     }
 

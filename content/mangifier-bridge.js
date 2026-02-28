@@ -782,6 +782,19 @@
       return 0;
     }
 
+    const rendererWrapper =
+      safe(() => (wave && wave.renderer ? wave.renderer.wrapper : null), null);
+    const rendererWidth =
+      rendererWrapper instanceof HTMLElement
+        ? Number(rendererWrapper.scrollWidth) ||
+          parsePixels(rendererWrapper.style.width || '') ||
+          safe(() => rendererWrapper.getBoundingClientRect().width, 0)
+        : 0;
+
+    if (rendererWidth > 0) {
+      return rendererWidth / duration;
+    }
+
     const container = wave.container instanceof HTMLElement ? wave.container : null;
     const scope = container && container.shadowRoot ? container.shadowRoot : null;
     const wrapper = scope && scope.querySelector ? scope.querySelector('[part="wrapper"]') : null;
@@ -796,6 +809,64 @@
 
     const optionValue = Number(wave.options && wave.options.minPxPerSec);
     return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
+  }
+
+  function measureSelectionTimeRange(hostMarker, leftPx, rightPx) {
+    const host = findLoopHostElement(hostMarker) || findHostElement(hostMarker);
+    if (!(host instanceof HTMLElement)) {
+      return {
+        ok: false,
+        reason: 'missing-host'
+      };
+    }
+
+    const selection = findWaveCandidate(host);
+    const candidate = selection.candidate || selection.fallback || null;
+    const wave = candidate && candidate.value ? candidate.value : null;
+    if (!wave || !isUsableWaveCandidate(wave, host)) {
+      return {
+        ok: false,
+        reason: 'missing-wave'
+      };
+    }
+
+    const startPx = Number(leftPx);
+    const endPx = Number(rightPx);
+    if (!Number.isFinite(startPx) || !Number.isFinite(endPx) || endPx <= startPx) {
+      return {
+        ok: false,
+        reason: 'invalid-range'
+      };
+    }
+
+    const pixelsPerSecond = getSourcePixelsPerSecond(wave);
+    if (!(pixelsPerSecond > 0)) {
+      return {
+        ok: false,
+        reason: 'missing-scale'
+      };
+    }
+
+    const duration = getDuration(wave);
+    const startSeconds = startPx / pixelsPerSecond;
+    const endSeconds = endPx / pixelsPerSecond;
+    if (
+      !Number.isFinite(startSeconds) ||
+      !Number.isFinite(endSeconds) ||
+      !(endSeconds > startSeconds)
+    ) {
+      return {
+        ok: false,
+        reason: 'invalid-time'
+      };
+    }
+
+    return {
+      ok: true,
+      startSeconds: clamp(startSeconds, 0, duration > 0 ? duration : startSeconds),
+      endSeconds: clamp(endSeconds, 0, duration > 0 ? duration : endSeconds),
+      pixelsPerSecond
+    };
   }
 
   function findTrackFiber(startFiber) {
@@ -1427,6 +1498,11 @@
 
     if (operation === 'loop-start') {
       respond(id, startLoop(payload.hostMarker, payload.startSeconds, payload.endSeconds));
+      return;
+    }
+
+    if (operation === 'selection-time-range') {
+      respond(id, measureSelectionTimeRange(payload.hostMarker, payload.leftPx, payload.rightPx));
       return;
     }
 
