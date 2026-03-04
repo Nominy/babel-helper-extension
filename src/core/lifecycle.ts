@@ -10,6 +10,14 @@ export function registerLifecycle(helper: any) {
   const ROUTE_REFRESH_MAX_ATTEMPTS = 12;
   const ROUTE_REFRESH_MAX_WINDOW_MS = 1200;
 
+  function isFeatureEnabled(featureKey) {
+    if (typeof helper.isFeatureEnabled === 'function') {
+      return helper.isFeatureEnabled(featureKey);
+    }
+
+    return true;
+  }
+
   function isTranscriptionRoute() {
     return /^\/transcription(?:\/|$)/.test(window.location.pathname || '');
   }
@@ -46,6 +54,10 @@ export function registerLifecycle(helper: any) {
   }
 
   function startHotkeysEnhanceFrame() {
+    if (!isFeatureEnabled('hotkeysHelp')) {
+      return;
+    }
+
     if (helper.state.hotkeysEnhanceFrame) {
       return;
     }
@@ -98,6 +110,11 @@ export function registerLifecycle(helper: any) {
   }
 
   function startHotkeysObserver() {
+    if (!isFeatureEnabled('hotkeysHelp')) {
+      stopHotkeysObserver();
+      return;
+    }
+
     stopHotkeysObserver();
 
     if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
@@ -184,11 +201,15 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
-    if (typeof helper.handleCutPreviewKeydown === 'function' && helper.handleCutPreviewKeydown(event)) {
+    if (
+      isFeatureEnabled('timelineSelection') &&
+      typeof helper.handleCutPreviewKeydown === 'function' &&
+      helper.handleCutPreviewKeydown(event)
+    ) {
       return;
     }
 
-    if (event.key === 'Escape') {
+    if (isFeatureEnabled('focusToggle') && event.key === 'Escape') {
       if (helper.toggleEditorFocus()) {
         event.preventDefault();
         event.stopPropagation();
@@ -197,6 +218,7 @@ export function registerLifecycle(helper: any) {
     }
 
     if (
+      isFeatureEnabled('rowActions') &&
       event.key === 'Delete' &&
       !event.ctrlKey &&
       !event.metaKey &&
@@ -209,6 +231,7 @@ export function registerLifecycle(helper: any) {
     }
 
     if (
+      isFeatureEnabled('rowActions') &&
       !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
@@ -226,14 +249,14 @@ export function registerLifecycle(helper: any) {
     }
 
     let handled = false;
-    if (!event.shiftKey && event.code === 'BracketLeft') {
+    if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketLeft') {
       handled = helper.moveTextToAdjacentSegment(-1);
-    } else if (!event.shiftKey && event.code === 'BracketRight') {
+    } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
       handled = helper.moveTextToAdjacentSegment(1);
-    } else if (event.shiftKey && event.key === 'ArrowUp') {
+    } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowUp') {
       handled = true;
       void helper.runRowAction('mergePrevious');
-    } else if (event.shiftKey && event.key === 'ArrowDown') {
+    } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowDown') {
       handled = true;
       void helper.runRowAction('mergeNext');
     }
@@ -416,8 +439,17 @@ export function registerLifecycle(helper: any) {
 
   function bindSessionFeatures() {
     stopRouteRecoveryObserver();
-    helper.enhanceHotkeysDialog();
-    startHotkeysObserver();
+
+    if (isFeatureEnabled('hotkeysHelp')) {
+      if (typeof helper.enhanceHotkeysDialog === 'function') {
+        helper.enhanceHotkeysDialog();
+      }
+      startHotkeysObserver();
+    } else {
+      stopHotkeysObserver();
+      stopHotkeysEnhanceFrame();
+    }
+
     helper.state.sessionActive = true;
   }
 
@@ -485,10 +517,10 @@ export function registerLifecycle(helper: any) {
     bindRouteWatchers();
     bindGlobalListeners();
     helper.bindRowTracking();
-    if (typeof helper.bindCutPreview === 'function') {
+    if (isFeatureEnabled('timelineSelection') && typeof helper.bindCutPreview === 'function') {
       helper.bindCutPreview();
     }
-    if (typeof helper.bindMagnifier === 'function') {
+    if (isFeatureEnabled('magnifier') && typeof helper.bindMagnifier === 'function') {
       helper.bindMagnifier();
     }
     resetRouteRefreshWindow();

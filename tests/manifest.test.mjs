@@ -8,4 +8,6 @@ test('manifest targets bundled dist assets', () => {
 
   assert.equal(manifest.content_scripts[0].js[0], 'dist/content/entry.js');
   assert.equal(manifest.web_accessible_resources[0].resources[0], 'dist/content/magnifier-bridge.js');
+  assert.equal(manifest.options_page, 'options.html');
+  assert.equal(manifest.permissions.includes('storage'), true);
 });

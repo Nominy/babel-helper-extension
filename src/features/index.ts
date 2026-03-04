@@ -1,4 +1,5 @@
-﻿import type { FeatureModule } from '../core/types';
+import type { FeatureSettings } from '../core/settings';
+import type { FeatureModule } from '../core/types';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
 import { createRowActionsFeature } from './row-actions-feature';
 import { createTextMoveFeature } from './text-move-feature';
@@ -6,8 +7,17 @@ import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createTimelineSelectionFeature } from './timeline-selection-feature';
 import { createMagnifierFeature } from './magnifier-feature';
 
-export function createFeatureModules(): FeatureModule[] {
-  return [
+const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
+  'hotkeys-help': 'hotkeysHelp',
+  'row-actions': 'rowActions',
+  'text-move': 'textMove',
+  'focus-toggle': 'focusToggle',
+  'timeline-selection': 'timelineSelection',
+  magnifier: 'magnifier'
+};
+
+export function createFeatureModules(featureSettings: FeatureSettings): FeatureModule[] {
+  const modules = [
     createHotkeysHelpFeature(),
     createRowActionsFeature(),
     createTextMoveFeature(),
@@ -15,4 +25,13 @@ export function createFeatureModules(): FeatureModule[] {
     createTimelineSelectionFeature(),
     createMagnifierFeature()
   ];
+
+  return modules.filter((module) => {
+    const settingKey = FEATURE_ID_TO_SETTING_KEY[module.id];
+    if (!settingKey) {
+      return true;
+    }
+
+    return featureSettings[settingKey];
+  });
 }

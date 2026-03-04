@@ -21,6 +21,11 @@ const tasks = [
     ...shared,
     entryPoints: ['src/content/magnifier-bridge.ts'],
     outfile: 'dist/content/magnifier-bridge.js'
+  },
+  {
+    ...shared,
+    entryPoints: ['src/options/options.ts'],
+    outfile: 'dist/options/options.js'
   }
 ];
 

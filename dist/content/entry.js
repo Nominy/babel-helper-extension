@@ -1,8 +1,85 @@
 "use strict";
 (() => {
-  // src/core/config.ts
-  function createConfig() {
+  // src/core/settings.ts
+  var SETTINGS_STORAGE_KEY = "settings";
+  var DEFAULT_FEATURE_SETTINGS = {
+    hotkeysHelp: true,
+    rowActions: true,
+    textMove: true,
+    focusToggle: true,
+    timelineSelection: true,
+    magnifier: true
+  };
+  var DEFAULT_EXTENSION_SETTINGS = {
+    features: DEFAULT_FEATURE_SETTINGS
+  };
+  var FEATURE_KEYS = [
+    "hotkeysHelp",
+    "rowActions",
+    "textMove",
+    "focusToggle",
+    "timelineSelection",
+    "magnifier"
+  ];
+  function getExtensionStorage() {
+    const chromeApi = globalThis.chrome;
+    if (!chromeApi || !chromeApi.storage || !chromeApi.storage.local) {
+      return null;
+    }
+    return chromeApi.storage.local;
+  }
+  function normalizeExtensionSettings(source) {
+    const incoming = source && typeof source === "object" && source !== null ? source : {};
+    const rawFeatures = incoming.features && typeof incoming.features === "object" ? incoming.features : {};
+    const features = {};
+    for (const key of FEATURE_KEYS) {
+      const value = rawFeatures[key];
+      features[key] = typeof value === "boolean" ? value : DEFAULT_FEATURE_SETTINGS[key];
+    }
     return {
+      features
+    };
+  }
+  async function loadExtensionSettings() {
+    const storage = getExtensionStorage();
+    if (!storage || typeof storage.get !== "function") {
+      return normalizeExtensionSettings(DEFAULT_EXTENSION_SETTINGS);
+    }
+    return new Promise((resolve) => {
+      storage.get(SETTINGS_STORAGE_KEY, (items) => {
+        const runtime = globalThis.chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalizeExtensionSettings(DEFAULT_EXTENSION_SETTINGS));
+          return;
+        }
+        resolve(normalizeExtensionSettings(items?.[SETTINGS_STORAGE_KEY]));
+      });
+    });
+  }
+
+  // src/core/config.ts
+  function buildHotkeysHelpRows(featureSettings) {
+    const rows = [];
+    if (featureSettings.focusToggle) {
+      rows.push(["Esc", "Toggle blur and restore cursor"]);
+    }
+    if (featureSettings.textMove) {
+      rows.push(["Alt + [ (\u0420\u0490)", "Move text before caret to previous segment"]);
+      rows.push(["Alt + ] (\u0420\u0404)", "Move text after caret to next segment"]);
+    }
+    if (featureSettings.rowActions) {
+      rows.push(["Alt + Shift + Up", "Merge with previous segment"]);
+      rows.push(["Alt + Shift + Down", "Merge with next segment"]);
+      rows.push(["Del", "Delete current segment"]);
+      rows.push(["D", "Delete current segment when not typing"]);
+    }
+    return rows;
+  }
+  function createConfig(featureSettings = DEFAULT_FEATURE_SETTINGS) {
+    return {
+      features: {
+        ...featureSettings
+      },
       rowTextareaSelector: 'textarea[placeholder^="What was said"]',
       actionTriggerSelector: 'button[aria-haspopup="menu"]',
       hotkeysHelpMarker: "data-babel-helper-hotkeys",
@@ -11,15 +88,7 @@
         /\buse these shortcuts to navigate and control the transcription workbench\b/i,
         /\bhotkeys\b/i
       ],
-      hotkeysHelpRows: [
-        ["Esc", "Toggle blur and restore cursor"],
-        ["Alt + [ (\u0420\u0490)", "Move text before caret to previous segment"],
-        ["Alt + ] (\u0420\u0404)", "Move text after caret to next segment"],
-        ["Alt + Shift + Up", "Merge with previous segment"],
-        ["Alt + Shift + Down", "Merge with next segment"],
-        ["Del", "Delete current segment"],
-        ["D", "Delete current segment when not typing"]
-      ],
+      hotkeysHelpRows: buildHotkeysHelpRows(featureSettings),
       actionPatterns: {
         deleteSegment: [/\bdelete(?:\s+segment)?\b/i, /\bremove(?:\s+segment)?\b/i],
         mergePrevious: [
@@ -3834,6 +3903,12 @@
     const ROUTE_REFRESH_DELAY_MS = 80;
     const ROUTE_REFRESH_MAX_ATTEMPTS = 12;
     const ROUTE_REFRESH_MAX_WINDOW_MS = 1200;
+    function isFeatureEnabled(featureKey) {
+      if (typeof helper.isFeatureEnabled === "function") {
+        return helper.isFeatureEnabled(featureKey);
+      }
+      return true;
+    }
     function isTranscriptionRoute() {
       return /^\/transcription(?:\/|$)/.test(window.location.pathname || "");
     }
@@ -3860,6 +3935,9 @@
       helper.state.routeRefreshWindowStartedAt = Date.now();
     }
     function startHotkeysEnhanceFrame() {
+      if (!isFeatureEnabled("hotkeysHelp")) {
+        return;
+      }
       if (helper.state.hotkeysEnhanceFrame) {
         return;
       }
@@ -3901,6 +3979,10 @@
       );
     }
     function startHotkeysObserver() {
+      if (!isFeatureEnabled("hotkeysHelp")) {
+        stopHotkeysObserver();
+        return;
+      }
       stopHotkeysObserver();
       if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== "function") {
         return;
@@ -3970,21 +4052,21 @@
       if (event.defaultPrevented) {
         return;
       }
-      if (typeof helper.handleCutPreviewKeydown === "function" && helper.handleCutPreviewKeydown(event)) {
+      if (isFeatureEnabled("timelineSelection") && typeof helper.handleCutPreviewKeydown === "function" && helper.handleCutPreviewKeydown(event)) {
         return;
       }
-      if (event.key === "Escape") {
+      if (isFeatureEnabled("focusToggle") && event.key === "Escape") {
         if (helper.toggleEditorFocus()) {
           event.preventDefault();
           event.stopPropagation();
         }
         return;
       }
-      if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && helper.getCurrentRow({ allowFallback: false })) {
+      if (isFeatureEnabled("rowActions") && event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && helper.getCurrentRow({ allowFallback: false })) {
         tryDeleteCurrentRow(event);
         return;
       }
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === "KeyD" && !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)) {
+      if (isFeatureEnabled("rowActions") && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === "KeyD" && !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)) {
         if (tryDeleteCurrentRow(event)) {
           return;
         }
@@ -3993,14 +4075,14 @@
         return;
       }
       let handled = false;
-      if (!event.shiftKey && event.code === "BracketLeft") {
+      if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketLeft") {
         handled = helper.moveTextToAdjacentSegment(-1);
-      } else if (!event.shiftKey && event.code === "BracketRight") {
+      } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketRight") {
         handled = helper.moveTextToAdjacentSegment(1);
-      } else if (event.shiftKey && event.key === "ArrowUp") {
+      } else if (isFeatureEnabled("rowActions") && event.shiftKey && event.key === "ArrowUp") {
         handled = true;
         void helper.runRowAction("mergePrevious");
-      } else if (event.shiftKey && event.key === "ArrowDown") {
+      } else if (isFeatureEnabled("rowActions") && event.shiftKey && event.key === "ArrowDown") {
         handled = true;
         void helper.runRowAction("mergeNext");
       }
@@ -4142,8 +4224,15 @@
     }
     function bindSessionFeatures() {
       stopRouteRecoveryObserver();
-      helper.enhanceHotkeysDialog();
-      startHotkeysObserver();
+      if (isFeatureEnabled("hotkeysHelp")) {
+        if (typeof helper.enhanceHotkeysDialog === "function") {
+          helper.enhanceHotkeysDialog();
+        }
+        startHotkeysObserver();
+      } else {
+        stopHotkeysObserver();
+        stopHotkeysEnhanceFrame();
+      }
       helper.state.sessionActive = true;
     }
     helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason) {
@@ -4198,10 +4287,10 @@
       bindRouteWatchers();
       bindGlobalListeners();
       helper.bindRowTracking();
-      if (typeof helper.bindCutPreview === "function") {
+      if (isFeatureEnabled("timelineSelection") && typeof helper.bindCutPreview === "function") {
         helper.bindCutPreview();
       }
-      if (typeof helper.bindMagnifier === "function") {
+      if (isFeatureEnabled("magnifier") && typeof helper.bindMagnifier === "function") {
         helper.bindMagnifier();
       }
       resetRouteRefreshWindow();
@@ -4286,8 +4375,16 @@
   }
 
   // src/features/index.ts
-  function createFeatureModules() {
-    return [
+  var FEATURE_ID_TO_SETTING_KEY = {
+    "hotkeys-help": "hotkeysHelp",
+    "row-actions": "rowActions",
+    "text-move": "textMove",
+    "focus-toggle": "focusToggle",
+    "timeline-selection": "timelineSelection",
+    magnifier: "magnifier"
+  };
+  function createFeatureModules(featureSettings) {
+    const modules = [
       createHotkeysHelpFeature(),
       createRowActionsFeature(),
       createTextMoveFeature(),
@@ -4295,15 +4392,30 @@
       createTimelineSelectionFeature(),
       createMagnifierFeature()
     ];
+    return modules.filter((module) => {
+      const settingKey = FEATURE_ID_TO_SETTING_KEY[module.id];
+      if (!settingKey) {
+        return true;
+      }
+      return featureSettings[settingKey];
+    });
   }
 
   // src/core/kernel.ts
+  function cloneSettings(settings) {
+    return normalizeExtensionSettings(settings);
+  }
   function createHelperKernel() {
-    const config = createConfig();
     const state = createState();
+    let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
+    const config = createConfig(settings.features);
     const helper = {
       config,
+      settings,
       state,
+      isFeatureEnabled(featureKey) {
+        return Boolean(helper.settings?.features?.[featureKey]);
+      },
       runtime: {
         clearRuntimeTimer() {
           const timer = helper.state.routeRefreshTimer;
@@ -4330,10 +4442,24 @@
       sleep,
       waitFor
     };
-    registerRowService(helper);
-    registerHotkeysHelpService(helper);
-    registerTimelineSelectionService(helper);
-    registerMagnifierService(helper);
+    function applySettings(nextSettings) {
+      settings = cloneSettings(nextSettings);
+      helper.settings = settings;
+      const nextConfig = createConfig(settings.features);
+      Object.assign(helper.config, nextConfig);
+    }
+    function registerServices() {
+      registerRowService(helper);
+      if (helper.isFeatureEnabled("hotkeysHelp")) {
+        registerHotkeysHelpService(helper);
+      }
+      if (helper.isFeatureEnabled("timelineSelection")) {
+        registerTimelineSelectionService(helper);
+      }
+      if (helper.isFeatureEnabled("magnifier")) {
+        registerMagnifierService(helper);
+      }
+    }
     const services = {
       session: {
         isInteractive: () => helper.runtime.isSessionInteractive()
@@ -4358,7 +4484,7 @@
       onDispose: (disposer) => disposerStack.add(disposer),
       logger
     };
-    const features = createFeatureModules();
+    let features = [];
     const runFeatures = async (method) => {
       for (const feature of features) {
         const fn = feature[method];
@@ -4370,6 +4496,10 @@
     return {
       helper,
       async start() {
+        const loadedSettings = await loadExtensionSettings();
+        applySettings(loadedSettings);
+        registerServices();
+        features = createFeatureModules(helper.settings.features);
         await runFeatures("register");
         await runFeatures("start");
         registerLifecycle(helper);

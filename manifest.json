@@ -3,6 +3,10 @@
   "name": "Babel Audio Workflow Helper",
   "version": "0.2.0",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
+  "permissions": [
+    "storage"
+  ],
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": [

@@ -10,7 +10,9 @@ const REQUIRED_FILES = [
   'src/services/magnifier-service.ts',
   'src/features/index.ts',
   'src/content/entry.ts',
-  'src/content/magnifier-bridge.ts'
+  'src/content/magnifier-bridge.ts',
+  'src/options/options.ts',
+  'options.html'
 ];
 
 test('refactor structure files exist', () => {

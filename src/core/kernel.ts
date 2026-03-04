@@ -1,6 +1,13 @@
-﻿import { createConfig } from './config';
+import { createConfig } from './config';
 import { createState } from './state-store';
 import { createLogger } from './logger';
+import {
+  DEFAULT_EXTENSION_SETTINGS,
+  type ExtensionSettings,
+  type FeatureSettingKey,
+  loadExtensionSettings,
+  normalizeExtensionSettings
+} from './settings';
 import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, sleep, waitFor } from '../hooks/dom';
 import { registerRowService } from '../services/row-service';
 import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
@@ -11,13 +18,22 @@ import { createDisposerStack } from './disposables';
 import type { FeatureContext, FeatureModule, ServiceRegistry } from './types';
 import { createFeatureModules } from '../features';
 
+function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
+  return normalizeExtensionSettings(settings);
+}
+
 export function createHelperKernel() {
-  const config = createConfig();
   const state = createState();
+  let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
+  const config = createConfig(settings.features);
 
   const helper: any = {
     config,
+    settings,
     state,
+    isFeatureEnabled(featureKey: FeatureSettingKey) {
+      return Boolean(helper.settings?.features?.[featureKey]);
+    },
     runtime: {
       clearRuntimeTimer() {
         const timer = helper.state.routeRefreshTimer;
@@ -45,10 +61,29 @@ export function createHelperKernel() {
     waitFor
   };
 
-  registerRowService(helper);
-  registerHotkeysHelpService(helper);
-  registerTimelineSelectionService(helper);
-  registerMagnifierService(helper);
+  function applySettings(nextSettings: ExtensionSettings) {
+    settings = cloneSettings(nextSettings);
+    helper.settings = settings;
+
+    const nextConfig = createConfig(settings.features);
+    Object.assign(helper.config, nextConfig);
+  }
+
+  function registerServices() {
+    registerRowService(helper);
+
+    if (helper.isFeatureEnabled('hotkeysHelp')) {
+      registerHotkeysHelpService(helper);
+    }
+
+    if (helper.isFeatureEnabled('timelineSelection')) {
+      registerTimelineSelectionService(helper);
+    }
+
+    if (helper.isFeatureEnabled('magnifier')) {
+      registerMagnifierService(helper);
+    }
+  }
 
   const services: ServiceRegistry = {
     session: {
@@ -76,7 +111,7 @@ export function createHelperKernel() {
     logger
   };
 
-  const features = createFeatureModules();
+  let features: FeatureModule[] = [];
 
   const runFeatures = async (method: 'register' | 'start' | 'stop') => {
     for (const feature of features) {
@@ -90,6 +125,12 @@ export function createHelperKernel() {
   return {
     helper,
     async start() {
+      const loadedSettings = await loadExtensionSettings();
+      applySettings(loadedSettings);
+
+      registerServices();
+      features = createFeatureModules(helper.settings.features);
+
       await runFeatures('register');
       await runFeatures('start');
       registerLifecycle(helper);

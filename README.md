@@ -13,6 +13,7 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
 Bundled outputs:
 - `dist/content/entry.js`
 - `dist/content/magnifier-bridge.js`
+- `dist/options/options.js`
 
 ## Architecture
 
@@ -31,6 +32,8 @@ This refactor keeps existing shortcuts and workflow behavior parity while separa
 - handlers
 - features
 - services
+
+Feature settings are available in extension options (`chrome://extensions` -> Babel Audio Workflow Helper -> Extension options). Settings are stored in `chrome.storage.local` and applied on the next dashboard tab reload.
 
 ## Validation
 
