@@ -1,17 +1,17 @@
-(function registerBabelHelperMangifier() {
-  const helper = window.__babelWorkflowHelper;
-  if (!helper || helper.__mangifierRegistered) {
+﻿// @ts-nocheck
+export function registerMagnifierService(helper: any) {
+  if (!helper || helper.__magnifierRegistered) {
     return;
   }
 
-  helper.__mangifierRegistered = true;
+  helper.__magnifierRegistered = true;
 
-  const MANGIFIER_ATTR = "data-babel-helper-mangifier";
-  const HOST_MARKER_ATTR = "data-babel-helper-mangifier-host";
-  const MOUNT_MARKER_ATTR = "data-babel-helper-mangifier-mount";
+  const MAGNIFIER_ATTR = "data-babel-helper-magnifier";
+  const HOST_MARKER_ATTR = "data-babel-helper-magnifier-host";
+  const MOUNT_MARKER_ATTR = "data-babel-helper-magnifier-mount";
   const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
   const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-  const BRIDGE_SCRIPT_PATH = "content/mangifier-bridge.js";
+  const BRIDGE_SCRIPT_PATH = "dist/content/magnifier-bridge.js";
   const SCALE = 3;
   const WIDTH = 180;
   const MAX_HEIGHT = 150;
@@ -472,7 +472,7 @@
 
   function createMagnifier(context) {
     const element = document.createElement("div");
-    element.setAttribute(MANGIFIER_ATTR, "true");
+    element.setAttribute(MAGNIFIER_ATTR, "true");
     element.style.position = "absolute";
     element.style.top = INSET + "px";
     element.style.left = INSET + "px";
@@ -810,4 +810,8 @@
     document.removeEventListener("pointercancel", handlePointerEnd, true);
     helper.state.magnifierListenersBound = false;
   };
-})();
+}
+
+
+
+

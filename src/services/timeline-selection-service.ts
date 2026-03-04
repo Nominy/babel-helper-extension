@@ -1,5 +1,5 @@
-(function registerBabelHelperCut() {
-  const helper = window.__babelWorkflowHelper;
+﻿// @ts-nocheck
+export function registerTimelineSelectionService(helper: any) {
   if (!helper || helper.__cutRegistered) {
     return;
   }
@@ -17,7 +17,7 @@
   const SELECTION_LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
   const BRIDGE_REQUEST_EVENT = 'babel-helper-magnifier-request';
   const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const BRIDGE_SCRIPT_PATH = 'content/mangifier-bridge.js';
+  const BRIDGE_SCRIPT_PATH = 'dist/content/magnifier-bridge.js';
   const BRIDGE_TIMEOUT_MS = 700;
 
   helper.state.cutDraft = null;
@@ -3015,4 +3015,7 @@
     document.removeEventListener('click', handleSmartSplitClick, true);
     helper.state.cutListenersBound = false;
   };
-})();
+}
+
+
+

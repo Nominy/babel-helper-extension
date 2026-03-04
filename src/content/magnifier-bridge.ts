@@ -1,12 +1,13 @@
-(function initBabelHelperMangifierBridge() {
+﻿// @ts-nocheck
+export function initMagnifierBridge() {
   if (window.__babelHelperMagnifierBridge) {
     return;
   }
 
   const REQUEST_EVENT = 'babel-helper-magnifier-request';
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const HOST_ATTR = 'data-babel-helper-mangifier-host';
-  const MOUNT_ATTR = 'data-babel-helper-mangifier-mount';
+  const HOST_ATTR = 'data-babel-helper-magnifier-host';
+  const MOUNT_ATTR = 'data-babel-helper-magnifier-mount';
   const LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
   const instances = new Map();
   const loops = new Map();
@@ -1512,4 +1513,7 @@
   });
 
   window.__babelHelperMagnifierBridge = { instances, loops };
-})();
+}
+
+initMagnifierBridge();
+

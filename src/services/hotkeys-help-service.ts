@@ -1,5 +1,5 @@
-(function registerBabelHelperHotkeys() {
-  const helper = window.__babelWorkflowHelper;
+﻿// @ts-nocheck
+export function registerHotkeysHelpService(helper: any) {
   if (!helper || helper.__hotkeysRegistered) {
     return;
   }
@@ -96,4 +96,6 @@
       contentTarget.appendChild(helper.buildHotkeysHelpBlock());
     }
   };
-})();
+}
+
+

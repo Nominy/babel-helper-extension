@@ -1,5 +1,5 @@
-(function initBabelHelperMain() {
-  const helper = window.__babelWorkflowHelper;
+﻿// @ts-nocheck
+export function registerLifecycle(helper: any) {
   if (!helper || helper.__mainInitialized) {
     return;
   }
@@ -500,4 +500,6 @@
   } else {
     helper.init();
   }
-})();
+}
+
+

@@ -1,5 +1,5 @@
-(function registerBabelHelperRows() {
-  const helper = window.__babelWorkflowHelper;
+﻿// @ts-nocheck
+export function registerRowService(helper: any) {
   if (!helper || helper.__rowsRegistered) {
     return;
   }
@@ -780,4 +780,6 @@
     }
     return focused;
   };
-})();
+}
+
+

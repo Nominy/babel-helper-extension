@@ -1,7 +1,7 @@
-{
+﻿{
   "manifest_version": 3,
   "name": "Babel Audio Workflow Helper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
   "content_scripts": [
     {
@@ -9,12 +9,7 @@
         "https://dashboard.babel.audio/*"
       ],
       "js": [
-        "content/shared.js",
-        "content/rows.js",
-        "content/cut.js",
-        "content/mangifier.js",
-        "content/hotkeys.js",
-        "content/main.js"
+        "dist/content/entry.js"
       ],
       "run_at": "document_idle"
     }
@@ -22,7 +17,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "content/mangifier-bridge.js"
+        "dist/content/magnifier-bridge.js"
       ],
       "matches": [
         "https://dashboard.babel.audio/*"
