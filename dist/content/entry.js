@@ -10,7 +10,8 @@
     focusToggle: true,
     timelineSelection: true,
     timelineZoomDefaults: true,
-    magnifier: true
+    magnifier: true,
+    customLinter: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -23,7 +24,8 @@
     "focusToggle",
     "timelineSelection",
     "timelineZoomDefaults",
-    "magnifier"
+    "magnifier",
+    "customLinter"
   ];
   function getExtensionStorage() {
     const chromeApi = globalThis.chrome;
@@ -1333,7 +1335,7 @@
     const SELECTION_LOOP_HOST_ATTR = "data-babel-helper-selection-loop-host";
     const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
     const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-    const BRIDGE_SCRIPT_PATH = "dist/content/magnifier-bridge.js";
+    const BRIDGE_SCRIPT_PATH2 = "dist/content/magnifier-bridge.js";
     const BRIDGE_TIMEOUT_MS = 700;
     const ZOOM_PERSIST_DEBOUNCE_MS = 240;
     helper.state.cutDraft = null;
@@ -2200,7 +2202,7 @@
           return;
         }
         const script = document.createElement("script");
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
+        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH2);
         script.async = false;
         script.onload = () => {
           script.remove();
@@ -3877,7 +3879,7 @@
     const MOUNT_MARKER_ATTR = "data-babel-helper-magnifier-mount";
     const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
     const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-    const BRIDGE_SCRIPT_PATH = "dist/content/magnifier-bridge.js";
+    const BRIDGE_SCRIPT_PATH2 = "dist/content/magnifier-bridge.js";
     const SCALE = 3;
     const WIDTH = 180;
     const MAX_HEIGHT = 150;
@@ -4118,7 +4120,7 @@
       }
       return null;
     }
-    function injectBridge() {
+    function injectBridge2() {
       if (window.__babelHelperMagnifierBridge) {
         bridgeInjected = true;
         return Promise.resolve(true);
@@ -4137,7 +4139,7 @@
           return;
         }
         const script = document.createElement("script");
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
+        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH2);
         script.async = false;
         script.onload = () => {
           script.remove();
@@ -4154,7 +4156,7 @@
       return bridgeLoadPromise;
     }
     async function callBridge(operation, payload) {
-      const ready = await injectBridge();
+      const ready = await injectBridge2();
       if (!ready) {
         return null;
       }
@@ -5008,6 +5010,68 @@
     };
   }
 
+  // src/features/custom-linter-feature.ts
+  var BRIDGE_SCRIPT_PATH = "dist/content/linter-bridge.js";
+  var TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
+  var BRIDGE_SCRIPT_ATTR = "data-babel-helper-linter-bridge";
+  function setBridgeEnabled(enabled) {
+    window.dispatchEvent(
+      new CustomEvent(TOGGLE_EVENT, {
+        detail: {
+          enabled
+        }
+      })
+    );
+  }
+  function injectBridge() {
+    if (document.querySelector(`script[${BRIDGE_SCRIPT_ATTR}="true"]`)) {
+      return Promise.resolve(true);
+    }
+    const chromeApi = globalThis.chrome;
+    if (!chromeApi || !chromeApi.runtime || typeof chromeApi.runtime.getURL !== "function") {
+      return Promise.resolve(false);
+    }
+    const root = document.documentElement || document.head || document.body;
+    if (!(root instanceof HTMLElement)) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.setAttribute(BRIDGE_SCRIPT_ATTR, "true");
+      script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
+      script.async = false;
+      script.onload = () => {
+        resolve(true);
+      };
+      script.onerror = () => {
+        script.remove();
+        resolve(false);
+      };
+      root.appendChild(script);
+    });
+  }
+  function createCustomLinterFeature() {
+    let startPromise = null;
+    return {
+      id: "custom-linter",
+      async start(ctx) {
+        if (!startPromise) {
+          startPromise = injectBridge();
+        }
+        const ready = await startPromise;
+        if (!ready) {
+          startPromise = null;
+          ctx.logger.warn("Custom linter bridge did not load");
+          return;
+        }
+        setBridgeEnabled(true);
+      },
+      stop() {
+        setBridgeEnabled(false);
+      }
+    };
+  }
+
   // src/features/index.ts
   var FEATURE_ID_TO_SETTING_KEY = {
     "hotkeys-help": "hotkeysHelp",
@@ -5015,7 +5079,8 @@
     "text-move": "textMove",
     "focus-toggle": "focusToggle",
     "timeline-selection": "timelineSelection",
-    magnifier: "magnifier"
+    magnifier: "magnifier",
+    "custom-linter": "customLinter"
   };
   function createFeatureModules(featureSettings) {
     const modules = [
@@ -5024,7 +5089,8 @@
       createTextMoveFeature(),
       createFocusToggleFeature(),
       createTimelineSelectionFeature(),
-      createMagnifierFeature()
+      createMagnifierFeature(),
+      createCustomLinterFeature()
     ];
     return modules.filter((module) => {
       const settingKey = FEATURE_ID_TO_SETTING_KEY[module.id];

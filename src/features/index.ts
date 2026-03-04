@@ -6,6 +6,7 @@ import { createTextMoveFeature } from './text-move-feature';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createTimelineSelectionFeature } from './timeline-selection-feature';
 import { createMagnifierFeature } from './magnifier-feature';
+import { createCustomLinterFeature } from './custom-linter-feature';
 
 const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'hotkeys-help': 'hotkeysHelp',
@@ -13,7 +14,8 @@ const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'text-move': 'textMove',
   'focus-toggle': 'focusToggle',
   'timeline-selection': 'timelineSelection',
-  magnifier: 'magnifier'
+  magnifier: 'magnifier',
+  'custom-linter': 'customLinter'
 };
 
 export function createFeatureModules(featureSettings: FeatureSettings): FeatureModule[] {
@@ -23,7 +25,8 @@ export function createFeatureModules(featureSettings: FeatureSettings): FeatureM
     createTextMoveFeature(),
     createFocusToggleFeature(),
     createTimelineSelectionFeature(),
-    createMagnifierFeature()
+    createMagnifierFeature(),
+    createCustomLinterFeature()
   ];
 
   return modules.filter((module) => {

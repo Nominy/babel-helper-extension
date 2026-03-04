@@ -6,7 +6,8 @@ export type FeatureSettingKey =
   | 'focusToggle'
   | 'timelineSelection'
   | 'timelineZoomDefaults'
-  | 'magnifier';
+  | 'magnifier'
+  | 'customLinter';
 
 export interface FeatureSettings {
   hotkeysHelp: boolean;
@@ -17,6 +18,7 @@ export interface FeatureSettings {
   timelineSelection: boolean;
   timelineZoomDefaults: boolean;
   magnifier: boolean;
+  customLinter: boolean;
 }
 
 export interface ExtensionSettings {
@@ -38,7 +40,8 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   focusToggle: true,
   timelineSelection: true,
   timelineZoomDefaults: true,
-  magnifier: true
+  magnifier: true,
+  customLinter: true
 };
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
@@ -53,7 +56,8 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'focusToggle',
   'timelineSelection',
   'timelineZoomDefaults',
-  'magnifier'
+  'magnifier',
+  'customLinter'
 ];
 
 export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
@@ -88,6 +92,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   magnifier: {
     label: 'Magnifier',
     description: 'Show live waveform magnifier while dragging timeline segment edges.'
+  },
+  customLinter: {
+    label: 'Custom Linter',
+    description: 'Inject helper rules into Babel lintAnnotations results so issues appear in native linter UI.'
   }
 };
 

@@ -10,7 +10,8 @@
     focusToggle: true,
     timelineSelection: true,
     timelineZoomDefaults: true,
-    magnifier: true
+    magnifier: true,
+    customLinter: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -23,7 +24,8 @@
     "focusToggle",
     "timelineSelection",
     "timelineZoomDefaults",
-    "magnifier"
+    "magnifier",
+    "customLinter"
   ];
   var FEATURE_META = {
     hotkeysHelp: {
@@ -57,6 +59,10 @@
     magnifier: {
       label: "Magnifier",
       description: "Show live waveform magnifier while dragging timeline segment edges."
+    },
+    customLinter: {
+      label: "Custom Linter",
+      description: "Inject helper rules into Babel lintAnnotations results so issues appear in native linter UI."
     }
   };
   function getExtensionStorage() {

@@ -13,6 +13,7 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
 Bundled outputs:
 - `dist/content/entry.js`
 - `dist/content/magnifier-bridge.js`
+- `dist/content/linter-bridge.js`
 - `dist/options/options.js`
 
 ## Architecture
@@ -23,7 +24,7 @@ Source lives under `src/`:
 - `services/` row/menu/focus/timeline/magnifier services
 - `handlers/` keyboard/pointer/route handler adapters
 - `features/` plugin modules that consume typed context
-- `content/` extension entry points (`entry.ts`, `magnifier-bridge.ts`)
+- `content/` extension entry points (`entry.ts`, `magnifier-bridge.ts`, `linter-bridge.ts`)
 
 ## Behavior
 
@@ -34,6 +35,12 @@ This refactor keeps existing shortcuts and workflow behavior parity while separa
 - services
 
 Feature settings are available in extension options (`chrome://extensions` -> Babel Audio Workflow Helper -> Extension options). Settings are stored in `chrome.storage.local` and applied on the next dashboard tab reload.
+
+Custom linter notes:
+- `Custom Linter` is enabled by default and augments Babel's native lint API response.
+- Built-in helper rules currently include:
+  - comma formatting: enforce `, ` (comma + single space)
+- Rule injection bridge lives in `src/content/linter-bridge.ts`.
 
 ## Validation
 

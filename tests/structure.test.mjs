@@ -11,6 +11,7 @@ const REQUIRED_FILES = [
   'src/features/index.ts',
   'src/content/entry.ts',
   'src/content/magnifier-bridge.ts',
+  'src/content/linter-bridge.ts',
   'src/options/options.ts',
   'options.html'
 ];

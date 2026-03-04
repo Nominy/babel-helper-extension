@@ -21,7 +21,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "dist/content/magnifier-bridge.js"
+        "dist/content/magnifier-bridge.js",
+        "dist/content/linter-bridge.js"
       ],
       "matches": [
         "https://dashboard.babel.audio/*"
