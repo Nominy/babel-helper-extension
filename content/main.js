@@ -6,6 +6,160 @@
 
   helper.__mainInitialized = true;
 
+  const ROUTE_REFRESH_DELAY_MS = 80;
+  const ROUTE_REFRESH_MAX_ATTEMPTS = 12;
+  const ROUTE_REFRESH_MAX_WINDOW_MS = 1200;
+
+  function isTranscriptionRoute() {
+    return /^\/transcription(?:\/|$)/.test(window.location.pathname || '');
+  }
+
+  function isReadOnlyFeedbackRoute() {
+    const params = new URLSearchParams(window.location.search || '');
+    const displayFeedback = params.get('displayFeedback');
+    if (displayFeedback === 'true') {
+      return true;
+    }
+
+    return Boolean(
+      params.has('reviewActionId') &&
+      displayFeedback != null &&
+      displayFeedback !== 'false'
+    );
+  }
+
+  function hasTranscriptSurface() {
+    return Boolean(document.querySelector(helper.config.rowTextareaSelector));
+  }
+
+  helper.runtime.isSessionInteractive = function isSessionInteractive() {
+    return Boolean(
+      isTranscriptionRoute() &&
+      !isReadOnlyFeedbackRoute() &&
+      hasTranscriptSurface()
+    );
+  };
+
+  function resetRouteRefreshWindow() {
+    helper.state.routeRefreshAttempts = 0;
+    helper.state.routeRefreshWindowStartedAt = Date.now();
+  }
+
+  function startHotkeysEnhanceFrame() {
+    if (helper.state.hotkeysEnhanceFrame) {
+      return;
+    }
+
+    helper.state.hotkeysEnhanceFrame = window.requestAnimationFrame(() => {
+      helper.state.hotkeysEnhanceFrame = 0;
+      helper.enhanceHotkeysDialog();
+    });
+  }
+
+  function stopHotkeysEnhanceFrame() {
+    if (!helper.state.hotkeysEnhanceFrame) {
+      return;
+    }
+
+    window.cancelAnimationFrame(helper.state.hotkeysEnhanceFrame);
+    helper.state.hotkeysEnhanceFrame = 0;
+  }
+
+  function stopHotkeysObserver() {
+    const observer = helper.state.hotkeysObserver;
+    if (observer && typeof observer.disconnect === 'function') {
+      observer.disconnect();
+    }
+
+    helper.state.hotkeysObserver = null;
+  }
+
+  function stopRouteRecoveryObserver() {
+    const observer = helper.state.routeRecoveryObserver;
+    if (observer && typeof observer.disconnect === 'function') {
+      observer.disconnect();
+    }
+
+    helper.state.routeRecoveryObserver = null;
+  }
+
+  function isHotkeysMutationCandidate(node) {
+    if (!(node instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (node.matches('[role="dialog"], [data-radix-popper-content-wrapper], [data-radix-portal]')) {
+      return true;
+    }
+
+    return Boolean(
+      node.querySelector('[role="dialog"], [data-radix-popper-content-wrapper], [data-radix-portal]')
+    );
+  }
+
+  function startHotkeysObserver() {
+    stopHotkeysObserver();
+
+    if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+      return;
+    }
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type !== 'childList' || !mutation.addedNodes.length) {
+          continue;
+        }
+
+        for (const node of mutation.addedNodes) {
+          if (isHotkeysMutationCandidate(node)) {
+            startHotkeysEnhanceFrame();
+            return;
+          }
+        }
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    helper.state.hotkeysObserver = observer;
+  }
+
+  function startRouteRecoveryObserver() {
+    if (helper.state.routeRecoveryObserver || !(document.body instanceof HTMLElement)) {
+      return;
+    }
+
+    if (typeof MutationObserver !== 'function') {
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      if (!isTranscriptionRoute() || isReadOnlyFeedbackRoute()) {
+        return;
+      }
+
+      if (!hasTranscriptSurface()) {
+        return;
+      }
+
+      stopRouteRecoveryObserver();
+      resetRouteRefreshWindow();
+      helper.runtime.scheduleRouteRefresh('recovery-observer');
+    });
+
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['placeholder'],
+      childList: true,
+      subtree: true
+    });
+
+    helper.state.routeRecoveryObserver = observer;
+  }
+
   function tryDeleteCurrentRow(event) {
     const row = helper.getCurrentRow({ allowFallback: false });
     if (!row) {
@@ -22,6 +176,10 @@
   }
 
   helper.handleKeydown = function handleKeydown(event) {
+    if (!helper.runtime.isSessionInteractive()) {
+      return;
+    }
+
     if (event.defaultPrevented) {
       return;
     }
@@ -86,55 +244,255 @@
     }
   };
 
+  function handleRowFocusIn(event) {
+    if (!helper.runtime.isSessionInteractive()) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const row = target.closest('tr');
+    if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+      helper.setCurrentRow(row);
+    }
+  }
+
+  function handleRowPointerDown(event) {
+    if (!helper.runtime.isSessionInteractive()) {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const row = target.closest('tr');
+    if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+      helper.setCurrentRow(row);
+    }
+  }
+
   helper.bindRowTracking = function bindRowTracking() {
-    document.addEventListener(
-      'focusin',
-      (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLElement)) {
-          return;
-        }
+    if (helper.state.rowTrackingBound) {
+      return;
+    }
 
-        const row = target.closest('tr');
-        if (row && row.querySelector(helper.config.rowTextareaSelector)) {
-          helper.setCurrentRow(row);
-        }
-      },
-      true
-    );
+    document.addEventListener('focusin', handleRowFocusIn, true);
+    document.addEventListener('pointerdown', handleRowPointerDown, true);
+    helper.state.rowTrackingBound = true;
+  };
 
-    document.addEventListener(
-      'pointerdown',
-      (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLElement)) {
-          return;
-        }
+  helper.unbindRowTracking = function unbindRowTracking() {
+    if (!helper.state.rowTrackingBound) {
+      return;
+    }
 
-        const row = target.closest('tr');
-        if (row && row.querySelector(helper.config.rowTextareaSelector)) {
-          helper.setCurrentRow(row);
-        }
-      },
-      true
-    );
+    document.removeEventListener('focusin', handleRowFocusIn, true);
+    document.removeEventListener('pointerdown', handleRowPointerDown, true);
+    helper.state.rowTrackingBound = false;
+  };
+
+  function bindGlobalListeners() {
+    if (helper.state.keydownBound) {
+      return;
+    }
+
+    document.addEventListener('keydown', helper.handleKeydown, true);
+    helper.state.keydownBound = true;
+  }
+
+  function patchHistoryMethod(name) {
+    const current = window.history[name];
+    if (typeof current !== 'function') {
+      return;
+    }
+
+    if (current.__babelHelperPatched) {
+      return;
+    }
+
+    const original = current.__babelHelperOriginal || current;
+
+    function patchedHistoryMethod() {
+      const result = original.apply(this, arguments);
+      resetRouteRefreshWindow();
+      helper.runtime.scheduleRouteRefresh('route-change');
+      return result;
+    }
+
+    patchedHistoryMethod.__babelHelperPatched = true;
+    patchedHistoryMethod.__babelHelperOriginal = original;
+    window.history[name] = patchedHistoryMethod;
+  }
+
+  function ensureHistoryPatches() {
+    if (
+      typeof window.history.pushState === 'function' &&
+      !window.history.pushState.__babelHelperPatched
+    ) {
+      patchHistoryMethod('pushState');
+    }
+
+    if (
+      typeof window.history.replaceState === 'function' &&
+      !window.history.replaceState.__babelHelperPatched
+    ) {
+      patchHistoryMethod('replaceState');
+    }
+  }
+
+  var URL_POLL_INTERVAL_MS = 500;
+  var lastPolledHref = '';
+  var urlPollTimer = 0;
+
+  function startUrlPolling() {
+    if (urlPollTimer) {
+      return;
+    }
+
+    lastPolledHref = window.location.href;
+    urlPollTimer = window.setInterval(function pollUrl() {
+      ensureHistoryPatches();
+
+      var currentHref = window.location.href;
+      if (currentHref !== lastPolledHref) {
+        lastPolledHref = currentHref;
+        handleRouteEvent('url-poll');
+      }
+    }, URL_POLL_INTERVAL_MS);
+  }
+
+  function handleRouteEvent(reason) {
+    lastPolledHref = window.location.href;
+    resetRouteRefreshWindow();
+    helper.runtime.scheduleRouteRefresh(reason);
+  }
+
+  function handlePopState() {
+    handleRouteEvent('popstate');
+  }
+
+  function handlePageShow() {
+    handleRouteEvent('pageshow');
+  }
+
+  function bindRouteWatchers() {
+    if (helper.state.routeWatchBound) {
+      return;
+    }
+
+    patchHistoryMethod('pushState');
+    patchHistoryMethod('replaceState');
+    window.addEventListener('popstate', handlePopState, true);
+    window.addEventListener('pageshow', handlePageShow, true);
+    startUrlPolling();
+    helper.state.routeWatchBound = true;
+  }
+
+  function clearSessionFeatures() {
+    stopHotkeysObserver();
+    stopHotkeysEnhanceFrame();
+
+    if (typeof helper.resetCutState === 'function') {
+      helper.resetCutState();
+    } else if (typeof helper.clearCutPreview === 'function') {
+      helper.clearCutPreview();
+    }
+
+    if (typeof helper.clearMagnifier === 'function') {
+      helper.clearMagnifier();
+    }
+
+    if (typeof helper.setCurrentRow === 'function') {
+      helper.setCurrentRow(null);
+    }
+
+    helper.state.sessionActive = false;
+  }
+
+  function bindSessionFeatures() {
+    stopRouteRecoveryObserver();
+    helper.enhanceHotkeysDialog();
+    startHotkeysObserver();
+    helper.state.sessionActive = true;
+  }
+
+  helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason) {
+    helper.runtime.clearRuntimeTimer();
+    helper.state.routeRefreshTimer = window.setTimeout(() => {
+      helper.state.routeRefreshTimer = 0;
+      void helper.runtime.refreshRouteSession(reason || 'scheduled');
+    }, ROUTE_REFRESH_DELAY_MS);
+  };
+
+  helper.runtime.refreshRouteSession = function refreshRouteSession(reason) {
+    if (!isTranscriptionRoute()) {
+      clearSessionFeatures();
+      stopRouteRecoveryObserver();
+      helper.runtime.clearRuntimeTimer();
+      helper.state.routeRefreshAttempts = 0;
+      helper.state.routeRefreshWindowStartedAt = 0;
+      return false;
+    }
+
+    if (isReadOnlyFeedbackRoute()) {
+      clearSessionFeatures();
+      startRouteRecoveryObserver();
+      helper.runtime.clearRuntimeTimer();
+      helper.state.routeRefreshAttempts = 0;
+      helper.state.routeRefreshWindowStartedAt = 0;
+      return false;
+    }
+
+    if (hasTranscriptSurface()) {
+      bindSessionFeatures();
+      helper.runtime.clearRuntimeTimer();
+      helper.state.routeRefreshAttempts = 0;
+      helper.state.routeRefreshWindowStartedAt = 0;
+      return true;
+    }
+
+    startRouteRecoveryObserver();
+
+    const startedAt = helper.state.routeRefreshWindowStartedAt || Date.now();
+    if (!helper.state.routeRefreshWindowStartedAt) {
+      helper.state.routeRefreshWindowStartedAt = startedAt;
+    }
+
+    helper.state.routeRefreshAttempts += 1;
+    if (
+      helper.state.routeRefreshAttempts >= ROUTE_REFRESH_MAX_ATTEMPTS ||
+      Date.now() - startedAt >= ROUTE_REFRESH_MAX_WINDOW_MS
+    ) {
+      helper.runtime.clearRuntimeTimer();
+      return false;
+    }
+
+    helper.runtime.scheduleRouteRefresh(reason === 'await-surface' ? reason : 'await-surface');
+    return false;
   };
 
   helper.init = function init() {
+    if (helper.state.runtimeBound) {
+      return;
+    }
+
+    helper.state.runtimeBound = true;
+    bindRouteWatchers();
+    bindGlobalListeners();
     helper.bindRowTracking();
     if (typeof helper.bindCutPreview === 'function') {
       helper.bindCutPreview();
     }
-    helper.enhanceHotkeysDialog();
-    document.addEventListener('keydown', helper.handleKeydown, true);
-
-    const observer = new MutationObserver(() => {
-      helper.enhanceHotkeysDialog();
-    });
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
+    if (typeof helper.bindMagnifier === 'function') {
+      helper.bindMagnifier();
+    }
+    resetRouteRefreshWindow();
+    void helper.runtime.refreshRouteSession('init');
   };
 
   if (document.readyState === 'loading') {

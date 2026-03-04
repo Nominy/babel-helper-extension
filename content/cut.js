@@ -222,6 +222,19 @@
     );
   }
 
+  function getRegionHandleElement(element) {
+    let current = element instanceof HTMLElement ? element : null;
+    while (current instanceof HTMLElement) {
+      if (isRegionHandle(current)) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
   function isRegionBody(element) {
     if (!(element instanceof HTMLElement)) {
       return false;
@@ -1344,6 +1357,14 @@
     clearCutDraft();
   };
 
+  helper.resetCutState = function resetCutState() {
+    helper.state.smartSplitClickDraft = null;
+    helper.state.smartSplitClickContext = null;
+    helper.state.cutDraft = null;
+    helper.state.cutLastContainer = null;
+    helper.clearCutPreview();
+  };
+
   helper.startSelectionLoop = async function startSelectionLoop() {
     const preview = helper.state.cutPreview;
     if (!preview || helper.state.cutCommitPending) {
@@ -1788,7 +1809,7 @@
         return null;
       }
 
-      if (isRegionHandle(node)) {
+      if (getRegionHandleElement(node)) {
         return null;
       }
 
@@ -2652,6 +2673,12 @@
   };
 
   helper.handleCutPreviewKeydown = function handleCutPreviewKeydown(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === 'function') {
+      if (!helper.runtime.isSessionInteractive()) {
+        return false;
+      }
+    }
+
     if (!helper.state.cutPreview) {
       if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyL') {
         setSelectionLoopDebug('no-preview-key');
@@ -2724,6 +2751,12 @@
   };
 
   function handlePointerDown(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === 'function') {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     if (helper.state.cutCommitPending) {
       return;
     }
@@ -2749,6 +2782,12 @@
   }
 
   function handlePointerMove(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === 'function') {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     if (helper.state.cutCommitPending) {
       return;
     }
@@ -2774,6 +2813,12 @@
   }
 
   function handlePointerEnd(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === 'function') {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     if (helper.state.cutCommitPending) {
       return;
     }
@@ -2918,6 +2963,12 @@
   }
 
   function handleSmartSplitClick(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === 'function') {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     if (helper.state.cutCommitPending) {
       return;
     }
@@ -2940,10 +2991,28 @@
   }
 
   helper.bindCutPreview = function bindCutPreview() {
+    if (helper.state.cutListenersBound) {
+      return;
+    }
+
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('pointermove', handlePointerMove, true);
     document.addEventListener('pointerup', handlePointerEnd, true);
     document.addEventListener('pointercancel', handlePointerEnd, true);
     document.addEventListener('click', handleSmartSplitClick, true);
+    helper.state.cutListenersBound = true;
+  };
+
+  helper.unbindCutPreview = function unbindCutPreview() {
+    if (!helper.state.cutListenersBound) {
+      return;
+    }
+
+    document.removeEventListener('pointerdown', handlePointerDown, true);
+    document.removeEventListener('pointermove', handlePointerMove, true);
+    document.removeEventListener('pointerup', handlePointerEnd, true);
+    document.removeEventListener('pointercancel', handlePointerEnd, true);
+    document.removeEventListener('click', handleSmartSplitClick, true);
+    helper.state.cutListenersBound = false;
   };
 })();

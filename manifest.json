@@ -6,8 +6,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://dashboard.babel.audio/transcription*",
-        "https://dashboard.babel.audio/transcription/*"
+        "https://dashboard.babel.audio/*"
       ],
       "js": [
         "content/shared.js",

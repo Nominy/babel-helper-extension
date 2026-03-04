@@ -329,6 +329,11 @@
   }
 
   function injectBridge() {
+    if (window.__babelHelperMagnifierBridge) {
+      bridgeInjected = true;
+      return Promise.resolve(true);
+    }
+
     if (bridgeInjected) {
       return Promise.resolve(true);
     }
@@ -663,13 +668,37 @@
         magnifier.bridgeInstanceId = ensureResult.id;
       }
 
-      const updateResult = await callBridge("update", {
+      let updateResult = await callBridge("update", {
         instanceId: magnifier.bridgeInstanceId,
         time: target.timeSeconds,
         width,
         height,
         scale: SCALE,
       });
+
+      if ((!updateResult || !updateResult.ok) && magnifier.bridgeInstanceId) {
+        await callBridge("destroy", {
+          instanceId: magnifier.bridgeInstanceId,
+        });
+        magnifier.bridgeInstanceId = null;
+
+        const retryEnsure = await callBridge("ensure", {
+          hostMarker: magnifier.hostMarker,
+          mountMarker: magnifier.mountMarker,
+          height,
+          scale: SCALE,
+        });
+        if (retryEnsure && retryEnsure.ok && retryEnsure.id) {
+          magnifier.bridgeInstanceId = retryEnsure.id;
+          updateResult = await callBridge("update", {
+            instanceId: magnifier.bridgeInstanceId,
+            time: target.timeSeconds,
+            width,
+            height,
+            scale: SCALE,
+          });
+        }
+      }
 
       if (!updateResult || !updateResult.ok) {
         setStatus(magnifier, `${SCALE} unavailable`);
@@ -704,6 +733,12 @@
   }
 
   function handlePointerDown(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function") {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     const drag = getDragContextFromEvent(event);
     helper.state.magnifierDrag = drag;
     if (drag) {
@@ -712,6 +747,12 @@
   }
 
   function handlePointerMove(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function") {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     const drag = helper.state.magnifierDrag;
     if (!drag) {
       return;
@@ -732,6 +773,12 @@
   }
 
   function handlePointerEnd(event) {
+    if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function") {
+      if (!helper.runtime.isSessionInteractive()) {
+        return;
+      }
+    }
+
     const drag = helper.state.magnifierDrag;
     const pointerId = typeof event.pointerId === "number" ? event.pointerId : 1;
     if (drag && drag.pointerId === pointerId) {
@@ -740,8 +787,27 @@
     }
   }
 
-  document.addEventListener("pointerdown", handlePointerDown, true);
-  document.addEventListener("pointermove", handlePointerMove, true);
-  document.addEventListener("pointerup", handlePointerEnd, true);
-  document.addEventListener("pointercancel", handlePointerEnd, true);
+  helper.bindMagnifier = function bindMagnifier() {
+    if (helper.state.magnifierListenersBound) {
+      return;
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("pointermove", handlePointerMove, true);
+    document.addEventListener("pointerup", handlePointerEnd, true);
+    document.addEventListener("pointercancel", handlePointerEnd, true);
+    helper.state.magnifierListenersBound = true;
+  };
+
+  helper.unbindMagnifier = function unbindMagnifier() {
+    if (!helper.state.magnifierListenersBound) {
+      return;
+    }
+
+    document.removeEventListener("pointerdown", handlePointerDown, true);
+    document.removeEventListener("pointermove", handlePointerMove, true);
+    document.removeEventListener("pointerup", handlePointerEnd, true);
+    document.removeEventListener("pointercancel", handlePointerEnd, true);
+    helper.state.magnifierListenersBound = false;
+  };
 })();
