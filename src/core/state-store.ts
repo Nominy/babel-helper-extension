@@ -25,7 +25,8 @@
     smartSplitClickContext: null,
     selectionLoop: null,
     magnifier: null,
-    magnifierDrag: null
+    magnifierDrag: null,
+    speakerSwitchPending: false
   };
 }
 

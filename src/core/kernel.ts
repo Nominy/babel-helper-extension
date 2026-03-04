@@ -144,6 +144,9 @@ export function createHelperKernel() {
       if (typeof helper.unbindMagnifier === 'function') {
         helper.unbindMagnifier();
       }
+      if (typeof helper.unbindZoomPersistence === 'function') {
+        helper.unbindZoomPersistence();
+      }
       if (typeof helper.unbindRowTracking === 'function') {
         helper.unbindRowTracking();
       }

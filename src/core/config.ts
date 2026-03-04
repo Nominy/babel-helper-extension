@@ -13,6 +13,11 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
     rows.push(['Alt + ] (РЄ)', 'Move text after caret to next segment']);
   }
 
+  if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
+    rows.push(['Alt + 1 / Alt + 2', 'Switch active speaker workflow lane']);
+    rows.push(['Alt + ~', 'Reset lanes: show both, unmute both, select All Tracks']);
+  }
+
   if (featureSettings.rowActions) {
     rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
     rows.push(['Alt + Shift + Down', 'Merge with next segment']);

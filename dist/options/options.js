@@ -5,9 +5,11 @@
   var DEFAULT_FEATURE_SETTINGS = {
     hotkeysHelp: true,
     rowActions: true,
+    speakerWorkflowHotkeys: true,
     textMove: true,
     focusToggle: true,
     timelineSelection: true,
+    timelineZoomDefaults: true,
     magnifier: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
@@ -16,9 +18,11 @@
   var FEATURE_KEYS = [
     "hotkeysHelp",
     "rowActions",
+    "speakerWorkflowHotkeys",
     "textMove",
     "focusToggle",
     "timelineSelection",
+    "timelineZoomDefaults",
     "magnifier"
   ];
   var FEATURE_META = {
@@ -29,6 +33,10 @@
     rowActions: {
       label: "Row Actions",
       description: "Enable Delete, D, and Alt + Shift + Arrow merge shortcuts."
+    },
+    speakerWorkflowHotkeys: {
+      label: "Speaker Workflow Hotkeys",
+      description: "Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts."
     },
     textMove: {
       label: "Text Move",
@@ -41,6 +49,10 @@
     timelineSelection: {
       label: "Timeline Selection",
       description: "Enable Alt + Drag cut preview and S/Shift + S/L timeline actions."
+    },
+    timelineZoomDefaults: {
+      label: "Timeline Zoom Defaults",
+      description: "Remember last timeline zoom and apply it when a transcription session starts."
     },
     magnifier: {
       label: "Magnifier",

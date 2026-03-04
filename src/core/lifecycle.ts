@@ -249,7 +249,33 @@ export function registerLifecycle(helper: any) {
     }
 
     let handled = false;
-    if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketLeft') {
+    if (
+      isFeatureEnabled('rowActions') &&
+      isFeatureEnabled('speakerWorkflowHotkeys') &&
+      !event.shiftKey &&
+      event.code === 'Digit1' &&
+      typeof helper.switchSpeakerWorkflow === 'function'
+    ) {
+      handled = true;
+      void helper.switchSpeakerWorkflow('Speaker 1');
+    } else if (
+      isFeatureEnabled('rowActions') &&
+      isFeatureEnabled('speakerWorkflowHotkeys') &&
+      !event.shiftKey &&
+      event.code === 'Digit2' &&
+      typeof helper.switchSpeakerWorkflow === 'function'
+    ) {
+      handled = true;
+      void helper.switchSpeakerWorkflow('Speaker 2');
+    } else if (
+      isFeatureEnabled('rowActions') &&
+      isFeatureEnabled('speakerWorkflowHotkeys') &&
+      event.code === 'Backquote' &&
+      typeof helper.resetSpeakerWorkflow === 'function'
+    ) {
+      handled = true;
+      void helper.resetSpeakerWorkflow();
+    } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketLeft') {
       handled = helper.moveTextToAdjacentSegment(-1);
     } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
       handled = helper.moveTextToAdjacentSegment(1);
@@ -430,6 +456,10 @@ export function registerLifecycle(helper: any) {
       helper.clearMagnifier();
     }
 
+    if (typeof helper.unbindZoomPersistence === 'function') {
+      helper.unbindZoomPersistence();
+    }
+
     if (typeof helper.setCurrentRow === 'function') {
       helper.setCurrentRow(null);
     }
@@ -438,6 +468,7 @@ export function registerLifecycle(helper: any) {
   }
 
   function bindSessionFeatures() {
+    const wasSessionActive = Boolean(helper.state.sessionActive);
     stopRouteRecoveryObserver();
 
     if (isFeatureEnabled('hotkeysHelp')) {
@@ -448,6 +479,23 @@ export function registerLifecycle(helper: any) {
     } else {
       stopHotkeysObserver();
       stopHotkeysEnhanceFrame();
+    }
+
+    if (
+      isFeatureEnabled('timelineSelection') &&
+      isFeatureEnabled('timelineZoomDefaults') &&
+      typeof helper.bindZoomPersistence === 'function'
+    ) {
+      helper.bindZoomPersistence();
+    }
+
+    if (
+      !wasSessionActive &&
+      isFeatureEnabled('timelineSelection') &&
+      isFeatureEnabled('timelineZoomDefaults') &&
+      typeof helper.applySavedZoomDefault === 'function'
+    ) {
+      void helper.applySavedZoomDefault();
     }
 
     helper.state.sessionActive = true;

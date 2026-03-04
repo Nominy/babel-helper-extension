@@ -5,9 +5,11 @@
   var DEFAULT_FEATURE_SETTINGS = {
     hotkeysHelp: true,
     rowActions: true,
+    speakerWorkflowHotkeys: true,
     textMove: true,
     focusToggle: true,
     timelineSelection: true,
+    timelineZoomDefaults: true,
     magnifier: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
@@ -16,9 +18,11 @@
   var FEATURE_KEYS = [
     "hotkeysHelp",
     "rowActions",
+    "speakerWorkflowHotkeys",
     "textMove",
     "focusToggle",
     "timelineSelection",
+    "timelineZoomDefaults",
     "magnifier"
   ];
   function getExtensionStorage() {
@@ -66,6 +70,10 @@
     if (featureSettings.textMove) {
       rows.push(["Alt + [ (\u0420\u0490)", "Move text before caret to previous segment"]);
       rows.push(["Alt + ] (\u0420\u0404)", "Move text after caret to next segment"]);
+    }
+    if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
+      rows.push(["Alt + 1 / Alt + 2", "Switch active speaker workflow lane"]);
+      rows.push(["Alt + ~", "Reset lanes: show both, unmute both, select All Tracks"]);
     }
     if (featureSettings.rowActions) {
       rows.push(["Alt + Shift + Up", "Merge with previous segment"]);
@@ -134,7 +142,8 @@
       smartSplitClickContext: null,
       selectionLoop: null,
       magnifier: null,
-      magnifierDrag: null
+      magnifierDrag: null,
+      speakerSwitchPending: false
     };
   }
 
@@ -258,6 +267,7 @@
       return;
     }
     helper.__rowsRegistered = true;
+    helper.state.speakerSwitchPending = false;
     helper.getTranscriptRows = function getTranscriptRows() {
       return Array.from(document.querySelectorAll("tbody tr")).filter(
         (row) => row.querySelector(helper.config.rowTextareaSelector)
@@ -288,6 +298,333 @@
     function getReactFiber(element) {
       return getReactInternalValue(element, "__reactFiber$");
     }
+    function normalizeSpeakerLabel(value) {
+      const text = typeof value === "string" ? value : String(value ?? "");
+      const match = text.match(/\bspeaker\s*([12])\b/i);
+      if (!match) {
+        return "";
+      }
+      return "Speaker " + match[1];
+    }
+    function normalizeTrackFilterLabel(value) {
+      const text = typeof value === "string" ? value : String(value ?? "");
+      if (/\ball\s*tracks\b/i.test(text)) {
+        return "All Tracks";
+      }
+      return normalizeSpeakerLabel(text);
+    }
+    function getSpeakerLane(label) {
+      const normalizedTarget = normalizeSpeakerLabel(label);
+      if (!normalizedTarget) {
+        return null;
+      }
+      const targetLower = normalizedTarget.toLowerCase();
+      const headings = Array.from(document.querySelectorAll("h3"));
+      for (const heading of headings) {
+        if (!(heading instanceof HTMLElement)) {
+          continue;
+        }
+        if (helper.normalizeText(heading).toLowerCase() !== targetLower) {
+          continue;
+        }
+        const header = heading.parentElement;
+        if (!(header instanceof HTMLElement)) {
+          continue;
+        }
+        const visibilityButton = header.querySelector(
+          'button[aria-label="Show track"], button[aria-label="Hide track"]'
+        );
+        if (!(visibilityButton instanceof HTMLElement)) {
+          continue;
+        }
+        const controlsRoot = header.parentElement instanceof HTMLElement ? header.parentElement : header;
+        const solo = controlsRoot.querySelector('button[aria-label="Solo track"], button[aria-label="Unsolo track"]');
+        return {
+          label: normalizedTarget,
+          heading,
+          header,
+          controlsRoot,
+          visibilityButton,
+          soloButton: solo instanceof HTMLElement ? solo : null
+        };
+      }
+      return null;
+    }
+    function getLaneVisibilityState(lane) {
+      const button = lane && lane.visibilityButton instanceof HTMLElement && lane.visibilityButton.isConnected ? lane.visibilityButton : null;
+      if (!(button instanceof HTMLElement)) {
+        return "";
+      }
+      const ariaLabel = helper.normalizeText(button).toLowerCase() || "";
+      const semantic = (button.getAttribute("aria-label") || "").toLowerCase();
+      if (semantic === "show track" || ariaLabel === "show track") {
+        return "hidden";
+      }
+      if (semantic === "hide track" || ariaLabel === "hide track") {
+        return "visible";
+      }
+      return "";
+    }
+    function getLaneMuteState(lane) {
+      const button = lane && lane.soloButton instanceof HTMLElement && lane.soloButton.isConnected ? lane.soloButton : null;
+      if (!(button instanceof HTMLElement)) {
+        return "";
+      }
+      const label = (button.getAttribute("aria-label") || "").trim().toLowerCase();
+      if (label === "solo track") {
+        return "muted";
+      }
+      if (label === "unsolo track") {
+        return "unmuted";
+      }
+      return "";
+    }
+    function clickControl(element) {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+      try {
+        element.click();
+        return true;
+      } catch (_error) {
+        helper.dispatchClick(element);
+        return true;
+      }
+    }
+    async function ensureLaneVisibility(label, shouldBeVisible) {
+      const lane = getSpeakerLane(label);
+      if (!lane) {
+        return false;
+      }
+      const targetState = shouldBeVisible ? "visible" : "hidden";
+      const currentState = getLaneVisibilityState(lane);
+      if (currentState === targetState) {
+        return true;
+      }
+      clickControl(lane.visibilityButton);
+      const settled = await helper.waitFor(() => {
+        const refreshed = getSpeakerLane(label);
+        if (!refreshed) {
+          return null;
+        }
+        return getLaneVisibilityState(refreshed) === targetState ? refreshed : null;
+      }, 900, 40);
+      return Boolean(settled);
+    }
+    function getPlayAllTracksButton() {
+      const button = document.querySelector('button[aria-label="Play all tracks"]');
+      return button instanceof HTMLElement ? button : null;
+    }
+    async function ensureLaneMuteState(label, shouldBeMuted) {
+      const desired = shouldBeMuted ? "muted" : "unmuted";
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const lane = getSpeakerLane(label);
+        if (!lane) {
+          return false;
+        }
+        const current = getLaneMuteState(lane);
+        if (current === desired) {
+          return true;
+        }
+        const button = lane.soloButton;
+        if (!(button instanceof HTMLElement)) {
+          const ready = await helper.waitFor(() => {
+            const refreshed = getSpeakerLane(label);
+            return refreshed && refreshed.soloButton instanceof HTMLElement ? refreshed : null;
+          }, 600, 40);
+          if (!ready) {
+            continue;
+          }
+        }
+        const refreshedLane = getSpeakerLane(label);
+        if (!(refreshedLane && refreshedLane.soloButton instanceof HTMLElement)) {
+          continue;
+        }
+        clickControl(refreshedLane.soloButton);
+        const settled = await helper.waitFor(() => {
+          const next = getSpeakerLane(label);
+          return next && getLaneMuteState(next) === desired ? next : null;
+        }, 900, 40);
+        if (settled) {
+          return true;
+        }
+      }
+      return false;
+    }
+    function getUniqueLaneSoloButtons() {
+      const buttons = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const label of ["Speaker 1", "Speaker 2"]) {
+        const lane = getSpeakerLane(label);
+        const button = lane && lane.soloButton instanceof HTMLElement ? lane.soloButton : null;
+        if (!(button instanceof HTMLElement) || seen.has(button)) {
+          continue;
+        }
+        seen.add(button);
+        buttons.push(button);
+      }
+      return buttons;
+    }
+    function hasActiveSoloMode(buttons) {
+      for (const button of buttons) {
+        const label = (button.getAttribute("aria-label") || "").trim().toLowerCase();
+        if (label === "unsolo track") {
+          return true;
+        }
+      }
+      return false;
+    }
+    async function clearAllLaneMutes() {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const buttons = getUniqueLaneSoloButtons();
+        if (!buttons.length) {
+          return false;
+        }
+        const active = buttons.find(
+          (button) => (button.getAttribute("aria-label") || "").trim().toLowerCase() === "unsolo track"
+        );
+        if (!(active instanceof HTMLElement)) {
+          return true;
+        }
+        clickControl(active);
+        const settled = await helper.waitFor(() => {
+          const refreshedButtons = getUniqueLaneSoloButtons();
+          return refreshedButtons.length && !hasActiveSoloMode(refreshedButtons) ? refreshedButtons : null;
+        }, 900, 40);
+        if (settled) {
+          return true;
+        }
+      }
+      return false;
+    }
+    function findSpeakerSelectorCombobox() {
+      function isSpeakerSelectorCombobox(node) {
+        if (!(node instanceof HTMLElement)) {
+          return false;
+        }
+        const label = helper.normalizeText(node);
+        return Boolean(normalizeTrackFilterLabel(label));
+      }
+      const playAll = getPlayAllTracksButton();
+      let current = playAll instanceof HTMLElement ? playAll.parentElement : null;
+      while (current instanceof HTMLElement) {
+        const combo = Array.from(current.querySelectorAll('button[role="combobox"]')).find(
+          (node) => isSpeakerSelectorCombobox(node)
+        );
+        if (combo instanceof HTMLElement) {
+          return combo;
+        }
+        current = current.parentElement;
+      }
+      const fallback = Array.from(document.querySelectorAll('button[role="combobox"]')).find(
+        (node) => isSpeakerSelectorCombobox(node)
+      );
+      return fallback instanceof HTMLElement ? fallback : null;
+    }
+    function findSpeakerSelectorOption(label) {
+      const normalizedTarget = normalizeTrackFilterLabel(label);
+      if (!normalizedTarget) {
+        return null;
+      }
+      const targetLower = normalizedTarget.toLowerCase();
+      const candidates = Array.from(
+        document.querySelectorAll(
+          '[role="option"], [role="menuitemradio"], [role="menuitem"], [data-radix-collection-item]'
+        )
+      );
+      for (const node of candidates) {
+        if (!(node instanceof HTMLElement) || !helper.isVisible(node)) {
+          continue;
+        }
+        if (node.matches('button[role="combobox"]')) {
+          continue;
+        }
+        const candidateLabel = normalizeTrackFilterLabel(helper.normalizeText(node));
+        if (candidateLabel && candidateLabel.toLowerCase() === targetLower) {
+          return node;
+        }
+      }
+      return null;
+    }
+    async function selectSpeakerInToolbar(label) {
+      const normalizedTarget = normalizeTrackFilterLabel(label);
+      if (!normalizedTarget) {
+        return false;
+      }
+      const combo = findSpeakerSelectorCombobox();
+      if (!(combo instanceof HTMLElement)) {
+        return false;
+      }
+      const activeLabel = normalizeTrackFilterLabel(helper.normalizeText(combo));
+      if (activeLabel === normalizedTarget) {
+        return true;
+      }
+      clickControl(combo);
+      const option = await helper.waitFor(() => findSpeakerSelectorOption(normalizedTarget), 900, 40);
+      if (!(option instanceof HTMLElement)) {
+        return false;
+      }
+      clickControl(option);
+      const applied = await helper.waitFor(() => {
+        const nextCombo = findSpeakerSelectorCombobox();
+        if (!(nextCombo instanceof HTMLElement)) {
+          return null;
+        }
+        return normalizeTrackFilterLabel(helper.normalizeText(nextCombo)) === normalizedTarget ? nextCombo : null;
+      }, 1e3, 40);
+      return Boolean(applied);
+    }
+    helper.switchSpeakerWorkflow = async function switchSpeakerWorkflow(targetSpeakerLabel) {
+      if (typeof helper.isFeatureEnabled === "function" && !helper.isFeatureEnabled("speakerWorkflowHotkeys")) {
+        return false;
+      }
+      if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function" && !helper.runtime.isSessionInteractive()) {
+        return false;
+      }
+      const targetLabel = normalizeSpeakerLabel(targetSpeakerLabel);
+      if (!targetLabel) {
+        return false;
+      }
+      if (helper.state.speakerSwitchPending) {
+        return false;
+      }
+      const otherLabel = targetLabel === "Speaker 1" ? "Speaker 2" : "Speaker 1";
+      helper.state.speakerSwitchPending = true;
+      try {
+        const targetVisible = await ensureLaneVisibility(targetLabel, true);
+        const otherVisibleForMute = await ensureLaneVisibility(otherLabel, true);
+        const targetMuted = await ensureLaneMuteState(targetLabel, true);
+        const otherUnmuted = await ensureLaneMuteState(otherLabel, false);
+        const otherHidden = await ensureLaneVisibility(otherLabel, false);
+        const selectorUpdated = await selectSpeakerInToolbar(targetLabel);
+        return Boolean(
+          targetVisible && otherVisibleForMute && targetMuted && otherUnmuted && otherHidden && selectorUpdated
+        );
+      } finally {
+        helper.state.speakerSwitchPending = false;
+      }
+    };
+    helper.resetSpeakerWorkflow = async function resetSpeakerWorkflow() {
+      if (typeof helper.isFeatureEnabled === "function" && !helper.isFeatureEnabled("speakerWorkflowHotkeys")) {
+        return false;
+      }
+      if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function" && !helper.runtime.isSessionInteractive()) {
+        return false;
+      }
+      if (helper.state.speakerSwitchPending) {
+        return false;
+      }
+      helper.state.speakerSwitchPending = true;
+      try {
+        const speakerOneVisible = await ensureLaneVisibility("Speaker 1", true);
+        const speakerTwoVisible = await ensureLaneVisibility("Speaker 2", true);
+        const allUnmuted = await clearAllLaneMutes();
+        const selectorUpdated = await selectSpeakerInToolbar("All Tracks");
+        return Boolean(speakerOneVisible && speakerTwoVisible && allUnmuted && selectorUpdated);
+      } finally {
+        helper.state.speakerSwitchPending = false;
+      }
+    };
     helper.getRowIdentity = function getRowIdentity(row) {
       if (!(row instanceof HTMLElement)) {
         return null;
@@ -923,6 +1260,62 @@
     };
   }
 
+  // src/core/workflow-defaults.ts
+  var WORKFLOW_DEFAULTS_STORAGE_KEY = "workflowDefaults";
+  var MIN_ZOOM_VALUE = 10;
+  var MAX_ZOOM_VALUE = 2e3;
+  var DEFAULT_WORKFLOW_DEFAULTS = {
+    lastZoomValue: null
+  };
+  function getExtensionStorage2() {
+    const chromeApi = globalThis.chrome;
+    if (!chromeApi || !chromeApi.storage || !chromeApi.storage.local) {
+      return null;
+    }
+    return chromeApi.storage.local;
+  }
+  function normalizeZoomValue(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    return Math.min(MAX_ZOOM_VALUE, Math.max(MIN_ZOOM_VALUE, Math.round(numeric)));
+  }
+  function normalizeWorkflowDefaults(source) {
+    const incoming = source && typeof source === "object" && source !== null ? source : {};
+    return {
+      lastZoomValue: normalizeZoomValue(incoming.lastZoomValue)
+    };
+  }
+  async function loadWorkflowDefaults() {
+    const storage = getExtensionStorage2();
+    if (!storage || typeof storage.get !== "function") {
+      return normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS);
+    }
+    return new Promise((resolve) => {
+      storage.get(WORKFLOW_DEFAULTS_STORAGE_KEY, (items) => {
+        const runtime = globalThis.chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS));
+          return;
+        }
+        resolve(normalizeWorkflowDefaults(items?.[WORKFLOW_DEFAULTS_STORAGE_KEY]));
+      });
+    });
+  }
+  async function saveWorkflowDefaults(defaults) {
+    const normalized = normalizeWorkflowDefaults(defaults);
+    const storage = getExtensionStorage2();
+    if (!storage || typeof storage.set !== "function") {
+      return normalized;
+    }
+    return new Promise((resolve) => {
+      storage.set({ [WORKFLOW_DEFAULTS_STORAGE_KEY]: normalized }, () => {
+        resolve(normalized);
+      });
+    });
+  }
+
   // src/services/timeline-selection-service.ts
   function registerTimelineSelectionService(helper) {
     if (!helper || helper.__cutRegistered) {
@@ -942,6 +1335,7 @@
     const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
     const BRIDGE_SCRIPT_PATH = "dist/content/magnifier-bridge.js";
     const BRIDGE_TIMEOUT_MS = 700;
+    const ZOOM_PERSIST_DEBOUNCE_MS = 240;
     helper.state.cutDraft = null;
     helper.state.cutPreview = null;
     helper.state.cutCommitPending = false;
@@ -957,6 +1351,19 @@
     let bridgeInjected = false;
     let bridgeLoadPromise = null;
     let bridgeRequestId = 0;
+    let zoomPersistenceSlider = null;
+    let zoomPersistenceObserver = null;
+    let zoomPersistenceTimer = 0;
+    let zoomPersistenceApplying = false;
+    let zoomPersistenceLoaded = false;
+    let zoomPersistenceDefaults = null;
+    let zoomPersistenceSaveChain = Promise.resolve();
+    function isFeatureEnabled(featureKey) {
+      if (typeof helper.isFeatureEnabled === "function") {
+        return helper.isFeatureEnabled(featureKey);
+      }
+      return true;
+    }
     function setSelectionLoopDebug(stage, details) {
       const root = document.documentElement;
       if (!(root instanceof HTMLElement)) {
@@ -1272,6 +1679,203 @@
       const slider = document.querySelector(selector);
       return slider instanceof HTMLElement ? slider : null;
     }
+    function clearZoomPersistenceTimer() {
+      if (zoomPersistenceTimer) {
+        window.clearTimeout(zoomPersistenceTimer);
+        zoomPersistenceTimer = 0;
+      }
+    }
+    function getNumericZoomValueFromSlider(slider) {
+      if (!(slider instanceof HTMLElement)) {
+        return null;
+      }
+      const numeric = Number(slider.getAttribute("aria-valuenow"));
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+    async function ensureZoomPersistenceDefaults() {
+      if (zoomPersistenceLoaded && zoomPersistenceDefaults) {
+        return zoomPersistenceDefaults;
+      }
+      const loaded = await loadWorkflowDefaults();
+      zoomPersistenceDefaults = loaded;
+      zoomPersistenceLoaded = true;
+      return loaded;
+    }
+    async function persistZoomValue(value) {
+      if (!isFeatureEnabled("timelineZoomDefaults")) {
+        return;
+      }
+      const normalized = normalizeZoomValue(value);
+      if (!Number.isFinite(normalized)) {
+        return;
+      }
+      const defaults = await ensureZoomPersistenceDefaults();
+      if (defaults.lastZoomValue === normalized) {
+        return;
+      }
+      const saved = await saveWorkflowDefaults({
+        ...defaults,
+        lastZoomValue: normalized
+      });
+      zoomPersistenceDefaults = saved;
+      zoomPersistenceLoaded = true;
+    }
+    function queuePersistZoomValue(value) {
+      zoomPersistenceSaveChain = zoomPersistenceSaveChain.then(() => persistZoomValue(value)).catch(() => {
+      });
+    }
+    function scheduleZoomPersistenceFromSlider(slider) {
+      if (!isFeatureEnabled("timelineZoomDefaults")) {
+        return;
+      }
+      if (zoomPersistenceApplying) {
+        return;
+      }
+      const value = getNumericZoomValueFromSlider(slider);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      clearZoomPersistenceTimer();
+      zoomPersistenceTimer = window.setTimeout(() => {
+        zoomPersistenceTimer = 0;
+        queuePersistZoomValue(value);
+      }, ZOOM_PERSIST_DEBOUNCE_MS);
+    }
+    function getZoomValueCallbacks(slider) {
+      if (!(slider instanceof HTMLElement)) {
+        return [];
+      }
+      const callbacks = [];
+      let node = getReactFiber(slider);
+      let depth = 0;
+      while (node && typeof node === "object" && depth < 40) {
+        const props = node.memoizedProps;
+        if (props && typeof props === "object" && typeof props.onValueChange === "function") {
+          callbacks.push(props.onValueChange);
+        }
+        node = node.return;
+        depth += 1;
+      }
+      return callbacks;
+    }
+    async function applyZoomValueToSlider(value) {
+      const slider = getZoomSliderElement();
+      if (!(slider instanceof HTMLElement)) {
+        return false;
+      }
+      const sliderMin = Number(slider.getAttribute("aria-valuemin"));
+      const sliderMax = Number(slider.getAttribute("aria-valuemax"));
+      if (!Number.isFinite(sliderMin) || !Number.isFinite(sliderMax) || sliderMax <= sliderMin) {
+        return false;
+      }
+      const normalized = normalizeZoomValue(value);
+      if (!Number.isFinite(normalized)) {
+        return false;
+      }
+      const target = Math.min(sliderMax, Math.max(sliderMin, normalized));
+      const current = getNumericZoomValueFromSlider(slider);
+      if (Number.isFinite(current) && Math.abs(current - target) <= 0.5) {
+        return true;
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let invoked = false;
+        const bridgeResult = await callSelectionBridge("zoom-set", {
+          value: target
+        });
+        if (bridgeResult && bridgeResult.ok) {
+          invoked = true;
+        }
+        if (!invoked) {
+          const callbacks = getZoomValueCallbacks(slider);
+          for (const callback of callbacks) {
+            try {
+              callback([target]);
+              invoked = true;
+            } catch (_error) {
+            }
+          }
+        }
+        if (!invoked) {
+          return false;
+        }
+        const settled = await helper.waitFor(() => {
+          const refreshedSlider = getZoomSliderElement();
+          const refreshedValue = getNumericZoomValueFromSlider(refreshedSlider);
+          return Number.isFinite(refreshedValue) && Math.abs(refreshedValue - target) <= 1 ? refreshedSlider : null;
+        }, 240, 20);
+        if (settled) {
+          return true;
+        }
+        await helper.sleep(32);
+      }
+      return false;
+    }
+    helper.bindZoomPersistence = function bindZoomPersistence() {
+      if (!isFeatureEnabled("timelineZoomDefaults")) {
+        helper.unbindZoomPersistence();
+        return false;
+      }
+      const slider = getZoomSliderElement();
+      if (!(slider instanceof HTMLElement) || typeof MutationObserver !== "function") {
+        return false;
+      }
+      if (zoomPersistenceSlider === slider && zoomPersistenceObserver) {
+        return true;
+      }
+      if (zoomPersistenceObserver && typeof zoomPersistenceObserver.disconnect === "function") {
+        zoomPersistenceObserver.disconnect();
+      }
+      zoomPersistenceSlider = slider;
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === "attributes" && mutation.attributeName === "aria-valuenow") {
+            scheduleZoomPersistenceFromSlider(slider);
+            return;
+          }
+        }
+      });
+      observer.observe(slider, {
+        attributes: true,
+        attributeFilter: ["aria-valuenow"]
+      });
+      zoomPersistenceObserver = observer;
+      return true;
+    };
+    helper.unbindZoomPersistence = function unbindZoomPersistence() {
+      clearZoomPersistenceTimer();
+      if (zoomPersistenceObserver && typeof zoomPersistenceObserver.disconnect === "function") {
+        zoomPersistenceObserver.disconnect();
+      }
+      zoomPersistenceObserver = null;
+      zoomPersistenceSlider = null;
+    };
+    helper.applySavedZoomDefault = async function applySavedZoomDefault() {
+      if (!isFeatureEnabled("timelineZoomDefaults")) {
+        return false;
+      }
+      const slider = getZoomSliderElement() || await helper.waitFor(() => getZoomSliderElement(), 1e3, 50);
+      if (!(slider instanceof HTMLElement)) {
+        return false;
+      }
+      helper.bindZoomPersistence();
+      const defaults = await ensureZoomPersistenceDefaults();
+      const targetValue = normalizeZoomValue(defaults.lastZoomValue);
+      if (!Number.isFinite(targetValue)) {
+        return false;
+      }
+      const currentValue = getNumericZoomValueFromSlider(slider);
+      if (Number.isFinite(currentValue) && Math.abs(currentValue - targetValue) <= 0.5) {
+        return true;
+      }
+      zoomPersistenceApplying = true;
+      try {
+        return await applyZoomValueToSlider(targetValue);
+      } finally {
+        window.setTimeout(() => {
+          zoomPersistenceApplying = false;
+        }, 120);
+      }
+    };
     function getZoomSliderSignature() {
       const slider = getZoomSliderElement();
       if (!(slider instanceof HTMLElement)) {
@@ -2222,6 +2826,17 @@
       updatePreviewElement();
     }
     function beginPreviewDrag(event) {
+      if (event.button !== 0) {
+        if (event.button === 1) {
+          const previewElement2 = getPreviewHostFromEvent(event);
+          if (previewElement2 instanceof HTMLElement && helper.state.cutPreview) {
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
+          }
+        }
+        return false;
+      }
       const previewElement = getPreviewHostFromEvent(event);
       const preview = helper.state.cutPreview;
       if (!(previewElement instanceof HTMLElement) || !preview) {
@@ -4075,7 +4690,16 @@
         return;
       }
       let handled = false;
-      if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketLeft") {
+      if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && !event.shiftKey && event.code === "Digit1" && typeof helper.switchSpeakerWorkflow === "function") {
+        handled = true;
+        void helper.switchSpeakerWorkflow("Speaker 1");
+      } else if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && !event.shiftKey && event.code === "Digit2" && typeof helper.switchSpeakerWorkflow === "function") {
+        handled = true;
+        void helper.switchSpeakerWorkflow("Speaker 2");
+      } else if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && event.code === "Backquote" && typeof helper.resetSpeakerWorkflow === "function") {
+        handled = true;
+        void helper.resetSpeakerWorkflow();
+      } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketLeft") {
         handled = helper.moveTextToAdjacentSegment(-1);
       } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketRight") {
         handled = helper.moveTextToAdjacentSegment(1);
@@ -4217,12 +4841,16 @@
       if (typeof helper.clearMagnifier === "function") {
         helper.clearMagnifier();
       }
+      if (typeof helper.unbindZoomPersistence === "function") {
+        helper.unbindZoomPersistence();
+      }
       if (typeof helper.setCurrentRow === "function") {
         helper.setCurrentRow(null);
       }
       helper.state.sessionActive = false;
     }
     function bindSessionFeatures() {
+      const wasSessionActive = Boolean(helper.state.sessionActive);
       stopRouteRecoveryObserver();
       if (isFeatureEnabled("hotkeysHelp")) {
         if (typeof helper.enhanceHotkeysDialog === "function") {
@@ -4232,6 +4860,12 @@
       } else {
         stopHotkeysObserver();
         stopHotkeysEnhanceFrame();
+      }
+      if (isFeatureEnabled("timelineSelection") && isFeatureEnabled("timelineZoomDefaults") && typeof helper.bindZoomPersistence === "function") {
+        helper.bindZoomPersistence();
+      }
+      if (!wasSessionActive && isFeatureEnabled("timelineSelection") && isFeatureEnabled("timelineZoomDefaults") && typeof helper.applySavedZoomDefault === "function") {
+        void helper.applySavedZoomDefault();
       }
       helper.state.sessionActive = true;
     }
@@ -4512,6 +5146,9 @@
         }
         if (typeof helper.unbindMagnifier === "function") {
           helper.unbindMagnifier();
+        }
+        if (typeof helper.unbindZoomPersistence === "function") {
+          helper.unbindZoomPersistence();
         }
         if (typeof helper.unbindRowTracking === "function") {
           helper.unbindRowTracking();

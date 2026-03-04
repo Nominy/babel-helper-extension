@@ -5,6 +5,7 @@ export function registerRowService(helper: any) {
   }
 
   helper.__rowsRegistered = true;
+  helper.state.speakerSwitchPending = false;
 
   helper.getTranscriptRows = function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
@@ -45,6 +46,435 @@ export function registerRowService(helper: any) {
   function getReactFiber(element) {
     return getReactInternalValue(element, '__reactFiber$');
   }
+
+  function normalizeSpeakerLabel(value) {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    const match = text.match(/\bspeaker\s*([12])\b/i);
+    if (!match) {
+      return '';
+    }
+
+    return 'Speaker ' + match[1];
+  }
+
+  function normalizeTrackFilterLabel(value) {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    if (/\ball\s*tracks\b/i.test(text)) {
+      return 'All Tracks';
+    }
+
+    return normalizeSpeakerLabel(text);
+  }
+
+  function getSpeakerLane(label) {
+    const normalizedTarget = normalizeSpeakerLabel(label);
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const targetLower = normalizedTarget.toLowerCase();
+    const headings = Array.from(document.querySelectorAll('h3'));
+    for (const heading of headings) {
+      if (!(heading instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (helper.normalizeText(heading).toLowerCase() !== targetLower) {
+        continue;
+      }
+
+      const header = heading.parentElement;
+      if (!(header instanceof HTMLElement)) {
+        continue;
+      }
+
+      const visibilityButton = header.querySelector(
+        'button[aria-label="Show track"], button[aria-label="Hide track"]'
+      );
+      if (!(visibilityButton instanceof HTMLElement)) {
+        continue;
+      }
+
+      const controlsRoot = header.parentElement instanceof HTMLElement ? header.parentElement : header;
+      const solo = controlsRoot.querySelector('button[aria-label="Solo track"], button[aria-label="Unsolo track"]');
+
+      return {
+        label: normalizedTarget,
+        heading,
+        header,
+        controlsRoot,
+        visibilityButton,
+        soloButton: solo instanceof HTMLElement ? solo : null
+      };
+    }
+
+    return null;
+  }
+
+  function getLaneVisibilityState(lane) {
+    const button =
+      lane &&
+      lane.visibilityButton instanceof HTMLElement &&
+      lane.visibilityButton.isConnected
+        ? lane.visibilityButton
+        : null;
+    if (!(button instanceof HTMLElement)) {
+      return '';
+    }
+
+    const ariaLabel = helper.normalizeText(button).toLowerCase() || '';
+    const semantic = (button.getAttribute('aria-label') || '').toLowerCase();
+    if (semantic === 'show track' || ariaLabel === 'show track') {
+      return 'hidden';
+    }
+    if (semantic === 'hide track' || ariaLabel === 'hide track') {
+      return 'visible';
+    }
+
+    return '';
+  }
+
+  function getLaneMuteState(lane) {
+    const button =
+      lane &&
+      lane.soloButton instanceof HTMLElement &&
+      lane.soloButton.isConnected
+        ? lane.soloButton
+        : null;
+    if (!(button instanceof HTMLElement)) {
+      return '';
+    }
+
+    const label = (button.getAttribute('aria-label') || '').trim().toLowerCase();
+    if (label === 'solo track') {
+      return 'muted';
+    }
+    if (label === 'unsolo track') {
+      return 'unmuted';
+    }
+
+    return '';
+  }
+
+  function clickControl(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    try {
+      element.click();
+      return true;
+    } catch (_error) {
+      helper.dispatchClick(element);
+      return true;
+    }
+  }
+
+  async function ensureLaneVisibility(label, shouldBeVisible) {
+    const lane = getSpeakerLane(label);
+    if (!lane) {
+      return false;
+    }
+
+    const targetState = shouldBeVisible ? 'visible' : 'hidden';
+    const currentState = getLaneVisibilityState(lane);
+    if (currentState === targetState) {
+      return true;
+    }
+
+    clickControl(lane.visibilityButton);
+
+    const settled = await helper.waitFor(() => {
+      const refreshed = getSpeakerLane(label);
+      if (!refreshed) {
+        return null;
+      }
+
+      return getLaneVisibilityState(refreshed) === targetState ? refreshed : null;
+    }, 900, 40);
+
+    return Boolean(settled);
+  }
+
+  function getPlayAllTracksButton() {
+    const button = document.querySelector('button[aria-label="Play all tracks"]');
+    return button instanceof HTMLElement ? button : null;
+  }
+
+  async function ensureLaneMuteState(label, shouldBeMuted) {
+    const desired = shouldBeMuted ? 'muted' : 'unmuted';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const lane = getSpeakerLane(label);
+      if (!lane) {
+        return false;
+      }
+
+      const current = getLaneMuteState(lane);
+      if (current === desired) {
+        return true;
+      }
+
+      const button = lane.soloButton;
+      if (!(button instanceof HTMLElement)) {
+        const ready = await helper.waitFor(() => {
+          const refreshed = getSpeakerLane(label);
+          return refreshed && refreshed.soloButton instanceof HTMLElement ? refreshed : null;
+        }, 600, 40);
+
+        if (!ready) {
+          continue;
+        }
+      }
+
+      const refreshedLane = getSpeakerLane(label);
+      if (!(refreshedLane && refreshedLane.soloButton instanceof HTMLElement)) {
+        continue;
+      }
+
+      clickControl(refreshedLane.soloButton);
+      const settled = await helper.waitFor(() => {
+        const next = getSpeakerLane(label);
+        return next && getLaneMuteState(next) === desired ? next : null;
+      }, 900, 40);
+      if (settled) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getUniqueLaneSoloButtons() {
+    const buttons = [];
+    const seen = new Set();
+    for (const label of ['Speaker 1', 'Speaker 2']) {
+      const lane = getSpeakerLane(label);
+      const button = lane && lane.soloButton instanceof HTMLElement ? lane.soloButton : null;
+      if (!(button instanceof HTMLElement) || seen.has(button)) {
+        continue;
+      }
+
+      seen.add(button);
+      buttons.push(button);
+    }
+
+    return buttons;
+  }
+
+  function hasActiveSoloMode(buttons) {
+    for (const button of buttons) {
+      const label = (button.getAttribute('aria-label') || '').trim().toLowerCase();
+      if (label === 'unsolo track') {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function clearAllLaneMutes() {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const buttons = getUniqueLaneSoloButtons();
+      if (!buttons.length) {
+        return false;
+      }
+
+      const active = buttons.find(
+        (button) => (button.getAttribute('aria-label') || '').trim().toLowerCase() === 'unsolo track'
+      );
+      if (!(active instanceof HTMLElement)) {
+        return true;
+      }
+
+      clickControl(active);
+      const settled = await helper.waitFor(() => {
+        const refreshedButtons = getUniqueLaneSoloButtons();
+        return refreshedButtons.length && !hasActiveSoloMode(refreshedButtons) ? refreshedButtons : null;
+      }, 900, 40);
+      if (settled) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function findSpeakerSelectorCombobox() {
+    function isSpeakerSelectorCombobox(node) {
+      if (!(node instanceof HTMLElement)) {
+        return false;
+      }
+
+      const label = helper.normalizeText(node);
+      return Boolean(normalizeTrackFilterLabel(label));
+    }
+
+    const playAll = getPlayAllTracksButton();
+    let current = playAll instanceof HTMLElement ? playAll.parentElement : null;
+
+    while (current instanceof HTMLElement) {
+      const combo = Array.from(current.querySelectorAll('button[role="combobox"]')).find((node) =>
+        isSpeakerSelectorCombobox(node)
+      );
+      if (combo instanceof HTMLElement) {
+        return combo;
+      }
+
+      current = current.parentElement;
+    }
+
+    const fallback = Array.from(document.querySelectorAll('button[role="combobox"]')).find((node) =>
+      isSpeakerSelectorCombobox(node)
+    );
+
+    return fallback instanceof HTMLElement ? fallback : null;
+  }
+
+  function findSpeakerSelectorOption(label) {
+    const normalizedTarget = normalizeTrackFilterLabel(label);
+    if (!normalizedTarget) {
+      return null;
+    }
+
+    const targetLower = normalizedTarget.toLowerCase();
+    const candidates = Array.from(
+      document.querySelectorAll(
+        '[role="option"], [role="menuitemradio"], [role="menuitem"], [data-radix-collection-item]'
+      )
+    );
+
+    for (const node of candidates) {
+      if (!(node instanceof HTMLElement) || !helper.isVisible(node)) {
+        continue;
+      }
+
+      if (node.matches('button[role="combobox"]')) {
+        continue;
+      }
+
+      const candidateLabel = normalizeTrackFilterLabel(helper.normalizeText(node));
+      if (candidateLabel && candidateLabel.toLowerCase() === targetLower) {
+        return node;
+      }
+    }
+
+    return null;
+  }
+
+  async function selectSpeakerInToolbar(label) {
+    const normalizedTarget = normalizeTrackFilterLabel(label);
+    if (!normalizedTarget) {
+      return false;
+    }
+
+    const combo = findSpeakerSelectorCombobox();
+    if (!(combo instanceof HTMLElement)) {
+      return false;
+    }
+
+    const activeLabel = normalizeTrackFilterLabel(helper.normalizeText(combo));
+    if (activeLabel === normalizedTarget) {
+      return true;
+    }
+
+    clickControl(combo);
+
+    const option = await helper.waitFor(() => findSpeakerSelectorOption(normalizedTarget), 900, 40);
+    if (!(option instanceof HTMLElement)) {
+      return false;
+    }
+
+    clickControl(option);
+    const applied = await helper.waitFor(() => {
+      const nextCombo = findSpeakerSelectorCombobox();
+      if (!(nextCombo instanceof HTMLElement)) {
+        return null;
+      }
+
+      return normalizeTrackFilterLabel(helper.normalizeText(nextCombo)) === normalizedTarget
+        ? nextCombo
+        : null;
+    }, 1000, 40);
+
+    return Boolean(applied);
+  }
+
+  helper.switchSpeakerWorkflow = async function switchSpeakerWorkflow(targetSpeakerLabel) {
+    if (typeof helper.isFeatureEnabled === 'function' && !helper.isFeatureEnabled('speakerWorkflowHotkeys')) {
+      return false;
+    }
+
+    if (
+      helper.runtime &&
+      typeof helper.runtime.isSessionInteractive === 'function' &&
+      !helper.runtime.isSessionInteractive()
+    ) {
+      return false;
+    }
+
+    const targetLabel = normalizeSpeakerLabel(targetSpeakerLabel);
+    if (!targetLabel) {
+      return false;
+    }
+
+    if (helper.state.speakerSwitchPending) {
+      return false;
+    }
+
+    const otherLabel = targetLabel === 'Speaker 1' ? 'Speaker 2' : 'Speaker 1';
+    helper.state.speakerSwitchPending = true;
+
+    try {
+      const targetVisible = await ensureLaneVisibility(targetLabel, true);
+      const otherVisibleForMute = await ensureLaneVisibility(otherLabel, true);
+      const targetMuted = await ensureLaneMuteState(targetLabel, true);
+      const otherUnmuted = await ensureLaneMuteState(otherLabel, false);
+      const otherHidden = await ensureLaneVisibility(otherLabel, false);
+      const selectorUpdated = await selectSpeakerInToolbar(targetLabel);
+
+      return Boolean(
+        targetVisible &&
+        otherVisibleForMute &&
+        targetMuted &&
+        otherUnmuted &&
+        otherHidden &&
+        selectorUpdated
+      );
+    } finally {
+      helper.state.speakerSwitchPending = false;
+    }
+  };
+
+  helper.resetSpeakerWorkflow = async function resetSpeakerWorkflow() {
+    if (typeof helper.isFeatureEnabled === 'function' && !helper.isFeatureEnabled('speakerWorkflowHotkeys')) {
+      return false;
+    }
+
+    if (
+      helper.runtime &&
+      typeof helper.runtime.isSessionInteractive === 'function' &&
+      !helper.runtime.isSessionInteractive()
+    ) {
+      return false;
+    }
+
+    if (helper.state.speakerSwitchPending) {
+      return false;
+    }
+
+    helper.state.speakerSwitchPending = true;
+
+    try {
+      const speakerOneVisible = await ensureLaneVisibility('Speaker 1', true);
+      const speakerTwoVisible = await ensureLaneVisibility('Speaker 2', true);
+      const allUnmuted = await clearAllLaneMutes();
+      const selectorUpdated = await selectSpeakerInToolbar('All Tracks');
+
+      return Boolean(speakerOneVisible && speakerTwoVisible && allUnmuted && selectorUpdated);
+    } finally {
+      helper.state.speakerSwitchPending = false;
+    }
+  };
 
   helper.getRowIdentity = function getRowIdentity(row) {
     if (!(row instanceof HTMLElement)) {

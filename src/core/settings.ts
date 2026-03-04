@@ -1,17 +1,21 @@
 export type FeatureSettingKey =
   | 'hotkeysHelp'
   | 'rowActions'
+  | 'speakerWorkflowHotkeys'
   | 'textMove'
   | 'focusToggle'
   | 'timelineSelection'
+  | 'timelineZoomDefaults'
   | 'magnifier';
 
 export interface FeatureSettings {
   hotkeysHelp: boolean;
   rowActions: boolean;
+  speakerWorkflowHotkeys: boolean;
   textMove: boolean;
   focusToggle: boolean;
   timelineSelection: boolean;
+  timelineZoomDefaults: boolean;
   magnifier: boolean;
 }
 
@@ -29,9 +33,11 @@ export const SETTINGS_STORAGE_KEY = 'settings';
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   hotkeysHelp: true,
   rowActions: true,
+  speakerWorkflowHotkeys: true,
   textMove: true,
   focusToggle: true,
   timelineSelection: true,
+  timelineZoomDefaults: true,
   magnifier: true
 };
 
@@ -42,9 +48,11 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
 export const FEATURE_KEYS: FeatureSettingKey[] = [
   'hotkeysHelp',
   'rowActions',
+  'speakerWorkflowHotkeys',
   'textMove',
   'focusToggle',
   'timelineSelection',
+  'timelineZoomDefaults',
   'magnifier'
 ];
 
@@ -57,6 +65,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
     label: 'Row Actions',
     description: 'Enable Delete, D, and Alt + Shift + Arrow merge shortcuts.'
   },
+  speakerWorkflowHotkeys: {
+    label: 'Speaker Workflow Hotkeys',
+    description: 'Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts.'
+  },
   textMove: {
     label: 'Text Move',
     description: 'Enable Alt + [ and Alt + ] to move text between adjacent segments.'
@@ -68,6 +80,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   timelineSelection: {
     label: 'Timeline Selection',
     description: 'Enable Alt + Drag cut preview and S/Shift + S/L timeline actions.'
+  },
+  timelineZoomDefaults: {
+    label: 'Timeline Zoom Defaults',
+    description: 'Remember last timeline zoom and apply it when a transcription session starts.'
   },
   magnifier: {
     label: 'Magnifier',

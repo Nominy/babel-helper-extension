@@ -1399,6 +1399,72 @@ export function initMagnifierBridge() {
     return { ok: true };
   }
 
+  function getZoomSliderElement() {
+    const selector =
+      '[role="slider"][data-orientation="horizontal"][aria-valuemin="10"][aria-valuemax="2000"]';
+    const slider = document.querySelector(selector);
+    return slider instanceof HTMLElement ? slider : null;
+  }
+
+  function getZoomValueCallbacks(slider) {
+    if (!(slider instanceof HTMLElement)) {
+      return [];
+    }
+
+    const callbacks = [];
+    let node = getReactFiber(slider);
+    let depth = 0;
+    while (node && typeof node === 'object' && depth < 40) {
+      const props = safe(() => node.memoizedProps, null);
+      if (props && typeof props === 'object' && typeof props.onValueChange === 'function') {
+        callbacks.push(props.onValueChange);
+      }
+
+      node = safe(() => node.return, null);
+      depth += 1;
+    }
+
+    return callbacks;
+  }
+
+  function setZoomValue(value) {
+    const slider = getZoomSliderElement();
+    if (!(slider instanceof HTMLElement)) {
+      return { ok: false, reason: 'missing-slider' };
+    }
+
+    const min = Number(slider.getAttribute('aria-valuemin'));
+    const max = Number(slider.getAttribute('aria-valuemax'));
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+      return { ok: false, reason: 'invalid-slider-range' };
+    }
+
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return { ok: false, reason: 'invalid-value' };
+    }
+
+    const target = clamp(numeric, min, max);
+    const callbacks = getZoomValueCallbacks(slider);
+    if (!callbacks.length) {
+      return { ok: false, reason: 'missing-onValueChange' };
+    }
+
+    for (const callback of callbacks) {
+      try {
+        callback([target]);
+      } catch (_error) {
+        // Ignore callback errors and continue; multiple callbacks can exist.
+      }
+    }
+
+    return {
+      ok: true,
+      target,
+      current: Number(slider.getAttribute('aria-valuenow')) || null
+    };
+  }
+
   function startLoop(hostMarker, start, end) {
     const startSeconds = Number(start);
     const endSeconds = Number(end);
@@ -1504,6 +1570,11 @@ export function initMagnifierBridge() {
 
     if (operation === 'selection-time-range') {
       respond(id, measureSelectionTimeRange(payload.hostMarker, payload.leftPx, payload.rightPx));
+      return;
+    }
+
+    if (operation === 'zoom-set') {
+      respond(id, setZoomValue(payload.value));
       return;
     }
 
