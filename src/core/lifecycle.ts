@@ -192,6 +192,22 @@ export function registerLifecycle(helper: any) {
     return true;
   }
 
+  function matchPlaybackRewindShortcut(event) {
+    const shortcuts = Array.isArray(helper.config.playbackRewindShortcuts)
+      ? helper.config.playbackRewindShortcuts
+      : [];
+
+    return (
+      shortcuts.find(
+        (shortcut) =>
+          shortcut &&
+          shortcut.code === event.code &&
+          Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) &&
+          Number.isFinite(Number(shortcut.seconds))
+      ) || null
+    );
+  }
+
   helper.handleKeydown = function handleKeydown(event) {
     if (!helper.runtime.isSessionInteractive()) {
       return;
@@ -279,6 +295,14 @@ export function registerLifecycle(helper: any) {
       handled = helper.moveTextToAdjacentSegment(-1);
     } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
       handled = helper.moveTextToAdjacentSegment(1);
+    } else if (
+      isFeatureEnabled('rowActions') &&
+      matchPlaybackRewindShortcut(event)
+    ) {
+      const rewindShortcut = matchPlaybackRewindShortcut(event);
+      handled =
+        typeof helper.seekPlaybackBySeconds === 'function' &&
+        helper.seekPlaybackBySeconds(-Number(rewindShortcut.seconds));
     } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowUp') {
       handled = true;
       void helper.runRowAction('mergePrevious');

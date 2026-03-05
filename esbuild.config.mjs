@@ -24,6 +24,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/content/playback-bridge.ts'],
+    outfile: 'dist/content/playback-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/content/linter-bridge.ts'],
     outfile: 'dist/content/linter-bridge.js'
   },

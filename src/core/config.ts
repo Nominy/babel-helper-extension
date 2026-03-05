@@ -1,6 +1,10 @@
 import type { FeatureSettings } from './settings';
 import { DEFAULT_FEATURE_SETTINGS } from './settings';
 
+const PLAYBACK_REWIND_SHORTCUTS = [
+  { code: 'KeyX', shiftKey: false, seconds: 1, label: 'Alt + X' }
+];
+
 function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, string]> {
   const rows: Array<[string, string]> = [];
 
@@ -19,6 +23,10 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
   }
 
   if (featureSettings.rowActions) {
+    for (const shortcut of PLAYBACK_REWIND_SHORTCUTS) {
+      const milliseconds = Math.round(shortcut.seconds * 1000);
+      rows.push([shortcut.label, 'Rewind playback ' + milliseconds + 'ms']);
+    }
     rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
     rows.push(['Alt + Shift + Down', 'Merge with next segment']);
     rows.push(['Del', 'Delete current segment']);
@@ -42,6 +50,9 @@ export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_
       /\bhotkeys\b/i
     ],
     hotkeysHelpRows: buildHotkeysHelpRows(featureSettings),
+    playbackRewindShortcuts: PLAYBACK_REWIND_SHORTCUTS.map((shortcut) => ({
+      ...shortcut
+    })),
     actionPatterns: {
       deleteSegment: [/\bdelete(?:\s+segment)?\b/i, /\bremove(?:\s+segment)?\b/i],
       mergePrevious: [

@@ -6,6 +6,14 @@ export function registerRowService(helper: any) {
 
   helper.__rowsRegistered = true;
   helper.state.speakerSwitchPending = false;
+  const PLAYBACK_BRIDGE_REQUEST_EVENT = 'babel-helper-playback-request';
+  const PLAYBACK_BRIDGE_RESPONSE_EVENT = 'babel-helper-playback-response';
+  const PLAYBACK_BRIDGE_SCRIPT_PATH = 'dist/content/playback-bridge.js';
+  const PLAYBACK_BRIDGE_TIMEOUT_MS = 500;
+
+  let playbackBridgeInjected = false;
+  let playbackBridgeLoadPromise = null;
+  let playbackBridgeRequestId = 0;
 
   helper.getTranscriptRows = function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
@@ -45,6 +53,210 @@ export function registerRowService(helper: any) {
 
   function getReactFiber(element) {
     return getReactInternalValue(element, '__reactFiber$');
+  }
+
+  function injectPlaybackBridge() {
+    if (window.__babelHelperPlaybackBridge) {
+      playbackBridgeInjected = true;
+      return Promise.resolve(true);
+    }
+
+    if (playbackBridgeInjected) {
+      return Promise.resolve(true);
+    }
+
+    if (playbackBridgeLoadPromise) {
+      return playbackBridgeLoadPromise;
+    }
+
+    playbackBridgeLoadPromise = new Promise((resolve) => {
+      const parent = document.documentElement || document.head || document.body;
+      if (
+        !parent ||
+        typeof chrome === 'undefined' ||
+        !chrome.runtime ||
+        typeof chrome.runtime.getURL !== 'function'
+      ) {
+        playbackBridgeLoadPromise = null;
+        resolve(false);
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = chrome.runtime.getURL(PLAYBACK_BRIDGE_SCRIPT_PATH);
+      script.async = false;
+      script.onload = () => {
+        script.remove();
+        playbackBridgeInjected = true;
+        resolve(true);
+      };
+      script.onerror = () => {
+        script.remove();
+        playbackBridgeLoadPromise = null;
+        resolve(false);
+      };
+
+      parent.appendChild(script);
+    });
+
+    return playbackBridgeLoadPromise;
+  }
+
+  async function callPlaybackBridge(operation, payload) {
+    const ready = await injectPlaybackBridge();
+    if (!ready) {
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      playbackBridgeRequestId += 1;
+      const id = 'playback-request-' + playbackBridgeRequestId;
+      let settled = false;
+
+      const finish = (result) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.removeEventListener(PLAYBACK_BRIDGE_RESPONSE_EVENT, handleResponse, true);
+        window.clearTimeout(timeoutId);
+        resolve(result || null);
+      };
+
+      const handleResponse = (event) => {
+        const detail = event.detail || {};
+        if (detail.id !== id) {
+          return;
+        }
+
+        finish(detail.result || null);
+      };
+
+      const timeoutId = window.setTimeout(() => finish(null), PLAYBACK_BRIDGE_TIMEOUT_MS);
+      window.addEventListener(PLAYBACK_BRIDGE_RESPONSE_EVENT, handleResponse, true);
+      window.dispatchEvent(
+        new CustomEvent(PLAYBACK_BRIDGE_REQUEST_EVENT, {
+          detail: {
+            id,
+            operation,
+            payload: payload || {}
+          }
+        })
+      );
+    });
+  }
+
+  function getWaveRegistryFromValue(value) {
+    const registry =
+      value && typeof value === 'object' && !Array.isArray(value) && value.current
+        ? value.current
+        : value;
+    if (!registry || typeof registry !== 'object' || Array.isArray(registry)) {
+      return null;
+    }
+
+    const keys = Object.keys(registry);
+    const hasWaveEntry = keys.some((key) => {
+      const entry = registry[key];
+      return entry && typeof entry === 'object' && entry.wavesurfer;
+    });
+    return hasWaveEntry ? registry : null;
+  }
+
+  function getWaveRegistryFromFiber(fiber) {
+    let owner = fiber;
+    let ownerDepth = 0;
+    while (owner && typeof owner === 'object' && ownerDepth < 16) {
+      let hook = owner.memoizedState;
+      let hookIndex = 0;
+      while (hook && typeof hook === 'object' && hookIndex < 24) {
+        const registry = getWaveRegistryFromValue(hook.memoizedState);
+        if (registry) {
+          return registry;
+        }
+
+        hook = hook.next;
+        hookIndex += 1;
+      }
+
+      owner = owner.return;
+      ownerDepth += 1;
+    }
+
+    return null;
+  }
+
+  function getWaveRegistryFromPlaybackControls() {
+    const controls = document.querySelectorAll(
+      'button[aria-label="Jump back 5 seconds"], button[aria-label="Play all tracks"], button[aria-label="Pause all tracks"], button[aria-label="Jump forward 5 seconds"]'
+    );
+    for (const control of controls) {
+      const registry = getWaveRegistryFromFiber(getReactFiber(control));
+      if (registry) {
+        return registry;
+      }
+    }
+
+    return null;
+  }
+
+  function getWaveformHosts() {
+    return Array.from(document.querySelectorAll('div')).filter((node) => {
+      if (!(node instanceof HTMLDivElement) || !(node.shadowRoot instanceof ShadowRoot)) {
+        return false;
+      }
+
+      return Boolean(node.shadowRoot.querySelector('[part="scroll"], [part="wrapper"]'));
+    });
+  }
+
+  function getWaveformRegistryFromHost(host) {
+    let fiber = getReactFiber(host);
+    if (!fiber && host instanceof HTMLElement) {
+      fiber = getReactFiber(host.parentElement);
+    }
+    return getWaveRegistryFromFiber(fiber);
+  }
+
+  function getPlaybackWaveInstances() {
+    const unique = [];
+    const seen = new Set();
+    const registries = [];
+    const playbackRegistry = getWaveRegistryFromPlaybackControls();
+    if (playbackRegistry) {
+      registries.push(playbackRegistry);
+    }
+
+    for (const host of getWaveformHosts()) {
+      const registry = getWaveformRegistryFromHost(host);
+      if (!registry || typeof registry !== 'object') {
+        continue;
+      }
+      registries.push(registry);
+    }
+
+    for (const registry of registries) {
+      for (const key of Object.keys(registry)) {
+        const entry = registry[key];
+        const wave =
+          entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
+        if (
+          !wave ||
+          typeof wave !== 'object' ||
+          seen.has(wave) ||
+          typeof wave.getCurrentTime !== 'function' ||
+          typeof wave.setTime !== 'function'
+        ) {
+          continue;
+        }
+
+        seen.add(wave);
+        unique.push(wave);
+      }
+    }
+
+    return unique;
   }
 
   function normalizeSpeakerLabel(value) {
@@ -1210,6 +1422,75 @@ export function registerRowService(helper: any) {
     }
     return focused;
   };
+
+  function seekPlaybackBySecondsLocally(deltaSeconds) {
+    const delta = Number(deltaSeconds);
+    if (!Number.isFinite(delta) || delta === 0) {
+      return false;
+    }
+
+    const waves = getPlaybackWaveInstances();
+    if (waves.length) {
+      const currentTime = Number(waves[0].getCurrentTime());
+      if (!Number.isFinite(currentTime)) {
+        return false;
+      }
+
+      const duration =
+        typeof waves[0].getDuration === 'function' ? Number(waves[0].getDuration()) : NaN;
+      const maxTime = Number.isFinite(duration) && duration > 0 ? duration : Number.POSITIVE_INFINITY;
+      const nextTime = Math.max(0, Math.min(maxTime, currentTime + delta));
+      if (!Number.isFinite(nextTime)) {
+        return false;
+      }
+
+      for (const wave of waves) {
+        try {
+          wave.setTime(nextTime);
+        } catch (_error) {
+          // Ignore one-off instance failures; other synced waveforms may still update.
+        }
+      }
+
+      return true;
+    }
+
+    const audio = document.querySelector('audio');
+    if (!(audio instanceof HTMLMediaElement)) {
+      return false;
+    }
+
+    const currentTime = Number(audio.currentTime);
+    if (!Number.isFinite(currentTime)) {
+      return false;
+    }
+
+    const duration = Number(audio.duration);
+    const maxTime = Number.isFinite(duration) && duration > 0 ? duration : Number.POSITIVE_INFINITY;
+    const nextTime = Math.max(0, Math.min(maxTime, currentTime + delta));
+    if (!Number.isFinite(nextTime)) {
+      return false;
+    }
+
+    audio.currentTime = nextTime;
+    return true;
+  }
+
+  helper.seekPlaybackBySeconds = function seekPlaybackBySeconds(deltaSeconds) {
+    const delta = Number(deltaSeconds);
+    if (!Number.isFinite(delta) || delta === 0) {
+      return false;
+    }
+
+    return callPlaybackBridge('seek', { deltaSeconds: delta }).then((result) => {
+      if (result && result.ok) {
+        return true;
+      }
+
+      return seekPlaybackBySecondsLocally(delta);
+    });
+  };
+
 }
 
 

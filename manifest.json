@@ -22,6 +22,7 @@
     {
       "resources": [
         "dist/content/magnifier-bridge.js",
+        "dist/content/playback-bridge.js",
         "dist/content/linter-bridge.js"
       ],
       "matches": [
