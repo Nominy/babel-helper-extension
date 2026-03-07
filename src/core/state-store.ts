@@ -3,6 +3,8 @@
     currentRow: null,
     currentRowIdentity: null,
     lastBlur: null,
+    blurPlaybackTime: null,
+    restorePlaybackTime: null,
     blurRestorePending: false,
     runtimeBound: false,
     routeWatchBound: false,

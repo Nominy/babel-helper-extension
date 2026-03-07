@@ -13,7 +13,8 @@
     timelineSelection: true,
     timelineZoomDefaults: true,
     magnifier: true,
-    customLinter: true
+    customLinter: true,
+    proportionalCursorRestore: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -29,7 +30,8 @@
     "timelineSelection",
     "timelineZoomDefaults",
     "magnifier",
-    "customLinter"
+    "customLinter",
+    "proportionalCursorRestore"
   ];
   var FEATURE_META = {
     hotkeysHelp: {
@@ -75,6 +77,10 @@
     customLinter: {
       label: "Custom Linter",
       description: "Inject helper rules into Babel lintAnnotations results so issues appear in native linter UI."
+    },
+    proportionalCursorRestore: {
+      label: "Proportional Cursor Restore",
+      description: "When restoring focus after Esc, place cursor at the text position proportional to playback progress within the segment."
     }
   };
   function getExtensionStorage() {

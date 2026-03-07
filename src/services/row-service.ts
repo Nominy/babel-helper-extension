@@ -16,6 +16,60 @@ export function registerRowService(helper: any) {
   let playbackBridgeRequestId = 0;
   let escapePlaybackQueue = Promise.resolve();
 
+  const PROPORTIONAL_MIN_DELTA_SECONDS = 0.3;
+
+  function parseSegmentTimeValue(value) {
+    if (typeof value !== 'string') { return null; }
+    const trimmed = value.trim();
+    if (!trimmed) { return null; }
+    const match = trimmed.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
+    if (!match) { return null; }
+    const parts = match[0].split(':');
+    let total = 0;
+    for (const part of parts) {
+      const numeric = Number(part);
+      if (!Number.isFinite(numeric)) { return null; }
+      total = total * 60 + numeric;
+    }
+    return total;
+  }
+
+  function getRowTimeRange(row) {
+    if (!(row instanceof HTMLElement)) { return null; }
+    const startCell = row.children[2];
+    const endCell = row.children[3];
+    const startSeconds = startCell instanceof HTMLElement
+      ? parseSegmentTimeValue(helper.normalizeText(startCell))
+      : null;
+    const endSeconds = endCell instanceof HTMLElement
+      ? parseSegmentTimeValue(helper.normalizeText(endCell))
+      : null;
+    if (startSeconds === null || endSeconds === null || endSeconds <= startSeconds) {
+      return null;
+    }
+    return { startSeconds, endSeconds };
+  }
+
+  function snapToWordBoundary(text, offset) {
+    if (!text || offset <= 0) { return 0; }
+    if (offset >= text.length) { return text.length; }
+
+    // If already at a word boundary (space before or at position 0), return as-is.
+    if (offset === 0 || /\s/.test(text[offset - 1])) { return offset; }
+
+    // Scan backward and forward for the nearest whitespace and pick the closer one.
+    let backward = offset;
+    while (backward > 0 && !/\s/.test(text[backward - 1])) { backward--; }
+
+    let forward = offset;
+    while (forward < text.length && !/\s/.test(text[forward])) { forward++; }
+    // Position after the space (start of next word).
+    if (forward < text.length) { forward++; }
+
+    // Pick whichever boundary is closer to the raw offset.
+    return (offset - backward) <= (forward - offset) ? backward : forward;
+  }
+
   helper.getTranscriptRows = function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
       row.querySelector(helper.config.rowTextareaSelector)
@@ -1562,11 +1616,47 @@ export function registerRowService(helper: any) {
       currentRow === rememberedRow;
 
     if (rememberedRowStillCurrent) {
+      let selectionStart = remembered.selectionStart;
+      let selectionEnd = remembered.selectionEnd;
+      let direction = remembered.direction;
+
+      if (helper.config.features.proportionalCursorRestore) {
+        const blurTime = helper.state.blurPlaybackTime;
+        const restoreTime = helper.state.restorePlaybackTime;
+        if (
+          typeof blurTime === 'number' && Number.isFinite(blurTime) &&
+          typeof restoreTime === 'number' && Number.isFinite(restoreTime) &&
+          Math.abs(restoreTime - blurTime) >= PROPORTIONAL_MIN_DELTA_SECONDS
+        ) {
+          const timeRange = getRowTimeRange(rememberedRow);
+          if (timeRange) {
+            const textarea = helper.getRowTextarea(rememberedRow);
+            const text = textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
+            if (text.length > 0) {
+              const duration = timeRange.endSeconds - timeRange.startSeconds;
+              const ratio = Math.max(0, Math.min(1,
+                (restoreTime - timeRange.startSeconds) / duration
+              ));
+              const rawOffset = Math.round(ratio * text.length);
+              const snapped = snapToWordBoundary(text, rawOffset);
+              // Only advance cursor forward from where it was; never pull it backward.
+              const finalOffset = Math.max(remembered.selectionStart, snapped);
+              selectionStart = finalOffset;
+              selectionEnd = finalOffset;
+              direction = 'none';
+            }
+          }
+        }
+      }
+
+      helper.state.blurPlaybackTime = null;
+      helper.state.restorePlaybackTime = null;
+
       const focused = helper.focusRow(rememberedRow, {
         activateRow: false,
-        selectionStart: remembered.selectionStart,
-        selectionEnd: remembered.selectionEnd,
-        direction: remembered.direction
+        selectionStart: selectionStart,
+        selectionEnd: selectionEnd,
+        direction: direction
       });
       if (focused) {
         helper.state.blurRestorePending = false;
@@ -1828,6 +1918,8 @@ export function registerRowService(helper: any) {
       }
 
       if (!focused && isPlaying) {
+        helper.state.restorePlaybackTime =
+          playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
         focusCurrentEditorForEscape();
         await helper.setPlaybackPaused(true);
         return;
@@ -1835,6 +1927,8 @@ export function registerRowService(helper: any) {
 
       if (focused && !isPlaying) {
         helper.toggleEditorFocus();
+        helper.state.blurPlaybackTime =
+          playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
         await helper.setPlaybackPaused(false);
         return;
       }

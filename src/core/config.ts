@@ -9,7 +9,8 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
   const rows: Array<[string, string]> = [];
 
   if (featureSettings.focusToggle) {
-    rows.push(['Esc', 'Pause playback and blur, then resume and restore cursor']);
+    rows.push(['Esc', 'Pause and blur / resume and restore cursor' +
+      (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')]);
   }
 
   if (featureSettings.textMove) {

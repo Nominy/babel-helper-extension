@@ -9,7 +9,8 @@ export type FeatureSettingKey =
   | 'timelineSelection'
   | 'timelineZoomDefaults'
   | 'magnifier'
-  | 'customLinter';
+  | 'customLinter'
+  | 'proportionalCursorRestore';
 
 export interface FeatureSettings {
   hotkeysHelp: boolean;
@@ -23,6 +24,7 @@ export interface FeatureSettings {
   timelineZoomDefaults: boolean;
   magnifier: boolean;
   customLinter: boolean;
+  proportionalCursorRestore: boolean;
 }
 
 export interface ExtensionSettings {
@@ -47,7 +49,8 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   timelineSelection: true,
   timelineZoomDefaults: true,
   magnifier: true,
-  customLinter: true
+  customLinter: true,
+  proportionalCursorRestore: true
 };
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
@@ -65,7 +68,8 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'timelineSelection',
   'timelineZoomDefaults',
   'magnifier',
-  'customLinter'
+  'customLinter',
+  'proportionalCursorRestore'
 ];
 
 export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
@@ -112,6 +116,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   customLinter: {
     label: 'Custom Linter',
     description: 'Inject helper rules into Babel lintAnnotations results so issues appear in native linter UI.'
+  },
+  proportionalCursorRestore: {
+    label: 'Proportional Cursor Restore',
+    description: 'When restoring focus after Esc, place cursor at the text position proportional to playback progress within the segment.'
   }
 };
 
