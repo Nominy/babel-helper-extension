@@ -71,7 +71,7 @@
 
   // src/core/config.ts
   var PLAYBACK_REWIND_SHORTCUTS = [
-    { code: "KeyX", shiftKey: false, seconds: 1, label: "Alt + X" }
+    { code: "KeyX", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false, seconds: 1, label: "Ctrl + X" }
   ];
   function buildHotkeysHelpRows(featureSettings) {
     const rows = [];
@@ -5389,7 +5389,7 @@
     function matchPlaybackRewindShortcut(event) {
       const shortcuts = Array.isArray(helper.config.playbackRewindShortcuts) ? helper.config.playbackRewindShortcuts : [];
       return shortcuts.find(
-        (shortcut) => shortcut && shortcut.code === event.code && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Number.isFinite(Number(shortcut.seconds))
+        (shortcut) => shortcut && shortcut.code === event.code && Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) && Boolean(shortcut.altKey) === Boolean(event.altKey) && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Boolean(shortcut.metaKey) === Boolean(event.metaKey) && Number.isFinite(Number(shortcut.seconds))
       ) || null;
     }
     function shouldSuppressNativeArrowHotkey(event) {
@@ -5445,6 +5445,15 @@
           return;
         }
       }
+      const rewindShortcut = isFeatureEnabled("rowActions") ? matchPlaybackRewindShortcut(event) : null;
+      if (rewindShortcut) {
+        const handled2 = typeof helper.seekPlaybackBySeconds === "function" && helper.seekPlaybackBySeconds(-Number(rewindShortcut.seconds));
+        if (handled2) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
       if (event.ctrlKey || event.metaKey || !event.altKey) {
         return;
       }
@@ -5462,9 +5471,6 @@
         handled = helper.moveTextToAdjacentSegment(-1);
       } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketRight") {
         handled = helper.moveTextToAdjacentSegment(1);
-      } else if (isFeatureEnabled("rowActions") && matchPlaybackRewindShortcut(event)) {
-        const rewindShortcut = matchPlaybackRewindShortcut(event);
-        handled = typeof helper.seekPlaybackBySeconds === "function" && helper.seekPlaybackBySeconds(-Number(rewindShortcut.seconds));
       } else if (isFeatureEnabled("rowActions") && event.shiftKey && event.key === "ArrowUp") {
         handled = true;
         void helper.runRowAction("mergePrevious");

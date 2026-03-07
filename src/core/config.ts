@@ -2,7 +2,7 @@ import type { FeatureSettings } from './settings';
 import { DEFAULT_FEATURE_SETTINGS } from './settings';
 
 const PLAYBACK_REWIND_SHORTCUTS = [
-  { code: 'KeyX', shiftKey: false, seconds: 1, label: 'Alt + X' }
+  { code: 'KeyX', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false, seconds: 1, label: 'Ctrl + X' }
 ];
 
 function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, string]> {

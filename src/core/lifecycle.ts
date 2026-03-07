@@ -202,7 +202,10 @@ export function registerLifecycle(helper: any) {
         (shortcut) =>
           shortcut &&
           shortcut.code === event.code &&
+          Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) &&
+          Boolean(shortcut.altKey) === Boolean(event.altKey) &&
           Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) &&
+          Boolean(shortcut.metaKey) === Boolean(event.metaKey) &&
           Number.isFinite(Number(shortcut.seconds))
       ) || null
     );
@@ -296,6 +299,18 @@ export function registerLifecycle(helper: any) {
       }
     }
 
+    const rewindShortcut = isFeatureEnabled('rowActions') ? matchPlaybackRewindShortcut(event) : null;
+    if (rewindShortcut) {
+      const handled =
+        typeof helper.seekPlaybackBySeconds === 'function' &&
+        helper.seekPlaybackBySeconds(-Number(rewindShortcut.seconds));
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
     if (event.ctrlKey || event.metaKey || !event.altKey) {
       return;
     }
@@ -331,14 +346,6 @@ export function registerLifecycle(helper: any) {
       handled = helper.moveTextToAdjacentSegment(-1);
     } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
       handled = helper.moveTextToAdjacentSegment(1);
-    } else if (
-      isFeatureEnabled('rowActions') &&
-      matchPlaybackRewindShortcut(event)
-    ) {
-      const rewindShortcut = matchPlaybackRewindShortcut(event);
-      handled =
-        typeof helper.seekPlaybackBySeconds === 'function' &&
-        helper.seekPlaybackBySeconds(-Number(rewindShortcut.seconds));
     } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowUp') {
       handled = true;
       void helper.runRowAction('mergePrevious');
