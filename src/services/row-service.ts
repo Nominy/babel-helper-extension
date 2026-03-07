@@ -1067,6 +1067,138 @@ export function registerRowService(helper: any) {
     return null;
   };
 
+  function getMergeActionPlan(actionName, row, rows, originalIndex) {
+    if (
+      (actionName !== 'mergePrevious' && actionName !== 'mergeNext') ||
+      !(row instanceof HTMLTableRowElement) ||
+      !Array.isArray(rows) ||
+      originalIndex < 0
+    ) {
+      return null;
+    }
+
+    const direction = actionName === 'mergePrevious' ? -1 : 1;
+    const adjacentRow = rows[originalIndex + direction];
+    if (!(adjacentRow instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    const survivingRow = direction < 0 ? adjacentRow : row;
+    const survivingText = helper.getRowTextValue(survivingRow);
+    const mergedText =
+      direction < 0
+        ? helper.joinSegmentText(helper.getRowTextValue(adjacentRow), helper.getRowTextValue(row))
+        : helper.joinSegmentText(helper.getRowTextValue(row), helper.getRowTextValue(adjacentRow));
+    const appendedText = direction < 0 ? helper.getRowTextValue(row) : helper.getRowTextValue(adjacentRow);
+    const caretOffset =
+      appendedText && mergedText.endsWith(appendedText)
+        ? mergedText.length - appendedText.length
+        : survivingText.length;
+
+    return {
+      actionName,
+      adjacentRow,
+      adjacentText: helper.getRowTextValue(adjacentRow),
+      expectedRowCount: rows.length - 1,
+      mergedText,
+      originalIndex,
+      survivingRow,
+      survivingText,
+      targetIndex: direction < 0 ? Math.max(0, originalIndex - 1) : originalIndex,
+      caretOffset
+    };
+  }
+
+  function findMergedRow(plan, updatedRows) {
+    if (!plan || !Array.isArray(updatedRows) || !updatedRows.length) {
+      return null;
+    }
+
+    const candidates = [];
+    if (plan.survivingRow instanceof HTMLTableRowElement && plan.survivingRow.isConnected) {
+      candidates.push(plan.survivingRow);
+    }
+
+    const indexed = updatedRows[plan.targetIndex];
+    if (indexed instanceof HTMLTableRowElement && !candidates.includes(indexed)) {
+      candidates.push(indexed);
+    }
+
+    for (const row of updatedRows) {
+      if (row instanceof HTMLTableRowElement && !candidates.includes(row)) {
+        candidates.push(row);
+      }
+    }
+
+    for (const candidate of candidates) {
+      const text = helper.getRowTextValue(candidate);
+      if (!text) {
+        continue;
+      }
+
+      if (text === plan.mergedText) {
+        return candidate;
+      }
+
+      if (
+        text !== plan.survivingText &&
+        text.includes(plan.survivingText) &&
+        (!plan.adjacentText || text.includes(plan.adjacentText))
+      ) {
+        return candidate;
+      }
+    }
+
+    return candidates[0] || null;
+  }
+
+  function restoreMergeSelection(row, caretOffset) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return false;
+    }
+
+    const textarea = helper.getRowTextarea(row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const caret = Math.max(0, Math.min(textarea.value.length, Number(caretOffset) || 0));
+    const applySelection = () => {
+      helper.state.lastBlur = {
+        row,
+        selectionStart: caret,
+        selectionEnd: caret,
+        direction: 'none'
+      };
+      helper.state.blurRestorePending = true;
+      textarea.focus({
+        preventScroll: true
+      });
+
+      try {
+        textarea.setSelectionRange(caret, caret, 'none');
+      } catch (_error) {
+        // Ignore selection errors from browsers that reject the call mid-render.
+      }
+    };
+
+    helper.focusRow(row, {
+      activateRow: false,
+      scroll: false,
+      selectionStart: caret,
+      selectionEnd: caret
+    });
+
+    window.requestAnimationFrame(() => {
+      applySelection();
+      window.requestAnimationFrame(applySelection);
+    });
+    window.setTimeout(applySelection, 80);
+    window.setTimeout(applySelection, 180);
+
+    return true;
+  }
+
   helper.runRowAction = async function runRowAction(actionName, options) {
     const settings = options || {};
     const row =
@@ -1086,6 +1218,7 @@ export function registerRowService(helper: any) {
 
     const rows = helper.getTranscriptRows();
     const originalIndex = rows.indexOf(row);
+    const mergePlan = getMergeActionPlan(actionName, row, rows, originalIndex);
     helper.setCurrentRow(row);
 
     const previousCandidates = new Set(helper.collectMenuCandidates());
@@ -1113,6 +1246,37 @@ export function registerRowService(helper: any) {
     }
 
     helper.dispatchClick(actionItem);
+
+    if (mergePlan) {
+      const mergedRow = await helper.waitFor(() => {
+        const updatedRows = helper.getTranscriptRows();
+        const candidate = findMergedRow(mergePlan, updatedRows);
+        if (!(candidate instanceof HTMLTableRowElement)) {
+          return null;
+        }
+
+        const text = helper.getRowTextValue(candidate);
+        const rowCountSettled = updatedRows.length <= mergePlan.expectedRowCount;
+        const textSettled =
+          text === mergePlan.mergedText ||
+          (text !== mergePlan.survivingText &&
+            text.includes(mergePlan.survivingText) &&
+            (!mergePlan.adjacentText || text.includes(mergePlan.adjacentText)));
+        const adjacentRemoved =
+          !(mergePlan.adjacentRow instanceof HTMLTableRowElement) || !mergePlan.adjacentRow.isConnected;
+
+        return rowCountSettled || textSettled || adjacentRemoved ? candidate : null;
+      }, 1200, 40);
+
+      const resolvedRow =
+        (mergedRow instanceof HTMLTableRowElement && mergedRow) ||
+        findMergedRow(mergePlan, helper.getTranscriptRows());
+      if (resolvedRow) {
+        helper.setCurrentRow(resolvedRow);
+        restoreMergeSelection(resolvedRow, mergePlan.caretOffset);
+        return true;
+      }
+    }
 
     window.setTimeout(() => {
       const updatedRows = helper.getTranscriptRows();

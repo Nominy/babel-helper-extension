@@ -23,6 +23,12 @@
     const pendingWrapSelection = {
       current: null
     };
+    const selectionRestoreState = {
+      token: 0
+    };
+    const pendingNativeRowAutocomplete = {
+      current: null
+    };
     let listboxRoot = null;
     function getReactFiber(element) {
       if (!(element instanceof HTMLElement)) {
@@ -133,6 +139,117 @@
           cancelable: false
         })
       );
+    }
+    function setTextareaSelection(textarea, start, end, direction = "none") {
+      try {
+        textarea.setSelectionRange(start, end, direction);
+      } catch (_error) {
+      }
+    }
+    function restoreSelectionStably(textarea, start, end, direction = "none", attempts = 6) {
+      selectionRestoreState.token += 1;
+      const token = selectionRestoreState.token;
+      let remaining = Math.max(1, attempts);
+      const apply = () => {
+        if (selectionRestoreState.token !== token || !textarea.isConnected) {
+          return;
+        }
+        textarea.focus({ preventScroll: true });
+        setTextareaSelection(textarea, start, end, direction);
+        remaining -= 1;
+        if (remaining > 0) {
+          window.requestAnimationFrame(apply);
+        }
+      };
+      apply();
+    }
+    function getInsertedSuggestionCursorPosition(context, triggerIndex, suggestion) {
+      if (context.type === "style") {
+        return triggerIndex + 1 + suggestion.label.length + 2;
+      }
+      if (context.type === "curly") {
+        return triggerIndex + suggestion.insertText.length - 1;
+      }
+      return triggerIndex + suggestion.insertText.length;
+    }
+    function matchNativeRowAutocompleteInsertion(pending, nextValue) {
+      const before = pending.beforeValue.substring(0, pending.triggerIndex);
+      const after = pending.beforeValue.substring(pending.cursorPosition);
+      for (const suggestion of pending.suggestions) {
+        const expectedValue = `${before}${suggestion.insertText}${after}`;
+        if (expectedValue !== nextValue) {
+          continue;
+        }
+        return {
+          suggestion,
+          caret: getInsertedSuggestionCursorPosition(pending.context, pending.triggerIndex, suggestion)
+        };
+      }
+      return null;
+    }
+    function scheduleNativeRowAutocompleteCaretRestore(pending) {
+      let attempts = 6;
+      const apply = () => {
+        if (pendingNativeRowAutocomplete.current !== pending) {
+          return;
+        }
+        const textarea = pending.textarea;
+        if (!(textarea instanceof HTMLTextAreaElement) || !textarea.isConnected) {
+          pendingNativeRowAutocomplete.current = null;
+          return;
+        }
+        const match = matchNativeRowAutocompleteInsertion(pending, textarea.value);
+        if (match) {
+          const currentStart = typeof textarea.selectionStart === "number" ? textarea.selectionStart : -1;
+          const currentEnd = typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : -1;
+          if (currentStart !== match.caret || currentEnd !== match.caret) {
+            textarea.focus({ preventScroll: true });
+            setTextareaSelection(textarea, match.caret, match.caret);
+          }
+        }
+        attempts -= 1;
+        if (attempts <= 0) {
+          if (pendingNativeRowAutocomplete.current === pending) {
+            pendingNativeRowAutocomplete.current = null;
+          }
+          return;
+        }
+        window.requestAnimationFrame(apply);
+      };
+      window.requestAnimationFrame(apply);
+    }
+    function maybeTrackNativeRowAutocompleteEnter(textarea, event) {
+      if (!isRowTextarea(textarea) || event.key !== "Enter" || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || state.isOpen) {
+        return;
+      }
+      const selectionStart = typeof textarea.selectionStart === "number" ? textarea.selectionStart : textarea.value.length;
+      const selectionEnd = typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : selectionStart;
+      if (selectionStart !== selectionEnd) {
+        return;
+      }
+      const data = getBridgeData();
+      if (!data) {
+        return;
+      }
+      const textBeforeCursor = textarea.value.substring(0, selectionStart);
+      const trigger = findTriggerContext(textBeforeCursor, data.openMap, data.stopSet);
+      if (!trigger) {
+        return;
+      }
+      const suggestions = getSuggestions(trigger.context, trigger.partial, data);
+      if (!suggestions.length) {
+        return;
+      }
+      const triggerIndex = textBeforeCursor.length - trigger.partial.length - 1;
+      pendingNativeRowAutocomplete.current = {
+        textarea,
+        beforeValue: textarea.value,
+        triggerIndex,
+        cursorPosition: selectionStart,
+        context: trigger.context,
+        suggestions
+      };
+      scheduleNativeRowAutocompleteCaretRestore(pendingNativeRowAutocomplete.current);
     }
     function clearDismissTimer() {
       if (dismissTimer) {
@@ -403,8 +520,9 @@
       }
       setNativeTextareaValue(textarea, `${before}${insertText}${after}`);
       textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(nextCursorPosition, nextCursorPosition);
+      setTextareaSelection(textarea, nextCursorPosition, nextCursorPosition);
       dispatchInputEvent(textarea);
+      restoreSelectionStably(textarea, nextCursorPosition, nextCursorPosition);
       pendingWrapSelection.current = null;
       dismiss();
       return true;
@@ -482,7 +600,11 @@
     }
     function onKeyDown(event) {
       const textarea = isSupportedTextarea(event.target) ? event.target : null;
-      if (!textarea || event.isComposing || !state.isOpen || !state.suggestions.length) {
+      if (!textarea || event.isComposing) {
+        return;
+      }
+      maybeTrackNativeRowAutocompleteEnter(textarea, event);
+      if (!state.isOpen || !state.suggestions.length) {
         return;
       }
       switch (event.key) {
