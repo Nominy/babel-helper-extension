@@ -46,7 +46,7 @@
     },
     focusToggle: {
       label: "Focus Toggle",
-      description: "Enable Esc to blur and restore the active transcript textarea."
+      description: "Enable Esc to pause and blur the active transcript textarea, then resume and restore it."
     },
     timelineSelection: {
       label: "Timeline Selection",

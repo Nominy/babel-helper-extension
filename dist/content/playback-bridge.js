@@ -139,6 +139,34 @@
         scrollLeft: scroll instanceof HTMLElement ? scroll.scrollLeft : null
       };
     }
+    function getWavePausedState(wave) {
+      if (!wave || typeof wave !== "object") {
+        return null;
+      }
+      if (typeof wave.isPlaying === "function") {
+        return !Boolean(safe(() => wave.isPlaying(), false));
+      }
+      if (wave.media && "paused" in wave.media) {
+        return Boolean(wave.media.paused);
+      }
+      return null;
+    }
+    function clickControl(element) {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+      try {
+        element.click();
+        return true;
+      } catch (_error) {
+        return false;
+      }
+    }
+    function getPlaybackControl(paused) {
+      const selector = paused ? 'button[aria-label="Pause all tracks"]' : 'button[aria-label="Play all tracks"]';
+      const button = document.querySelector(selector);
+      return button instanceof HTMLElement ? button : null;
+    }
     function seekWithWaveInstances(deltaSeconds) {
       const waves = getPlaybackWaveInstances();
       if (!waves.length) {
@@ -210,14 +238,16 @@
       const waves = getPlaybackWaveInstances();
       if (waves.length) {
         const currentTime = Number(safe(() => waves[0].getCurrentTime(), NaN));
+        const paused = getWavePausedState(waves[0]);
         const duration = Number(
           typeof waves[0].getDuration === "function" ? safe(() => waves[0].getDuration(), NaN) : NaN
         );
         return {
-          ok: Number.isFinite(currentTime),
+          ok: Number.isFinite(currentTime) || typeof paused === "boolean",
           source: "wavesurfer",
           currentTime: Number.isFinite(currentTime) ? currentTime : null,
           duration: Number.isFinite(duration) ? duration : null,
+          paused: typeof paused === "boolean" ? paused : null,
           indicator: getPlaybackIndicator(),
           waveCount: waves.length
         };
@@ -231,8 +261,121 @@
         source: "audio",
         currentTime: Number.isFinite(Number(audio.currentTime)) ? Number(audio.currentTime) : null,
         duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : null,
+        paused: Boolean(audio.paused),
         indicator: getPlaybackIndicator(),
         waveCount: 0
+      };
+    }
+    function setWavePausedState(paused) {
+      const waves = getPlaybackWaveInstances();
+      if (!waves.length) {
+        return null;
+      }
+      let applied = 0;
+      for (const wave of waves) {
+        try {
+          if (paused) {
+            if (typeof wave.pause === "function") {
+              wave.pause();
+              applied += 1;
+              continue;
+            }
+            if (wave.media && typeof wave.media.pause === "function") {
+              wave.media.pause();
+              applied += 1;
+              continue;
+            }
+          } else {
+            if (typeof wave.play === "function") {
+              const result = wave.play();
+              if (result && typeof result.catch === "function") {
+                result.catch(() => {
+                });
+              }
+              applied += 1;
+              continue;
+            }
+            if (wave.media && typeof wave.media.play === "function") {
+              const result = wave.media.play();
+              if (result && typeof result.catch === "function") {
+                result.catch(() => {
+                });
+              }
+              applied += 1;
+              continue;
+            }
+          }
+        } catch (_error) {
+        }
+      }
+      if (!applied) {
+        return null;
+      }
+      const state = getPlaybackState();
+      return {
+        ...state,
+        ok: Boolean(state && state.ok && state.paused === paused),
+        via: "wavesurfer-direct"
+      };
+    }
+    function setAudioPausedState(paused) {
+      const audio = document.querySelector("audio");
+      if (!(audio instanceof HTMLMediaElement)) {
+        return null;
+      }
+      try {
+        if (paused) {
+          audio.pause();
+        } else if (typeof audio.play === "function") {
+          const result = audio.play();
+          if (result && typeof result.catch === "function") {
+            result.catch(() => {
+            });
+          }
+        }
+      } catch (_error) {
+        return null;
+      }
+      const state = getPlaybackState();
+      return {
+        ...state,
+        ok: Boolean(state && state.ok && state.paused === paused),
+        via: "audio-direct"
+      };
+    }
+    function setPlaybackPaused(paused) {
+      const desired = Boolean(paused);
+      const previous = getPlaybackState();
+      if (previous && previous.ok && previous.paused === desired) {
+        return {
+          ...previous,
+          ok: true,
+          previousPaused: previous.paused,
+          changed: false,
+          via: "noop"
+        };
+      }
+      const control = getPlaybackControl(desired);
+      if (control && clickControl(control)) {
+        const afterControl = getPlaybackState();
+        if (afterControl && afterControl.ok && afterControl.paused === desired) {
+          return {
+            ...afterControl,
+            previousPaused: previous && typeof previous.paused === "boolean" ? previous.paused : null,
+            changed: previous && typeof previous.paused === "boolean" ? previous.paused !== afterControl.paused : null,
+            via: "control"
+          };
+        }
+      }
+      const direct = setWavePausedState(desired) || setAudioPausedState(desired) || {
+        ok: false,
+        reason: "playback-unavailable",
+        indicator: getPlaybackIndicator()
+      };
+      return {
+        ...direct,
+        previousPaused: previous && typeof previous.paused === "boolean" ? previous.paused : null,
+        changed: previous && typeof previous.paused === "boolean" && typeof direct.paused === "boolean" ? previous.paused !== direct.paused : null
       };
     }
     window.addEventListener(REQUEST_EVENT, (event) => {
@@ -249,11 +392,16 @@
       }
       if (operation === "state") {
         respond(id, getPlaybackState());
+        return;
+      }
+      if (operation === "set-paused") {
+        respond(id, setPlaybackPaused(payload.paused));
       }
     });
     window.__babelHelperPlaybackBridge = {
       seekPlaybackBySeconds,
-      getPlaybackState
+      getPlaybackState,
+      setPlaybackPaused
     };
   }
   initPlaybackBridge();

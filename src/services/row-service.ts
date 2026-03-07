@@ -14,6 +14,7 @@ export function registerRowService(helper: any) {
   let playbackBridgeInjected = false;
   let playbackBridgeLoadPromise = null;
   let playbackBridgeRequestId = 0;
+  let escapePlaybackQueue = Promise.resolve();
 
   helper.getTranscriptRows = function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
@@ -410,6 +411,11 @@ export function registerRowService(helper: any) {
 
   function getPlayAllTracksButton() {
     const button = document.querySelector('button[aria-label="Play all tracks"]');
+    return button instanceof HTMLElement ? button : null;
+  }
+
+  function getPauseAllTracksButton() {
+    const button = document.querySelector('button[aria-label="Pause all tracks"]');
     return button instanceof HTMLElement ? button : null;
   }
 
@@ -1421,6 +1427,257 @@ export function registerRowService(helper: any) {
       helper.state.blurRestorePending = false;
     }
     return focused;
+  };
+
+  function queueEscapePlaybackTask(task) {
+    const scheduled = escapePlaybackQueue.catch(() => {}).then(task);
+    escapePlaybackQueue = scheduled.catch(() => {});
+    return scheduled;
+  }
+
+  function getWavePausedState(wave) {
+    if (!wave || typeof wave !== 'object') {
+      return null;
+    }
+
+    if (typeof wave.isPlaying === 'function') {
+      try {
+        return !Boolean(wave.isPlaying());
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    if (wave.media && 'paused' in wave.media) {
+      return Boolean(wave.media.paused);
+    }
+
+    return null;
+  }
+
+  function getPlaybackStateLocally() {
+    const waves = getPlaybackWaveInstances();
+    if (waves.length) {
+      const currentTime = Number(waves[0].getCurrentTime());
+      const duration =
+        typeof waves[0].getDuration === 'function' ? Number(waves[0].getDuration()) : NaN;
+      const paused = getWavePausedState(waves[0]);
+      return {
+        ok: Number.isFinite(currentTime) || typeof paused === 'boolean',
+        source: 'wavesurfer',
+        currentTime: Number.isFinite(currentTime) ? currentTime : null,
+        duration: Number.isFinite(duration) ? duration : null,
+        paused: typeof paused === 'boolean' ? paused : null,
+        waveCount: waves.length
+      };
+    }
+
+    const audio = document.querySelector('audio');
+    if (!(audio instanceof HTMLMediaElement)) {
+      return {
+        ok: false,
+        reason: 'playback-unavailable',
+        paused: null,
+        waveCount: 0
+      };
+    }
+
+    return {
+      ok: true,
+      source: 'audio',
+      currentTime: Number.isFinite(Number(audio.currentTime)) ? Number(audio.currentTime) : null,
+      duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : null,
+      paused: Boolean(audio.paused),
+      waveCount: 0
+    };
+  }
+
+  function setWavePausedStateLocally(paused) {
+    const waves = getPlaybackWaveInstances();
+    if (!waves.length) {
+      return null;
+    }
+
+    let applied = 0;
+    for (const wave of waves) {
+      try {
+        if (paused) {
+          if (typeof wave.pause === 'function') {
+            wave.pause();
+            applied += 1;
+            continue;
+          }
+          if (wave.media && typeof wave.media.pause === 'function') {
+            wave.media.pause();
+            applied += 1;
+            continue;
+          }
+        } else {
+          if (typeof wave.play === 'function') {
+            const result = wave.play();
+            if (result && typeof result.catch === 'function') {
+              result.catch(() => {});
+            }
+            applied += 1;
+            continue;
+          }
+          if (wave.media && typeof wave.media.play === 'function') {
+            const result = wave.media.play();
+            if (result && typeof result.catch === 'function') {
+              result.catch(() => {});
+            }
+            applied += 1;
+            continue;
+          }
+        }
+      } catch (_error) {
+        // Ignore one-off instance failures; other synced waveforms may still update.
+      }
+    }
+
+    if (!applied) {
+      return null;
+    }
+
+    return getPlaybackStateLocally();
+  }
+
+  function setAudioPausedStateLocally(paused) {
+    const audio = document.querySelector('audio');
+    if (!(audio instanceof HTMLMediaElement)) {
+      return null;
+    }
+
+    try {
+      if (paused) {
+        audio.pause();
+      } else if (typeof audio.play === 'function') {
+        const result = audio.play();
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => {});
+        }
+      }
+    } catch (_error) {
+      return null;
+    }
+
+    return getPlaybackStateLocally();
+  }
+
+  function setPlaybackPausedLocally(paused) {
+    const desired = Boolean(paused);
+    const previous = getPlaybackStateLocally();
+    if (previous && previous.ok && previous.paused === desired) {
+      return {
+        ...previous,
+        ok: true,
+        previousPaused: previous.paused,
+        changed: false,
+        via: 'noop'
+      };
+    }
+
+    const control = desired ? getPauseAllTracksButton() : getPlayAllTracksButton();
+    if (control && clickControl(control)) {
+      const afterControl = getPlaybackStateLocally();
+      if (afterControl && afterControl.ok && afterControl.paused === desired) {
+        return {
+          ...afterControl,
+          previousPaused: previous && typeof previous.paused === 'boolean' ? previous.paused : null,
+          changed:
+            previous && typeof previous.paused === 'boolean'
+              ? previous.paused !== afterControl.paused
+              : null,
+          via: 'control'
+        };
+      }
+    }
+
+    const direct =
+      setWavePausedStateLocally(desired) ||
+      setAudioPausedStateLocally(desired) || {
+        ok: false,
+        reason: 'playback-unavailable',
+        paused: null,
+        waveCount: 0
+      };
+
+    return {
+      ...direct,
+      previousPaused: previous && typeof previous.paused === 'boolean' ? previous.paused : null,
+      changed:
+        previous &&
+        typeof previous.paused === 'boolean' &&
+        typeof direct.paused === 'boolean'
+          ? previous.paused !== direct.paused
+          : null
+    };
+  }
+
+  helper.setPlaybackPaused = function setPlaybackPaused(paused) {
+    const desired = Boolean(paused);
+    return callPlaybackBridge('set-paused', { paused: desired }).then((result) => {
+      if (result && result.ok && result.paused === desired) {
+        return result;
+      }
+
+      return setPlaybackPausedLocally(desired);
+    });
+  };
+
+  helper.getPlaybackState = function getPlaybackState() {
+    return callPlaybackBridge('state').then((result) => {
+      if (result && result.ok && typeof result.paused === 'boolean') {
+        return result;
+      }
+
+      return getPlaybackStateLocally();
+    });
+  };
+
+  function focusCurrentEditorForEscape() {
+    if (helper.state.blurRestorePending && helper.toggleEditorFocus()) {
+      return true;
+    }
+
+    const currentRow = helper.getCurrentRow();
+    if (!(currentRow instanceof HTMLElement)) {
+      return false;
+    }
+
+    return helper.focusRow(currentRow, {
+      activateRow: false,
+      cursor: 'start'
+    });
+  }
+
+  helper.handleEscapeWorkflow = function handleEscapeWorkflow() {
+    const focused = helper.getActiveRowTextarea() instanceof HTMLTextAreaElement;
+
+    void queueEscapePlaybackTask(async () => {
+      const playback = await helper.getPlaybackState();
+      const isPlaying = Boolean(playback && playback.ok && playback.paused === false);
+
+      if (focused && isPlaying) {
+        await helper.setPlaybackPaused(true);
+        return;
+      }
+
+      if (!focused && isPlaying) {
+        focusCurrentEditorForEscape();
+        await helper.setPlaybackPaused(true);
+        return;
+      }
+
+      if (focused && !isPlaying) {
+        helper.toggleEditorFocus();
+        await helper.setPlaybackPaused(false);
+        return;
+      }
+
+      await helper.setPlaybackPaused(false);
+    });
+    return true;
   };
 
   function seekPlaybackBySecondsLocally(deltaSeconds) {

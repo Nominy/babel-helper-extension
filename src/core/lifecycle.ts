@@ -226,7 +226,7 @@ export function registerLifecycle(helper: any) {
     }
 
     if (isFeatureEnabled('focusToggle') && event.key === 'Escape') {
-      if (helper.toggleEditorFocus()) {
+      if (typeof helper.handleEscapeWorkflow === 'function' && helper.handleEscapeWorkflow()) {
         event.preventDefault();
         event.stopPropagation();
       }
