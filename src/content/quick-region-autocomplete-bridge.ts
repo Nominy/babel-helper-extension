@@ -24,6 +24,23 @@
       triggerIndex: number;
       cursorPosition: number;
       fullText: string;
+      wrapSelection: null | {
+        textarea: HTMLTextAreaElement;
+        fullText: string;
+        selectionStart: number;
+        selectionEnd: number;
+        selectedText: string;
+      };
+    }
+  };
+
+  const pendingWrapSelection = {
+    current: null as null | {
+      textarea: HTMLTextAreaElement;
+      fullText: string;
+      selectionStart: number;
+      selectionEnd: number;
+      selectedText: string;
     }
   };
 
@@ -125,9 +142,17 @@
     return target instanceof HTMLTextAreaElement && target.matches(QUICK_TEXTAREA_SELECTOR);
   }
 
-  function getActiveQuickTextarea() {
+  function isRowTextarea(target: EventTarget | null): target is HTMLTextAreaElement {
+    return target instanceof HTMLTextAreaElement && target.matches(ROW_TEXTAREA_SELECTOR);
+  }
+
+  function isSupportedTextarea(target: EventTarget | null): target is HTMLTextAreaElement {
+    return isQuickTextarea(target) || isRowTextarea(target);
+  }
+
+  function getActiveSupportedTextarea() {
     const active = document.activeElement;
-    return isQuickTextarea(active) ? active : null;
+    return isSupportedTextarea(active) ? active : null;
   }
 
   function setNativeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
@@ -382,6 +407,38 @@
     return root;
   }
 
+  function openWrapSuggestions(textarea: HTMLTextAreaElement, wrapSelection: NonNullable<typeof pendingWrapSelection.current>) {
+    const data = getBridgeData();
+    if (!data) {
+      dismiss();
+      return;
+    }
+
+    const suggestions = getSuggestions({ type: 'style', open: '<', close: '>' }, '', data);
+    if (!suggestions.length) {
+      dismiss();
+      return;
+    }
+
+    const isRtl = (textarea.dir || document.documentElement.dir || '').toLowerCase() === 'rtl';
+    const position = getCaretPosition(textarea, wrapSelection.selectionStart, isRtl, suggestions.length);
+
+    clearDismissTimer();
+    state.isOpen = true;
+    state.suggestions = suggestions;
+    state.highlightedIndex = 0;
+    state.position = position;
+    contextState.current = {
+      context: { type: 'style', open: '<', close: '>' },
+      partial: '',
+      triggerIndex: wrapSelection.selectionStart,
+      cursorPosition: wrapSelection.selectionStart,
+      fullText: wrapSelection.fullText,
+      wrapSelection
+    };
+    renderListbox();
+  }
+
   function openForTextarea(textarea: HTMLTextAreaElement) {
     const data = getBridgeData();
     if (!data) {
@@ -418,8 +475,19 @@
       partial: trigger.partial,
       triggerIndex,
       cursorPosition,
-      fullText: textarea.value
+      fullText: textarea.value,
+      wrapSelection:
+        trigger.context.type === 'style' &&
+        pendingWrapSelection.current &&
+        pendingWrapSelection.current.textarea === textarea &&
+        pendingWrapSelection.current.selectionStart === triggerIndex
+          ? pendingWrapSelection.current
+          : null
     };
+
+    if (trigger.context.type !== 'style') {
+      pendingWrapSelection.current = null;
+    }
     renderListbox();
   }
 
@@ -430,13 +498,23 @@
       return false;
     }
 
-    const before = context.fullText.substring(0, context.triggerIndex);
-    const after = context.fullText.substring(context.cursorPosition);
-    const insertText = suggestion.insertText;
+    const wrapSelection = context.wrapSelection;
+    const before = wrapSelection
+      ? wrapSelection.fullText.substring(0, wrapSelection.selectionStart)
+      : context.fullText.substring(0, context.triggerIndex);
+    const after = wrapSelection
+      ? wrapSelection.fullText.substring(wrapSelection.selectionEnd)
+      : context.fullText.substring(context.cursorPosition);
+    const insertText =
+      context.context.type === 'style' && wrapSelection
+        ? `<${suggestion.label}> ${wrapSelection.selectedText} </${suggestion.label}>`
+        : suggestion.insertText;
 
     let nextCursorPosition = context.triggerIndex + insertText.length;
     if (context.context.type === 'style') {
-      nextCursorPosition = context.triggerIndex + 1 + suggestion.label.length + 2;
+      nextCursorPosition = wrapSelection
+        ? before.length + insertText.length
+        : context.triggerIndex + 1 + suggestion.label.length + 2;
     } else if (context.context.type === 'curly') {
       nextCursorPosition = context.triggerIndex + insertText.length - 1;
     }
@@ -445,8 +523,45 @@
     textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(nextCursorPosition, nextCursorPosition);
     dispatchInputEvent(textarea);
+    pendingWrapSelection.current = null;
     dismiss();
     return true;
+  }
+
+  function onBeforeInput(event: InputEvent) {
+    const textarea = isSupportedTextarea(event.target) ? event.target : null;
+    if (!textarea) {
+      return;
+    }
+
+    if (
+      event.inputType === 'insertText' &&
+      event.data === '<' &&
+      typeof textarea.selectionStart === 'number' &&
+      typeof textarea.selectionEnd === 'number' &&
+      textarea.selectionStart !== textarea.selectionEnd
+    ) {
+      event.preventDefault();
+      pendingWrapSelection.current = {
+        textarea,
+        fullText: textarea.value,
+        selectionStart: textarea.selectionStart,
+        selectionEnd: textarea.selectionEnd,
+        selectedText: textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
+      };
+      textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
+      openWrapSuggestions(textarea, pendingWrapSelection.current);
+      return;
+    }
+
+    if (
+      pendingWrapSelection.current &&
+      pendingWrapSelection.current.textarea === textarea &&
+      event.inputType !== 'insertText' &&
+      event.inputType !== 'insertCompositionText'
+    ) {
+      pendingWrapSelection.current = null;
+    }
   }
 
   function onInput(event: Event) {
@@ -459,14 +574,14 @@
 
   function onClick(event: MouseEvent) {
     const target = event.target as Element | null;
-    const activeQuickTextarea = getActiveQuickTextarea();
+    const activeSupportedTextarea = getActiveSupportedTextarea();
 
     if (isQuickTextarea(target)) {
       openForTextarea(target);
       return;
     }
 
-    if (!activeQuickTextarea) {
+    if (!activeSupportedTextarea) {
       dismiss();
       return;
     }
@@ -481,7 +596,7 @@
     event.stopPropagation();
     const index = Number(option.dataset.quickRegionSuggestionIndex || '-1');
     if (index >= 0) {
-      insertSuggestion(activeQuickTextarea, index);
+      insertSuggestion(activeSupportedTextarea, index);
     }
   }
 
@@ -510,7 +625,7 @@
   }
 
   function onKeyDown(event: KeyboardEvent) {
-    const textarea = isQuickTextarea(event.target) ? event.target : null;
+    const textarea = isSupportedTextarea(event.target) ? event.target : null;
     if (!textarea || event.isComposing || !state.isOpen || !state.suggestions.length) {
       return;
     }
@@ -547,7 +662,7 @@
 
   function onFocusOut(event: FocusEvent) {
     const target = event.target;
-    if (!isQuickTextarea(target)) {
+    if (!isSupportedTextarea(target)) {
       return;
     }
 
@@ -565,6 +680,7 @@
     }
 
     ensureListboxRoot();
+    document.addEventListener('beforeinput', onBeforeInput, true);
     document.addEventListener('input', onInput, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('mousedown', onMouseDown, true);
@@ -579,6 +695,7 @@
       return;
     }
 
+    document.removeEventListener('beforeinput', onBeforeInput, true);
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('mousedown', onMouseDown, true);
@@ -586,6 +703,7 @@
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('focusout', onFocusOut, true);
     bound = false;
+    pendingWrapSelection.current = null;
     dismiss();
   }
 
