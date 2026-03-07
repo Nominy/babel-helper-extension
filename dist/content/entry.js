@@ -5307,10 +5307,16 @@
       if (event.defaultPrevented) {
         return false;
       }
-      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+      if (event.altKey) {
         return false;
       }
-      return event.key === "ArrowLeft" || event.key === "ArrowRight";
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return false;
+      }
+      if (event.ctrlKey || event.metaKey) {
+        return true;
+      }
+      return !event.shiftKey;
     }
     function handleNativeArrowSuppress(event) {
       if (!shouldSuppressNativeArrowHotkey(event)) {
