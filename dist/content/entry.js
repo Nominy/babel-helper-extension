@@ -77,8 +77,8 @@
       rows.push(["Esc", "Pause playback and blur, then resume and restore cursor"]);
     }
     if (featureSettings.textMove) {
-      rows.push(["Alt + [ (\u0420\u0490)", "Move text before caret to previous segment"]);
-      rows.push(["Alt + ] (\u0420\u0404)", "Move text after caret to next segment"]);
+      rows.push(["Alt + [", "Move text before caret to previous segment"]);
+      rows.push(["Alt + ]", "Move text after caret to next segment"]);
     }
     if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
       rows.push(["Alt + 1 / Alt + 2", "Switch active speaker workflow lane"]);
