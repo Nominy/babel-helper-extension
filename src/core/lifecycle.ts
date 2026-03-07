@@ -208,6 +208,34 @@ export function registerLifecycle(helper: any) {
     );
   }
 
+  function shouldSuppressNativeArrowHotkey(event) {
+    if (!isFeatureEnabled('disableNativeArrowSeek')) {
+      return false;
+    }
+
+    if (!helper.runtime.isSessionInteractive()) {
+      return false;
+    }
+
+    if (event.defaultPrevented) {
+      return false;
+    }
+
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+      return false;
+    }
+
+    return event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+  }
+
+  function handleNativeArrowSuppress(event) {
+    if (!shouldSuppressNativeArrowHotkey(event)) {
+      return;
+    }
+
+    event.stopImmediatePropagation();
+  }
+
   helper.handleKeydown = function handleKeydown(event) {
     if (!helper.runtime.isSessionInteractive()) {
       return;
@@ -374,8 +402,10 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
+    window.addEventListener('keydown', handleNativeArrowSuppress, true);
     document.addEventListener('keydown', helper.handleKeydown, true);
     helper.state.keydownBound = true;
+    helper.state.nativeArrowSuppressBound = true;
   }
 
   function patchHistoryMethod(name) {

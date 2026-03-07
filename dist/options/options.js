@@ -7,6 +7,8 @@
     rowActions: true,
     speakerWorkflowHotkeys: true,
     textMove: true,
+    quickRegionAutocomplete: true,
+    disableNativeArrowSeek: true,
     focusToggle: true,
     timelineSelection: true,
     timelineZoomDefaults: true,
@@ -21,6 +23,8 @@
     "rowActions",
     "speakerWorkflowHotkeys",
     "textMove",
+    "quickRegionAutocomplete",
+    "disableNativeArrowSeek",
     "focusToggle",
     "timelineSelection",
     "timelineZoomDefaults",
@@ -43,6 +47,14 @@
     textMove: {
       label: "Text Move",
       description: "Enable Alt + [ and Alt + ] to move text between adjacent segments."
+    },
+    quickRegionAutocomplete: {
+      label: "Quick Region Autocomplete",
+      description: "Reuse Babel tag autocomplete in quick region and row editors, including selected-text style tag wrapping."
+    },
+    disableNativeArrowSeek: {
+      label: "Disable Native Arrow Seek",
+      description: "Block Babel\u2019s bare Left/Right Arrow segment-jump hotkeys while keeping normal caret movement."
     },
     focusToggle: {
       label: "Focus Toggle",

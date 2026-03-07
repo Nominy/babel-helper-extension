@@ -13,6 +13,7 @@ const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'hotkeys-help': 'hotkeysHelp',
   'row-actions': 'rowActions',
   'text-move': 'textMove',
+  'quick-region-autocomplete': 'quickRegionAutocomplete',
   'focus-toggle': 'focusToggle',
   'timeline-selection': 'timelineSelection',
   magnifier: 'magnifier',

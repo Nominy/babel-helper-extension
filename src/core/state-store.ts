@@ -13,6 +13,7 @@
     hotkeysObserver: null,
     routeRecoveryObserver: null,
     keydownBound: false,
+    nativeArrowSuppressBound: false,
     sessionActive: false,
     rowTrackingBound: false,
     cutListenersBound: false,

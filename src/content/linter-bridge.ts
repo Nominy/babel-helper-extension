@@ -6,7 +6,10 @@ export function initLinterBridge() {
 
   const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
   const LINT_PATH = '/api/trpc/transcriptions.lintAnnotations';
-  const RULE_REASON = 'Commas must be formatted as ", "';
+  const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
+  const QUOTE_BALANCE_RULE_REASON = 'Double quotes must be balanced.';
+  const QUOTE_PLACEMENT_RULE_REASON = 'Double quotes must not have stray spaces inside or be glued to surrounding words.';
+  const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
   const RULE_SEVERITY = 'error';
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 250;
@@ -165,7 +168,105 @@ export function initLinterBridge() {
       return false;
     }
 
-    return /\s+,/.test(text) || /,(?! |$)/.test(text) || /, {2,}/.test(text);
+    return /\s+,/.test(text) || /(?<!\d),(?![\d ]|$)/.test(text) || /, {2,}/.test(text);
+  }
+
+  function getQuoteIndices(text) {
+    const indices = [];
+    if (typeof text !== 'string' || text.indexOf('"') === -1) {
+      return indices;
+    }
+
+    for (let index = 0; index < text.length; index += 1) {
+      if (text[index] === '"') {
+        indices.push(index);
+      }
+    }
+
+    return indices;
+  }
+
+  function hasUnbalancedDoubleQuotes(text) {
+    return getQuoteIndices(text).length % 2 === 1;
+  }
+
+  function isWordCharacter(char) {
+    return typeof char === 'string' && /[\p{L}\p{N}]/u.test(char);
+  }
+
+  function hasQuotePlacementViolation(text) {
+    const quoteIndices = getQuoteIndices(text);
+    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
+      return false;
+    }
+
+    for (let index = 0; index < quoteIndices.length; index += 2) {
+      const openIndex = quoteIndices[index];
+      const closeIndex = quoteIndices[index + 1];
+      const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
+      const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
+      const prevCharBeforeClose = closeIndex > 0 ? text[closeIndex - 1] : '';
+      const nextChar = closeIndex + 1 < text.length ? text[closeIndex + 1] : '';
+
+      if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
+        return true;
+      }
+
+      if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function hasCurlySpacingViolation(text) {
+    if (typeof text !== 'string') {
+      return false;
+    }
+
+    const hasOpen = text.indexOf('{') !== -1;
+    const hasClose = text.indexOf('}') !== -1;
+    if (!hasOpen && !hasClose) {
+      return false;
+    }
+
+    if (hasOpen !== hasClose) {
+      return true;
+    }
+
+    const stack = [];
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (char === '{') {
+        stack.push(index);
+        continue;
+      }
+
+      if (char !== '}') {
+        continue;
+      }
+
+      if (!stack.length) {
+        return true;
+      }
+
+      const openIndex = stack.pop();
+      const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
+      const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
+      const prevCharBeforeClose = index > 0 ? text[index - 1] : '';
+      const nextChar = index + 1 < text.length ? text[index + 1] : '';
+
+      if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
+        return true;
+      }
+
+      if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
+        return true;
+      }
+    }
+
+    return stack.length > 0;
   }
 
   function buildCustomIssues(annotationEntries) {
@@ -175,15 +276,35 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (!hasCommaSpacingViolation(entry.text)) {
-        continue;
+      if (hasCommaSpacingViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: COMMA_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
       }
 
-      issues.push({
-        annotationId: entry.annotationId,
-        reason: RULE_REASON,
-        severity: RULE_SEVERITY
-      });
+      if (hasUnbalancedDoubleQuotes(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: QUOTE_BALANCE_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      } else if (hasQuotePlacementViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: QUOTE_PLACEMENT_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      }
+
+      if (hasCurlySpacingViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: CURLY_SPACING_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      }
     }
 
     return issues;

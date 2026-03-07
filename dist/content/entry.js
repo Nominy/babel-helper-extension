@@ -7,6 +7,8 @@
     rowActions: true,
     speakerWorkflowHotkeys: true,
     textMove: true,
+    quickRegionAutocomplete: true,
+    disableNativeArrowSeek: true,
     focusToggle: true,
     timelineSelection: true,
     timelineZoomDefaults: true,
@@ -21,6 +23,8 @@
     "rowActions",
     "speakerWorkflowHotkeys",
     "textMove",
+    "quickRegionAutocomplete",
+    "disableNativeArrowSeek",
     "focusToggle",
     "timelineSelection",
     "timelineZoomDefaults",
@@ -142,6 +146,7 @@
       hotkeysObserver: null,
       routeRecoveryObserver: null,
       keydownBound: false,
+      nativeArrowSuppressBound: false,
       sessionActive: false,
       rowTrackingBound: false,
       cutListenersBound: false,
@@ -5115,6 +5120,27 @@
         (shortcut) => shortcut && shortcut.code === event.code && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Number.isFinite(Number(shortcut.seconds))
       ) || null;
     }
+    function shouldSuppressNativeArrowHotkey(event) {
+      if (!isFeatureEnabled("disableNativeArrowSeek")) {
+        return false;
+      }
+      if (!helper.runtime.isSessionInteractive()) {
+        return false;
+      }
+      if (event.defaultPrevented) {
+        return false;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return false;
+      }
+      return event.key === "ArrowLeft" || event.key === "ArrowRight";
+    }
+    function handleNativeArrowSuppress(event) {
+      if (!shouldSuppressNativeArrowHotkey(event)) {
+        return;
+      }
+      event.stopImmediatePropagation();
+    }
     helper.handleKeydown = function handleKeydown(event) {
       if (!helper.runtime.isSessionInteractive()) {
         return;
@@ -5219,8 +5245,10 @@
       if (helper.state.keydownBound) {
         return;
       }
+      window.addEventListener("keydown", handleNativeArrowSuppress, true);
       document.addEventListener("keydown", helper.handleKeydown, true);
       helper.state.keydownBound = true;
+      helper.state.nativeArrowSuppressBound = true;
     }
     function patchHistoryMethod(name) {
       const current = window.history[name];
@@ -5595,6 +5623,7 @@
     "hotkeys-help": "hotkeysHelp",
     "row-actions": "rowActions",
     "text-move": "textMove",
+    "quick-region-autocomplete": "quickRegionAutocomplete",
     "focus-toggle": "focusToggle",
     "timeline-selection": "timelineSelection",
     magnifier: "magnifier",
