@@ -34,6 +34,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/content/quick-region-autocomplete-bridge.ts'],
+    outfile: 'dist/content/quick-region-autocomplete-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/options/options.ts'],
     outfile: 'dist/options/options.js'
   }

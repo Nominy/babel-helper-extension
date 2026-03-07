@@ -7,6 +7,7 @@ import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createTimelineSelectionFeature } from './timeline-selection-feature';
 import { createMagnifierFeature } from './magnifier-feature';
 import { createCustomLinterFeature } from './custom-linter-feature';
+import { createQuickRegionAutocompleteFeature } from './quick-region-autocomplete-feature';
 
 const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'hotkeys-help': 'hotkeysHelp',
@@ -26,7 +27,8 @@ export function createFeatureModules(featureSettings: FeatureSettings): FeatureM
     createFocusToggleFeature(),
     createTimelineSelectionFeature(),
     createMagnifierFeature(),
-    createCustomLinterFeature()
+    createCustomLinterFeature(),
+    createQuickRegionAutocompleteFeature()
   ];
 
   return modules.filter((module) => {

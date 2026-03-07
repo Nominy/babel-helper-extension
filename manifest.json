@@ -23,7 +23,8 @@
       "resources": [
         "dist/content/magnifier-bridge.js",
         "dist/content/playback-bridge.js",
-        "dist/content/linter-bridge.js"
+        "dist/content/linter-bridge.js",
+        "dist/content/quick-region-autocomplete-bridge.js"
       ],
       "matches": [
         "https://dashboard.babel.audio/*"

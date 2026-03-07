@@ -1782,7 +1782,7 @@
     const SELECTION_LOOP_HOST_ATTR = "data-babel-helper-selection-loop-host";
     const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
     const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-    const BRIDGE_SCRIPT_PATH2 = "dist/content/magnifier-bridge.js";
+    const BRIDGE_SCRIPT_PATH3 = "dist/content/magnifier-bridge.js";
     const BRIDGE_TIMEOUT_MS = 700;
     const ZOOM_PERSIST_DEBOUNCE_MS = 240;
     helper.state.cutDraft = null;
@@ -2649,7 +2649,7 @@
           return;
         }
         const script = document.createElement("script");
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH2);
+        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH3);
         script.async = false;
         script.onload = () => {
           script.remove();
@@ -4326,7 +4326,7 @@
     const MOUNT_MARKER_ATTR = "data-babel-helper-magnifier-mount";
     const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
     const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-    const BRIDGE_SCRIPT_PATH2 = "dist/content/magnifier-bridge.js";
+    const BRIDGE_SCRIPT_PATH3 = "dist/content/magnifier-bridge.js";
     const SCALE = 3;
     const WIDTH = 180;
     const MAX_HEIGHT = 150;
@@ -4567,7 +4567,7 @@
       }
       return null;
     }
-    function injectBridge2() {
+    function injectBridge3() {
       if (window.__babelHelperMagnifierBridge) {
         bridgeInjected = true;
         return Promise.resolve(true);
@@ -4586,7 +4586,7 @@
           return;
         }
         const script = document.createElement("script");
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH2);
+        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH3);
         script.async = false;
         script.onload = () => {
           script.remove();
@@ -4603,7 +4603,7 @@
       return bridgeLoadPromise;
     }
     async function callBridge(operation, payload) {
-      const ready = await injectBridge2();
+      const ready = await injectBridge3();
       if (!ready) {
         return null;
       }
@@ -5528,6 +5528,68 @@
     };
   }
 
+  // src/features/quick-region-autocomplete-feature.ts
+  var BRIDGE_SCRIPT_PATH2 = "dist/content/quick-region-autocomplete-bridge.js";
+  var TOGGLE_EVENT2 = "babel-helper-quick-region-autocomplete-toggle";
+  var BRIDGE_SCRIPT_ATTR2 = "data-babel-helper-quick-region-autocomplete-bridge";
+  function setBridgeEnabled2(enabled) {
+    window.dispatchEvent(
+      new CustomEvent(TOGGLE_EVENT2, {
+        detail: {
+          enabled
+        }
+      })
+    );
+  }
+  function injectBridge2() {
+    if (document.querySelector(`script[${BRIDGE_SCRIPT_ATTR2}="true"]`)) {
+      return Promise.resolve(true);
+    }
+    const chromeApi = globalThis.chrome;
+    if (!chromeApi || !chromeApi.runtime || typeof chromeApi.runtime.getURL !== "function") {
+      return Promise.resolve(false);
+    }
+    const root = document.documentElement || document.head || document.body;
+    if (!(root instanceof HTMLElement)) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.setAttribute(BRIDGE_SCRIPT_ATTR2, "true");
+      script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH2);
+      script.async = false;
+      script.onload = () => {
+        resolve(true);
+      };
+      script.onerror = () => {
+        script.remove();
+        resolve(false);
+      };
+      root.appendChild(script);
+    });
+  }
+  function createQuickRegionAutocompleteFeature() {
+    let startPromise = null;
+    return {
+      id: "quick-region-autocomplete",
+      async start(ctx) {
+        if (!startPromise) {
+          startPromise = injectBridge2();
+        }
+        const ready = await startPromise;
+        if (!ready) {
+          startPromise = null;
+          ctx.logger.warn("Quick region autocomplete bridge did not load");
+          return;
+        }
+        setBridgeEnabled2(true);
+      },
+      stop() {
+        setBridgeEnabled2(false);
+      }
+    };
+  }
+
   // src/features/index.ts
   var FEATURE_ID_TO_SETTING_KEY = {
     "hotkeys-help": "hotkeysHelp",
@@ -5546,7 +5608,8 @@
       createFocusToggleFeature(),
       createTimelineSelectionFeature(),
       createMagnifierFeature(),
-      createCustomLinterFeature()
+      createCustomLinterFeature(),
+      createQuickRegionAutocompleteFeature()
     ];
     return modules.filter((module) => {
       const settingKey = FEATURE_ID_TO_SETTING_KEY[module.id];
