@@ -1034,6 +1034,68 @@ export function registerTimelineSelectionService(helper: any) {
     );
   }
 
+  function isValidPreviewTimeRange(timeRange) {
+    return Boolean(
+      timeRange &&
+        Number.isFinite(timeRange.startSeconds) &&
+        Number.isFinite(timeRange.endSeconds) &&
+        timeRange.endSeconds > timeRange.startSeconds
+    );
+  }
+
+  function buildPreviewTimeEntries(container) {
+    if (!(container instanceof HTMLElement)) {
+      return [];
+    }
+
+    const snapshot = collectRegionSnapshot(container);
+    if (!snapshot) {
+      return [];
+    }
+
+    const waveformEntry = getWaveformEntryForContainer(container);
+    return getSnapshotTimeEntries(snapshot, {
+      runtimeEntries: getWaveformRegionEntries(waveformEntry)
+    });
+  }
+
+  function getPreviewLocalTimeRange(preview) {
+    if (!preview) {
+      return null;
+    }
+
+    const entries = Array.isArray(preview.timeEntries) ? preview.timeEntries : [];
+    if (entries.length) {
+      const startSeconds = projectSelectionXToSeconds(entries, preview.leftPx);
+      const endSeconds = projectSelectionXToSeconds(entries, preview.rightPx);
+      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
+        return {
+          startSeconds,
+          endSeconds
+        };
+      }
+    }
+
+    const timeScale = preview.timeScale;
+    if (
+      timeScale &&
+      Number.isFinite(timeScale.secondsPerPx) &&
+      timeScale.secondsPerPx > 0 &&
+      Number.isFinite(timeScale.offsetSeconds)
+    ) {
+      const startSeconds = timeScale.offsetSeconds + preview.leftPx * timeScale.secondsPerPx;
+      const endSeconds = timeScale.offsetSeconds + preview.rightPx * timeScale.secondsPerPx;
+      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
+        return {
+          startSeconds,
+          endSeconds
+        };
+      }
+    }
+
+    return null;
+  }
+
   function getPreviewDurationSeconds(preview) {
     if (!preview) {
       return null;
@@ -1052,15 +1114,19 @@ export function registerTimelineSelectionService(helper: any) {
     return null;
   }
 
-  function getPreviewTimeRange(preview) {
-    if (
-      !preview ||
-      !preview.timeRange ||
-      !Number.isFinite(preview.timeRange.startSeconds) ||
-      !Number.isFinite(preview.timeRange.endSeconds) ||
-      !(preview.timeRange.endSeconds > preview.timeRange.startSeconds)
-    ) {
-      if (preview && !preview.timeRangeRequest) {
+  function getPreviewTimeRange(preview, options) {
+    if (!preview) {
+      return null;
+    }
+
+    const localTimeRange = getPreviewLocalTimeRange(preview);
+    if (isValidPreviewTimeRange(localTimeRange)) {
+      return localTimeRange;
+    }
+
+    if (!isValidPreviewTimeRange(preview.timeRange)) {
+      const settings = options || {};
+      if (!preview.timeRangeRequest && settings.allowAsync !== false) {
         void refreshPreviewTimeRange(preview);
       }
       return null;
@@ -1088,22 +1154,26 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     preview.hostMarker = hostMarker;
+    const requestLeftPx = preview.leftPx;
+    const requestRightPx = preview.rightPx;
     const request = callSelectionBridge('selection-time-range', {
       hostMarker,
-      leftPx: preview.leftPx,
-      rightPx: preview.rightPx
+      leftPx: requestLeftPx,
+      rightPx: requestRightPx
     }).then((result) => {
       if (preview.timeRangeRequest !== request) {
-        return preview.timeRange;
+        return getPreviewTimeRange(preview, { allowAsync: false });
       }
 
       preview.timeRangeRequest = null;
-      if (
+      if (isValidPreviewTimeRange(getPreviewLocalTimeRange(preview))) {
+        preview.timeRange = null;
+      } else if (
+        preview.leftPx === requestLeftPx &&
+        preview.rightPx === requestRightPx &&
         result &&
         result.ok &&
-        Number.isFinite(result.startSeconds) &&
-        Number.isFinite(result.endSeconds) &&
-        result.endSeconds > result.startSeconds
+        isValidPreviewTimeRange(result)
       ) {
         preview.timeRange = {
           startSeconds: result.startSeconds,
@@ -1125,7 +1195,7 @@ export function registerTimelineSelectionService(helper: any) {
   }
 
   async function ensurePreviewTimeRange(preview) {
-    const cached = getPreviewTimeRange(preview);
+    const cached = getPreviewTimeRange(preview, { allowAsync: false });
     if (cached) {
       return cached;
     }
@@ -1944,6 +2014,7 @@ export function registerTimelineSelectionService(helper: any) {
       rightPx,
       element: preview,
       timeScale,
+      timeEntries: buildPreviewTimeEntries(draft.container),
       zoomSignature,
       hostMarker,
       timeRange: null,
