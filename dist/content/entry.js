@@ -338,6 +338,19 @@
       }
       return { startSeconds, endSeconds };
     }
+    function findRowByPlaybackTime(playbackTime) {
+      if (typeof playbackTime !== "number" || !Number.isFinite(playbackTime)) {
+        return null;
+      }
+      const rows = helper.getTranscriptRows();
+      for (const row of rows) {
+        const range = getRowTimeRange(row);
+        if (range && playbackTime >= range.startSeconds && playbackTime < range.endSeconds) {
+          return row;
+        }
+      }
+      return null;
+    }
     function snapToWordBoundary(text, offset) {
       if (!text || offset <= 0) {
         return 0;
@@ -384,33 +397,45 @@
       "whiteSpace",
       "wordWrap",
       "overflowWrap",
-      "direction"
+      "direction",
+      "boxSizing",
+      "tabSize",
+      "textAlign"
     ];
     function getCaretPixelPosition(textarea, charIndex) {
       const mirror = document.createElement("div");
       try {
         const computed = window.getComputedStyle(textarea);
-        mirror.style.position = "absolute";
+        const textareaRect = textarea.getBoundingClientRect();
+        mirror.style.position = "fixed";
+        mirror.style.top = `${textareaRect.top}px`;
+        mirror.style.left = `${textareaRect.left}px`;
         mirror.style.visibility = "hidden";
-        mirror.style.whiteSpace = "pre-wrap";
-        mirror.style.wordWrap = "break-word";
         mirror.style.overflow = "hidden";
-        mirror.style.width = `${textarea.clientWidth}px`;
+        mirror.style.pointerEvents = "none";
         for (const prop of MIRROR_STYLE_PROPS) {
           mirror.style[prop] = computed[prop];
         }
+        mirror.style.whiteSpace = "pre-wrap";
+        mirror.style.wordWrap = "break-word";
+        mirror.style.overflowWrap = "break-word";
+        mirror.style.width = `${textarea.offsetWidth}px`;
+        mirror.style.height = `${textarea.offsetHeight}px`;
+        mirror.style.boxSizing = "border-box";
         const beforeCaret = textarea.value.substring(0, charIndex);
+        const afterCaret = textarea.value.substring(charIndex);
         mirror.appendChild(document.createTextNode(beforeCaret));
         const marker = document.createElement("span");
         marker.textContent = "\u200B";
         mirror.appendChild(marker);
+        if (afterCaret) {
+          mirror.appendChild(document.createTextNode(afterCaret));
+        }
         document.body.appendChild(mirror);
-        const textareaRect = textarea.getBoundingClientRect();
-        const mirrorRect = mirror.getBoundingClientRect();
         const markerRect = marker.getBoundingClientRect();
-        const top = textareaRect.top + (markerRect.top - mirrorRect.top) - textarea.scrollTop;
-        const left = textareaRect.left + (markerRect.left - mirrorRect.left) - textarea.scrollLeft;
         const lineHeight = parseFloat(computed.lineHeight) || markerRect.height || 16;
+        const top = markerRect.top - textarea.scrollTop;
+        const left = markerRect.left - textarea.scrollLeft;
         return { top, left, height: lineHeight };
       } finally {
         if (mirror.parentNode) {
@@ -487,6 +512,8 @@
       document.body.appendChild(el);
       helper.state.ghostCursorElement = el;
       helper.state.ghostCursorRow = row;
+      let trackedRow = row;
+      let trackedTimeRange = timeRange;
       el.style.display = "none";
       let tickInFlight = false;
       async function tick() {
@@ -498,15 +525,6 @@
           if (!helper.state.ghostCursorElement || helper.state.ghostCursorElement !== el) {
             return;
           }
-          if (!row.isConnected) {
-            stopGhostCursor();
-            return;
-          }
-          const ta = helper.getRowTextarea(row);
-          if (!(ta instanceof HTMLTextAreaElement)) {
-            stopGhostCursor();
-            return;
-          }
           const playback = typeof helper.getPlaybackState === "function" ? await helper.getPlaybackState() : getPlaybackStateLocally();
           if (!playback || !playback.ok || typeof playback.currentTime !== "number") {
             el.style.display = "none";
@@ -516,8 +534,34 @@
             stopGhostCursor();
             return;
           }
+          const currentTime = playback.currentTime;
+          if (currentTime < trackedTimeRange.startSeconds || currentTime >= trackedTimeRange.endSeconds) {
+            const newRow = findRowByPlaybackTime(currentTime);
+            if (newRow && newRow !== trackedRow) {
+              const newRange = getRowTimeRange(newRow);
+              if (newRange) {
+                trackedRow = newRow;
+                trackedTimeRange = newRange;
+                helper.state.ghostCursorRow = newRow;
+                const remembered = helper.state.lastBlur;
+                if (remembered && remembered.synthetic) {
+                  remembered.row = newRow;
+                  helper.setCurrentRow(newRow);
+                }
+              }
+            }
+          }
+          if (!trackedRow.isConnected) {
+            stopGhostCursor();
+            return;
+          }
+          const ta = helper.getRowTextarea(trackedRow);
+          if (!(ta instanceof HTMLTextAreaElement)) {
+            stopGhostCursor();
+            return;
+          }
           const text = ta.value || "";
-          const charOffset = computeGhostOffset(text, timeRange, playback.currentTime, blurTime);
+          const charOffset = computeGhostOffset(text, trackedTimeRange, currentTime, blurTime);
           if (charOffset === null) {
             el.style.display = "none";
             return;
@@ -1733,17 +1777,23 @@
                 ));
                 const rawOffset = Math.round(ratio * text.length);
                 const snapped = snapToWordBoundary(text, rawOffset);
-                const blurAudioRatio = Math.max(0, Math.min(
-                  1,
-                  (blurTime - timeRange.startSeconds) / duration
-                ));
-                const blurCursorRatio = remembered.selectionStart / text.length;
-                const FRONTIER_THRESHOLD = 0.15;
-                if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
-                  const finalOffset = Math.max(remembered.selectionStart, snapped);
-                  selectionStart = finalOffset;
-                  selectionEnd = finalOffset;
+                if (remembered.synthetic) {
+                  selectionStart = snapped;
+                  selectionEnd = snapped;
                   direction = "none";
+                } else {
+                  const blurAudioRatio = Math.max(0, Math.min(
+                    1,
+                    (blurTime - timeRange.startSeconds) / duration
+                  ));
+                  const blurCursorRatio = remembered.selectionStart / text.length;
+                  const FRONTIER_THRESHOLD = 0.15;
+                  if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
+                    const finalOffset = Math.max(remembered.selectionStart, snapped);
+                    selectionStart = finalOffset;
+                    selectionEnd = finalOffset;
+                    direction = "none";
+                  }
                 }
               }
             }
@@ -1955,6 +2005,47 @@
       if (helper.state.blurRestorePending && helper.toggleEditorFocus()) {
         return true;
       }
+      const restoreTime = helper.state.restorePlaybackTime;
+      if (typeof restoreTime === "number" && Number.isFinite(restoreTime)) {
+        const timeRow = findRowByPlaybackTime(restoreTime);
+        if (timeRow instanceof HTMLElement) {
+          const timeRange = getRowTimeRange(timeRow);
+          const textarea = helper.getRowTextarea(timeRow);
+          if (timeRange && textarea instanceof HTMLTextAreaElement) {
+            const text = textarea.value || "";
+            if (text.length > 0 && helper.config.features.proportionalCursorRestore) {
+              const duration = timeRange.endSeconds - timeRange.startSeconds;
+              const blurTime = helper.state.blurPlaybackTime;
+              const adjustedRestoreTime = Math.max(
+                typeof blurTime === "number" && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,
+                restoreTime - REACTION_TIME_OFFSET_SECONDS
+              );
+              const ratio = Math.max(0, Math.min(
+                1,
+                (adjustedRestoreTime - timeRange.startSeconds) / duration
+              ));
+              const rawOffset = Math.round(ratio * text.length);
+              const snapped = snapToWordBoundary(text, rawOffset);
+              helper.state.blurPlaybackTime = null;
+              helper.state.restorePlaybackTime = null;
+              helper.state.blurRestorePending = false;
+              return helper.focusRow(timeRow, {
+                activateRow: false,
+                selectionStart: snapped,
+                selectionEnd: snapped,
+                direction: "none"
+              });
+            }
+          }
+          helper.state.blurPlaybackTime = null;
+          helper.state.restorePlaybackTime = null;
+          helper.state.blurRestorePending = false;
+          return helper.focusRow(timeRow, {
+            activateRow: false,
+            cursor: "start"
+          });
+        }
+      }
       const currentRow = helper.getCurrentRow();
       if (!(currentRow instanceof HTMLElement)) {
         return false;
@@ -1990,7 +2081,24 @@
           }
           return;
         }
+        const currentTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
+        const bootstrapRow = typeof currentTime === "number" && findRowByPlaybackTime(currentTime) || helper.findActiveRowByDomState() || helper.findActiveRowByReactState() || helper.getCurrentRow();
+        if (bootstrapRow) {
+          helper.state.lastBlur = {
+            row: bootstrapRow,
+            selectionStart: 0,
+            selectionEnd: 0,
+            direction: "none",
+            synthetic: true
+          };
+          helper.state.blurRestorePending = true;
+          helper.state.blurPlaybackTime = typeof currentTime === "number" ? currentTime : null;
+          helper.setCurrentRow(bootstrapRow);
+        }
         await helper.setPlaybackPaused(false);
+        if (bootstrapRow && helper.config.features.proportionalCursorRestore) {
+          startGhostCursor(bootstrapRow);
+        }
       });
       return true;
     };
