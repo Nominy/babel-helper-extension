@@ -87,10 +87,37 @@ function setStatus(statusElement: HTMLElement, message: string) {
   statusElement.textContent = message;
 }
 
+function downloadJson(data: unknown, filename: string) {
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+async function loadAnalyticsData(): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chromeApi = (globalThis as { chrome?: any }).chrome;
+    if (!chromeApi?.storage?.local) {
+      reject(new Error('Chrome storage API not available'));
+      return;
+    }
+    chromeApi.storage.local.get('babel_helper_analytics', (items: Record<string, unknown> | undefined) => {
+      resolve(items?.['babel_helper_analytics'] ?? null);
+    });
+  });
+}
+
 async function boot() {
   const featureList = requireElement<HTMLElement>('[data-role="feature-list"]');
   const statusElement = requireElement<HTMLElement>('[data-role="status"]');
   const resetButton = requireElement<HTMLButtonElement>('[data-role="reset"]');
+  const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
 
   renderFeatureCards(featureList);
   const inputs = getFeatureInputs();
@@ -126,6 +153,21 @@ async function boot() {
       inputs[key].checked = true;
     }
     void save();
+  });
+
+  downloadButton.addEventListener('click', () => {
+    setStatus(statusElement, 'Preparing download...');
+    void loadAnalyticsData().then((data) => {
+      if (!data) {
+        setStatus(statusElement, 'No analytics data found.');
+        return;
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      downloadJson(data, `babel-analytics-${timestamp}.json`);
+      setStatus(statusElement, 'Download started.');
+    }).catch(() => {
+      setStatus(statusElement, 'Could not read analytics data.');
+    });
   });
 }
 

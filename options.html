@@ -122,7 +122,8 @@
         padding: 7px 12px;
       }
 
-      .reset-btn {
+      .reset-btn,
+      .download-btn {
         appearance: none;
         border: 1px solid #cfd8e6;
         background: #fff;
@@ -134,8 +135,18 @@
         cursor: pointer;
       }
 
-      .reset-btn:hover {
+      .reset-btn:hover,
+      .download-btn:hover {
         background: #f3f7fc;
+      }
+
+      .download-btn {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .download-btn:hover {
+        background: var(--accent-soft);
       }
 
       @media (max-width: 560px) {
@@ -160,6 +171,7 @@
         <div class="feature-list" data-role="feature-list"></div>
         <div class="footer">
           <button class="reset-btn" type="button" data-role="reset">Reset to Defaults</button>
+          <button class="download-btn" type="button" data-role="download-logs">Download Logs</button>
           <div class="status" data-role="status">Loading...</div>
         </div>
       </section>

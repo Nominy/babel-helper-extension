@@ -246,6 +246,7 @@ export function registerRowService(helper: any) {
   }
 
   function stopGhostCursor() {
+    const wasActive = helper.state.ghostCursorIntervalId != null;
     if (helper.state.ghostCursorIntervalId != null) {
       clearInterval(helper.state.ghostCursorIntervalId);
       helper.state.ghostCursorIntervalId = null;
@@ -258,7 +259,14 @@ export function registerRowService(helper: any) {
       } catch (_e) { /* ignore */ }
       helper.state.ghostCursorElement = null;
     }
+    const stoppedRowId = helper.state.ghostCursorRow
+      ? (helper.getRowIdentity(helper.state.ghostCursorRow)?.annotationId ?? null)
+      : null;
     helper.state.ghostCursorRow = null;
+
+    if (wasActive && helper.analytics) {
+      helper.analytics.record('ghost:stop', { rowId: stoppedRowId });
+    }
   }
 
   function startGhostCursor(row) {
@@ -323,9 +331,19 @@ export function registerRowService(helper: any) {
           if (newRow && newRow !== trackedRow) {
             const newRange = getRowTimeRange(newRow);
             if (newRange) {
+              const prevRowId = helper.getRowIdentity(trackedRow)?.annotationId ?? null;
               trackedRow = newRow;
               trackedTimeRange = newRange;
               helper.state.ghostCursorRow = newRow;
+
+              if (helper.analytics) {
+                const newRowId = helper.getRowIdentity(newRow)?.annotationId ?? null;
+                helper.analytics.record('ghost:row-switch', {
+                  fromRowId: prevRowId,
+                  toRowId: newRowId,
+                  playbackTime: currentTime
+                });
+              }
 
               // Update the synthetic blur's row so State 2 restores into
               // the correct row when the user presses Esc.
@@ -382,6 +400,15 @@ export function registerRowService(helper: any) {
     helper.state.ghostCursorIntervalId = setInterval(() => {
       void tick();
     }, GHOST_CURSOR_INTERVAL_MS);
+
+    if (helper.analytics) {
+      const rowId = helper.getRowIdentity(row)?.annotationId ?? null;
+      helper.analytics.record('ghost:start', {
+        rowId,
+        timeRange,
+        blurTime: helper.state.blurPlaybackTime
+      });
+    }
   }
 
   helper.getTranscriptRows = function getTranscriptRows() {
@@ -1615,6 +1642,20 @@ export function registerRowService(helper: any) {
 
     helper.dispatchClick(actionItem);
 
+    if (helper.analytics) {
+      if (actionName === 'mergePrevious') {
+        helper.analytics.record('text:merge-previous', {
+          rowIndex: originalIndex,
+          hasMergePlan: Boolean(mergePlan)
+        });
+      } else if (actionName === 'mergeNext') {
+        helper.analytics.record('text:merge-next', {
+          rowIndex: originalIndex,
+          hasMergePlan: Boolean(mergePlan)
+        });
+      }
+    }
+
     if (mergePlan) {
       const mergedRow = await helper.waitFor(() => {
         const updatedRows = helper.getTranscriptRows();
@@ -1843,6 +1884,15 @@ export function registerRowService(helper: any) {
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(0, 0);
       helper.setCurrentRow(row);
+
+      if (helper.analytics) {
+        helper.analytics.record('text:move-left', {
+          movedLength: movedText.length,
+          splitIndex,
+          remainingLength: nextCurrentValue.length,
+          targetLength: nextTargetValue.length
+        });
+      }
       return true;
     }
 
@@ -1865,6 +1915,15 @@ export function registerRowService(helper: any) {
     textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(caret, caret);
     helper.setCurrentRow(row);
+
+    if (helper.analytics) {
+      helper.analytics.record('text:move-right', {
+        movedLength: movedText.length,
+        splitIndex,
+        remainingLength: nextCurrentValue.length,
+        targetLength: nextTargetValue.length
+      });
+    }
     return true;
   };
 
@@ -1897,10 +1956,15 @@ export function registerRowService(helper: any) {
         helper.setCurrentRow(row);
       }
 
+      const selStart = active.selectionStart;
+      const selEnd = active.selectionEnd;
+      const textLen = (active.value || '').length;
+      const rowId = row ? (helper.getRowIdentity(row)?.annotationId ?? null) : null;
+
       helper.state.lastBlur = {
         row: row || helper.getCurrentRow(),
-        selectionStart: active.selectionStart,
-        selectionEnd: active.selectionEnd,
+        selectionStart: selStart,
+        selectionEnd: selEnd,
         direction: active.selectionDirection || 'none'
       };
       helper.state.blurRestorePending = true;
@@ -1910,10 +1974,23 @@ export function registerRowService(helper: any) {
       // updated by the input/selectionchange listener. If not, use the
       // current selection as a sensible default.
       if (typeof helper.state.cursorBaseline !== 'number') {
-        helper.state.cursorBaseline = active.selectionStart;
+        helper.state.cursorBaseline = selStart;
       }
 
-      return helper.clearActiveFocus();
+      const cleared = helper.clearActiveFocus();
+
+      if (helper.analytics) {
+        helper.analytics.record('focus:blur', {
+          rowId,
+          cursorPos: selStart,
+          selectionLength: selEnd - selStart,
+          textLength: textLen,
+          cursorBaseline: helper.state.cursorBaseline,
+          cursorRatio: textLen > 0 ? Math.round((selStart / textLen) * 100) / 100 : null
+        });
+      }
+
+      return cleared;
     }
 
     const remembered = helper.state.lastBlur;
@@ -1929,6 +2006,9 @@ export function registerRowService(helper: any) {
       const focused = helper.focusRow(currentRow, { cursor: 'start' });
       if (focused) {
         helper.state.blurRestorePending = false;
+        if (helper.analytics) {
+          helper.analytics.record('focus:restore-fallback', { reason: 'no-remembered-blur' });
+        }
       }
       return focused;
     }
@@ -1944,6 +2024,7 @@ export function registerRowService(helper: any) {
       let selectionStart = remembered.selectionStart;
       let selectionEnd = remembered.selectionEnd;
       let direction = remembered.direction;
+      let usedProportional = false;
 
       if (helper.config.features.proportionalCursorRestore) {
         const blurTime = helper.state.blurPlaybackTime;
@@ -1966,6 +2047,21 @@ export function registerRowService(helper: any) {
                 selectionStart = result.offset;
                 selectionEnd = result.offset;
                 direction = 'none';
+                usedProportional = true;
+
+                if (helper.analytics) {
+                  helper.analytics.record('cursor:proportional-offset', {
+                    blurTime,
+                    restoreTime,
+                    playbackDelta: Math.round((restoreTime - blurTime) * 1000) / 1000,
+                    timeRange,
+                    textLength: text.length,
+                    baseline,
+                    rawOffset: result.offset,
+                    clamped: result.clamped,
+                    rememberedPos: remembered.selectionStart
+                  });
+                }
               }
             }
           }
@@ -1987,6 +2083,24 @@ export function registerRowService(helper: any) {
       });
       if (focused) {
         helper.state.blurRestorePending = false;
+
+        if (helper.analytics) {
+          const rowId = helper.getRowIdentity(rememberedRow)?.annotationId ?? null;
+          const eventType = usedProportional ? 'focus:restore-proportional' : 'focus:restore';
+          helper.analytics.record(eventType, {
+            rowId,
+            cursorPos: selectionStart,
+            proportional: usedProportional,
+            sameRow: true,
+            cursorBaseline: helper.state.cursorBaseline
+          });
+          helper.analytics.endEscCycle({
+            playbackTime: helper.state.restorePlaybackTime,
+            cursorPos: selectionStart,
+            proportional: usedProportional,
+            rowId
+          });
+        }
       }
       return focused;
     }
@@ -1997,6 +2111,9 @@ export function registerRowService(helper: any) {
       helper.getTranscriptRows()[0] ||
       null;
     if (!fallbackRow) {
+      if (helper.analytics) {
+        helper.analytics.record('focus:restore-failed', { reason: 'no-fallback-row' });
+      }
       return false;
     }
 
@@ -2006,6 +2123,20 @@ export function registerRowService(helper: any) {
     });
     if (focused) {
       helper.state.blurRestorePending = false;
+      if (helper.analytics) {
+        const rowId = helper.getRowIdentity(fallbackRow)?.annotationId ?? null;
+        helper.analytics.record('focus:restore-fallback', {
+          rowId,
+          reason: 'row-mismatch',
+          rememberedRowConnected: rememberedRow?.isConnected ?? false,
+          currentRowConnected: currentRow?.isConnected ?? false
+        });
+        helper.analytics.endEscCycle({
+          cursorPos: 0,
+          proportional: false,
+          rowId
+        });
+      }
     }
     return focused;
   };
@@ -2245,6 +2376,24 @@ export function registerRowService(helper: any) {
 
             if (result) {
               helper.state.cursorBaseline = result.offset;
+
+              if (helper.analytics) {
+                const rowId = helper.getRowIdentity(timeRow)?.annotationId ?? null;
+                helper.analytics.record('focus:restore-fallback', {
+                  reason: 'time-lookup-proportional',
+                  rowId,
+                  cursorPos: result.offset,
+                  playbackTime: restoreTime,
+                  clamped: result.clamped
+                });
+                helper.analytics.endEscCycle({
+                  playbackTime: restoreTime,
+                  cursorPos: result.offset,
+                  proportional: true,
+                  rowId
+                });
+              }
+
               return helper.focusRow(timeRow, {
                 activateRow: false,
                 selectionStart: result.offset,
@@ -2260,6 +2409,21 @@ export function registerRowService(helper: any) {
         helper.state.restorePlaybackTime = null;
         helper.state.blurRestorePending = false;
 
+        if (helper.analytics) {
+          const rowId = helper.getRowIdentity(timeRow)?.annotationId ?? null;
+          helper.analytics.record('focus:restore-fallback', {
+            reason: 'time-lookup-start',
+            rowId,
+            playbackTime: restoreTime
+          });
+          helper.analytics.endEscCycle({
+            playbackTime: restoreTime,
+            cursorPos: 0,
+            proportional: false,
+            rowId
+          });
+        }
+
         return helper.focusRow(timeRow, {
           activateRow: false,
           cursor: 'start'
@@ -2269,7 +2433,23 @@ export function registerRowService(helper: any) {
 
     const currentRow = helper.getCurrentRow();
     if (!(currentRow instanceof HTMLElement)) {
+      if (helper.analytics) {
+        helper.analytics.record('focus:restore-failed', { reason: 'no-current-row-for-escape' });
+      }
       return false;
+    }
+
+    if (helper.analytics) {
+      const rowId = helper.getRowIdentity(currentRow)?.annotationId ?? null;
+      helper.analytics.record('focus:restore-fallback', {
+        reason: 'current-row-fallback',
+        rowId
+      });
+      helper.analytics.endEscCycle({
+        cursorPos: 0,
+        proportional: false,
+        rowId
+      });
     }
 
     return helper.focusRow(currentRow, {
@@ -2281,29 +2461,104 @@ export function registerRowService(helper: any) {
   helper.handleEscapeWorkflow = function handleEscapeWorkflow() {
     const focused = helper.getActiveRowTextarea() instanceof HTMLTextAreaElement;
 
+    if (helper.analytics) {
+      helper.analytics.record('hotkey:escape', {
+        focused,
+        blurRestorePending: helper.state.blurRestorePending,
+        hasLastBlur: Boolean(helper.state.lastBlur),
+        cursorBaseline: helper.state.cursorBaseline
+      });
+    }
+
     void queueEscapePlaybackTask(async () => {
       const playback = await helper.getPlaybackState();
       const isPlaying = Boolean(playback && playback.ok && playback.paused === false);
+      const currentTime = playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
+
+      if (helper.analytics) {
+        helper.analytics.record('esc:playback-query', {
+          ok: playback?.ok,
+          paused: playback?.paused,
+          currentTime,
+          source: playback?.source
+        });
+      }
 
       if (focused && isPlaying) {
+        // State 1: focused + playing -> pause only
+        if (helper.analytics) {
+          helper.analytics.record('esc:state1:focused-playing', {
+            playbackTime: currentTime
+          });
+        }
         await helper.setPlaybackPaused(true);
+        if (helper.analytics) {
+          helper.analytics.record('playback:pause', { via: 'esc-state1', playbackTime: currentTime });
+        }
         return;
       }
 
       if (!focused && isPlaying) {
+        // State 2: unfocused + playing -> restore focus + pause
         stopGhostCursor();
         helper.state.restorePlaybackTime =
           playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
+
+        if (helper.analytics) {
+          const rowId = helper.state.lastBlur?.row
+            ? (helper.getRowIdentity(helper.state.lastBlur.row)?.annotationId ?? null)
+            : null;
+          helper.analytics.record('esc:state2:unfocused-playing', {
+            playbackTime: currentTime,
+            blurPlaybackTime: helper.state.blurPlaybackTime,
+            playbackDelta: currentTime != null && helper.state.blurPlaybackTime != null
+              ? Math.round((currentTime - helper.state.blurPlaybackTime) * 1000) / 1000
+              : null,
+            rowId,
+            blurRestorePending: helper.state.blurRestorePending
+          });
+        }
+
         focusCurrentEditorForEscape();
         await helper.setPlaybackPaused(true);
+        if (helper.analytics) {
+          helper.analytics.record('playback:pause', { via: 'esc-state2', playbackTime: currentTime });
+        }
         return;
       }
 
       if (focused && !isPlaying) {
+        // State 3: focused + not playing -> blur + play
+        const activeTextarea = helper.getActiveRowTextarea();
+        const cursorPos = activeTextarea ? activeTextarea.selectionStart : null;
+        const textLen = activeTextarea ? (activeTextarea.value || '').length : null;
+        const row = activeTextarea ? activeTextarea.closest('tr') : null;
+        const rowId = row ? (helper.getRowIdentity(row)?.annotationId ?? null) : null;
+
         helper.toggleEditorFocus();
         helper.state.blurPlaybackTime =
           playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
+
+        if (helper.analytics) {
+          helper.analytics.record('esc:state3:focused-notplaying', {
+            playbackTime: currentTime,
+            cursorPos,
+            textLength: textLen,
+            rowId,
+            cursorBaseline: helper.state.cursorBaseline
+          });
+          helper.analytics.startEscCycle(3, {
+            playbackTime: currentTime,
+            rowId,
+            cursorPos,
+            textLength: textLen
+          });
+        }
+
         await helper.setPlaybackPaused(false);
+        if (helper.analytics) {
+          helper.analytics.record('playback:resume', { via: 'esc-state3', playbackTime: currentTime });
+        }
 
         // Start the ghost cursor on the just-blurred row so the user sees
         // a live preview of where the cursor would land.
@@ -2316,8 +2571,6 @@ export function registerRowService(helper: any) {
 
       // State 4: !focused && !isPlaying — bootstrap a synthetic blur so the
       // next Esc press (State 2) can restore focus with proportional cursor.
-      const currentTime =
-        playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
 
       // Find the row matching current playback position, falling back to
       // Babel-active row or the DOM/React-state active row.
@@ -2326,6 +2579,22 @@ export function registerRowService(helper: any) {
         helper.findActiveRowByDomState() ||
         helper.findActiveRowByReactState() ||
         helper.getCurrentRow();
+
+      const bootstrapRowId = bootstrapRow ? (helper.getRowIdentity(bootstrapRow)?.annotationId ?? null) : null;
+
+      if (helper.analytics) {
+        helper.analytics.record('esc:state4:unfocused-notplaying', {
+          playbackTime: currentTime,
+          bootstrapRowId,
+          hasBootstrapRow: Boolean(bootstrapRow)
+        });
+        helper.analytics.startEscCycle(4, {
+          playbackTime: currentTime,
+          rowId: bootstrapRowId,
+          cursorPos: 0,
+          textLength: bootstrapRow ? (helper.getRowTextValue(bootstrapRow) || '').length : null
+        });
+      }
 
       if (bootstrapRow) {
         helper.state.lastBlur = {
@@ -2343,6 +2612,9 @@ export function registerRowService(helper: any) {
       }
 
       await helper.setPlaybackPaused(false);
+      if (helper.analytics) {
+        helper.analytics.record('playback:resume', { via: 'esc-state4', playbackTime: currentTime });
+      }
 
       // Start the ghost cursor so the user sees a live preview of where
       // the cursor would land if they press Esc.
@@ -2410,6 +2682,10 @@ export function registerRowService(helper: any) {
     const delta = Number(deltaSeconds);
     if (!Number.isFinite(delta) || delta === 0) {
       return false;
+    }
+
+    if (helper.analytics) {
+      helper.analytics.record('playback:seek', { deltaSeconds: delta });
     }
 
     return callPlaybackBridge('seek', { deltaSeconds: delta }).then((result) => {

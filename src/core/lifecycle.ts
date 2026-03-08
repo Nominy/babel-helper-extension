@@ -262,6 +262,9 @@ export function registerLifecycle(helper: any) {
     }
 
     event.stopImmediatePropagation();
+    if (helper.analytics) {
+      helper.analytics.record('hotkey:arrow-suppressed', { key: event.key, ctrlKey: event.ctrlKey });
+    }
   }
 
   helper.handleKeydown = function handleKeydown(event) {
@@ -278,6 +281,9 @@ export function registerLifecycle(helper: any) {
       typeof helper.handleCutPreviewKeydown === 'function' &&
       helper.handleCutPreviewKeydown(event)
     ) {
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:cut-preview', { key: event.key, code: event.code });
+      }
       return;
     }
 
@@ -298,6 +304,9 @@ export function registerLifecycle(helper: any) {
       !event.shiftKey &&
       helper.getCurrentRow({ allowFallback: false })
     ) {
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:delete', { key: 'Delete' });
+      }
       tryDeleteCurrentRow(event);
       return;
     }
@@ -312,6 +321,9 @@ export function registerLifecycle(helper: any) {
       !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)
     ) {
       if (tryDeleteCurrentRow(event)) {
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:delete', { key: 'D' });
+        }
         return;
       }
     }
@@ -324,6 +336,9 @@ export function registerLifecycle(helper: any) {
       if (handled) {
         event.preventDefault();
         event.stopPropagation();
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:rewind', { seconds: Number(rewindShortcut.seconds), code: event.code });
+        }
       }
       return;
     }
@@ -342,6 +357,9 @@ export function registerLifecycle(helper: any) {
     ) {
       handled = true;
       void helper.switchSpeakerWorkflow('Speaker 1');
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:speaker-switch', { speaker: 'Speaker 1' });
+      }
     } else if (
       isFeatureEnabled('rowActions') &&
       isFeatureEnabled('speakerWorkflowHotkeys') &&
@@ -351,6 +369,9 @@ export function registerLifecycle(helper: any) {
     ) {
       handled = true;
       void helper.switchSpeakerWorkflow('Speaker 2');
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:speaker-switch', { speaker: 'Speaker 2' });
+      }
     } else if (
       isFeatureEnabled('rowActions') &&
       isFeatureEnabled('speakerWorkflowHotkeys') &&
@@ -359,16 +380,31 @@ export function registerLifecycle(helper: any) {
     ) {
       handled = true;
       void helper.resetSpeakerWorkflow();
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:speaker-reset', {});
+      }
     } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketLeft') {
       handled = helper.moveTextToAdjacentSegment(-1);
+      if (handled && helper.analytics) {
+        helper.analytics.record('hotkey:text-move', { direction: 'left' });
+      }
     } else if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
       handled = helper.moveTextToAdjacentSegment(1);
+      if (handled && helper.analytics) {
+        helper.analytics.record('hotkey:text-move', { direction: 'right' });
+      }
     } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowUp') {
       handled = true;
       void helper.runRowAction('mergePrevious');
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:merge', { direction: 'previous' });
+      }
     } else if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowDown') {
       handled = true;
       void helper.runRowAction('mergeNext');
+      if (helper.analytics) {
+        helper.analytics.record('hotkey:merge', { direction: 'next' });
+      }
     }
 
     if (handled) {
@@ -391,10 +427,22 @@ export function registerLifecycle(helper: any) {
     if (row && row.querySelector(helper.config.rowTextareaSelector)) {
       // Reset the cursor baseline when focus moves to a different row,
       // since the baseline is only meaningful within a single segment.
-      if (helper.state.currentRow && helper.state.currentRow !== row) {
+      const rowChanged = helper.state.currentRow && helper.state.currentRow !== row;
+      if (rowChanged) {
         helper.state.cursorBaseline = null;
       }
       helper.setCurrentRow(row);
+
+      if (helper.analytics) {
+        const rowId = typeof helper.getRowIdentity === 'function'
+          ? (helper.getRowIdentity(row)?.annotationId ?? null)
+          : null;
+        helper.analytics.record('row:focus-in', {
+          rowId,
+          rowChanged,
+          isTextarea: target instanceof HTMLTextAreaElement
+        });
+      }
     }
   }
 
@@ -432,7 +480,26 @@ export function registerLifecycle(helper: any) {
 
     const pos = target.selectionStart;
     if (typeof pos === 'number') {
+      const prevBaseline = helper.state.cursorBaseline;
       helper.state.cursorBaseline = pos;
+
+      // Only log meaningful baseline changes (not every micro-movement)
+      if (helper.analytics && event.type === 'input') {
+        helper.analytics.recordTextEdit({
+          cursorPos: pos,
+          textLength: (target.value || '').length,
+          prevBaseline
+        });
+      }
+
+      if (helper.analytics && prevBaseline !== pos && event.type !== 'input') {
+        helper.analytics.record('cursor:baseline-update', {
+          pos,
+          prevBaseline,
+          eventType: event.type,
+          textLength: (target.value || '').length
+        });
+      }
     }
   }
 
@@ -538,6 +605,12 @@ export function registerLifecycle(helper: any) {
     lastPolledHref = window.location.href;
     resetRouteRefreshWindow();
     helper.runtime.scheduleRouteRefresh(reason);
+    if (helper.analytics) {
+      helper.analytics.record('session:route-change', {
+        reason,
+        url: window.location.href
+      });
+    }
   }
 
   function handlePopState() {
@@ -583,6 +656,13 @@ export function registerLifecycle(helper: any) {
       helper.setCurrentRow(null);
     }
 
+    if (helper.state.sessionActive && helper.analytics) {
+      helper.analytics.record('session:end', {
+        url: window.location.href,
+        summary: helper.analytics.getSummary()
+      });
+    }
+
     helper.state.sessionActive = false;
   }
 
@@ -618,6 +698,12 @@ export function registerLifecycle(helper: any) {
     }
 
     helper.state.sessionActive = true;
+
+    if (!wasSessionActive && helper.analytics) {
+      helper.analytics.record('session:start', {
+        url: window.location.href
+      });
+    }
   }
 
   helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason) {

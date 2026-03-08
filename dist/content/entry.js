@@ -480,6 +480,7 @@
       return el;
     }
     function stopGhostCursor() {
+      const wasActive = helper.state.ghostCursorIntervalId != null;
       if (helper.state.ghostCursorIntervalId != null) {
         clearInterval(helper.state.ghostCursorIntervalId);
         helper.state.ghostCursorIntervalId = null;
@@ -493,7 +494,11 @@
         }
         helper.state.ghostCursorElement = null;
       }
+      const stoppedRowId = helper.state.ghostCursorRow ? helper.getRowIdentity(helper.state.ghostCursorRow)?.annotationId ?? null : null;
       helper.state.ghostCursorRow = null;
+      if (wasActive && helper.analytics) {
+        helper.analytics.record("ghost:stop", { rowId: stoppedRowId });
+      }
     }
     function startGhostCursor(row) {
       stopGhostCursor();
@@ -544,9 +549,18 @@
             if (newRow && newRow !== trackedRow) {
               const newRange = getRowTimeRange(newRow);
               if (newRange) {
+                const prevRowId = helper.getRowIdentity(trackedRow)?.annotationId ?? null;
                 trackedRow = newRow;
                 trackedTimeRange = newRange;
                 helper.state.ghostCursorRow = newRow;
+                if (helper.analytics) {
+                  const newRowId = helper.getRowIdentity(newRow)?.annotationId ?? null;
+                  helper.analytics.record("ghost:row-switch", {
+                    fromRowId: prevRowId,
+                    toRowId: newRowId,
+                    playbackTime: currentTime
+                  });
+                }
                 const remembered = helper.state.lastBlur;
                 if (remembered && remembered.synthetic) {
                   remembered.row = newRow;
@@ -587,6 +601,14 @@
       helper.state.ghostCursorIntervalId = setInterval(() => {
         void tick();
       }, GHOST_CURSOR_INTERVAL_MS);
+      if (helper.analytics) {
+        const rowId = helper.getRowIdentity(row)?.annotationId ?? null;
+        helper.analytics.record("ghost:start", {
+          rowId,
+          timeRange,
+          blurTime: helper.state.blurPlaybackTime
+        });
+      }
     }
     helper.getTranscriptRows = function getTranscriptRows() {
       return Array.from(document.querySelectorAll("tbody tr")).filter(
@@ -1505,6 +1527,19 @@
         return false;
       }
       helper.dispatchClick(actionItem);
+      if (helper.analytics) {
+        if (actionName === "mergePrevious") {
+          helper.analytics.record("text:merge-previous", {
+            rowIndex: originalIndex,
+            hasMergePlan: Boolean(mergePlan)
+          });
+        } else if (actionName === "mergeNext") {
+          helper.analytics.record("text:merge-next", {
+            rowIndex: originalIndex,
+            hasMergePlan: Boolean(mergePlan)
+          });
+        }
+      }
       if (mergePlan) {
         const mergedRow = await helper.waitFor(() => {
           const updatedRows = helper.getTranscriptRows();
@@ -1690,6 +1725,14 @@
         textarea.focus({ preventScroll: true });
         textarea.setSelectionRange(0, 0);
         helper.setCurrentRow(row);
+        if (helper.analytics) {
+          helper.analytics.record("text:move-left", {
+            movedLength: movedText2.length,
+            splitIndex: splitIndex2,
+            remainingLength: nextCurrentValue2.length,
+            targetLength: nextTargetValue2.length
+          });
+        }
         return true;
       }
       const splitIndex = Math.max(0, Math.min(currentValue.length, selectionEnd));
@@ -1709,6 +1752,14 @@
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(caret, caret);
       helper.setCurrentRow(row);
+      if (helper.analytics) {
+        helper.analytics.record("text:move-right", {
+          movedLength: movedText.length,
+          splitIndex,
+          remainingLength: nextCurrentValue.length,
+          targetLength: nextTargetValue.length
+        });
+      }
       return true;
     };
     helper.clearActiveFocus = function clearActiveFocus() {
@@ -1735,17 +1786,32 @@
         if (row) {
           helper.setCurrentRow(row);
         }
+        const selStart = active.selectionStart;
+        const selEnd = active.selectionEnd;
+        const textLen = (active.value || "").length;
+        const rowId = row ? helper.getRowIdentity(row)?.annotationId ?? null : null;
         helper.state.lastBlur = {
           row: row || helper.getCurrentRow(),
-          selectionStart: active.selectionStart,
-          selectionEnd: active.selectionEnd,
+          selectionStart: selStart,
+          selectionEnd: selEnd,
           direction: active.selectionDirection || "none"
         };
         helper.state.blurRestorePending = true;
         if (typeof helper.state.cursorBaseline !== "number") {
-          helper.state.cursorBaseline = active.selectionStart;
+          helper.state.cursorBaseline = selStart;
         }
-        return helper.clearActiveFocus();
+        const cleared = helper.clearActiveFocus();
+        if (helper.analytics) {
+          helper.analytics.record("focus:blur", {
+            rowId,
+            cursorPos: selStart,
+            selectionLength: selEnd - selStart,
+            textLength: textLen,
+            cursorBaseline: helper.state.cursorBaseline,
+            cursorRatio: textLen > 0 ? Math.round(selStart / textLen * 100) / 100 : null
+          });
+        }
+        return cleared;
       }
       const remembered = helper.state.lastBlur;
       if (!helper.state.blurRestorePending) {
@@ -1757,6 +1823,9 @@
         const focused2 = helper.focusRow(currentRow, { cursor: "start" });
         if (focused2) {
           helper.state.blurRestorePending = false;
+          if (helper.analytics) {
+            helper.analytics.record("focus:restore-fallback", { reason: "no-remembered-blur" });
+          }
         }
         return focused2;
       }
@@ -1766,6 +1835,7 @@
         let selectionStart = remembered.selectionStart;
         let selectionEnd = remembered.selectionEnd;
         let direction = remembered.direction;
+        let usedProportional = false;
         if (helper.config.features.proportionalCursorRestore) {
           const blurTime = helper.state.blurPlaybackTime;
           const restoreTime = helper.state.restorePlaybackTime;
@@ -1781,6 +1851,20 @@
                   selectionStart = result.offset;
                   selectionEnd = result.offset;
                   direction = "none";
+                  usedProportional = true;
+                  if (helper.analytics) {
+                    helper.analytics.record("cursor:proportional-offset", {
+                      blurTime,
+                      restoreTime,
+                      playbackDelta: Math.round((restoreTime - blurTime) * 1e3) / 1e3,
+                      timeRange,
+                      textLength: text.length,
+                      baseline,
+                      rawOffset: result.offset,
+                      clamped: result.clamped,
+                      rememberedPos: remembered.selectionStart
+                    });
+                  }
                 }
               }
             }
@@ -1797,11 +1881,31 @@
         });
         if (focused2) {
           helper.state.blurRestorePending = false;
+          if (helper.analytics) {
+            const rowId = helper.getRowIdentity(rememberedRow)?.annotationId ?? null;
+            const eventType = usedProportional ? "focus:restore-proportional" : "focus:restore";
+            helper.analytics.record(eventType, {
+              rowId,
+              cursorPos: selectionStart,
+              proportional: usedProportional,
+              sameRow: true,
+              cursorBaseline: helper.state.cursorBaseline
+            });
+            helper.analytics.endEscCycle({
+              playbackTime: helper.state.restorePlaybackTime,
+              cursorPos: selectionStart,
+              proportional: usedProportional,
+              rowId
+            });
+          }
         }
         return focused2;
       }
       const fallbackRow = currentRow && currentRow.isConnected && currentRow || rememberedRow && rememberedRow.isConnected && rememberedRow || helper.getTranscriptRows()[0] || null;
       if (!fallbackRow) {
+        if (helper.analytics) {
+          helper.analytics.record("focus:restore-failed", { reason: "no-fallback-row" });
+        }
         return false;
       }
       const focused = helper.focusRow(fallbackRow, {
@@ -1810,6 +1914,20 @@
       });
       if (focused) {
         helper.state.blurRestorePending = false;
+        if (helper.analytics) {
+          const rowId = helper.getRowIdentity(fallbackRow)?.annotationId ?? null;
+          helper.analytics.record("focus:restore-fallback", {
+            rowId,
+            reason: "row-mismatch",
+            rememberedRowConnected: rememberedRow?.isConnected ?? false,
+            currentRowConnected: currentRow?.isConnected ?? false
+          });
+          helper.analytics.endEscCycle({
+            cursorPos: 0,
+            proportional: false,
+            rowId
+          });
+        }
       }
       return focused;
     };
@@ -2010,6 +2128,22 @@
               helper.state.blurRestorePending = false;
               if (result) {
                 helper.state.cursorBaseline = result.offset;
+                if (helper.analytics) {
+                  const rowId = helper.getRowIdentity(timeRow)?.annotationId ?? null;
+                  helper.analytics.record("focus:restore-fallback", {
+                    reason: "time-lookup-proportional",
+                    rowId,
+                    cursorPos: result.offset,
+                    playbackTime: restoreTime,
+                    clamped: result.clamped
+                  });
+                  helper.analytics.endEscCycle({
+                    playbackTime: restoreTime,
+                    cursorPos: result.offset,
+                    proportional: true,
+                    rowId
+                  });
+                }
                 return helper.focusRow(timeRow, {
                   activateRow: false,
                   selectionStart: result.offset,
@@ -2022,6 +2156,20 @@
           helper.state.blurPlaybackTime = null;
           helper.state.restorePlaybackTime = null;
           helper.state.blurRestorePending = false;
+          if (helper.analytics) {
+            const rowId = helper.getRowIdentity(timeRow)?.annotationId ?? null;
+            helper.analytics.record("focus:restore-fallback", {
+              reason: "time-lookup-start",
+              rowId,
+              playbackTime: restoreTime
+            });
+            helper.analytics.endEscCycle({
+              playbackTime: restoreTime,
+              cursorPos: 0,
+              proportional: false,
+              rowId
+            });
+          }
           return helper.focusRow(timeRow, {
             activateRow: false,
             cursor: "start"
@@ -2030,7 +2178,22 @@
       }
       const currentRow = helper.getCurrentRow();
       if (!(currentRow instanceof HTMLElement)) {
+        if (helper.analytics) {
+          helper.analytics.record("focus:restore-failed", { reason: "no-current-row-for-escape" });
+        }
         return false;
+      }
+      if (helper.analytics) {
+        const rowId = helper.getRowIdentity(currentRow)?.annotationId ?? null;
+        helper.analytics.record("focus:restore-fallback", {
+          reason: "current-row-fallback",
+          rowId
+        });
+        helper.analytics.endEscCycle({
+          cursorPos: 0,
+          proportional: false,
+          rowId
+        });
       }
       return helper.focusRow(currentRow, {
         activateRow: false,
@@ -2039,32 +2202,106 @@
     }
     helper.handleEscapeWorkflow = function handleEscapeWorkflow() {
       const focused = helper.getActiveRowTextarea() instanceof HTMLTextAreaElement;
+      if (helper.analytics) {
+        helper.analytics.record("hotkey:escape", {
+          focused,
+          blurRestorePending: helper.state.blurRestorePending,
+          hasLastBlur: Boolean(helper.state.lastBlur),
+          cursorBaseline: helper.state.cursorBaseline
+        });
+      }
       void queueEscapePlaybackTask(async () => {
         const playback = await helper.getPlaybackState();
         const isPlaying = Boolean(playback && playback.ok && playback.paused === false);
+        const currentTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
+        if (helper.analytics) {
+          helper.analytics.record("esc:playback-query", {
+            ok: playback?.ok,
+            paused: playback?.paused,
+            currentTime,
+            source: playback?.source
+          });
+        }
         if (focused && isPlaying) {
+          if (helper.analytics) {
+            helper.analytics.record("esc:state1:focused-playing", {
+              playbackTime: currentTime
+            });
+          }
           await helper.setPlaybackPaused(true);
+          if (helper.analytics) {
+            helper.analytics.record("playback:pause", { via: "esc-state1", playbackTime: currentTime });
+          }
           return;
         }
         if (!focused && isPlaying) {
           stopGhostCursor();
           helper.state.restorePlaybackTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
+          if (helper.analytics) {
+            const rowId = helper.state.lastBlur?.row ? helper.getRowIdentity(helper.state.lastBlur.row)?.annotationId ?? null : null;
+            helper.analytics.record("esc:state2:unfocused-playing", {
+              playbackTime: currentTime,
+              blurPlaybackTime: helper.state.blurPlaybackTime,
+              playbackDelta: currentTime != null && helper.state.blurPlaybackTime != null ? Math.round((currentTime - helper.state.blurPlaybackTime) * 1e3) / 1e3 : null,
+              rowId,
+              blurRestorePending: helper.state.blurRestorePending
+            });
+          }
           focusCurrentEditorForEscape();
           await helper.setPlaybackPaused(true);
+          if (helper.analytics) {
+            helper.analytics.record("playback:pause", { via: "esc-state2", playbackTime: currentTime });
+          }
           return;
         }
         if (focused && !isPlaying) {
+          const activeTextarea = helper.getActiveRowTextarea();
+          const cursorPos = activeTextarea ? activeTextarea.selectionStart : null;
+          const textLen = activeTextarea ? (activeTextarea.value || "").length : null;
+          const row = activeTextarea ? activeTextarea.closest("tr") : null;
+          const rowId = row ? helper.getRowIdentity(row)?.annotationId ?? null : null;
           helper.toggleEditorFocus();
           helper.state.blurPlaybackTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
+          if (helper.analytics) {
+            helper.analytics.record("esc:state3:focused-notplaying", {
+              playbackTime: currentTime,
+              cursorPos,
+              textLength: textLen,
+              rowId,
+              cursorBaseline: helper.state.cursorBaseline
+            });
+            helper.analytics.startEscCycle(3, {
+              playbackTime: currentTime,
+              rowId,
+              cursorPos,
+              textLength: textLen
+            });
+          }
           await helper.setPlaybackPaused(false);
+          if (helper.analytics) {
+            helper.analytics.record("playback:resume", { via: "esc-state3", playbackTime: currentTime });
+          }
           const blurredRow = helper.state.lastBlur && helper.state.lastBlur.row;
           if (blurredRow) {
             startGhostCursor(blurredRow);
           }
           return;
         }
-        const currentTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
         const bootstrapRow = typeof currentTime === "number" && findRowByPlaybackTime(currentTime) || helper.findActiveRowByDomState() || helper.findActiveRowByReactState() || helper.getCurrentRow();
+        const bootstrapRowId = bootstrapRow ? helper.getRowIdentity(bootstrapRow)?.annotationId ?? null : null;
+        if (helper.analytics) {
+          helper.analytics.record("esc:state4:unfocused-notplaying", {
+            playbackTime: currentTime,
+            bootstrapRowId,
+            hasBootstrapRow: Boolean(bootstrapRow)
+          });
+          helper.analytics.startEscCycle(4, {
+            playbackTime: currentTime,
+            rowId: bootstrapRowId,
+            cursorPos: 0,
+            textLength: bootstrapRow ? (helper.getRowTextValue(bootstrapRow) || "").length : null
+          });
+        }
         if (bootstrapRow) {
           helper.state.lastBlur = {
             row: bootstrapRow,
@@ -2079,6 +2316,9 @@
           helper.setCurrentRow(bootstrapRow);
         }
         await helper.setPlaybackPaused(false);
+        if (helper.analytics) {
+          helper.analytics.record("playback:resume", { via: "esc-state4", playbackTime: currentTime });
+        }
         if (bootstrapRow && helper.config.features.proportionalCursorRestore) {
           startGhostCursor(bootstrapRow);
         }
@@ -2131,6 +2371,9 @@
       const delta = Number(deltaSeconds);
       if (!Number.isFinite(delta) || delta === 0) {
         return false;
+      }
+      if (helper.analytics) {
+        helper.analytics.record("playback:seek", { deltaSeconds: delta });
       }
       return callPlaybackBridge("seek", { deltaSeconds: delta }).then((result) => {
         if (result && result.ok) {
@@ -5721,6 +5964,9 @@
         return;
       }
       event.stopImmediatePropagation();
+      if (helper.analytics) {
+        helper.analytics.record("hotkey:arrow-suppressed", { key: event.key, ctrlKey: event.ctrlKey });
+      }
     }
     helper.handleKeydown = function handleKeydown(event) {
       if (!helper.runtime.isSessionInteractive()) {
@@ -5730,6 +5976,9 @@
         return;
       }
       if (isFeatureEnabled("timelineSelection") && typeof helper.handleCutPreviewKeydown === "function" && helper.handleCutPreviewKeydown(event)) {
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:cut-preview", { key: event.key, code: event.code });
+        }
         return;
       }
       if (isFeatureEnabled("focusToggle") && event.key === "Escape") {
@@ -5740,11 +5989,17 @@
         return;
       }
       if (isFeatureEnabled("rowActions") && event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && helper.getCurrentRow({ allowFallback: false })) {
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:delete", { key: "Delete" });
+        }
         tryDeleteCurrentRow(event);
         return;
       }
       if (isFeatureEnabled("rowActions") && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === "KeyD" && !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)) {
         if (tryDeleteCurrentRow(event)) {
+          if (helper.analytics) {
+            helper.analytics.record("hotkey:delete", { key: "D" });
+          }
           return;
         }
       }
@@ -5754,6 +6009,9 @@
         if (handled2) {
           event.preventDefault();
           event.stopPropagation();
+          if (helper.analytics) {
+            helper.analytics.record("hotkey:rewind", { seconds: Number(rewindShortcut.seconds), code: event.code });
+          }
         }
         return;
       }
@@ -5764,22 +6022,43 @@
       if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && !event.shiftKey && event.code === "Digit1" && typeof helper.switchSpeakerWorkflow === "function") {
         handled = true;
         void helper.switchSpeakerWorkflow("Speaker 1");
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:speaker-switch", { speaker: "Speaker 1" });
+        }
       } else if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && !event.shiftKey && event.code === "Digit2" && typeof helper.switchSpeakerWorkflow === "function") {
         handled = true;
         void helper.switchSpeakerWorkflow("Speaker 2");
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:speaker-switch", { speaker: "Speaker 2" });
+        }
       } else if (isFeatureEnabled("rowActions") && isFeatureEnabled("speakerWorkflowHotkeys") && event.code === "Backquote" && typeof helper.resetSpeakerWorkflow === "function") {
         handled = true;
         void helper.resetSpeakerWorkflow();
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:speaker-reset", {});
+        }
       } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketLeft") {
         handled = helper.moveTextToAdjacentSegment(-1);
+        if (handled && helper.analytics) {
+          helper.analytics.record("hotkey:text-move", { direction: "left" });
+        }
       } else if (isFeatureEnabled("textMove") && !event.shiftKey && event.code === "BracketRight") {
         handled = helper.moveTextToAdjacentSegment(1);
+        if (handled && helper.analytics) {
+          helper.analytics.record("hotkey:text-move", { direction: "right" });
+        }
       } else if (isFeatureEnabled("rowActions") && event.shiftKey && event.key === "ArrowUp") {
         handled = true;
         void helper.runRowAction("mergePrevious");
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:merge", { direction: "previous" });
+        }
       } else if (isFeatureEnabled("rowActions") && event.shiftKey && event.key === "ArrowDown") {
         handled = true;
         void helper.runRowAction("mergeNext");
+        if (helper.analytics) {
+          helper.analytics.record("hotkey:merge", { direction: "next" });
+        }
       }
       if (handled) {
         event.preventDefault();
@@ -5796,10 +6075,19 @@
       }
       const row = target.closest("tr");
       if (row && row.querySelector(helper.config.rowTextareaSelector)) {
-        if (helper.state.currentRow && helper.state.currentRow !== row) {
+        const rowChanged = helper.state.currentRow && helper.state.currentRow !== row;
+        if (rowChanged) {
           helper.state.cursorBaseline = null;
         }
         helper.setCurrentRow(row);
+        if (helper.analytics) {
+          const rowId = typeof helper.getRowIdentity === "function" ? helper.getRowIdentity(row)?.annotationId ?? null : null;
+          helper.analytics.record("row:focus-in", {
+            rowId,
+            rowChanged,
+            isTextarea: target instanceof HTMLTextAreaElement
+          });
+        }
       }
     }
     function handleRowPointerDown(event) {
@@ -5822,7 +6110,23 @@
       }
       const pos = target.selectionStart;
       if (typeof pos === "number") {
+        const prevBaseline = helper.state.cursorBaseline;
         helper.state.cursorBaseline = pos;
+        if (helper.analytics && event.type === "input") {
+          helper.analytics.recordTextEdit({
+            cursorPos: pos,
+            textLength: (target.value || "").length,
+            prevBaseline
+          });
+        }
+        if (helper.analytics && prevBaseline !== pos && event.type !== "input") {
+          helper.analytics.record("cursor:baseline-update", {
+            pos,
+            prevBaseline,
+            eventType: event.type,
+            textLength: (target.value || "").length
+          });
+        }
       }
     }
     helper.bindRowTracking = function bindRowTracking() {
@@ -5904,6 +6208,12 @@
       lastPolledHref = window.location.href;
       resetRouteRefreshWindow();
       helper.runtime.scheduleRouteRefresh(reason);
+      if (helper.analytics) {
+        helper.analytics.record("session:route-change", {
+          reason,
+          url: window.location.href
+        });
+      }
     }
     function handlePopState() {
       handleRouteEvent("popstate");
@@ -5939,6 +6249,12 @@
       if (typeof helper.setCurrentRow === "function") {
         helper.setCurrentRow(null);
       }
+      if (helper.state.sessionActive && helper.analytics) {
+        helper.analytics.record("session:end", {
+          url: window.location.href,
+          summary: helper.analytics.getSummary()
+        });
+      }
       helper.state.sessionActive = false;
     }
     function bindSessionFeatures() {
@@ -5960,6 +6276,11 @@
         void helper.applySavedZoomDefault();
       }
       helper.state.sessionActive = true;
+      if (!wasSessionActive && helper.analytics) {
+        helper.analytics.record("session:start", {
+          url: window.location.href
+        });
+      }
     }
     helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason) {
       helper.runtime.clearRuntimeTimer();
@@ -6255,6 +6576,243 @@
     });
   }
 
+  // src/core/analytics-store.ts
+  var DEFAULT_MAX_EVENTS = 2e3;
+  var STORAGE_KEY = "babel_helper_analytics";
+  var PERSIST_DEBOUNCE_MS = 5e3;
+  var TEXT_EDIT_SAMPLE_INTERVAL_MS = 2e3;
+  function createAnalyticsStore(options) {
+    const maxEvents = options?.maxEvents ?? DEFAULT_MAX_EVENTS;
+    const events = [];
+    let seq = 0;
+    let persistTimer = null;
+    let lastTextEditTs = 0;
+    const escCycle = {
+      blurAt: null,
+      blurHrt: null,
+      blurPlaybackTime: null,
+      blurState: null,
+      blurRowId: null,
+      blurCursorPos: null,
+      blurTextLength: null
+    };
+    const counters = {
+      sessionStartedAt: Date.now(),
+      totalEscPresses: 0,
+      escStates: {},
+      escCycleDurations: [],
+      blurDurations: [],
+      totalTextEdits: 0,
+      totalTextMoves: 0,
+      totalMerges: 0,
+      totalSmartSplits: 0,
+      totalSeeks: 0,
+      totalFocusRestores: 0,
+      proportionalRestoreCount: 0,
+      fallbackRestoreCount: 0,
+      ghostCursorStarts: 0
+    };
+    function record(type, data) {
+      seq += 1;
+      const event = {
+        seq,
+        type,
+        ts: Date.now(),
+        hrt: typeof performance !== "undefined" ? performance.now() : 0,
+        data
+      };
+      events.push(event);
+      if (events.length > maxEvents) {
+        events.shift();
+      }
+      updateCounters(event);
+      schedulePersist();
+      return event;
+    }
+    function updateCounters(event) {
+      const { type, data } = event;
+      if (type === "hotkey:escape") {
+        counters.totalEscPresses += 1;
+      }
+      if (type.startsWith("esc:state")) {
+        const stateKey = type.split(":")[1] || type;
+        counters.escStates[stateKey] = (counters.escStates[stateKey] || 0) + 1;
+      }
+      if (type === "timing:esc-cycle" && data && typeof data.durationMs === "number") {
+        counters.escCycleDurations.push(data.durationMs);
+        if (counters.escCycleDurations.length > 100) {
+          counters.escCycleDurations.shift();
+        }
+      }
+      if (type === "focus:blur" && data && typeof data.durationSinceRestoreMs === "number") {
+        counters.blurDurations.push(data.durationSinceRestoreMs);
+        if (counters.blurDurations.length > 100) {
+          counters.blurDurations.shift();
+        }
+      }
+      if (type === "text:edit") counters.totalTextEdits += 1;
+      if (type === "text:move-left" || type === "text:move-right") counters.totalTextMoves += 1;
+      if (type === "text:merge-previous" || type === "text:merge-next") counters.totalMerges += 1;
+      if (type === "text:smart-split") counters.totalSmartSplits += 1;
+      if (type === "playback:seek") counters.totalSeeks += 1;
+      if (type === "focus:restore" || type === "focus:restore-proportional" || type === "focus:restore-fallback") {
+        counters.totalFocusRestores += 1;
+      }
+      if (type === "focus:restore-proportional") counters.proportionalRestoreCount += 1;
+      if (type === "focus:restore-fallback") counters.fallbackRestoreCount += 1;
+      if (type === "ghost:start") counters.ghostCursorStarts += 1;
+    }
+    function startEscCycle(state, data) {
+      escCycle.blurAt = Date.now();
+      escCycle.blurHrt = typeof performance !== "undefined" ? performance.now() : 0;
+      escCycle.blurState = state;
+      escCycle.blurPlaybackTime = data?.playbackTime ?? null;
+      escCycle.blurRowId = data?.rowId ?? null;
+      escCycle.blurCursorPos = data?.cursorPos ?? null;
+      escCycle.blurTextLength = data?.textLength ?? null;
+    }
+    function endEscCycle(restoreData) {
+      if (escCycle.blurAt === null) return;
+      const now = Date.now();
+      const hrtNow = typeof performance !== "undefined" ? performance.now() : 0;
+      const durationMs = escCycle.blurHrt !== null && hrtNow > 0 ? hrtNow - escCycle.blurHrt : now - escCycle.blurAt;
+      record("timing:esc-cycle", {
+        durationMs: Math.round(durationMs),
+        blurState: escCycle.blurState,
+        blurPlaybackTime: escCycle.blurPlaybackTime,
+        restorePlaybackTime: restoreData?.playbackTime ?? null,
+        blurCursorPos: escCycle.blurCursorPos,
+        restoreCursorPos: restoreData?.cursorPos ?? null,
+        proportional: restoreData?.proportional ?? false,
+        blurRowId: escCycle.blurRowId,
+        restoreRowId: restoreData?.rowId ?? null,
+        sameRow: escCycle.blurRowId != null && escCycle.blurRowId === restoreData?.rowId,
+        blurTextLength: escCycle.blurTextLength
+      });
+      escCycle.blurAt = null;
+      escCycle.blurHrt = null;
+      escCycle.blurPlaybackTime = null;
+      escCycle.blurState = null;
+      escCycle.blurRowId = null;
+      escCycle.blurCursorPos = null;
+      escCycle.blurTextLength = null;
+    }
+    function recordTextEdit(data) {
+      const now = Date.now();
+      if (now - lastTextEditTs < TEXT_EDIT_SAMPLE_INTERVAL_MS) return;
+      lastTextEditTs = now;
+      record("text:edit", data);
+    }
+    function schedulePersist() {
+      if (persistTimer !== null) return;
+      persistTimer = setTimeout(() => {
+        persistTimer = null;
+        void persistToStorage();
+      }, PERSIST_DEBOUNCE_MS);
+    }
+    async function persistToStorage() {
+      try {
+        const chromeApi = globalThis.chrome;
+        if (!chromeApi?.storage?.local) return;
+        const payload = {
+          version: 1,
+          persistedAt: Date.now(),
+          summary: getSummary(),
+          // Only persist last 500 events to keep storage small
+          recentEvents: events.slice(-500)
+        };
+        await new Promise((resolve) => {
+          chromeApi.storage.local.set({ [STORAGE_KEY]: payload }, () => {
+            resolve();
+          });
+        });
+      } catch (_e) {
+      }
+    }
+    function getSummary() {
+      const avgEscCycle = counters.escCycleDurations.length > 0 ? Math.round(counters.escCycleDurations.reduce((a, b) => a + b, 0) / counters.escCycleDurations.length) : null;
+      const avgBlurTime = counters.blurDurations.length > 0 ? Math.round(counters.blurDurations.reduce((a, b) => a + b, 0) / counters.blurDurations.length) : null;
+      return {
+        sessionStartedAt: counters.sessionStartedAt,
+        totalEscPresses: counters.totalEscPresses,
+        escStateDistribution: { ...counters.escStates },
+        avgEscCycleDurationMs: avgEscCycle,
+        totalTextEdits: counters.totalTextEdits,
+        totalTextMoves: counters.totalTextMoves,
+        totalMerges: counters.totalMerges,
+        totalSmartSplits: counters.totalSmartSplits,
+        totalSeeks: counters.totalSeeks,
+        totalFocusRestores: counters.totalFocusRestores,
+        proportionalRestoreCount: counters.proportionalRestoreCount,
+        fallbackRestoreCount: counters.fallbackRestoreCount,
+        ghostCursorStarts: counters.ghostCursorStarts,
+        avgTimeInBlurredStateMs: avgBlurTime,
+        eventCount: events.length
+      };
+    }
+    function getEvents(filter) {
+      let result = events;
+      if (filter?.type) {
+        const types = Array.isArray(filter.type) ? filter.type : [filter.type];
+        const typeSet = new Set(types);
+        result = result.filter((e) => typeSet.has(e.type));
+      }
+      if (filter?.last && filter.last > 0) {
+        result = result.slice(-filter.last);
+      }
+      return result;
+    }
+    function getEscWorkflowHistory(count = 20) {
+      return getEvents({ type: [
+        "esc:state1:focused-playing",
+        "esc:state2:unfocused-playing",
+        "esc:state3:focused-notplaying",
+        "esc:state4:unfocused-notplaying",
+        "timing:esc-cycle"
+      ], last: count });
+    }
+    function getRecentTimeline(count = 50) {
+      return events.slice(-count);
+    }
+    function dump() {
+      const summary = getSummary();
+      console.group("[babel-analytics] Session Summary");
+      console.table(summary);
+      console.groupEnd();
+      console.group("[babel-analytics] Esc Workflow History (last 20)");
+      console.table(getEscWorkflowHistory());
+      console.groupEnd();
+      console.group("[babel-analytics] Recent Timeline (last 50)");
+      console.table(getRecentTimeline());
+      console.groupEnd();
+    }
+    const store = {
+      record,
+      recordTextEdit,
+      startEscCycle,
+      endEscCycle,
+      getSummary,
+      getEvents,
+      getEscWorkflowHistory,
+      getRecentTimeline,
+      dump,
+      get escCycle() {
+        return escCycle;
+      },
+      get eventCount() {
+        return events.length;
+      },
+      get allEvents() {
+        return events.slice();
+      }
+    };
+    try {
+      window.__babelAnalytics = store;
+    } catch (_e) {
+    }
+    return store;
+  }
+
   // src/core/kernel.ts
   function cloneSettings(settings) {
     return normalizeExtensionSettings(settings);
@@ -6263,10 +6821,12 @@
     const state = createState();
     let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
     const config = createConfig(settings.features);
+    const analytics = createAnalyticsStore();
     const helper = {
       config,
       settings,
       state,
+      analytics,
       isFeatureEnabled(featureKey) {
         return Boolean(helper.settings?.features?.[featureKey]);
       },

@@ -17,6 +17,7 @@ import { registerLifecycle } from './lifecycle';
 import { createDisposerStack } from './disposables';
 import type { FeatureContext, FeatureModule, ServiceRegistry } from './types';
 import { createFeatureModules } from '../features';
+import { createAnalyticsStore } from './analytics-store';
 
 function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
   return normalizeExtensionSettings(settings);
@@ -26,11 +27,13 @@ export function createHelperKernel() {
   const state = createState();
   let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
   const config = createConfig(settings.features);
+  const analytics = createAnalyticsStore();
 
   const helper: any = {
     config,
     settings,
     state,
+    analytics,
     isFeatureEnabled(featureKey: FeatureSettingKey) {
       return Boolean(helper.settings?.features?.[featureKey]);
     },
