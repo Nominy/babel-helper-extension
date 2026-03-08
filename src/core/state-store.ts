@@ -30,6 +30,7 @@
     magnifier: null,
     magnifierDrag: null,
     speakerSwitchPending: false,
+    cursorBaseline: null,
     ghostCursorElement: null,
     ghostCursorIntervalId: null,
     ghostCursorRow: null

@@ -389,6 +389,11 @@ export function registerLifecycle(helper: any) {
 
     const row = target.closest('tr');
     if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+      // Reset the cursor baseline when focus moves to a different row,
+      // since the baseline is only meaningful within a single segment.
+      if (helper.state.currentRow && helper.state.currentRow !== row) {
+        helper.state.cursorBaseline = null;
+      }
       helper.setCurrentRow(row);
     }
   }
@@ -409,6 +414,28 @@ export function registerLifecycle(helper: any) {
     }
   }
 
+  /**
+   * Update the cursor baseline when the user manually interacts with a
+   * transcript textarea.  Covers typing (input), arrow keys / click
+   * selection changes (keyup + pointerup) so that the proportional restore
+   * system never drags the cursor backward past a position the user
+   * intentionally placed it at.
+   */
+  function handleCursorBaselineUpdate(event) {
+    const target = event.target;
+    if (
+      !(target instanceof HTMLTextAreaElement) ||
+      !target.matches(helper.config.rowTextareaSelector)
+    ) {
+      return;
+    }
+
+    const pos = target.selectionStart;
+    if (typeof pos === 'number') {
+      helper.state.cursorBaseline = pos;
+    }
+  }
+
   helper.bindRowTracking = function bindRowTracking() {
     if (helper.state.rowTrackingBound) {
       return;
@@ -416,6 +443,9 @@ export function registerLifecycle(helper: any) {
 
     document.addEventListener('focusin', handleRowFocusIn, true);
     document.addEventListener('pointerdown', handleRowPointerDown, true);
+    document.addEventListener('input', handleCursorBaselineUpdate, true);
+    document.addEventListener('keyup', handleCursorBaselineUpdate, true);
+    document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
     helper.state.rowTrackingBound = true;
   };
 
@@ -426,6 +456,9 @@ export function registerLifecycle(helper: any) {
 
     document.removeEventListener('focusin', handleRowFocusIn, true);
     document.removeEventListener('pointerdown', handleRowPointerDown, true);
+    document.removeEventListener('input', handleCursorBaselineUpdate, true);
+    document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
+    document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
     helper.state.rowTrackingBound = false;
   };
 

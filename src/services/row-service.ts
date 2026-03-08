@@ -202,12 +202,16 @@ export function registerRowService(helper: any) {
   }
 
   /**
-   * Compute the ghost cursor character offset for a given playback time,
-   * applying the same proportional + reaction-time formula used for actual
-   * cursor placement. Returns the snapped character index, or null if the
-   * position cannot be computed.
+   * Compute the character offset the cursor should land at for a given
+   * playback time, applying reaction-time compensation, word-boundary
+   * snapping, and the monotonic baseline floor.
+   *
+   * Returns { offset, clamped } where `offset` is the final character
+   * index and `clamped` is true when the baseline floor prevented the
+   * cursor from advancing (i.e. the ghost cursor is "stuck").
+   * Returns null if the position cannot be computed.
    */
-  function computeGhostOffset(text, timeRange, currentTime, blurTime) {
+  function computeRestoreOffset(text, timeRange, currentTime, blurTime, baseline) {
     if (!text || text.length === 0 || !timeRange) { return null; }
     const duration = timeRange.endSeconds - timeRange.startSeconds;
     if (duration <= 0) { return null; }
@@ -220,7 +224,11 @@ export function registerRowService(helper: any) {
       (adjustedTime - timeRange.startSeconds) / duration
     ));
     const rawOffset = Math.round(ratio * text.length);
-    return snapToWordBoundary(text, rawOffset);
+    const snapped = snapToWordBoundary(text, rawOffset);
+
+    const floor = typeof baseline === 'number' && baseline >= 0 ? baseline : 0;
+    const final = Math.max(floor, snapped);
+    return { offset: final, clamped: final !== snapped };
   }
 
   function createGhostCursorElement() {
@@ -343,13 +351,21 @@ export function registerRowService(helper: any) {
         }
 
         const text = ta.value || '';
-        const charOffset = computeGhostOffset(text, trackedTimeRange, currentTime, blurTime);
-        if (charOffset === null) {
+        const baseline = typeof helper.state.cursorBaseline === 'number'
+          ? helper.state.cursorBaseline : 0;
+        const result = computeRestoreOffset(text, trackedTimeRange, currentTime, blurTime, baseline);
+        if (result === null) {
           el.style.display = 'none';
           return;
         }
 
-        const pos = getCaretPixelPosition(ta, charOffset);
+        // Change color based on whether the baseline floor is clamping:
+        // amber when advancing, dim gray when stuck at baseline.
+        el.style.background = result.clamped
+          ? 'rgba(156, 163, 175, 0.6)'   // gray-400 — stuck at baseline
+          : 'rgba(245, 158, 11, 0.75)';   // amber-500 — advancing
+
+        const pos = getCaretPixelPosition(ta, result.offset);
         el.style.display = '';
         el.style.top = `${pos.top}px`;
         el.style.left = `${pos.left}px`;
@@ -1889,6 +1905,14 @@ export function registerRowService(helper: any) {
       };
       helper.state.blurRestorePending = true;
 
+      // Preserve the current cursor baseline. If the user manually moved
+      // the cursor since the last restore, cursorBaseline was already
+      // updated by the input/selectionchange listener. If not, use the
+      // current selection as a sensible default.
+      if (typeof helper.state.cursorBaseline !== 'number') {
+        helper.state.cursorBaseline = active.selectionStart;
+      }
+
       return helper.clearActiveFocus();
     }
 
@@ -1934,47 +1958,14 @@ export function registerRowService(helper: any) {
             const textarea = helper.getRowTextarea(rememberedRow);
             const text = textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
             if (text.length > 0) {
-              const duration = timeRange.endSeconds - timeRange.startSeconds;
-
-              // Apply reaction-time compensation: shift the effective restore
-              // time backward so the cursor lands closer to the word the user
-              // was actually hearing when they decided to stop, rather than
-              // where the audio had already moved to by the time Esc was pressed.
-              // Never shift earlier than the blur time itself.
-              const adjustedRestoreTime = Math.max(blurTime,
-                restoreTime - REACTION_TIME_OFFSET_SECONDS
-              );
-
-              const ratio = Math.max(0, Math.min(1,
-                (adjustedRestoreTime - timeRange.startSeconds) / duration
-              ));
-              const rawOffset = Math.round(ratio * text.length);
-              const snapped = snapToWordBoundary(text, rawOffset);
-
-              if (remembered.synthetic) {
-                // Synthetic blur (State 4 bootstrap): no prior editing position,
-                // so place cursor directly at the proportional offset — no
-                // frontier check, no forward-only constraint.
-                selectionStart = snapped;
-                selectionEnd = snapped;
+              const baseline = typeof helper.state.cursorBaseline === 'number'
+                ? helper.state.cursorBaseline
+                : remembered.selectionStart;
+              const result = computeRestoreOffset(text, timeRange, restoreTime, blurTime, baseline);
+              if (result) {
+                selectionStart = result.offset;
+                selectionEnd = result.offset;
                 direction = 'none';
-              } else {
-                // Real blur: only advance if cursor was near the audio at blur
-                // time (editing at frontier).
-                const blurAudioRatio = Math.max(0, Math.min(1,
-                  (blurTime - timeRange.startSeconds) / duration
-                ));
-                const blurCursorRatio = remembered.selectionStart / text.length;
-                const FRONTIER_THRESHOLD = 0.15;
-
-                if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
-                  // At the frontier — advance forward, never backward.
-                  const finalOffset = Math.max(remembered.selectionStart, snapped);
-                  selectionStart = finalOffset;
-                  selectionEnd = finalOffset;
-                  direction = 'none';
-                }
-                // else: cursor was far from audio (cleanup edit) — keep original position
               }
             }
           }
@@ -1983,6 +1974,10 @@ export function registerRowService(helper: any) {
 
       helper.state.blurPlaybackTime = null;
       helper.state.restorePlaybackTime = null;
+
+      // Update baseline to the restored position so the next Esc cycle
+      // uses it as the floor. The user can further advance it by editing.
+      helper.state.cursorBaseline = selectionStart;
 
       const focused = helper.focusRow(rememberedRow, {
         activateRow: false,
@@ -2239,28 +2234,24 @@ export function registerRowService(helper: any) {
         if (timeRange && textarea instanceof HTMLTextAreaElement) {
           const text = textarea.value || '';
           if (text.length > 0 && helper.config.features.proportionalCursorRestore) {
-            const duration = timeRange.endSeconds - timeRange.startSeconds;
             const blurTime = helper.state.blurPlaybackTime;
-            const adjustedRestoreTime = Math.max(
-              typeof blurTime === 'number' && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,
-              restoreTime - REACTION_TIME_OFFSET_SECONDS
-            );
-            const ratio = Math.max(0, Math.min(1,
-              (adjustedRestoreTime - timeRange.startSeconds) / duration
-            ));
-            const rawOffset = Math.round(ratio * text.length);
-            const snapped = snapToWordBoundary(text, rawOffset);
+            const baseline = typeof helper.state.cursorBaseline === 'number'
+              ? helper.state.cursorBaseline : 0;
+            const result = computeRestoreOffset(text, timeRange, restoreTime, blurTime, baseline);
 
             helper.state.blurPlaybackTime = null;
             helper.state.restorePlaybackTime = null;
             helper.state.blurRestorePending = false;
 
-            return helper.focusRow(timeRow, {
-              activateRow: false,
-              selectionStart: snapped,
-              selectionEnd: snapped,
-              direction: 'none'
-            });
+            if (result) {
+              helper.state.cursorBaseline = result.offset;
+              return helper.focusRow(timeRow, {
+                activateRow: false,
+                selectionStart: result.offset,
+                selectionEnd: result.offset,
+                direction: 'none'
+              });
+            }
           }
         }
 
@@ -2345,6 +2336,7 @@ export function registerRowService(helper: any) {
           synthetic: true
         };
         helper.state.blurRestorePending = true;
+        helper.state.cursorBaseline = 0;
         helper.state.blurPlaybackTime =
           typeof currentTime === 'number' ? currentTime : null;
         helper.setCurrentRow(bootstrapRow);

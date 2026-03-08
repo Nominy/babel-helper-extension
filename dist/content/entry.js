@@ -165,6 +165,7 @@
       magnifier: null,
       magnifierDrag: null,
       speakerSwitchPending: false,
+      cursorBaseline: null,
       ghostCursorElement: null,
       ghostCursorIntervalId: null,
       ghostCursorRow: null
@@ -443,7 +444,7 @@
         }
       }
     }
-    function computeGhostOffset(text, timeRange, currentTime, blurTime) {
+    function computeRestoreOffset(text, timeRange, currentTime, blurTime, baseline) {
       if (!text || text.length === 0 || !timeRange) {
         return null;
       }
@@ -460,7 +461,10 @@
         (adjustedTime - timeRange.startSeconds) / duration
       ));
       const rawOffset = Math.round(ratio * text.length);
-      return snapToWordBoundary(text, rawOffset);
+      const snapped = snapToWordBoundary(text, rawOffset);
+      const floor = typeof baseline === "number" && baseline >= 0 ? baseline : 0;
+      const final = Math.max(floor, snapped);
+      return { offset: final, clamped: final !== snapped };
     }
     function createGhostCursorElement() {
       const el = document.createElement("div");
@@ -561,12 +565,14 @@
             return;
           }
           const text = ta.value || "";
-          const charOffset = computeGhostOffset(text, trackedTimeRange, currentTime, blurTime);
-          if (charOffset === null) {
+          const baseline = typeof helper.state.cursorBaseline === "number" ? helper.state.cursorBaseline : 0;
+          const result = computeRestoreOffset(text, trackedTimeRange, currentTime, blurTime, baseline);
+          if (result === null) {
             el.style.display = "none";
             return;
           }
-          const pos = getCaretPixelPosition(ta, charOffset);
+          el.style.background = result.clamped ? "rgba(156, 163, 175, 0.6)" : "rgba(245, 158, 11, 0.75)";
+          const pos = getCaretPixelPosition(ta, result.offset);
           el.style.display = "";
           el.style.top = `${pos.top}px`;
           el.style.left = `${pos.left}px`;
@@ -1736,6 +1742,9 @@
           direction: active.selectionDirection || "none"
         };
         helper.state.blurRestorePending = true;
+        if (typeof helper.state.cursorBaseline !== "number") {
+          helper.state.cursorBaseline = active.selectionStart;
+        }
         return helper.clearActiveFocus();
       }
       const remembered = helper.state.lastBlur;
@@ -1766,34 +1775,12 @@
               const textarea = helper.getRowTextarea(rememberedRow);
               const text = textarea instanceof HTMLTextAreaElement ? textarea.value || "" : "";
               if (text.length > 0) {
-                const duration = timeRange.endSeconds - timeRange.startSeconds;
-                const adjustedRestoreTime = Math.max(
-                  blurTime,
-                  restoreTime - REACTION_TIME_OFFSET_SECONDS
-                );
-                const ratio = Math.max(0, Math.min(
-                  1,
-                  (adjustedRestoreTime - timeRange.startSeconds) / duration
-                ));
-                const rawOffset = Math.round(ratio * text.length);
-                const snapped = snapToWordBoundary(text, rawOffset);
-                if (remembered.synthetic) {
-                  selectionStart = snapped;
-                  selectionEnd = snapped;
+                const baseline = typeof helper.state.cursorBaseline === "number" ? helper.state.cursorBaseline : remembered.selectionStart;
+                const result = computeRestoreOffset(text, timeRange, restoreTime, blurTime, baseline);
+                if (result) {
+                  selectionStart = result.offset;
+                  selectionEnd = result.offset;
                   direction = "none";
-                } else {
-                  const blurAudioRatio = Math.max(0, Math.min(
-                    1,
-                    (blurTime - timeRange.startSeconds) / duration
-                  ));
-                  const blurCursorRatio = remembered.selectionStart / text.length;
-                  const FRONTIER_THRESHOLD = 0.15;
-                  if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
-                    const finalOffset = Math.max(remembered.selectionStart, snapped);
-                    selectionStart = finalOffset;
-                    selectionEnd = finalOffset;
-                    direction = "none";
-                  }
                 }
               }
             }
@@ -1801,6 +1788,7 @@
         }
         helper.state.blurPlaybackTime = null;
         helper.state.restorePlaybackTime = null;
+        helper.state.cursorBaseline = selectionStart;
         const focused2 = helper.focusRow(rememberedRow, {
           activateRow: false,
           selectionStart,
@@ -2014,27 +2002,21 @@
           if (timeRange && textarea instanceof HTMLTextAreaElement) {
             const text = textarea.value || "";
             if (text.length > 0 && helper.config.features.proportionalCursorRestore) {
-              const duration = timeRange.endSeconds - timeRange.startSeconds;
               const blurTime = helper.state.blurPlaybackTime;
-              const adjustedRestoreTime = Math.max(
-                typeof blurTime === "number" && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,
-                restoreTime - REACTION_TIME_OFFSET_SECONDS
-              );
-              const ratio = Math.max(0, Math.min(
-                1,
-                (adjustedRestoreTime - timeRange.startSeconds) / duration
-              ));
-              const rawOffset = Math.round(ratio * text.length);
-              const snapped = snapToWordBoundary(text, rawOffset);
+              const baseline = typeof helper.state.cursorBaseline === "number" ? helper.state.cursorBaseline : 0;
+              const result = computeRestoreOffset(text, timeRange, restoreTime, blurTime, baseline);
               helper.state.blurPlaybackTime = null;
               helper.state.restorePlaybackTime = null;
               helper.state.blurRestorePending = false;
-              return helper.focusRow(timeRow, {
-                activateRow: false,
-                selectionStart: snapped,
-                selectionEnd: snapped,
-                direction: "none"
-              });
+              if (result) {
+                helper.state.cursorBaseline = result.offset;
+                return helper.focusRow(timeRow, {
+                  activateRow: false,
+                  selectionStart: result.offset,
+                  selectionEnd: result.offset,
+                  direction: "none"
+                });
+              }
             }
           }
           helper.state.blurPlaybackTime = null;
@@ -2092,6 +2074,7 @@
             synthetic: true
           };
           helper.state.blurRestorePending = true;
+          helper.state.cursorBaseline = 0;
           helper.state.blurPlaybackTime = typeof currentTime === "number" ? currentTime : null;
           helper.setCurrentRow(bootstrapRow);
         }
@@ -5813,6 +5796,9 @@
       }
       const row = target.closest("tr");
       if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+        if (helper.state.currentRow && helper.state.currentRow !== row) {
+          helper.state.cursorBaseline = null;
+        }
         helper.setCurrentRow(row);
       }
     }
@@ -5829,12 +5815,25 @@
         helper.setCurrentRow(row);
       }
     }
+    function handleCursorBaselineUpdate(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement) || !target.matches(helper.config.rowTextareaSelector)) {
+        return;
+      }
+      const pos = target.selectionStart;
+      if (typeof pos === "number") {
+        helper.state.cursorBaseline = pos;
+      }
+    }
     helper.bindRowTracking = function bindRowTracking() {
       if (helper.state.rowTrackingBound) {
         return;
       }
       document.addEventListener("focusin", handleRowFocusIn, true);
       document.addEventListener("pointerdown", handleRowPointerDown, true);
+      document.addEventListener("input", handleCursorBaselineUpdate, true);
+      document.addEventListener("keyup", handleCursorBaselineUpdate, true);
+      document.addEventListener("pointerup", handleCursorBaselineUpdate, true);
       helper.state.rowTrackingBound = true;
     };
     helper.unbindRowTracking = function unbindRowTracking() {
@@ -5843,6 +5842,9 @@
       }
       document.removeEventListener("focusin", handleRowFocusIn, true);
       document.removeEventListener("pointerdown", handleRowPointerDown, true);
+      document.removeEventListener("input", handleCursorBaselineUpdate, true);
+      document.removeEventListener("keyup", handleCursorBaselineUpdate, true);
+      document.removeEventListener("pointerup", handleCursorBaselineUpdate, true);
       helper.state.rowTrackingBound = false;
     };
     function bindGlobalListeners() {

@@ -119,7 +119,7 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   },
   proportionalCursorRestore: {
     label: 'Proportional Cursor Restore',
-    description: 'When restoring focus after Esc, place cursor at the text position proportional to playback progress within the segment.'
+    description: 'When restoring focus after Esc, advance cursor to the text position proportional to playback progress (never backward from your last edit position).'
   }
 };
 
