@@ -29,7 +29,10 @@
     selectionLoop: null,
     magnifier: null,
     magnifierDrag: null,
-    speakerSwitchPending: false
+    speakerSwitchPending: false,
+    ghostCursorElement: null,
+    ghostCursorIntervalId: null,
+    ghostCursorRow: null
   };
 }
 

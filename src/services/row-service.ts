@@ -18,6 +18,12 @@ export function registerRowService(helper: any) {
 
   const PROPORTIONAL_MIN_DELTA_SECONDS = 0.3;
 
+  // Reaction-time compensation: subtract this from restorePlaybackTime before
+  // computing the proportional cursor offset. Accounts for the delay between
+  // hearing a problem word and pressing Escape.  Tweak this value if the
+  // cursor consistently lands too far forward or backward.
+  const REACTION_TIME_OFFSET_SECONDS = 0.6;
+
   function parseSegmentTimeValue(value) {
     if (typeof value !== 'string') { return null; }
     const trimmed = value.trim();
@@ -68,6 +74,205 @@ export function registerRowService(helper: any) {
 
     // Pick whichever boundary is closer to the raw offset.
     return (offset - backward) <= (forward - offset) ? backward : forward;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ghost cursor: a live-updating orange bar on the blurred textarea row that
+  // shows where the cursor WOULD land if the user pressed Escape right now.
+  // Gated behind proportionalCursorRestore.
+  // ---------------------------------------------------------------------------
+
+  const GHOST_CURSOR_INTERVAL_MS = 66; // ~15 fps
+  const GHOST_CURSOR_ATTR = 'data-babel-helper-ghost-cursor';
+
+  /** Copied style properties for the mirror-div caret measurement. */
+  const MIRROR_STYLE_PROPS = [
+    'fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
+    'letterSpacing', 'textTransform', 'wordSpacing', 'textIndent',
+    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+    'lineHeight', 'whiteSpace', 'wordWrap', 'overflowWrap', 'direction'
+  ];
+
+  /**
+   * Compute the viewport-pixel coordinates of a character index inside a
+   * textarea using the mirror-div technique.  Returns { top, left, height }
+   * where height is the line-height so the ghost cursor bar can be sized.
+   */
+  function getCaretPixelPosition(textarea, charIndex) {
+    const mirror = document.createElement('div');
+    try {
+      const computed = window.getComputedStyle(textarea);
+      mirror.style.position = 'absolute';
+      mirror.style.visibility = 'hidden';
+      mirror.style.whiteSpace = 'pre-wrap';
+      mirror.style.wordWrap = 'break-word';
+      mirror.style.overflow = 'hidden';
+      mirror.style.width = `${textarea.clientWidth}px`;
+
+      for (const prop of MIRROR_STYLE_PROPS) {
+        mirror.style[prop] = computed[prop];
+      }
+
+      const beforeCaret = textarea.value.substring(0, charIndex);
+      mirror.appendChild(document.createTextNode(beforeCaret));
+      const marker = document.createElement('span');
+      marker.textContent = '\u200b'; // zero-width space
+      mirror.appendChild(marker);
+      document.body.appendChild(mirror);
+
+      const textareaRect = textarea.getBoundingClientRect();
+      const mirrorRect = mirror.getBoundingClientRect();
+      const markerRect = marker.getBoundingClientRect();
+
+      const top = textareaRect.top + (markerRect.top - mirrorRect.top) - textarea.scrollTop;
+      const left = textareaRect.left + (markerRect.left - mirrorRect.left) - textarea.scrollLeft;
+      const lineHeight = parseFloat(computed.lineHeight) || markerRect.height || 16;
+
+      return { top, left, height: lineHeight };
+    } finally {
+      if (mirror.parentNode) {
+        mirror.parentNode.removeChild(mirror);
+      }
+    }
+  }
+
+  /**
+   * Compute the ghost cursor character offset for a given playback time,
+   * applying the same proportional + reaction-time formula used for actual
+   * cursor placement. Returns the snapped character index, or null if the
+   * position cannot be computed.
+   */
+  function computeGhostOffset(text, timeRange, currentTime, blurTime) {
+    if (!text || text.length === 0 || !timeRange) { return null; }
+    const duration = timeRange.endSeconds - timeRange.startSeconds;
+    if (duration <= 0) { return null; }
+
+    const adjustedTime = Math.max(
+      typeof blurTime === 'number' && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,
+      currentTime - REACTION_TIME_OFFSET_SECONDS
+    );
+    const ratio = Math.max(0, Math.min(1,
+      (adjustedTime - timeRange.startSeconds) / duration
+    ));
+    const rawOffset = Math.round(ratio * text.length);
+    return snapToWordBoundary(text, rawOffset);
+  }
+
+  function createGhostCursorElement() {
+    const el = document.createElement('div');
+    el.setAttribute(GHOST_CURSOR_ATTR, '');
+    el.style.position = 'fixed';
+    el.style.width = '2px';
+    el.style.background = 'rgba(245, 158, 11, 0.75)'; // amber-500
+    el.style.borderRadius = '1px';
+    el.style.pointerEvents = 'none';
+    el.style.zIndex = '20';
+    el.style.transition = 'left 80ms linear, top 80ms linear';
+    el.style.willChange = 'left, top';
+    return el;
+  }
+
+  function stopGhostCursor() {
+    if (helper.state.ghostCursorIntervalId != null) {
+      clearInterval(helper.state.ghostCursorIntervalId);
+      helper.state.ghostCursorIntervalId = null;
+    }
+    if (helper.state.ghostCursorElement) {
+      try {
+        if (helper.state.ghostCursorElement.parentNode) {
+          helper.state.ghostCursorElement.parentNode.removeChild(helper.state.ghostCursorElement);
+        }
+      } catch (_e) { /* ignore */ }
+      helper.state.ghostCursorElement = null;
+    }
+    helper.state.ghostCursorRow = null;
+  }
+
+  function startGhostCursor(row) {
+    stopGhostCursor(); // clean up any previous instance
+
+    if (!helper.config.features.proportionalCursorRestore) { return; }
+    if (!(row instanceof HTMLElement) || !row.isConnected) { return; }
+
+    const textarea = helper.getRowTextarea(row);
+    if (!(textarea instanceof HTMLTextAreaElement)) { return; }
+
+    const timeRange = getRowTimeRange(row);
+    if (!timeRange) { return; }
+
+    const blurTime = helper.state.blurPlaybackTime;
+
+    const el = createGhostCursorElement();
+    document.body.appendChild(el);
+    helper.state.ghostCursorElement = el;
+    helper.state.ghostCursorRow = row;
+
+    // Initial hide until first position is computed
+    el.style.display = 'none';
+    let tickInFlight = false;
+
+    async function tick() {
+      if (tickInFlight) {
+        return;
+      }
+
+      tickInFlight = true;
+
+      // Bail if state was cleaned up or row disconnected
+      try {
+        if (!helper.state.ghostCursorElement || helper.state.ghostCursorElement !== el) { return; }
+        if (!row.isConnected) {
+          stopGhostCursor();
+          return;
+        }
+
+        // Re-query textarea in case Babel re-rendered the row
+        const ta = helper.getRowTextarea(row);
+        if (!(ta instanceof HTMLTextAreaElement)) {
+          stopGhostCursor();
+          return;
+        }
+
+        const playback =
+          typeof helper.getPlaybackState === 'function'
+            ? await helper.getPlaybackState()
+            : getPlaybackStateLocally();
+        if (!playback || !playback.ok || typeof playback.currentTime !== 'number') {
+          el.style.display = 'none';
+          return;
+        }
+
+        // If playback stopped (user clicked pause outside our workflow, etc.), remove ghost
+        if (playback.paused === true) {
+          stopGhostCursor();
+          return;
+        }
+
+        const text = ta.value || '';
+        const charOffset = computeGhostOffset(text, timeRange, playback.currentTime, blurTime);
+        if (charOffset === null) {
+          el.style.display = 'none';
+          return;
+        }
+
+        const pos = getCaretPixelPosition(ta, charOffset);
+        el.style.display = '';
+        el.style.top = `${pos.top}px`;
+        el.style.left = `${pos.left}px`;
+        el.style.height = `${pos.height}px`;
+      } catch (_e) {
+        el.style.display = 'none';
+      } finally {
+        tickInFlight = false;
+      }
+    }
+
+    // Run first tick immediately, then schedule the interval
+    void tick();
+    helper.state.ghostCursorIntervalId = setInterval(() => {
+      void tick();
+    }, GHOST_CURSOR_INTERVAL_MS);
   }
 
   helper.getTranscriptRows = function getTranscriptRows() {
@@ -1599,6 +1804,9 @@ export function registerRowService(helper: any) {
       return false;
     }
 
+    // Tear down the ghost cursor as soon as we begin restoring focus.
+    stopGhostCursor();
+
     const currentRow = helper.getCurrentRow();
     if (!remembered) {
       const focused = helper.focusRow(currentRow, { cursor: 'start' });
@@ -1634,16 +1842,37 @@ export function registerRowService(helper: any) {
             const text = textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
             if (text.length > 0) {
               const duration = timeRange.endSeconds - timeRange.startSeconds;
+
+              // Apply reaction-time compensation: shift the effective restore
+              // time backward so the cursor lands closer to the word the user
+              // was actually hearing when they decided to stop, rather than
+              // where the audio had already moved to by the time Esc was pressed.
+              // Never shift earlier than the blur time itself.
+              const adjustedRestoreTime = Math.max(blurTime,
+                restoreTime - REACTION_TIME_OFFSET_SECONDS
+              );
+
               const ratio = Math.max(0, Math.min(1,
-                (restoreTime - timeRange.startSeconds) / duration
+                (adjustedRestoreTime - timeRange.startSeconds) / duration
               ));
               const rawOffset = Math.round(ratio * text.length);
               const snapped = snapToWordBoundary(text, rawOffset);
-              // Only advance cursor forward from where it was; never pull it backward.
-              const finalOffset = Math.max(remembered.selectionStart, snapped);
-              selectionStart = finalOffset;
-              selectionEnd = finalOffset;
-              direction = 'none';
+
+              // Only advance if cursor was near the audio at blur time (editing at frontier).
+              const blurAudioRatio = Math.max(0, Math.min(1,
+                (blurTime - timeRange.startSeconds) / duration
+              ));
+              const blurCursorRatio = remembered.selectionStart / text.length;
+              const FRONTIER_THRESHOLD = 0.15;
+
+              if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
+                // At the frontier — advance forward, never backward.
+                const finalOffset = Math.max(remembered.selectionStart, snapped);
+                selectionStart = finalOffset;
+                selectionEnd = finalOffset;
+                direction = 'none';
+              }
+              // else: cursor was far from audio (cleanup edit) — keep original position
             }
           }
         }
@@ -1918,6 +2147,7 @@ export function registerRowService(helper: any) {
       }
 
       if (!focused && isPlaying) {
+        stopGhostCursor();
         helper.state.restorePlaybackTime =
           playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
         focusCurrentEditorForEscape();
@@ -1930,6 +2160,13 @@ export function registerRowService(helper: any) {
         helper.state.blurPlaybackTime =
           playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
         await helper.setPlaybackPaused(false);
+
+        // Start the ghost cursor on the just-blurred row so the user sees
+        // a live preview of where the cursor would land.
+        const blurredRow = helper.state.lastBlur && helper.state.lastBlur.row;
+        if (blurredRow) {
+          startGhostCursor(blurredRow);
+        }
         return;
       }
 

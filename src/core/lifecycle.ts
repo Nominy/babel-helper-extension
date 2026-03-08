@@ -197,11 +197,28 @@ export function registerLifecycle(helper: any) {
       ? helper.config.playbackRewindShortcuts
       : [];
 
+    function matchesShortcutCode(shortcut) {
+      const eventKeyCode = Number.isFinite(Number(event.keyCode)) ? Number(event.keyCode) : null;
+      if (Array.isArray(shortcut.codes) && shortcut.codes.includes(event.code)) {
+        return true;
+      }
+
+      if (shortcut.code && shortcut.code === event.code) {
+        return true;
+      }
+
+      if (eventKeyCode != null && Number.isFinite(Number(shortcut.keyCode))) {
+        return Number(shortcut.keyCode) === eventKeyCode;
+      }
+
+      return false;
+    }
+
     return (
       shortcuts.find(
         (shortcut) =>
           shortcut &&
-          shortcut.code === event.code &&
+          matchesShortcutCode(shortcut) &&
           Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) &&
           Boolean(shortcut.altKey) === Boolean(event.altKey) &&
           Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) &&

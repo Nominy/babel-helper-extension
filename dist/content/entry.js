@@ -71,7 +71,7 @@
 
   // src/core/config.ts
   var PLAYBACK_REWIND_SHORTCUTS = [
-    { code: "KeyX", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false, seconds: 1, label: "Ctrl + X" }
+    { code: "KeyX", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false, seconds: 1, label: "Alt + X" }
   ];
   function buildHotkeysHelpRows(featureSettings) {
     const rows = [];
@@ -164,7 +164,10 @@
       selectionLoop: null,
       magnifier: null,
       magnifierDrag: null,
-      speakerSwitchPending: false
+      speakerSwitchPending: false,
+      ghostCursorElement: null,
+      ghostCursorIntervalId: null,
+      ghostCursorRow: null
     };
   }
 
@@ -298,6 +301,7 @@
     let playbackBridgeRequestId = 0;
     let escapePlaybackQueue = Promise.resolve();
     const PROPORTIONAL_MIN_DELTA_SECONDS = 0.3;
+    const REACTION_TIME_OFFSET_SECONDS = 0.6;
     function parseSegmentTimeValue(value) {
       if (typeof value !== "string") {
         return null;
@@ -356,6 +360,183 @@
         forward++;
       }
       return offset - backward <= forward - offset ? backward : forward;
+    }
+    const GHOST_CURSOR_INTERVAL_MS = 66;
+    const GHOST_CURSOR_ATTR = "data-babel-helper-ghost-cursor";
+    const MIRROR_STYLE_PROPS = [
+      "fontFamily",
+      "fontSize",
+      "fontWeight",
+      "fontStyle",
+      "letterSpacing",
+      "textTransform",
+      "wordSpacing",
+      "textIndent",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+      "borderTopWidth",
+      "borderRightWidth",
+      "borderBottomWidth",
+      "borderLeftWidth",
+      "lineHeight",
+      "whiteSpace",
+      "wordWrap",
+      "overflowWrap",
+      "direction"
+    ];
+    function getCaretPixelPosition(textarea, charIndex) {
+      const mirror = document.createElement("div");
+      try {
+        const computed = window.getComputedStyle(textarea);
+        mirror.style.position = "absolute";
+        mirror.style.visibility = "hidden";
+        mirror.style.whiteSpace = "pre-wrap";
+        mirror.style.wordWrap = "break-word";
+        mirror.style.overflow = "hidden";
+        mirror.style.width = `${textarea.clientWidth}px`;
+        for (const prop of MIRROR_STYLE_PROPS) {
+          mirror.style[prop] = computed[prop];
+        }
+        const beforeCaret = textarea.value.substring(0, charIndex);
+        mirror.appendChild(document.createTextNode(beforeCaret));
+        const marker = document.createElement("span");
+        marker.textContent = "\u200B";
+        mirror.appendChild(marker);
+        document.body.appendChild(mirror);
+        const textareaRect = textarea.getBoundingClientRect();
+        const mirrorRect = mirror.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        const top = textareaRect.top + (markerRect.top - mirrorRect.top) - textarea.scrollTop;
+        const left = textareaRect.left + (markerRect.left - mirrorRect.left) - textarea.scrollLeft;
+        const lineHeight = parseFloat(computed.lineHeight) || markerRect.height || 16;
+        return { top, left, height: lineHeight };
+      } finally {
+        if (mirror.parentNode) {
+          mirror.parentNode.removeChild(mirror);
+        }
+      }
+    }
+    function computeGhostOffset(text, timeRange, currentTime, blurTime) {
+      if (!text || text.length === 0 || !timeRange) {
+        return null;
+      }
+      const duration = timeRange.endSeconds - timeRange.startSeconds;
+      if (duration <= 0) {
+        return null;
+      }
+      const adjustedTime = Math.max(
+        typeof blurTime === "number" && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,
+        currentTime - REACTION_TIME_OFFSET_SECONDS
+      );
+      const ratio = Math.max(0, Math.min(
+        1,
+        (adjustedTime - timeRange.startSeconds) / duration
+      ));
+      const rawOffset = Math.round(ratio * text.length);
+      return snapToWordBoundary(text, rawOffset);
+    }
+    function createGhostCursorElement() {
+      const el = document.createElement("div");
+      el.setAttribute(GHOST_CURSOR_ATTR, "");
+      el.style.position = "fixed";
+      el.style.width = "2px";
+      el.style.background = "rgba(245, 158, 11, 0.75)";
+      el.style.borderRadius = "1px";
+      el.style.pointerEvents = "none";
+      el.style.zIndex = "20";
+      el.style.transition = "left 80ms linear, top 80ms linear";
+      el.style.willChange = "left, top";
+      return el;
+    }
+    function stopGhostCursor() {
+      if (helper.state.ghostCursorIntervalId != null) {
+        clearInterval(helper.state.ghostCursorIntervalId);
+        helper.state.ghostCursorIntervalId = null;
+      }
+      if (helper.state.ghostCursorElement) {
+        try {
+          if (helper.state.ghostCursorElement.parentNode) {
+            helper.state.ghostCursorElement.parentNode.removeChild(helper.state.ghostCursorElement);
+          }
+        } catch (_e) {
+        }
+        helper.state.ghostCursorElement = null;
+      }
+      helper.state.ghostCursorRow = null;
+    }
+    function startGhostCursor(row) {
+      stopGhostCursor();
+      if (!helper.config.features.proportionalCursorRestore) {
+        return;
+      }
+      if (!(row instanceof HTMLElement) || !row.isConnected) {
+        return;
+      }
+      const textarea = helper.getRowTextarea(row);
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      const timeRange = getRowTimeRange(row);
+      if (!timeRange) {
+        return;
+      }
+      const blurTime = helper.state.blurPlaybackTime;
+      const el = createGhostCursorElement();
+      document.body.appendChild(el);
+      helper.state.ghostCursorElement = el;
+      helper.state.ghostCursorRow = row;
+      el.style.display = "none";
+      let tickInFlight = false;
+      async function tick() {
+        if (tickInFlight) {
+          return;
+        }
+        tickInFlight = true;
+        try {
+          if (!helper.state.ghostCursorElement || helper.state.ghostCursorElement !== el) {
+            return;
+          }
+          if (!row.isConnected) {
+            stopGhostCursor();
+            return;
+          }
+          const ta = helper.getRowTextarea(row);
+          if (!(ta instanceof HTMLTextAreaElement)) {
+            stopGhostCursor();
+            return;
+          }
+          const playback = typeof helper.getPlaybackState === "function" ? await helper.getPlaybackState() : getPlaybackStateLocally();
+          if (!playback || !playback.ok || typeof playback.currentTime !== "number") {
+            el.style.display = "none";
+            return;
+          }
+          if (playback.paused === true) {
+            stopGhostCursor();
+            return;
+          }
+          const text = ta.value || "";
+          const charOffset = computeGhostOffset(text, timeRange, playback.currentTime, blurTime);
+          if (charOffset === null) {
+            el.style.display = "none";
+            return;
+          }
+          const pos = getCaretPixelPosition(ta, charOffset);
+          el.style.display = "";
+          el.style.top = `${pos.top}px`;
+          el.style.left = `${pos.left}px`;
+          el.style.height = `${pos.height}px`;
+        } catch (_e) {
+          el.style.display = "none";
+        } finally {
+          tickInFlight = false;
+        }
+      }
+      void tick();
+      helper.state.ghostCursorIntervalId = setInterval(() => {
+        void tick();
+      }, GHOST_CURSOR_INTERVAL_MS);
     }
     helper.getTranscriptRows = function getTranscriptRows() {
       return Array.from(document.querySelectorAll("tbody tr")).filter(
@@ -1517,6 +1698,7 @@
       if (!helper.state.blurRestorePending) {
         return false;
       }
+      stopGhostCursor();
       const currentRow = helper.getCurrentRow();
       if (!remembered) {
         const focused2 = helper.focusRow(currentRow, { cursor: "start" });
@@ -1541,16 +1723,28 @@
               const text = textarea instanceof HTMLTextAreaElement ? textarea.value || "" : "";
               if (text.length > 0) {
                 const duration = timeRange.endSeconds - timeRange.startSeconds;
+                const adjustedRestoreTime = Math.max(
+                  blurTime,
+                  restoreTime - REACTION_TIME_OFFSET_SECONDS
+                );
                 const ratio = Math.max(0, Math.min(
                   1,
-                  (restoreTime - timeRange.startSeconds) / duration
+                  (adjustedRestoreTime - timeRange.startSeconds) / duration
                 ));
                 const rawOffset = Math.round(ratio * text.length);
                 const snapped = snapToWordBoundary(text, rawOffset);
-                const finalOffset = Math.max(remembered.selectionStart, snapped);
-                selectionStart = finalOffset;
-                selectionEnd = finalOffset;
-                direction = "none";
+                const blurAudioRatio = Math.max(0, Math.min(
+                  1,
+                  (blurTime - timeRange.startSeconds) / duration
+                ));
+                const blurCursorRatio = remembered.selectionStart / text.length;
+                const FRONTIER_THRESHOLD = 0.15;
+                if (Math.abs(blurCursorRatio - blurAudioRatio) <= FRONTIER_THRESHOLD) {
+                  const finalOffset = Math.max(remembered.selectionStart, snapped);
+                  selectionStart = finalOffset;
+                  selectionEnd = finalOffset;
+                  direction = "none";
+                }
               }
             }
           }
@@ -1780,6 +1974,7 @@
           return;
         }
         if (!focused && isPlaying) {
+          stopGhostCursor();
           helper.state.restorePlaybackTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
           focusCurrentEditorForEscape();
           await helper.setPlaybackPaused(true);
@@ -1789,6 +1984,10 @@
           helper.toggleEditorFocus();
           helper.state.blurPlaybackTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
           await helper.setPlaybackPaused(false);
+          const blurredRow = helper.state.lastBlur && helper.state.lastBlur.row;
+          if (blurredRow) {
+            startGhostCursor(blurredRow);
+          }
           return;
         }
         await helper.setPlaybackPaused(false);
@@ -5388,8 +5587,21 @@
     }
     function matchPlaybackRewindShortcut(event) {
       const shortcuts = Array.isArray(helper.config.playbackRewindShortcuts) ? helper.config.playbackRewindShortcuts : [];
+      function matchesShortcutCode(shortcut) {
+        const eventKeyCode = Number.isFinite(Number(event.keyCode)) ? Number(event.keyCode) : null;
+        if (Array.isArray(shortcut.codes) && shortcut.codes.includes(event.code)) {
+          return true;
+        }
+        if (shortcut.code && shortcut.code === event.code) {
+          return true;
+        }
+        if (eventKeyCode != null && Number.isFinite(Number(shortcut.keyCode))) {
+          return Number(shortcut.keyCode) === eventKeyCode;
+        }
+        return false;
+      }
       return shortcuts.find(
-        (shortcut) => shortcut && shortcut.code === event.code && Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) && Boolean(shortcut.altKey) === Boolean(event.altKey) && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Boolean(shortcut.metaKey) === Boolean(event.metaKey) && Number.isFinite(Number(shortcut.seconds))
+        (shortcut) => shortcut && matchesShortcutCode(shortcut) && Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) && Boolean(shortcut.altKey) === Boolean(event.altKey) && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Boolean(shortcut.metaKey) === Boolean(event.metaKey) && Number.isFinite(Number(shortcut.seconds))
       ) || null;
     }
     function shouldSuppressNativeArrowHotkey(event) {
