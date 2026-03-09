@@ -157,20 +157,6 @@ export function registerTimelineSelectionService(helper: any) {
     return Number.isFinite(numeric) ? numeric : null;
   }
 
-  function parseTimestamp(value) {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.indexOf(':') === -1) {
-      return null;
-    }
-
-    const parsed = parseTimeValue(trimmed);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
   function parseSecondsLabel(value) {
     const parsed = parseTimeValue(value);
     return Number.isFinite(parsed) ? parsed : null;
@@ -293,21 +279,6 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     return null;
-  }
-
-  function parseRowDurationSeconds() {
-    const row = helper.getCurrentRow();
-    if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
-      return null;
-    }
-
-    const start = parseTimeValue(helper.normalizeText(row.children[2]));
-    const end = parseTimeValue(helper.normalizeText(row.children[3]));
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-      return null;
-    }
-
-    return end - start;
   }
 
   function getRegionTimeText(region, selector) {
@@ -871,169 +842,6 @@ export function registerTimelineSelectionService(helper: any) {
     return (ratios[middle - 1] + ratios[middle]) / 2;
   }
 
-  function getWaveformRegionEntries(entry) {
-    const wavesurfer =
-      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
-    if (!wavesurfer || !wavesurfer.plugins || typeof wavesurfer.plugins !== 'object') {
-      return [];
-    }
-
-    const regionPlugin = Object.values(wavesurfer.plugins).find(
-      (plugin) =>
-        plugin &&
-        (typeof plugin.getRegions === 'function' ||
-          (plugin.regions && typeof plugin.regions === 'object'))
-    );
-    if (!regionPlugin) {
-      return [];
-    }
-
-    const sourceRegions =
-      typeof regionPlugin.getRegions === 'function'
-        ? regionPlugin.getRegions()
-        : Object.values(regionPlugin.regions || {});
-    if (!Array.isArray(sourceRegions)) {
-      return [];
-    }
-
-    return sourceRegions
-      .map((region) => {
-        const startSeconds = Number(region && region.start);
-        const endSeconds = Number(region && region.end);
-        const element = region && region.element instanceof HTMLElement ? region.element : null;
-        if (
-          !(element instanceof HTMLElement) ||
-          !Number.isFinite(startSeconds) ||
-          !Number.isFinite(endSeconds) ||
-          !(endSeconds > startSeconds)
-        ) {
-          return null;
-        }
-
-        return {
-          element,
-          startSeconds,
-          endSeconds
-        };
-      })
-      .filter(Boolean);
-  }
-
-  function getSnapshotTimeEntries(snapshot, options) {
-    if (!snapshot || !Array.isArray(snapshot.bounds)) {
-      return [];
-    }
-
-    const settings = options || {};
-    const runtimeEntries = Array.isArray(settings.runtimeEntries) ? settings.runtimeEntries : [];
-    const runtimeByElement = new Map();
-    for (const runtimeEntry of runtimeEntries) {
-      if (
-        runtimeEntry &&
-        runtimeEntry.element instanceof HTMLElement &&
-        Number.isFinite(runtimeEntry.startSeconds) &&
-        Number.isFinite(runtimeEntry.endSeconds)
-      ) {
-        runtimeByElement.set(runtimeEntry.element, runtimeEntry);
-      }
-    }
-
-    return snapshot.bounds
-      .map((entry) => {
-        const runtimeEntry = runtimeByElement.get(entry.region);
-        const startSeconds = runtimeEntry
-          ? runtimeEntry.startSeconds
-          : parseTimeValue(entry.startText);
-        const endSeconds = runtimeEntry
-          ? runtimeEntry.endSeconds
-          : parseTimeValue(entry.endText);
-        const widthPx = entry.rightPx - entry.leftPx;
-        if (
-          !Number.isFinite(startSeconds) ||
-          !Number.isFinite(endSeconds) ||
-          !(endSeconds > startSeconds) ||
-          !(widthPx > 0)
-        ) {
-          return null;
-        }
-
-        return {
-          leftPx: entry.leftPx,
-          rightPx: entry.rightPx,
-          widthPx,
-          startSeconds,
-          endSeconds,
-          secondsPerPx: (endSeconds - startSeconds) / widthPx
-        };
-      })
-      .filter(Boolean)
-      .sort((left, right) => left.leftPx - right.leftPx);
-  }
-
-  function projectSelectionXToSeconds(entries, x) {
-    if (!Array.isArray(entries) || !entries.length || !Number.isFinite(x)) {
-      return null;
-    }
-
-    const containing =
-      entries.find((entry) => x >= entry.leftPx && x <= entry.rightPx) || null;
-    if (containing) {
-      const ratio = (x - containing.leftPx) / containing.widthPx;
-      return containing.startSeconds + (containing.endSeconds - containing.startSeconds) * ratio;
-    }
-
-    let left = null;
-    let right = null;
-    for (const entry of entries) {
-      if (entry.rightPx < x) {
-        left = entry;
-        continue;
-      }
-
-      if (entry.leftPx > x) {
-        right = entry;
-        break;
-      }
-    }
-
-    if (left && right) {
-      const gapPx = right.leftPx - left.rightPx;
-      const gapSeconds = right.startSeconds - left.endSeconds;
-      if (gapPx > 0 && gapSeconds >= 0) {
-        const ratio = (x - left.rightPx) / gapPx;
-        return left.endSeconds + gapSeconds * clamp(ratio, 0, 1);
-      }
-    }
-
-    if (left && left.secondsPerPx > 0) {
-      return left.endSeconds + (x - left.rightPx) * left.secondsPerPx;
-    }
-
-    if (right && right.secondsPerPx > 0) {
-      return right.startSeconds - (right.leftPx - x) * right.secondsPerPx;
-    }
-
-    return null;
-  }
-
-  function getPreviewCommitSafetySeconds(preview) {
-    if (!preview || !(preview.container instanceof HTMLElement)) {
-      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
-    }
-
-    const waveformEntry = getWaveformEntryForContainer(preview.container);
-    const pixelsPerSecond = getWaveformPixelsPerSecond(waveformEntry, preview.container);
-    if (!(Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0)) {
-      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
-    }
-
-    return clamp(
-      2 / pixelsPerSecond,
-      CUT_PREVIEW_SAFETY_MIN_SECONDS,
-      CUT_PREVIEW_SAFETY_MAX_SECONDS
-    );
-  }
-
   function isValidPreviewTimeRange(timeRange) {
     return Boolean(
       timeRange &&
@@ -1041,59 +849,6 @@ export function registerTimelineSelectionService(helper: any) {
         Number.isFinite(timeRange.endSeconds) &&
         timeRange.endSeconds > timeRange.startSeconds
     );
-  }
-
-  function buildPreviewTimeEntries(container) {
-    if (!(container instanceof HTMLElement)) {
-      return [];
-    }
-
-    const snapshot = collectRegionSnapshot(container);
-    if (!snapshot) {
-      return [];
-    }
-
-    const waveformEntry = getWaveformEntryForContainer(container);
-    return getSnapshotTimeEntries(snapshot, {
-      runtimeEntries: getWaveformRegionEntries(waveformEntry)
-    });
-  }
-
-  function getPreviewLocalTimeRange(preview) {
-    if (!preview) {
-      return null;
-    }
-
-    const entries = Array.isArray(preview.timeEntries) ? preview.timeEntries : [];
-    if (entries.length) {
-      const startSeconds = projectSelectionXToSeconds(entries, preview.leftPx);
-      const endSeconds = projectSelectionXToSeconds(entries, preview.rightPx);
-      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
-        return {
-          startSeconds,
-          endSeconds
-        };
-      }
-    }
-
-    const timeScale = preview.timeScale;
-    if (
-      timeScale &&
-      Number.isFinite(timeScale.secondsPerPx) &&
-      timeScale.secondsPerPx > 0 &&
-      Number.isFinite(timeScale.offsetSeconds)
-    ) {
-      const startSeconds = timeScale.offsetSeconds + preview.leftPx * timeScale.secondsPerPx;
-      const endSeconds = timeScale.offsetSeconds + preview.rightPx * timeScale.secondsPerPx;
-      if (Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds) {
-        return {
-          startSeconds,
-          endSeconds
-        };
-      }
-    }
-
-    return null;
   }
 
   function getPreviewDurationSeconds(preview) {
@@ -1114,25 +869,41 @@ export function registerTimelineSelectionService(helper: any) {
     return null;
   }
 
+  function getPreviewCommitSafetySeconds(preview) {
+    if (!preview || !(preview.container instanceof HTMLElement)) {
+      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
+    }
+    const waveformEntry = getWaveformEntryForContainer(preview.container);
+    const pixelsPerSecond = getWaveformPixelsPerSecond(waveformEntry, preview.container);
+    if (!(Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0)) {
+      return CUT_PREVIEW_SAFETY_MIN_SECONDS;
+    }
+    return clamp(
+      2 / pixelsPerSecond,
+      CUT_PREVIEW_SAFETY_MIN_SECONDS,
+      CUT_PREVIEW_SAFETY_MAX_SECONDS
+    );
+  }
+
   function getPreviewTimeRange(preview, options) {
     if (!preview) {
       return null;
     }
 
-    const localTimeRange = getPreviewLocalTimeRange(preview);
-    if (isValidPreviewTimeRange(localTimeRange)) {
-      return localTimeRange;
+    // Only trust the bridge-derived time range (Wavesurfer's native
+    // pixelsPerSecond).  No local DOM-snapshot fallback — if we don't have
+    // the bridge result yet, return null so callers see "no time" rather
+    // than a wrong time.
+    if (isValidPreviewTimeRange(preview.timeRange)) {
+      return preview.timeRange;
     }
 
-    if (!isValidPreviewTimeRange(preview.timeRange)) {
-      const settings = options || {};
-      if (!preview.timeRangeRequest && settings.allowAsync !== false) {
-        void refreshPreviewTimeRange(preview);
-      }
-      return null;
+    const settings = options || {};
+    if (!preview.timeRangeRequest && settings.allowAsync !== false) {
+      void refreshPreviewTimeRange(preview);
     }
 
-    return preview.timeRange;
+    return null;
   }
 
   async function refreshPreviewTimeRange(preview, options) {
@@ -1166,19 +937,25 @@ export function registerTimelineSelectionService(helper: any) {
       }
 
       preview.timeRangeRequest = null;
-      if (isValidPreviewTimeRange(getPreviewLocalTimeRange(preview))) {
-        preview.timeRange = null;
-      } else if (
+      if (
         preview.leftPx === requestLeftPx &&
         preview.rightPx === requestRightPx &&
         result &&
         result.ok &&
         isValidPreviewTimeRange(result)
       ) {
+        // Always prefer the bridge result — it uses Wavesurfer's native
+        // pixelsPerSecond which is exact, unlike DOM-snapshot interpolation.
         preview.timeRange = {
           startSeconds: result.startSeconds,
           endSeconds: result.endSeconds
         };
+      } else if (
+        preview.leftPx !== requestLeftPx ||
+        preview.rightPx !== requestRightPx
+      ) {
+        // Selection moved while the request was in-flight; keep any existing
+        // bridge result rather than clearing it (a fresh request will follow).
       } else {
         preview.timeRange = null;
       }
@@ -1465,23 +1242,6 @@ export function registerTimelineSelectionService(helper: any) {
     return shadowWrapper instanceof HTMLElement ? shadowWrapper : null;
   }
 
-  function getWaveformScrollElementForEntry(entry, container) {
-    const wrapper = getWaveformWrapperForEntry(entry, container);
-    if (wrapper instanceof HTMLElement) {
-      const root = typeof wrapper.getRootNode === 'function' ? wrapper.getRootNode() : null;
-      const scroll =
-        root && typeof root.querySelector === 'function' ? root.querySelector('[part="scroll"]') : null;
-      if (scroll instanceof HTMLElement) {
-        return scroll;
-      }
-    }
-
-    const host = getWaveformHostFromContainer(container);
-    const shadowScroll =
-      host && host.shadowRoot ? host.shadowRoot.querySelector('[part="scroll"]') : null;
-    return shadowScroll instanceof HTMLElement ? shadowScroll : null;
-  }
-
   function getWaveformPixelsPerSecond(entry, container) {
     const wavesurfer =
       entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
@@ -1512,14 +1272,6 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     return 0;
-  }
-
-  function getWaveformScrollLeft(entry, container) {
-    const wavesurfer =
-      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
-    const direct =
-      wavesurfer && typeof wavesurfer.getScroll === 'function' ? Number(wavesurfer.getScroll()) : NaN;
-    return Number.isFinite(direct) && direct >= 0 ? direct : 0;
   }
 
   function getSelectionPlaybackTarget(preview) {
@@ -1999,7 +1751,6 @@ export function registerTimelineSelectionService(helper: any) {
     draft.container.appendChild(preview);
     rememberCutContainer(draft.container);
 
-    const timeScale = getLaneTimeScale(draft.container);
     const zoomSignature = getLaneZoomSignature(draft.container);
     const hostMarker = ensureSelectionHostMarker(draft.container);
 
@@ -2013,8 +1764,6 @@ export function registerTimelineSelectionService(helper: any) {
       leftPx,
       rightPx,
       element: preview,
-      timeScale,
-      timeEntries: buildPreviewTimeEntries(draft.container),
       zoomSignature,
       hostMarker,
       timeRange: null,
@@ -2028,6 +1777,9 @@ export function registerTimelineSelectionService(helper: any) {
     clearCutDraft();
     startCutPreviewZoomWatcher(helper.state.cutPreview);
     updatePreviewElement();
+    // Eagerly request bridge-based time conversion so it's ready when the drag
+    // ends, rather than waiting for the first getPreviewTimeRange call.
+    void refreshPreviewTimeRange(helper.state.cutPreview);
   }
 
   function beginPreviewDrag(event) {
@@ -2081,7 +1833,11 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     const dx = event.clientX - preview.dragStartClientX;
+    // Invalidate the cached bridge time range so a fresh request fires for the
+    // new pixel bounds.  The bridge will be queried on the next
+    // updatePreviewElement → getPreviewTimeRange call.
     preview.timeRange = null;
+    preview.timeRangeRequest = null;
     const minWidth = CUT_PREVIEW_MIN_WIDTH;
     if (preview.dragMode === 'create') {
       const currentX = clamp(
@@ -2129,6 +1885,9 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     preview.dragMode = null;
+    // Force a fresh bridge request for the final selection bounds so the label
+    // and subsequent operations use accurate Wavesurfer-derived time.
+    void refreshPreviewTimeRange(preview, { force: true });
     event.preventDefault();
     event.stopPropagation();
     return true;
@@ -2297,17 +2056,6 @@ export function registerTimelineSelectionService(helper: any) {
     }, 900, 40);
 
     return updated || collectRegionSnapshot(container);
-  }
-
-  async function waitForRegionChange(container, previousSignature) {
-    return helper.waitFor(() => {
-      const snapshot = collectRegionSnapshot(container);
-      if (!snapshot) {
-        return null;
-      }
-
-      return getSnapshotSignature(snapshot) !== previousSignature ? snapshot : null;
-    }, 900, 40);
   }
 
   function collectOverlapPlan(snapshot, cutLeftPx, cutRightPx) {
