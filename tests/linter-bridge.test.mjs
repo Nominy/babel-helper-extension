@@ -112,6 +112,96 @@ function hasCurlySpacingViolation(text) {
   return stack.length > 0;
 }
 
+function fixLeadingTrailingSpaces(text) {
+  if (typeof text !== 'string' || !text) {
+    return text;
+  }
+
+  return text.replace(/^[ \t]+|[ \t]+$/g, '');
+}
+
+function fixDoubleSpaces(text) {
+  if (typeof text !== 'string' || text.indexOf('  ') === -1) {
+    return text;
+  }
+
+  return text.replace(/(\S) {2,}(?=\S)/g, '$1 ');
+}
+
+function fixCommaSpacing(text) {
+  if (typeof text !== 'string' || text.indexOf(',') === -1) {
+    return text;
+  }
+
+  let result = text;
+  result = result.replace(/\s+,/g, ',');
+  result = result.replace(/,(?![\d ]|$)/g, ', ');
+  result = result.replace(/, {2,}/g, ', ');
+  return result;
+}
+
+function fixQuotePlacement(text) {
+  const quoteIndices = getQuoteIndices(text);
+  if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
+    return text;
+  }
+
+  let result = text;
+  for (let index = quoteIndices.length - 2; index >= 0; index -= 2) {
+    const openIndex = quoteIndices[index];
+    const closeIndex = quoteIndices[index + 1];
+    const inner = result.substring(openIndex + 1, closeIndex);
+    const trimmedInner = inner.replace(/^\s+/, '').replace(/\s+$/, '');
+    const before = result.substring(0, openIndex);
+    const after = result.substring(closeIndex + 1);
+
+    let prefix = before;
+    if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
+      prefix = prefix + ' ';
+    }
+
+    let suffix = after;
+    if (suffix.length > 0 && isWordCharacter(suffix[0])) {
+      suffix = ' ' + suffix;
+    }
+
+    result = prefix + '"' + trimmedInner + '"' + suffix;
+  }
+
+  return result;
+}
+
+function fixCurlySpacing(text) {
+  if (typeof text !== 'string') {
+    return text;
+  }
+
+  const hasOpen = text.indexOf('{') !== -1;
+  const hasClose = text.indexOf('}') !== -1;
+  if (!hasOpen || !hasClose) {
+    return text;
+  }
+
+  let result = text.replace(/\{\s+/g, '{').replace(/\s+\}/g, '}');
+  result = result.replace(/([\p{L}\p{N}])\{/gu, '$1 {');
+  result = result.replace(/\}([\p{L}\p{N}])/gu, '} $1');
+  return result;
+}
+
+function applyAllFixes(text) {
+  if (typeof text !== 'string') {
+    return text;
+  }
+
+  let result = text;
+  result = fixLeadingTrailingSpaces(result);
+  result = fixDoubleSpaces(result);
+  result = fixCommaSpacing(result);
+  result = fixQuotePlacement(result);
+  result = fixCurlySpacing(result);
+  return result;
+}
+
 test('does not flag decimal comma numbers', () => {
   assert.equal(hasCommaSpacingViolation('Это стоит 1,5 евро.'), false);
   assert.equal(hasCommaSpacingViolation('Диапазон 0,25 и 10,7 допустим.'), false);
@@ -148,4 +238,26 @@ test('flags bad curly tag spacing and imbalance', () => {
   assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER}suffix'), true);
   assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER'), true);
   assert.equal(hasCurlySpacingViolation('TEXT TAG: OTHER}'), true);
+});
+
+test('fixes native Babel-style leading and trailing spaces', () => {
+  assert.equal(fixLeadingTrailingSpaces('  hello world  '), 'hello world');
+  assert.equal(fixLeadingTrailingSpaces('\thello world\t'), 'hello world');
+});
+
+test('fixes native Babel-style repeated internal spaces only', () => {
+  assert.equal(fixDoubleSpaces('hello  world'), 'hello world');
+  assert.equal(fixDoubleSpaces('hello   brave   world'), 'hello brave world');
+  assert.equal(fixDoubleSpaces('  hello world  '), '  hello world  ');
+});
+
+test('applyAllFixes combines native and helper autofixes conservatively', () => {
+  assert.equal(
+    applyAllFixes('  hello  ,world  '),
+    'hello, world'
+  );
+  assert.equal(
+    applyAllFixes('foo" bar "baz'),
+    'foo "bar" baz'
+  );
 });

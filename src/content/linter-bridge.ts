@@ -869,6 +869,24 @@ export function initLinterBridge() {
   const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
 
+  function fixLeadingTrailingSpaces(text) {
+    if (typeof text !== 'string' || !text) {
+      return text;
+    }
+
+    return text.replace(/^[ \t]+|[ \t]+$/g, '');
+  }
+
+  function fixDoubleSpaces(text) {
+    if (typeof text !== 'string' || text.indexOf('  ') === -1) {
+      return text;
+    }
+
+    // Only collapse repeated in-line spaces between non-space characters.
+    // Leading/trailing whitespace is handled separately.
+    return text.replace(/(\S) {2,}(?=\S)/g, '$1 ');
+  }
+
   function fixCommaSpacing(text) {
     if (typeof text !== 'string' || text.indexOf(',') === -1) {
       return text;
@@ -951,6 +969,8 @@ export function initLinterBridge() {
     }
 
     let result = text;
+    result = fixLeadingTrailingSpaces(result);
+    result = fixDoubleSpaces(result);
     result = fixCommaSpacing(result);
     result = fixQuotePlacement(result);
     result = fixCurlySpacing(result);
@@ -1087,7 +1107,9 @@ export function initLinterBridge() {
     },
     autoFixCurrent,
     autoFixAll,
-    applyAllFixes
+    applyAllFixes,
+    fixLeadingTrailingSpaces,
+    fixDoubleSpaces
   };
 }
 
