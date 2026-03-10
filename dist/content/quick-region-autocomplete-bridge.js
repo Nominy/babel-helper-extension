@@ -41,13 +41,33 @@
       }
       return null;
     }
-    function findOwnerFiber(textarea, ownerName) {
+    function getAutocompleteConfigFromMemoizedState(memoizedState) {
+      if (!Array.isArray(memoizedState) || !memoizedState.length) {
+        return null;
+      }
+      const candidate = memoizedState[0];
+      if (!candidate || typeof candidate !== "object") {
+        return null;
+      }
+      const config = candidate;
+      if (!Array.isArray(config.bracketTags) && !Array.isArray(config.styleTags) && !Array.isArray(config.bracketTypes)) {
+        return null;
+      }
+      return config;
+    }
+    function findAutocompleteConfig(textarea) {
       let fiber = getReactFiber(textarea);
       let depth = 0;
       while (fiber && depth < 24) {
-        const typeName = fiber.type?.name || fiber.elementType?.name || null;
-        if (typeName === ownerName) {
-          return fiber;
+        let hook = fiber.memoizedState ?? null;
+        let hookIndex = 0;
+        while (hook && hookIndex < 32) {
+          const config = getAutocompleteConfigFromMemoizedState(hook.memoizedState);
+          if (config) {
+            return config;
+          }
+          hook = hook.next ?? null;
+          hookIndex += 1;
         }
         fiber = fiber.return ?? null;
         depth += 1;
@@ -59,19 +79,8 @@
       if (!(sourceTextarea instanceof HTMLTextAreaElement)) {
         return null;
       }
-      const ownerFiber = findOwnerFiber(sourceTextarea, "tw");
-      if (!ownerFiber) {
-        return null;
-      }
-      let hook = ownerFiber.memoizedState ?? null;
-      let index = 0;
-      while (hook && index < 19) {
-        hook = hook.next ?? null;
-        index += 1;
-      }
-      const memoizedState = hook?.memoizedState;
-      const config = Array.isArray(memoizedState) ? memoizedState[0] : null;
-      if (!config || typeof config !== "object") {
+      const config = findAutocompleteConfig(sourceTextarea);
+      if (!config) {
         return null;
       }
       const bracketTypes = Array.isArray(config.bracketTypes) ? config.bracketTypes : [];
