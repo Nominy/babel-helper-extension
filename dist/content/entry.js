@@ -172,7 +172,13 @@
       cursorBaseline: null,
       ghostCursorElement: null,
       ghostCursorIntervalId: null,
-      ghostCursorRow: null
+      ghostCursorRow: null,
+      ghostCursorRowIdentity: null,
+      ghostCursorOffset: null,
+      playbackRowSyncTimer: null,
+      playbackRowSyncInFlight: false,
+      lastPlaybackRow: null,
+      lastPlaybackRowIdentity: null
     };
   }
 
@@ -356,6 +362,33 @@
       }
       return null;
     }
+    function resolveConnectedRow(row, identity) {
+      if (row instanceof HTMLElement && row.isConnected) {
+        if (!identity || helper.rowMatchesIdentity(row, identity)) {
+          return row;
+        }
+      }
+      if (identity) {
+        return helper.findRowByIdentity(identity);
+      }
+      return null;
+    }
+    function getLastPlaybackRow() {
+      return resolveConnectedRow(
+        helper.state.lastPlaybackRow,
+        helper.state.lastPlaybackRowIdentity
+      );
+    }
+    function rememberPlaybackRow(row) {
+      if (row instanceof HTMLElement && row.isConnected) {
+        helper.state.lastPlaybackRow = row;
+        helper.state.lastPlaybackRowIdentity = helper.getRowIdentity(row);
+        return row;
+      }
+      helper.state.lastPlaybackRow = null;
+      helper.state.lastPlaybackRowIdentity = null;
+      return null;
+    }
     function snapToWordBoundary(text, offset) {
       if (!text || offset <= 0) {
         return 0;
@@ -500,6 +533,8 @@
       }
       const stoppedRowId = helper.state.ghostCursorRow ? helper.getRowIdentity(helper.state.ghostCursorRow)?.annotationId ?? null : null;
       helper.state.ghostCursorRow = null;
+      helper.state.ghostCursorRowIdentity = null;
+      helper.state.ghostCursorOffset = null;
       if (wasActive && helper.analytics) {
         helper.analytics.record("ghost:stop", { rowId: stoppedRowId });
       }
@@ -525,6 +560,8 @@
       document.body.appendChild(el);
       helper.state.ghostCursorElement = el;
       helper.state.ghostCursorRow = row;
+      helper.state.ghostCursorRowIdentity = helper.getRowIdentity(row);
+      helper.state.ghostCursorOffset = null;
       let trackedRow = row;
       let trackedTimeRange = timeRange;
       el.style.display = "none";
@@ -557,6 +594,8 @@
                 trackedRow = newRow;
                 trackedTimeRange = newRange;
                 helper.state.ghostCursorRow = newRow;
+                helper.state.ghostCursorRowIdentity = helper.getRowIdentity(newRow);
+                helper.state.cursorBaseline = 0;
                 if (helper.analytics) {
                   const newRowId = helper.getRowIdentity(newRow)?.annotationId ?? null;
                   helper.analytics.record("ghost:row-switch", {
@@ -590,6 +629,7 @@
             return;
           }
           el.style.background = result.clamped ? "rgba(156, 163, 175, 0.6)" : "rgba(245, 158, 11, 0.75)";
+          helper.state.ghostCursorOffset = result.offset;
           const pos = getCaretPixelPosition(ta, result.offset);
           el.style.display = "";
           el.style.top = `${pos.top}px`;
@@ -613,6 +653,20 @@
           blurTime: helper.state.blurPlaybackTime
         });
       }
+    }
+    function getGhostCursorTarget() {
+      const row = resolveConnectedRow(
+        helper.state.ghostCursorRow,
+        helper.state.ghostCursorRowIdentity
+      );
+      const offset = helper.state.ghostCursorOffset;
+      if (!(row instanceof HTMLElement) || typeof offset !== "number" || offset < 0) {
+        return null;
+      }
+      return {
+        row,
+        offset
+      };
     }
     helper.getTranscriptRows = function getTranscriptRows() {
       return Array.from(document.querySelectorAll("tbody tr")).filter(
@@ -1281,6 +1335,11 @@
           return activeRow;
         }
       }
+      const playbackRow = getLastPlaybackRow();
+      if (playbackRow) {
+        helper.setCurrentRow(playbackRow);
+        return playbackRow;
+      }
       const activeRowByDom = helper.findActiveRowByDomState();
       if (activeRowByDom) {
         helper.setCurrentRow(activeRowByDom);
@@ -1824,11 +1883,19 @@
       stopGhostCursor();
       const currentRow = helper.getCurrentRow();
       if (!remembered) {
-        const focused2 = helper.focusRow(currentRow, { cursor: "start" });
+        const ghostTarget2 = getGhostCursorTarget();
+        const focused2 = ghostTarget2 ? helper.focusRow(ghostTarget2.row, {
+          activateRow: false,
+          selectionStart: ghostTarget2.offset,
+          selectionEnd: ghostTarget2.offset,
+          direction: "none"
+        }) : helper.focusRow(currentRow, { cursor: "start" });
         if (focused2) {
           helper.state.blurRestorePending = false;
           if (helper.analytics) {
-            helper.analytics.record("focus:restore-fallback", { reason: "no-remembered-blur" });
+            helper.analytics.record("focus:restore-fallback", {
+              reason: ghostTarget2 ? "ghost-cursor-no-remembered-blur" : "no-remembered-blur"
+            });
           }
         }
         return focused2;
@@ -1902,6 +1969,35 @@
               rowId
             });
           }
+        }
+        return focused2;
+      }
+      const ghostTarget = getGhostCursorTarget();
+      if (ghostTarget) {
+        helper.state.blurPlaybackTime = null;
+        helper.state.restorePlaybackTime = null;
+        helper.state.blurRestorePending = false;
+        helper.state.cursorBaseline = ghostTarget.offset;
+        const focused2 = helper.focusRow(ghostTarget.row, {
+          activateRow: false,
+          selectionStart: ghostTarget.offset,
+          selectionEnd: ghostTarget.offset,
+          direction: "none"
+        });
+        if (focused2 && helper.analytics) {
+          const rowId = helper.getRowIdentity(ghostTarget.row)?.annotationId ?? null;
+          helper.analytics.record("focus:restore-fallback", {
+            rowId,
+            reason: "ghost-cursor-target",
+            cursorPos: ghostTarget.offset,
+            rememberedRowConnected: rememberedRow?.isConnected ?? false,
+            currentRowConnected: currentRow?.isConnected ?? false
+          });
+          helper.analytics.endEscCycle({
+            cursorPos: ghostTarget.offset,
+            proportional: true,
+            rowId
+          });
         }
         return focused2;
       }
@@ -1991,6 +2087,30 @@
         waveCount: 0
       };
     }
+    helper.syncCurrentRowToPlayback = async function syncCurrentRowToPlayback() {
+      if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function" && !helper.runtime.isSessionInteractive()) {
+        rememberPlaybackRow(null);
+        return null;
+      }
+      const playback = typeof helper.getPlaybackState === "function" ? await helper.getPlaybackState() : getPlaybackStateLocally();
+      if (!playback || !playback.ok) {
+        return getLastPlaybackRow();
+      }
+      const playbackRow = typeof playback.currentTime === "number" ? findRowByPlaybackTime(playback.currentTime) : null;
+      const preferredRow = playbackRow || getLastPlaybackRow();
+      if (playbackRow) {
+        rememberPlaybackRow(playbackRow);
+      }
+      if (playback.paused === false && preferredRow && !helper.state.ghostCursorElement) {
+        startGhostCursor(preferredRow);
+      } else if (playback.paused !== false) {
+        stopGhostCursor();
+      }
+      if (!(helper.getActiveRowTextarea() instanceof HTMLTextAreaElement) && preferredRow) {
+        helper.setCurrentRow(preferredRow);
+      }
+      return preferredRow;
+    };
     function setWavePausedStateLocally(paused) {
       const waves = getPlaybackWaveInstances();
       if (!waves.length) {
@@ -2114,6 +2234,32 @@
     function focusCurrentEditorForEscape() {
       if (helper.state.blurRestorePending && helper.toggleEditorFocus()) {
         return true;
+      }
+      const ghostTarget = getGhostCursorTarget();
+      if (ghostTarget) {
+        helper.state.blurPlaybackTime = null;
+        helper.state.restorePlaybackTime = null;
+        helper.state.blurRestorePending = false;
+        helper.state.cursorBaseline = ghostTarget.offset;
+        if (helper.analytics) {
+          const rowId = helper.getRowIdentity(ghostTarget.row)?.annotationId ?? null;
+          helper.analytics.record("focus:restore-fallback", {
+            reason: "ghost-cursor-escape",
+            rowId,
+            cursorPos: ghostTarget.offset
+          });
+          helper.analytics.endEscCycle({
+            cursorPos: ghostTarget.offset,
+            proportional: true,
+            rowId
+          });
+        }
+        return helper.focusRow(ghostTarget.row, {
+          activateRow: false,
+          selectionStart: ghostTarget.offset,
+          selectionEnd: ghostTarget.offset,
+          direction: "none"
+        });
       }
       const restoreTime = helper.state.restorePlaybackTime;
       if (typeof restoreTime === "number" && Number.isFinite(restoreTime)) {
@@ -6043,6 +6189,15 @@
         }
       }
     }
+    function schedulePlaybackRowSync() {
+      if (helper.state.playbackRowSyncInFlight || typeof helper.syncCurrentRowToPlayback !== "function") {
+        return;
+      }
+      helper.state.playbackRowSyncInFlight = true;
+      void helper.syncCurrentRowToPlayback().finally(() => {
+        helper.state.playbackRowSyncInFlight = false;
+      });
+    }
     helper.bindRowTracking = function bindRowTracking() {
       if (helper.state.rowTrackingBound) {
         return;
@@ -6052,6 +6207,8 @@
       document.addEventListener("input", handleCursorBaselineUpdate, true);
       document.addEventListener("keyup", handleCursorBaselineUpdate, true);
       document.addEventListener("pointerup", handleCursorBaselineUpdate, true);
+      schedulePlaybackRowSync();
+      helper.state.playbackRowSyncTimer = window.setInterval(schedulePlaybackRowSync, 250);
       helper.state.rowTrackingBound = true;
     };
     helper.unbindRowTracking = function unbindRowTracking() {
@@ -6063,6 +6220,13 @@
       document.removeEventListener("input", handleCursorBaselineUpdate, true);
       document.removeEventListener("keyup", handleCursorBaselineUpdate, true);
       document.removeEventListener("pointerup", handleCursorBaselineUpdate, true);
+      if (helper.state.playbackRowSyncTimer != null) {
+        window.clearInterval(helper.state.playbackRowSyncTimer);
+        helper.state.playbackRowSyncTimer = null;
+      }
+      helper.state.playbackRowSyncInFlight = false;
+      helper.state.lastPlaybackRow = null;
+      helper.state.lastPlaybackRowIdentity = null;
       helper.state.rowTrackingBound = false;
     };
     function bindGlobalListeners() {

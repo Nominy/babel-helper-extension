@@ -74,6 +74,39 @@ export function registerRowService(helper: any) {
     return null;
   }
 
+  function resolveConnectedRow(row, identity) {
+    if (row instanceof HTMLElement && row.isConnected) {
+      if (!identity || helper.rowMatchesIdentity(row, identity)) {
+        return row;
+      }
+    }
+
+    if (identity) {
+      return helper.findRowByIdentity(identity);
+    }
+
+    return null;
+  }
+
+  function getLastPlaybackRow() {
+    return resolveConnectedRow(
+      helper.state.lastPlaybackRow,
+      helper.state.lastPlaybackRowIdentity
+    );
+  }
+
+  function rememberPlaybackRow(row) {
+    if (row instanceof HTMLElement && row.isConnected) {
+      helper.state.lastPlaybackRow = row;
+      helper.state.lastPlaybackRowIdentity = helper.getRowIdentity(row);
+      return row;
+    }
+
+    helper.state.lastPlaybackRow = null;
+    helper.state.lastPlaybackRowIdentity = null;
+    return null;
+  }
+
   function snapToWordBoundary(text, offset) {
     if (!text || offset <= 0) { return 0; }
     if (offset >= text.length) { return text.length; }
@@ -263,6 +296,8 @@ export function registerRowService(helper: any) {
       ? (helper.getRowIdentity(helper.state.ghostCursorRow)?.annotationId ?? null)
       : null;
     helper.state.ghostCursorRow = null;
+    helper.state.ghostCursorRowIdentity = null;
+    helper.state.ghostCursorOffset = null;
 
     if (wasActive && helper.analytics) {
       helper.analytics.record('ghost:stop', { rowId: stoppedRowId });
@@ -287,6 +322,8 @@ export function registerRowService(helper: any) {
     document.body.appendChild(el);
     helper.state.ghostCursorElement = el;
     helper.state.ghostCursorRow = row;
+    helper.state.ghostCursorRowIdentity = helper.getRowIdentity(row);
+    helper.state.ghostCursorOffset = null;
 
     // Mutable tracking state for dynamic row switching
     let trackedRow = row;
@@ -335,6 +372,8 @@ export function registerRowService(helper: any) {
               trackedRow = newRow;
               trackedTimeRange = newRange;
               helper.state.ghostCursorRow = newRow;
+              helper.state.ghostCursorRowIdentity = helper.getRowIdentity(newRow);
+              helper.state.cursorBaseline = 0;
 
               if (helper.analytics) {
                 const newRowId = helper.getRowIdentity(newRow)?.annotationId ?? null;
@@ -382,6 +421,7 @@ export function registerRowService(helper: any) {
         el.style.background = result.clamped
           ? 'rgba(156, 163, 175, 0.6)'   // gray-400 — stuck at baseline
           : 'rgba(245, 158, 11, 0.75)';   // amber-500 — advancing
+        helper.state.ghostCursorOffset = result.offset;
 
         const pos = getCaretPixelPosition(ta, result.offset);
         el.style.display = '';
@@ -409,6 +449,22 @@ export function registerRowService(helper: any) {
         blurTime: helper.state.blurPlaybackTime
       });
     }
+  }
+
+  function getGhostCursorTarget() {
+    const row = resolveConnectedRow(
+      helper.state.ghostCursorRow,
+      helper.state.ghostCursorRowIdentity
+    );
+    const offset = helper.state.ghostCursorOffset;
+    if (!(row instanceof HTMLElement) || typeof offset !== 'number' || offset < 0) {
+      return null;
+    }
+
+    return {
+      row,
+      offset
+    };
   }
 
   helper.getTranscriptRows = function getTranscriptRows() {
@@ -1317,6 +1373,12 @@ export function registerRowService(helper: any) {
       }
     }
 
+    const playbackRow = getLastPlaybackRow();
+    if (playbackRow) {
+      helper.setCurrentRow(playbackRow);
+      return playbackRow;
+    }
+
     const activeRowByDom = helper.findActiveRowByDomState();
     if (activeRowByDom) {
       helper.setCurrentRow(activeRowByDom);
@@ -1998,16 +2060,29 @@ export function registerRowService(helper: any) {
       return false;
     }
 
+    // Snapshot the ghost target before teardown so fallback restore can still
+    // use the last visible ghost position if the remembered row went stale.
+    const preservedGhostTarget = getGhostCursorTarget();
+
     // Tear down the ghost cursor as soon as we begin restoring focus.
     stopGhostCursor();
 
     const currentRow = helper.getCurrentRow();
     if (!remembered) {
-      const focused = helper.focusRow(currentRow, { cursor: 'start' });
+      const focused = preservedGhostTarget
+        ? helper.focusRow(preservedGhostTarget.row, {
+            activateRow: false,
+            selectionStart: preservedGhostTarget.offset,
+            selectionEnd: preservedGhostTarget.offset,
+            direction: 'none'
+          })
+        : helper.focusRow(currentRow, { cursor: 'start' });
       if (focused) {
         helper.state.blurRestorePending = false;
         if (helper.analytics) {
-          helper.analytics.record('focus:restore-fallback', { reason: 'no-remembered-blur' });
+          helper.analytics.record('focus:restore-fallback', {
+            reason: preservedGhostTarget ? 'ghost-cursor-no-remembered-blur' : 'no-remembered-blur'
+          });
         }
       }
       return focused;
@@ -2101,6 +2176,36 @@ export function registerRowService(helper: any) {
             rowId
           });
         }
+      }
+      return focused;
+    }
+
+    if (preservedGhostTarget) {
+      helper.state.blurPlaybackTime = null;
+      helper.state.restorePlaybackTime = null;
+      helper.state.blurRestorePending = false;
+      helper.state.cursorBaseline = preservedGhostTarget.offset;
+
+      const focused = helper.focusRow(preservedGhostTarget.row, {
+        activateRow: false,
+        selectionStart: preservedGhostTarget.offset,
+        selectionEnd: preservedGhostTarget.offset,
+        direction: 'none'
+      });
+      if (focused && helper.analytics) {
+        const rowId = helper.getRowIdentity(preservedGhostTarget.row)?.annotationId ?? null;
+        helper.analytics.record('focus:restore-fallback', {
+          rowId,
+          reason: 'ghost-cursor-target',
+          cursorPos: preservedGhostTarget.offset,
+          rememberedRowConnected: rememberedRow?.isConnected ?? false,
+          currentRowConnected: currentRow?.isConnected ?? false
+        });
+        helper.analytics.endEscCycle({
+          cursorPos: preservedGhostTarget.offset,
+          proportional: true,
+          rowId
+        });
       }
       return focused;
     }
@@ -2203,6 +2308,45 @@ export function registerRowService(helper: any) {
       waveCount: 0
     };
   }
+
+  helper.syncCurrentRowToPlayback = async function syncCurrentRowToPlayback() {
+    if (
+      helper.runtime &&
+      typeof helper.runtime.isSessionInteractive === 'function' &&
+      !helper.runtime.isSessionInteractive()
+    ) {
+      rememberPlaybackRow(null);
+      return null;
+    }
+
+    const playback =
+      typeof helper.getPlaybackState === 'function'
+        ? await helper.getPlaybackState()
+        : getPlaybackStateLocally();
+    if (!playback || !playback.ok) {
+      return getLastPlaybackRow();
+    }
+
+    const playbackRow =
+      typeof playback.currentTime === 'number' ? findRowByPlaybackTime(playback.currentTime) : null;
+    const preferredRow = playbackRow || getLastPlaybackRow();
+
+    if (playbackRow) {
+      rememberPlaybackRow(playbackRow);
+    }
+
+    if (playback.paused === false && preferredRow && !helper.state.ghostCursorElement) {
+      startGhostCursor(preferredRow);
+    } else if (playback.paused !== false) {
+      stopGhostCursor();
+    }
+
+    if (!(helper.getActiveRowTextarea() instanceof HTMLTextAreaElement) && preferredRow) {
+      helper.setCurrentRow(preferredRow);
+    }
+
+    return preferredRow;
+  };
 
   function setWavePausedStateLocally(paused) {
     const waves = getPlaybackWaveInstances();
@@ -2350,6 +2494,35 @@ export function registerRowService(helper: any) {
   function focusCurrentEditorForEscape() {
     if (helper.state.blurRestorePending && helper.toggleEditorFocus()) {
       return true;
+    }
+
+    const ghostTarget = getGhostCursorTarget();
+    if (ghostTarget) {
+      helper.state.blurPlaybackTime = null;
+      helper.state.restorePlaybackTime = null;
+      helper.state.blurRestorePending = false;
+      helper.state.cursorBaseline = ghostTarget.offset;
+
+      if (helper.analytics) {
+        const rowId = helper.getRowIdentity(ghostTarget.row)?.annotationId ?? null;
+        helper.analytics.record('focus:restore-fallback', {
+          reason: 'ghost-cursor-escape',
+          rowId,
+          cursorPos: ghostTarget.offset
+        });
+        helper.analytics.endEscCycle({
+          cursorPos: ghostTarget.offset,
+          proportional: true,
+          rowId
+        });
+      }
+
+      return helper.focusRow(ghostTarget.row, {
+        activateRow: false,
+        selectionStart: ghostTarget.offset,
+        selectionEnd: ghostTarget.offset,
+        direction: 'none'
+      });
     }
 
     // toggleEditorFocus may have failed because the remembered row reference

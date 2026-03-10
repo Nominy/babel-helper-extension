@@ -513,6 +513,20 @@ export function registerLifecycle(helper: any) {
     }
   }
 
+  function schedulePlaybackRowSync() {
+    if (
+      helper.state.playbackRowSyncInFlight ||
+      typeof helper.syncCurrentRowToPlayback !== 'function'
+    ) {
+      return;
+    }
+
+    helper.state.playbackRowSyncInFlight = true;
+    void helper.syncCurrentRowToPlayback().finally(() => {
+      helper.state.playbackRowSyncInFlight = false;
+    });
+  }
+
   helper.bindRowTracking = function bindRowTracking() {
     if (helper.state.rowTrackingBound) {
       return;
@@ -523,6 +537,8 @@ export function registerLifecycle(helper: any) {
     document.addEventListener('input', handleCursorBaselineUpdate, true);
     document.addEventListener('keyup', handleCursorBaselineUpdate, true);
     document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
+    schedulePlaybackRowSync();
+    helper.state.playbackRowSyncTimer = window.setInterval(schedulePlaybackRowSync, 250);
     helper.state.rowTrackingBound = true;
   };
 
@@ -536,6 +552,13 @@ export function registerLifecycle(helper: any) {
     document.removeEventListener('input', handleCursorBaselineUpdate, true);
     document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
     document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
+    if (helper.state.playbackRowSyncTimer != null) {
+      window.clearInterval(helper.state.playbackRowSyncTimer);
+      helper.state.playbackRowSyncTimer = null;
+    }
+    helper.state.playbackRowSyncInFlight = false;
+    helper.state.lastPlaybackRow = null;
+    helper.state.lastPlaybackRowIdentity = null;
     helper.state.rowTrackingBound = false;
   };
 

@@ -33,7 +33,13 @@
     cursorBaseline: null,
     ghostCursorElement: null,
     ghostCursorIntervalId: null,
-    ghostCursorRow: null
+    ghostCursorRow: null,
+    ghostCursorRowIdentity: null,
+    ghostCursorOffset: null,
+    playbackRowSyncTimer: null,
+    playbackRowSyncInFlight: false,
+    lastPlaybackRow: null,
+    lastPlaybackRowIdentity: null
   };
 }
 
