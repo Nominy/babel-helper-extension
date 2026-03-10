@@ -1,4 +1,6 @@
 ﻿// @ts-nocheck
+import { requestAutoFix } from '../features/custom-linter-feature';
+
 export function registerLifecycle(helper: any) {
   if (!helper || helper.__mainInitialized) {
     return;
@@ -405,6 +407,14 @@ export function registerLifecycle(helper: any) {
       if (helper.analytics) {
         helper.analytics.record('hotkey:merge', { direction: 'next' });
       }
+    } else if (isFeatureEnabled('customLinter') && event.code === 'KeyF') {
+      handled = true;
+      const scope = event.shiftKey ? 'all' : 'current';
+      void requestAutoFix(scope).then((result) => {
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:lint-autofix', { scope, ...result });
+        }
+      });
     }
 
     if (handled) {

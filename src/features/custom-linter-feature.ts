@@ -3,6 +3,9 @@ import type { FeatureContext, FeatureModule } from '../core/types';
 const BRIDGE_SCRIPT_PATH = 'dist/content/linter-bridge.js';
 const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
 const BRIDGE_SCRIPT_ATTR = 'data-babel-helper-linter-bridge';
+const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
+const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
+const AUTOFIX_TIMEOUT_MS = 2000;
 
 function setBridgeEnabled(enabled: boolean): void {
   window.dispatchEvent(
@@ -43,6 +46,41 @@ function injectBridge(): Promise<boolean> {
     };
 
     root.appendChild(script);
+  });
+}
+
+export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean; [key: string]: unknown }> {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const handleResponse = (event: Event) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      window.removeEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+      window.clearTimeout(timeoutId);
+      const detail = (event as CustomEvent).detail || {};
+      resolve(detail);
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      window.removeEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+      resolve({ ok: false, reason: 'timeout' });
+    }, AUTOFIX_TIMEOUT_MS);
+
+    window.addEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+    window.dispatchEvent(
+      new CustomEvent(AUTOFIX_REQUEST_EVENT, {
+        detail: { scope }
+      })
+    );
   });
 }
 

@@ -96,6 +96,10 @@
       rows.push(["Del", "Delete current segment"]);
       rows.push(["D", "Delete current segment when not typing"]);
     }
+    if (featureSettings.customLinter) {
+      rows.push(["Alt + F", "Auto-fix lint issues in current row"]);
+      rows.push(["Alt + Shift + F", "Auto-fix lint issues in all rows"]);
+    }
     return rows;
   }
   function createConfig(featureSettings = DEFAULT_FEATURE_SETTINGS) {
@@ -5576,6 +5580,100 @@
     };
   }
 
+  // src/features/custom-linter-feature.ts
+  var BRIDGE_SCRIPT_PATH = "dist/content/linter-bridge.js";
+  var TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
+  var BRIDGE_SCRIPT_ATTR = "data-babel-helper-linter-bridge";
+  var AUTOFIX_REQUEST_EVENT = "babel-helper-linter-autofix";
+  var AUTOFIX_RESPONSE_EVENT = "babel-helper-linter-autofix-response";
+  var AUTOFIX_TIMEOUT_MS = 2e3;
+  function setBridgeEnabled(enabled) {
+    window.dispatchEvent(
+      new CustomEvent(TOGGLE_EVENT, {
+        detail: {
+          enabled
+        }
+      })
+    );
+  }
+  function injectBridge() {
+    if (document.querySelector(`script[${BRIDGE_SCRIPT_ATTR}="true"]`)) {
+      return Promise.resolve(true);
+    }
+    const chromeApi = globalThis.chrome;
+    if (!chromeApi || !chromeApi.runtime || typeof chromeApi.runtime.getURL !== "function") {
+      return Promise.resolve(false);
+    }
+    const root = document.documentElement || document.head || document.body;
+    if (!(root instanceof HTMLElement)) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.setAttribute(BRIDGE_SCRIPT_ATTR, "true");
+      script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
+      script.async = false;
+      script.onload = () => {
+        resolve(true);
+      };
+      script.onerror = () => {
+        script.remove();
+        resolve(false);
+      };
+      root.appendChild(script);
+    });
+  }
+  function requestAutoFix(scope) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const handleResponse = (event) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.removeEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+        window.clearTimeout(timeoutId);
+        const detail = event.detail || {};
+        resolve(detail);
+      };
+      const timeoutId = window.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        window.removeEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+        resolve({ ok: false, reason: "timeout" });
+      }, AUTOFIX_TIMEOUT_MS);
+      window.addEventListener(AUTOFIX_RESPONSE_EVENT, handleResponse, true);
+      window.dispatchEvent(
+        new CustomEvent(AUTOFIX_REQUEST_EVENT, {
+          detail: { scope }
+        })
+      );
+    });
+  }
+  function createCustomLinterFeature() {
+    let startPromise = null;
+    return {
+      id: "custom-linter",
+      async start(ctx) {
+        if (!startPromise) {
+          startPromise = injectBridge();
+        }
+        const ready = await startPromise;
+        if (!ready) {
+          startPromise = null;
+          ctx.logger.warn("Custom linter bridge did not load");
+          return;
+        }
+        setBridgeEnabled(true);
+      },
+      stop() {
+        setBridgeEnabled(false);
+      }
+    };
+  }
+
   // src/core/lifecycle.ts
   function registerLifecycle(helper) {
     if (!helper || helper.__mainInitialized) {
@@ -5867,6 +5965,14 @@
         if (helper.analytics) {
           helper.analytics.record("hotkey:merge", { direction: "next" });
         }
+      } else if (isFeatureEnabled("customLinter") && event.code === "KeyF") {
+        handled = true;
+        const scope = event.shiftKey ? "all" : "current";
+        void requestAutoFix(scope).then((result) => {
+          if (helper.analytics) {
+            helper.analytics.record("hotkey:lint-autofix", { scope, ...result });
+          }
+        });
       }
       if (handled) {
         event.preventDefault();
@@ -6226,68 +6332,6 @@
   function createMagnifierFeature() {
     return {
       id: "magnifier"
-    };
-  }
-
-  // src/features/custom-linter-feature.ts
-  var BRIDGE_SCRIPT_PATH = "dist/content/linter-bridge.js";
-  var TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
-  var BRIDGE_SCRIPT_ATTR = "data-babel-helper-linter-bridge";
-  function setBridgeEnabled(enabled) {
-    window.dispatchEvent(
-      new CustomEvent(TOGGLE_EVENT, {
-        detail: {
-          enabled
-        }
-      })
-    );
-  }
-  function injectBridge() {
-    if (document.querySelector(`script[${BRIDGE_SCRIPT_ATTR}="true"]`)) {
-      return Promise.resolve(true);
-    }
-    const chromeApi = globalThis.chrome;
-    if (!chromeApi || !chromeApi.runtime || typeof chromeApi.runtime.getURL !== "function") {
-      return Promise.resolve(false);
-    }
-    const root = document.documentElement || document.head || document.body;
-    if (!(root instanceof HTMLElement)) {
-      return Promise.resolve(false);
-    }
-    return new Promise((resolve) => {
-      const script = document.createElement("script");
-      script.setAttribute(BRIDGE_SCRIPT_ATTR, "true");
-      script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
-      script.async = false;
-      script.onload = () => {
-        resolve(true);
-      };
-      script.onerror = () => {
-        script.remove();
-        resolve(false);
-      };
-      root.appendChild(script);
-    });
-  }
-  function createCustomLinterFeature() {
-    let startPromise = null;
-    return {
-      id: "custom-linter",
-      async start(ctx) {
-        if (!startPromise) {
-          startPromise = injectBridge();
-        }
-        const ready = await startPromise;
-        if (!ready) {
-          startPromise = null;
-          ctx.logger.warn("Custom linter bridge did not load");
-          return;
-        }
-        setBridgeEnabled(true);
-      },
-      stop() {
-        setBridgeEnabled(false);
-      }
     };
   }
 

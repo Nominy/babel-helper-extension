@@ -62,6 +62,7 @@ export type AnalyticsEventType =
   | 'hotkey:rewind'                    // Alt+X rewind
   | 'hotkey:cut-preview'               // Cut preview keydown (S/Shift+S/L)
   | 'hotkey:arrow-suppressed'          // Native arrow seek suppressed
+  | 'hotkey:lint-autofix'              // Alt+F / Alt+Shift+F lint auto-fix
 
   // Row tracking
   | 'row:focus-in'                     // Row focused via focusin

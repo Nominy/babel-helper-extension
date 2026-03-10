@@ -34,6 +34,11 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
     rows.push(['D', 'Delete current segment when not typing']);
   }
 
+  if (featureSettings.customLinter) {
+    rows.push(['Alt + F', 'Auto-fix lint issues in current row']);
+    rows.push(['Alt + Shift + F', 'Auto-fix lint issues in all rows']);
+  }
+
   return rows;
 }
 

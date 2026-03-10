@@ -861,14 +861,233 @@ export function initLinterBridge() {
 
   scheduleInitialNativeLintTrigger('boot');
 
+  // ---------------------------------------------------------------------------
+  // Auto-fix functions
+  // ---------------------------------------------------------------------------
+
+  const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
+  const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
+  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+
+  function fixCommaSpacing(text) {
+    if (typeof text !== 'string' || text.indexOf(',') === -1) {
+      return text;
+    }
+
+    let result = text;
+    // Remove whitespace before commas: "word ,next" -> "word,next"
+    result = result.replace(/\s+,/g, ',');
+    // Ensure exactly one space after comma (except when followed by digit,
+    // end of string, or already a single space). Handle digits specially:
+    // "1,000" should stay as-is but "word,next" -> "word, next".
+    result = result.replace(/,(?![\d ]|$)/g, ', ');
+    // Collapse multiple spaces after comma to single space: ",  x" -> ", x"
+    result = result.replace(/, {2,}/g, ', ');
+
+    return result;
+  }
+
+  function fixQuotePlacement(text) {
+    const quoteIndices = getQuoteIndices(text);
+    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
+      return text;
+    }
+
+    // Process quote pairs from right to left so indices stay stable.
+    let result = text;
+    for (let index = quoteIndices.length - 2; index >= 0; index -= 2) {
+      const openIndex = quoteIndices[index];
+      const closeIndex = quoteIndices[index + 1];
+      const inner = result.substring(openIndex + 1, closeIndex);
+      const trimmedInner = inner.replace(/^\s+/, '').replace(/\s+$/, '');
+
+      // Rebuild segment: before open + quote pair + after close
+      const before = result.substring(0, openIndex);
+      const after = result.substring(closeIndex + 1);
+
+      // Ensure space before opening quote if preceded by a word character
+      let prefix = before;
+      if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
+        prefix = prefix + ' ';
+      }
+
+      // Ensure space after closing quote if followed by a word character
+      let suffix = after;
+      if (suffix.length > 0 && isWordCharacter(suffix[0])) {
+        suffix = ' ' + suffix;
+      }
+
+      result = prefix + '"' + trimmedInner + '"' + suffix;
+    }
+
+    return result;
+  }
+
+  function fixCurlySpacing(text) {
+    if (typeof text !== 'string') {
+      return text;
+    }
+
+    const hasOpen = text.indexOf('{') !== -1;
+    const hasClose = text.indexOf('}') !== -1;
+    if (!hasOpen || !hasClose) {
+      return text;
+    }
+
+    // Fix spacing inside curly braces: trim leading/trailing spaces inside { }
+    let result = text.replace(/\{\s+/g, '{').replace(/\s+\}/g, '}');
+
+    // Ensure space before opening brace if preceded by a word character
+    result = result.replace(/([\p{L}\p{N}])\{/gu, '$1 {');
+    // Ensure space after closing brace if followed by a word character
+    result = result.replace(/\}([\p{L}\p{N}])/gu, '} $1');
+
+    return result;
+  }
+
+  function applyAllFixes(text) {
+    if (typeof text !== 'string') {
+      return text;
+    }
+
+    let result = text;
+    result = fixCommaSpacing(result);
+    result = fixQuotePlacement(result);
+    result = fixCurlySpacing(result);
+    return result;
+  }
+
+  function setTextareaValue(textarea, value) {
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+    if (typeof valueSetter === 'function') {
+      valueSetter.call(textarea, value);
+    } else {
+      textarea.value = value;
+    }
+
+    try {
+      textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: null }));
+    } catch (_error) {
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function autoFixTextarea(textarea) {
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return { fixed: false, reason: 'not-textarea' };
+    }
+
+    const original = textarea.value || '';
+    const fixed = applyAllFixes(original);
+    if (fixed === original) {
+      return { fixed: false, reason: 'no-changes' };
+    }
+
+    // Preserve selection relative to text changes
+    const selStart = textarea.selectionStart;
+    const selEnd = textarea.selectionEnd;
+
+    setTextareaValue(textarea, fixed);
+
+    // Restore caret at a reasonable position (clamp to new length)
+    const clampedStart = Math.min(selStart, fixed.length);
+    const clampedEnd = Math.min(selEnd, fixed.length);
+    try {
+      textarea.setSelectionRange(clampedStart, clampedEnd);
+    } catch (_error) {
+      // Ignore selection errors
+    }
+
+    return { fixed: true, reason: 'applied', original, result: fixed };
+  }
+
+  function autoFixRow(row) {
+    if (!(row instanceof HTMLElement)) {
+      return { fixed: false, reason: 'not-element' };
+    }
+
+    const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+    return autoFixTextarea(textarea);
+  }
+
+  function autoFixAll() {
+    const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
+    let fixedCount = 0;
+    let totalCount = 0;
+
+    for (const textarea of textareas) {
+      totalCount += 1;
+      const result = autoFixTextarea(textarea);
+      if (result.fixed) {
+        fixedCount += 1;
+      }
+    }
+
+    return { fixedCount, totalCount };
+  }
+
+  function autoFixCurrent() {
+    // Fix the textarea that is currently focused, or the first one in the
+    // active row (detected by Babel's active-row styling).
+    const active = document.activeElement;
+    if (active instanceof HTMLTextAreaElement && active.matches(ROW_TEXTAREA_SELECTOR)) {
+      return autoFixTextarea(active);
+    }
+
+    // Fall back to the row with Babel's active highlight
+    const activeRow = document.querySelector('tbody tr.bg-neutral-100.ring-1.ring-neutral-300');
+    if (activeRow) {
+      return autoFixRow(activeRow);
+    }
+
+    // Last resort: first textarea
+    const first = document.querySelector(ROW_TEXTAREA_SELECTOR);
+    return autoFixTextarea(first);
+  }
+
+  window.addEventListener(
+    AUTOFIX_REQUEST_EVENT,
+    (event) => {
+      if (!enabled) {
+        window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+          detail: { ok: false, reason: 'disabled' }
+        }));
+        return;
+      }
+
+      const detail = event && event.detail ? event.detail : {};
+      const scope = detail.scope || 'current';
+      let result;
+
+      if (scope === 'all') {
+        result = autoFixAll();
+      } else {
+        result = autoFixCurrent();
+      }
+
+      // Re-trigger lint after fixes so the linter UI updates
+      scheduleInitialNativeLintTrigger('autofix');
+
+      window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+        detail: { ok: true, scope, ...result }
+      }));
+    },
+    true
+  );
+
   window.__babelHelperLinterBridge = {
-    version: 1,
+    version: 2,
     get enabled() {
       return enabled;
     },
     get debug() {
       return debugState;
-    }
+    },
+    autoFixCurrent,
+    autoFixAll,
+    applyAllFixes
   };
 }
 

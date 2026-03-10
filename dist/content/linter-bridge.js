@@ -708,14 +708,169 @@
       true
     );
     scheduleInitialNativeLintTrigger("boot");
+    const AUTOFIX_REQUEST_EVENT = "babel-helper-linter-autofix";
+    const AUTOFIX_RESPONSE_EVENT = "babel-helper-linter-autofix-response";
+    const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+    function fixCommaSpacing(text) {
+      if (typeof text !== "string" || text.indexOf(",") === -1) {
+        return text;
+      }
+      let result = text;
+      result = result.replace(/\s+,/g, ",");
+      result = result.replace(/,(?![\d ]|$)/g, ", ");
+      result = result.replace(/, {2,}/g, ", ");
+      return result;
+    }
+    function fixQuotePlacement(text) {
+      const quoteIndices = getQuoteIndices(text);
+      if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
+        return text;
+      }
+      let result = text;
+      for (let index = quoteIndices.length - 2; index >= 0; index -= 2) {
+        const openIndex = quoteIndices[index];
+        const closeIndex = quoteIndices[index + 1];
+        const inner = result.substring(openIndex + 1, closeIndex);
+        const trimmedInner = inner.replace(/^\s+/, "").replace(/\s+$/, "");
+        const before = result.substring(0, openIndex);
+        const after = result.substring(closeIndex + 1);
+        let prefix = before;
+        if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
+          prefix = prefix + " ";
+        }
+        let suffix = after;
+        if (suffix.length > 0 && isWordCharacter(suffix[0])) {
+          suffix = " " + suffix;
+        }
+        result = prefix + '"' + trimmedInner + '"' + suffix;
+      }
+      return result;
+    }
+    function fixCurlySpacing(text) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      const hasOpen = text.indexOf("{") !== -1;
+      const hasClose = text.indexOf("}") !== -1;
+      if (!hasOpen || !hasClose) {
+        return text;
+      }
+      let result = text.replace(/\{\s+/g, "{").replace(/\s+\}/g, "}");
+      result = result.replace(/([\p{L}\p{N}])\{/gu, "$1 {");
+      result = result.replace(/\}([\p{L}\p{N}])/gu, "} $1");
+      return result;
+    }
+    function applyAllFixes(text) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      let result = text;
+      result = fixCommaSpacing(result);
+      result = fixQuotePlacement(result);
+      result = fixCurlySpacing(result);
+      return result;
+    }
+    function setTextareaValue(textarea, value) {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      if (typeof valueSetter === "function") {
+        valueSetter.call(textarea, value);
+      } else {
+        textarea.value = value;
+      }
+      try {
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
+      } catch (_error) {
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    function autoFixTextarea(textarea) {
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        return { fixed: false, reason: "not-textarea" };
+      }
+      const original = textarea.value || "";
+      const fixed = applyAllFixes(original);
+      if (fixed === original) {
+        return { fixed: false, reason: "no-changes" };
+      }
+      const selStart = textarea.selectionStart;
+      const selEnd = textarea.selectionEnd;
+      setTextareaValue(textarea, fixed);
+      const clampedStart = Math.min(selStart, fixed.length);
+      const clampedEnd = Math.min(selEnd, fixed.length);
+      try {
+        textarea.setSelectionRange(clampedStart, clampedEnd);
+      } catch (_error) {
+      }
+      return { fixed: true, reason: "applied", original, result: fixed };
+    }
+    function autoFixRow(row) {
+      if (!(row instanceof HTMLElement)) {
+        return { fixed: false, reason: "not-element" };
+      }
+      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+      return autoFixTextarea(textarea);
+    }
+    function autoFixAll() {
+      const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
+      let fixedCount = 0;
+      let totalCount = 0;
+      for (const textarea of textareas) {
+        totalCount += 1;
+        const result = autoFixTextarea(textarea);
+        if (result.fixed) {
+          fixedCount += 1;
+        }
+      }
+      return { fixedCount, totalCount };
+    }
+    function autoFixCurrent() {
+      const active = document.activeElement;
+      if (active instanceof HTMLTextAreaElement && active.matches(ROW_TEXTAREA_SELECTOR)) {
+        return autoFixTextarea(active);
+      }
+      const activeRow = document.querySelector("tbody tr.bg-neutral-100.ring-1.ring-neutral-300");
+      if (activeRow) {
+        return autoFixRow(activeRow);
+      }
+      const first = document.querySelector(ROW_TEXTAREA_SELECTOR);
+      return autoFixTextarea(first);
+    }
+    window.addEventListener(
+      AUTOFIX_REQUEST_EVENT,
+      (event) => {
+        if (!enabled) {
+          window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+            detail: { ok: false, reason: "disabled" }
+          }));
+          return;
+        }
+        const detail = event && event.detail ? event.detail : {};
+        const scope = detail.scope || "current";
+        let result;
+        if (scope === "all") {
+          result = autoFixAll();
+        } else {
+          result = autoFixCurrent();
+        }
+        scheduleInitialNativeLintTrigger("autofix");
+        window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+          detail: { ok: true, scope, ...result }
+        }));
+      },
+      true
+    );
     window.__babelHelperLinterBridge = {
-      version: 1,
+      version: 2,
       get enabled() {
         return enabled;
       },
       get debug() {
         return debugState;
-      }
+      },
+      autoFixCurrent,
+      autoFixAll,
+      applyAllFixes
     };
   }
   initLinterBridge();
