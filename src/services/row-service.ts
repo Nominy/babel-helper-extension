@@ -2497,6 +2497,11 @@ export function registerRowService(helper: any) {
     }
 
     const ghostTarget = getGhostCursorTarget();
+    // toggleEditorFocus either was not called (blurRestorePending was false)
+    // or failed before reaching its own stopGhostCursor. Tear down the ghost
+    // now so the interval / DOM element are cleaned up in every code path.
+    stopGhostCursor();
+
     if (ghostTarget) {
       helper.state.blurPlaybackTime = null;
       helper.state.restorePlaybackTime = null;
@@ -2673,7 +2678,13 @@ export function registerRowService(helper: any) {
 
       if (!focused && isPlaying) {
         // State 2: unfocused + playing -> restore focus + pause
-        stopGhostCursor();
+        // NOTE: do NOT call stopGhostCursor() here. The restore path
+        // inside toggleEditorFocus (called via focusCurrentEditorForEscape)
+        // snapshots the ghost target *before* tearing it down (line 2065-2068).
+        // Stopping the ghost prematurely nulls ghostCursorOffset so
+        // getGhostCursorTarget() returns null, causing the restore to fall
+        // through to cursor:'start' (position 0) instead of the live ghost
+        // position.
         helper.state.restorePlaybackTime =
           playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
 

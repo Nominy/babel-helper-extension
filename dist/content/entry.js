@@ -1880,21 +1880,21 @@
       if (!helper.state.blurRestorePending) {
         return false;
       }
+      const preservedGhostTarget = getGhostCursorTarget();
       stopGhostCursor();
       const currentRow = helper.getCurrentRow();
       if (!remembered) {
-        const ghostTarget2 = getGhostCursorTarget();
-        const focused2 = ghostTarget2 ? helper.focusRow(ghostTarget2.row, {
+        const focused2 = preservedGhostTarget ? helper.focusRow(preservedGhostTarget.row, {
           activateRow: false,
-          selectionStart: ghostTarget2.offset,
-          selectionEnd: ghostTarget2.offset,
+          selectionStart: preservedGhostTarget.offset,
+          selectionEnd: preservedGhostTarget.offset,
           direction: "none"
         }) : helper.focusRow(currentRow, { cursor: "start" });
         if (focused2) {
           helper.state.blurRestorePending = false;
           if (helper.analytics) {
             helper.analytics.record("focus:restore-fallback", {
-              reason: ghostTarget2 ? "ghost-cursor-no-remembered-blur" : "no-remembered-blur"
+              reason: preservedGhostTarget ? "ghost-cursor-no-remembered-blur" : "no-remembered-blur"
             });
           }
         }
@@ -1972,29 +1972,28 @@
         }
         return focused2;
       }
-      const ghostTarget = getGhostCursorTarget();
-      if (ghostTarget) {
+      if (preservedGhostTarget) {
         helper.state.blurPlaybackTime = null;
         helper.state.restorePlaybackTime = null;
         helper.state.blurRestorePending = false;
-        helper.state.cursorBaseline = ghostTarget.offset;
-        const focused2 = helper.focusRow(ghostTarget.row, {
+        helper.state.cursorBaseline = preservedGhostTarget.offset;
+        const focused2 = helper.focusRow(preservedGhostTarget.row, {
           activateRow: false,
-          selectionStart: ghostTarget.offset,
-          selectionEnd: ghostTarget.offset,
+          selectionStart: preservedGhostTarget.offset,
+          selectionEnd: preservedGhostTarget.offset,
           direction: "none"
         });
         if (focused2 && helper.analytics) {
-          const rowId = helper.getRowIdentity(ghostTarget.row)?.annotationId ?? null;
+          const rowId = helper.getRowIdentity(preservedGhostTarget.row)?.annotationId ?? null;
           helper.analytics.record("focus:restore-fallback", {
             rowId,
             reason: "ghost-cursor-target",
-            cursorPos: ghostTarget.offset,
+            cursorPos: preservedGhostTarget.offset,
             rememberedRowConnected: rememberedRow?.isConnected ?? false,
             currentRowConnected: currentRow?.isConnected ?? false
           });
           helper.analytics.endEscCycle({
-            cursorPos: ghostTarget.offset,
+            cursorPos: preservedGhostTarget.offset,
             proportional: true,
             rowId
           });
@@ -2236,6 +2235,7 @@
         return true;
       }
       const ghostTarget = getGhostCursorTarget();
+      stopGhostCursor();
       if (ghostTarget) {
         helper.state.blurPlaybackTime = null;
         helper.state.restorePlaybackTime = null;
@@ -2385,7 +2385,6 @@
           return;
         }
         if (!focused && isPlaying) {
-          stopGhostCursor();
           helper.state.restorePlaybackTime = playback && typeof playback.currentTime === "number" ? playback.currentTime : null;
           if (helper.analytics) {
             const rowId = helper.state.lastBlur?.row ? helper.getRowIdentity(helper.state.lastBlur.row)?.annotationId ?? null : null;
