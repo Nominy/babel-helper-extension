@@ -384,11 +384,18 @@ export function registerRowService(helper: any) {
                 });
               }
 
-              // Update the synthetic blur's row so State 2 restores into
-              // the correct row when the user presses Esc.
+              // Update the remembered blur's row so State 2 restores into
+              // the correct row when the user presses Esc.  This must
+              // happen for both synthetic and real blurs: if the user
+              // blurred from row A (State 3) and playback advanced into
+              // row B, the restore must target row B — otherwise
+              // focusRow would scroll back to the old segment and
+              // Babel's active-segment highlight would jump.
               const remembered = helper.state.lastBlur;
-              if (remembered && remembered.synthetic) {
+              if (remembered) {
                 remembered.row = newRow;
+                remembered.selectionStart = 0;
+                remembered.selectionEnd = 0;
                 helper.setCurrentRow(newRow);
               }
             }

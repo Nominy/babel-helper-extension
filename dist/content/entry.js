@@ -605,8 +605,10 @@
                   });
                 }
                 const remembered = helper.state.lastBlur;
-                if (remembered && remembered.synthetic) {
+                if (remembered) {
                   remembered.row = newRow;
+                  remembered.selectionStart = 0;
+                  remembered.selectionEnd = 0;
                   helper.setCurrentRow(newRow);
                 }
               }
