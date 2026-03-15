@@ -14,7 +14,8 @@
     timelineZoomDefaults: true,
     magnifier: true,
     customLinter: true,
-    proportionalCursorRestore: true
+    proportionalCursorRestore: true,
+    wavesurferTooltipEllipsis: false
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -31,7 +32,8 @@
     "timelineZoomDefaults",
     "magnifier",
     "customLinter",
-    "proportionalCursorRestore"
+    "proportionalCursorRestore",
+    "wavesurferTooltipEllipsis"
   ];
   var FEATURE_META = {
     hotkeysHelp: {
@@ -81,6 +83,10 @@
     proportionalCursorRestore: {
       label: "Proportional Cursor Restore",
       description: "When restoring focus after Esc, advance cursor to the text position proportional to playback progress (never backward from your last edit position)."
+    },
+    wavesurferTooltipEllipsis: {
+      label: "Wavesurfer Tooltip Ellipsis",
+      description: "Truncate long Wavesurfer region tooltip labels with an ellipsis. Edit the template in src/features/wavesurfer-tooltip-ellipsis-feature.ts."
     }
   };
   function getExtensionStorage() {

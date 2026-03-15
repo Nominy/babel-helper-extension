@@ -10,7 +10,8 @@ export type FeatureSettingKey =
   | 'timelineZoomDefaults'
   | 'magnifier'
   | 'customLinter'
-  | 'proportionalCursorRestore';
+  | 'proportionalCursorRestore'
+  | 'wavesurferTooltipEllipsis';
 
 export interface FeatureSettings {
   hotkeysHelp: boolean;
@@ -25,6 +26,7 @@ export interface FeatureSettings {
   magnifier: boolean;
   customLinter: boolean;
   proportionalCursorRestore: boolean;
+  wavesurferTooltipEllipsis: boolean;
 }
 
 export interface ExtensionSettings {
@@ -50,7 +52,8 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   timelineZoomDefaults: true,
   magnifier: true,
   customLinter: true,
-  proportionalCursorRestore: true
+  proportionalCursorRestore: true,
+  wavesurferTooltipEllipsis: true
 };
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
@@ -69,7 +72,8 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'timelineZoomDefaults',
   'magnifier',
   'customLinter',
-  'proportionalCursorRestore'
+  'proportionalCursorRestore',
+  'wavesurferTooltipEllipsis'
 ];
 
 export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
@@ -120,6 +124,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   proportionalCursorRestore: {
     label: 'Proportional Cursor Restore',
     description: 'When restoring focus after Esc, advance cursor to the text position proportional to playback progress (never backward from your last edit position).'
+  },
+  wavesurferTooltipEllipsis: {
+    label: 'Wavesurfer Tooltip Ellipsis',
+    description: 'Truncate long Wavesurfer region tooltip labels with an ellipsis. Edit the template in src/features/wavesurfer-tooltip-ellipsis-feature.ts.'
   }
 };
 

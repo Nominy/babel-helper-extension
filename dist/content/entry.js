@@ -14,7 +14,8 @@
     timelineZoomDefaults: true,
     magnifier: true,
     customLinter: true,
-    proportionalCursorRestore: true
+    proportionalCursorRestore: true,
+    wavesurferTooltipEllipsis: false
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -31,7 +32,8 @@
     "timelineZoomDefaults",
     "magnifier",
     "customLinter",
-    "proportionalCursorRestore"
+    "proportionalCursorRestore",
+    "wavesurferTooltipEllipsis"
   ];
   function getExtensionStorage() {
     const chromeApi = globalThis.chrome;
@@ -6562,6 +6564,37 @@
     };
   }
 
+  // src/features/wavesurfer-tooltip-ellipsis-feature.ts
+  var STYLE_ID = "babel-helper-wavesurfer-tooltip-ellipsis";
+  var WAVESURFER_TOOLTIP_ELLIPSIS_CSS = `
+  .wavesurfer-region-label-tooltip > span {
+    width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+`.trim();
+  function createWavesurferTooltipEllipsisFeature() {
+    return {
+      id: "wavesurfer-tooltip-ellipsis",
+      start() {
+        if (!(document.head instanceof HTMLHeadElement)) {
+          return;
+        }
+        let style = document.getElementById(STYLE_ID);
+        if (!(style instanceof HTMLStyleElement)) {
+          style = document.createElement("style");
+          style.id = STYLE_ID;
+          document.head.appendChild(style);
+        }
+        style.textContent = WAVESURFER_TOOLTIP_ELLIPSIS_CSS;
+      },
+      stop() {
+        document.getElementById(STYLE_ID)?.remove();
+      }
+    };
+  }
+
   // src/features/index.ts
   var FEATURE_ID_TO_SETTING_KEY = {
     "hotkeys-help": "hotkeysHelp",
@@ -6571,7 +6604,8 @@
     "focus-toggle": "focusToggle",
     "timeline-selection": "timelineSelection",
     magnifier: "magnifier",
-    "custom-linter": "customLinter"
+    "custom-linter": "customLinter",
+    "wavesurfer-tooltip-ellipsis": "wavesurferTooltipEllipsis"
   };
   function createFeatureModules(featureSettings) {
     const modules = [
@@ -6582,7 +6616,8 @@
       createTimelineSelectionFeature(),
       createMagnifierFeature(),
       createCustomLinterFeature(),
-      createQuickRegionAutocompleteFeature()
+      createQuickRegionAutocompleteFeature(),
+      createWavesurferTooltipEllipsisFeature()
     ];
     return modules.filter((module) => {
       const settingKey = FEATURE_ID_TO_SETTING_KEY[module.id];

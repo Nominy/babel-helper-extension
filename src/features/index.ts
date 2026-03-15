@@ -8,6 +8,7 @@ import { createTimelineSelectionFeature } from './timeline-selection-feature';
 import { createMagnifierFeature } from './magnifier-feature';
 import { createCustomLinterFeature } from './custom-linter-feature';
 import { createQuickRegionAutocompleteFeature } from './quick-region-autocomplete-feature';
+import { createWavesurferTooltipEllipsisFeature } from './wavesurfer-tooltip-ellipsis-feature';
 
 const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'hotkeys-help': 'hotkeysHelp',
@@ -17,7 +18,8 @@ const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'focus-toggle': 'focusToggle',
   'timeline-selection': 'timelineSelection',
   magnifier: 'magnifier',
-  'custom-linter': 'customLinter'
+  'custom-linter': 'customLinter',
+  'wavesurfer-tooltip-ellipsis': 'wavesurferTooltipEllipsis'
 };
 
 export function createFeatureModules(featureSettings: FeatureSettings): FeatureModule[] {
@@ -29,7 +31,8 @@ export function createFeatureModules(featureSettings: FeatureSettings): FeatureM
     createTimelineSelectionFeature(),
     createMagnifierFeature(),
     createCustomLinterFeature(),
-    createQuickRegionAutocompleteFeature()
+    createQuickRegionAutocompleteFeature(),
+    createWavesurferTooltipEllipsisFeature()
   ];
 
   return modules.filter((module) => {
