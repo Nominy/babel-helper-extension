@@ -2,6 +2,7 @@ export type FeatureSettingKey =
   | 'hotkeysHelp'
   | 'rowActions'
   | 'speakerWorkflowHotkeys'
+  | 'selectedNumberToSkaz'
   | 'textMove'
   | 'quickRegionAutocomplete'
   | 'disableNativeArrowSeek'
@@ -17,6 +18,7 @@ export interface FeatureSettings {
   hotkeysHelp: boolean;
   rowActions: boolean;
   speakerWorkflowHotkeys: boolean;
+  selectedNumberToSkaz: boolean;
   textMove: boolean;
   quickRegionAutocomplete: boolean;
   disableNativeArrowSeek: boolean;
@@ -44,6 +46,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   hotkeysHelp: true,
   rowActions: true,
   speakerWorkflowHotkeys: true,
+  selectedNumberToSkaz: true,
   textMove: true,
   quickRegionAutocomplete: true,
   disableNativeArrowSeek: true,
@@ -64,6 +67,7 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'hotkeysHelp',
   'rowActions',
   'speakerWorkflowHotkeys',
+  'selectedNumberToSkaz',
   'textMove',
   'quickRegionAutocomplete',
   'disableNativeArrowSeek',
@@ -88,6 +92,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   speakerWorkflowHotkeys: {
     label: 'Speaker Workflow Hotkeys',
     description: 'Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts.'
+  },
+  selectedNumberToSkaz: {
+    label: 'Selected Number to SKAZ',
+    description: 'Enable Alt + A to auto-convert selected digits or Russian number words into `digits {СКАЗ: words}`.'
   },
   textMove: {
     label: 'Text Move',

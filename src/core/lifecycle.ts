@@ -1,5 +1,6 @@
 ﻿// @ts-nocheck
 import { requestAutoFix } from '../features/custom-linter-feature';
+import { autoConvertSelectedNumberText } from '../hooks/selected-number-to-skaz';
 
 export function registerLifecycle(helper: any) {
   if (!helper || helper.__mainInitialized) {
@@ -340,6 +341,26 @@ export function registerLifecycle(helper: any) {
         event.stopPropagation();
         if (helper.analytics) {
           helper.analytics.record('hotkey:rewind', { seconds: Number(rewindShortcut.seconds), code: event.code });
+        }
+      }
+      return;
+    }
+
+    if (
+      isFeatureEnabled('selectedNumberToSkaz') &&
+      event.code === 'KeyA' &&
+      event.altKey &&
+      !event.shiftKey &&
+      !event.metaKey
+    ) {
+      const handled = autoConvertSelectedNumberText(event.target);
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:selected-number-auto-convert', {
+            ctrlKey: event.ctrlKey
+          });
         }
       }
       return;

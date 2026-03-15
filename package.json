@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "babel-helper-extension",
   "version": "1.0.0",
   "private": true,
@@ -13,6 +13,8 @@
   "devDependencies": {
     "esbuild": "^0.25.1",
     "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@alordash/parse-word-to-number": "^3.0.7"
   }
 }
-

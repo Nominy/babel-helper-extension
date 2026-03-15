@@ -23,6 +23,10 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
     rows.push(['Alt + ~', 'Reset lanes: show both, unmute both, select All Tracks']);
   }
 
+  if (featureSettings.selectedNumberToSkaz) {
+    rows.push(['Alt + A / Ctrl + Alt + A', 'Auto-convert selection into `digits {СКАЗ: words}`']);
+  }
+
   if (featureSettings.rowActions) {
     for (const shortcut of PLAYBACK_REWIND_SHORTCUTS) {
       const milliseconds = Math.round(shortcut.seconds * 1000);

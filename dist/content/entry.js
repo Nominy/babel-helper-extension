@@ -1,11 +1,716 @@
+var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
 "use strict";
 (() => {
+  var __create = Object.create;
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __esm = (fn, res) => function __init() {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  };
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  };
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // node_modules/@alordash/damerau-levenshtein/lib/damerau-levenshtein.js
+  var require_damerau_levenshtein = __commonJS({
+    "node_modules/@alordash/damerau-levenshtein/lib/damerau-levenshtein.js"(exports, module) {
+      var DamerauLevenshtein = class {
+        #str1;
+        #str2;
+        #matrix;
+        /**
+         * Calculates Damerau-Levenshtein distance of the two strings.
+         * @param {String} str1
+         * @param {String} str2
+         * @property distance
+         * @property matrix
+         * @function toString() returns distance calculation matrix in tile grid.
+         * @function valueOf() returns this.distance
+         */
+        constructor(str1, str2) {
+          this.#str1 = str1;
+          this.#str2 = str2;
+          this.#matrix = [];
+          for (let i = 0; i <= this.#str1.length; i++) {
+            this.#matrix[i] = [];
+          }
+          this.distance = 0;
+          this.calculate();
+        }
+        /**
+         * @param {Array.<string>} strings
+         */
+        set strings(strings) {
+          [this.#str1, this.#str2] = strings;
+          this.#matrix = [];
+          for (let i = 0; i <= this.#str1.length; i++) {
+            this.#matrix[i] = [];
+          }
+          this.calculate();
+        }
+        /**
+         * @returns {Array.<Array.<number>>} calculation matrix
+         */
+        get matrix() {
+          return this.#matrix;
+        }
+        /**
+         * @returns {number} distance
+         */
+        valueOf() {
+          return this.distance;
+        }
+        /** 
+         * Returns string that shows Damerau-Levenshtein distance calculations matrix in tile grid.
+         * @returns {string} string
+         */
+        toString() {
+          let str1 = " " + this.#str1;
+          let str2 = " " + this.#str2;
+          let str = "".padStart(4, " ");
+          for (let c of str2) {
+            str += " |" + c.padStart(4 - 2, " ");
+          }
+          str += "\r\n";
+          str += "".padStart(4 + 1, "\u2014") + "".padStart(str2.length * 4, "+".padEnd(4, "\u2013")) + "\r\n";
+          for (let i = 0; i < this.#matrix.length; i++) {
+            str += str1[i].padStart(4, " ");
+            for (let j = 0; j < this.#matrix[i].length; j++) {
+              str += " |" + this.#matrix[i][j].toString(10).padStart(4 - 2, " ");
+            }
+            str += "\r\n";
+            str += "".padStart(4 + 1, "\u2014") + "".padStart(str2.length * 4, "+".padEnd(4, "\u2013")) + "\r\n";
+          }
+          return str.substring(0, str.length - 2);
+        }
+        calculate() {
+          for (let i = 0; i <= this.#str1.length; i++) {
+            for (let j = 0; j <= this.#str2.length; j++) {
+              this.#matrix[i][j] = this.D(i, j);
+            }
+          }
+          this.distance = this.#matrix[this.#str1.length][this.#str2.length];
+        }
+        Matrix(i, j) {
+          if (this.#matrix[i][j] == void 0) {
+            this.#matrix[i][j] = this.D(i, j);
+          }
+          return this.#matrix[i][j];
+        }
+        D(i, j) {
+          if (i == 0 && j == 0) {
+            return 0;
+          } else {
+            let cost = +(this.#str1[i - 1] != this.#str2[j - 1]);
+            let values = [];
+            if (i > 0) {
+              values.push(this.Matrix(i - 1, j) + 1);
+            }
+            if (j > 0) {
+              values.push(this.Matrix(i, j - 1) + 1);
+            }
+            if (i > 0 && j > 0) {
+              values.push(this.Matrix(i - 1, j - 1) + cost);
+            }
+            if (i > 1 && j > 1 && this.#str1[i - 1] == this.#str2[j - 2] && this.#str1[i - 2] == this.#str2[j - 1]) {
+              values.push(this.Matrix(i - 2, j - 2) + 1);
+            }
+            return Math.min.apply(null, values);
+          }
+        }
+      };
+      function distance(str1, str2) {
+        return new DamerauLevenshtein(str1, str2).distance;
+      }
+      function closest(original_string, target_strings) {
+        let calculator = new DamerauLevenshtein(original_string, target_strings[0]);
+        let result = { closest_string: target_strings[0], distance: calculator.distance };
+        for (let i = 1; i < target_strings.length; i++) {
+          let string = target_strings[i];
+          calculator.strings = [original_string, string];
+          let distance2 = calculator.distance;
+          if (distance2 < result.distance) {
+            result.closest_string = string;
+            result.distance = distance2;
+          }
+        }
+        return result;
+      }
+      module.exports = {
+        DamerauLevenshtein,
+        distance,
+        closest
+      };
+    }
+  });
+
+  // node_modules/@alordash/damerau-levenshtein/index.js
+  var require_damerau_levenshtein2 = __commonJS({
+    "node_modules/@alordash/damerau-levenshtein/index.js"(exports, module) {
+      module.exports = require_damerau_levenshtein();
+    }
+  });
+
+  // src/build/fs-browser-shim.js
+  var fs_browser_shim_exports = {};
+  __export(fs_browser_shim_exports, {
+    default: () => fs_browser_shim_default,
+    readFileSync: () => readFileSync,
+    readdirSync: () => readdirSync
+  });
+  function getFileName(filePath) {
+    const normalized = String(filePath).replace(/\\/g, "/");
+    const parts = normalized.split("/");
+    return parts[parts.length - 1] || "";
+  }
+  function readFileSync(filePath, options) {
+    const fileName = getFileName(filePath);
+    const contents = FILES[fileName];
+    if (typeof contents !== "string") {
+      throw new Error(`fs-browser-shim cannot read ${String(filePath)}`);
+    }
+    if (typeof options === "string") {
+      return contents;
+    }
+    if (options && typeof options === "object" && options.encoding) {
+      return contents;
+    }
+    return new TextEncoder().encode(contents);
+  }
+  function readdirSync(dirPath) {
+    const normalized = String(dirPath).replace(/\\/g, "/");
+    if (normalized.endsWith("/expressions") || normalized.endsWith("/expressions/")) {
+      return Object.keys(FILES);
+    }
+    throw new Error(`fs-browser-shim cannot read directory ${String(dirPath)}`);
+  }
+  var EN_CSV, RU_CSV, FILES, fs_browser_shim_default;
+  var init_fs_browser_shim = __esm({
+    "src/build/fs-browser-shim.js"() {
+      EN_CSV = `META;;;;
+separators;;;;
+-;;;;
+text;value;multiply level;errors limit;rank
+zero;0;0;1;1
+one;1;0;0;1
+two;2;0;0;1
+three;3;0;1;1
+four;4;0;0;1
+five;5;0;1;1
+six;6;0;0;1
+seven;7;0;0;1
+eight;8;0;1;1
+nine;9;0;1;1
+ten;10;0;0;1
+eleven;11;0;2;1
+twelve;12;0;2;1
+thirteen;13;0;2;1
+fourteen;14;0;2;1
+fifteen;15;0;2;1
+sixteen;16;0;2;1
+seventeen;17;0;2;1
+eighteen;18;0;2;1
+nineteen;19;0;2;1
+twenty;20;0;1;2
+thirty;30;0;1;2
+forty;40;0;0;2
+fifty;50;0;1;2
+sixty;60;0;1;2
+seventy;70;0;1;2
+eighty;80;0;1;2
+ninety;90;0;1;2
+hundred;100;2;2;3
+thousand;1000;1;2;4
+million;1000000;1;2;7
+billion;1000000000;1;2;10
+trillion;1000000000000;1;2;13
+first;1;0;1;1
+second;2;0;1;1
+third;3;0;1;1
+fourth;4;0;1;1
+fifth;5;0;1;1
+sixth;6;0;1;1
+seventh;7;0;1;1
+eighth;8;0;1;1
+nineth;9;0;1;1`;
+      RU_CSV = `META;;;;
+separators;;;;
+;;;;
+text;value;multiply level;errors limit;rank
+\u043D\u043E\u043B\u044C;0;0;1;1
+\u043E\u0434\u0438\u043D;1;0;1;1
+\u0434\u0432\u0430;2;0;1;1
+\u0442\u0440\u0438;3;0;0;1
+\u0447\u0435\u0442\u044B\u0440\u0435;4;0;2;1
+\u043F\u044F\u0442\u044C;5;0;0;1
+\u0448\u0435\u0441\u0442\u044C;6;0;1;1
+\u0441\u0435\u043C\u044C;7;0;0;1
+\u0432\u043E\u0441\u0435\u043C\u044C;8;0;2;1
+\u0434\u0435\u0432\u044F\u0442\u044C;9;0;2;1
+\u0434\u0435\u0441\u044F\u0442\u044C;10;0;2;1
+\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044C;11;0;2;1
+\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044C;12;0;2;1
+\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044C;13;0;2;1
+\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044C;14;0;2;1
+\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C;15;0;2;1
+\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C;16;0;2;1
+\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C;17;0;2;1
+\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C;18;0;2;1
+\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C;19;0;2;1
+\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044C;20;0;2;2
+\u0442\u0440\u0438\u0434\u0446\u0430\u0442\u044C;30;0;2;2
+\u0441\u043E\u0440\u043E\u043A;40;0;0;2
+\u043F\u044F\u0442\u044C\u0434\u0435\u0441\u044F\u0442;50;0;2;2
+\u0448\u0435\u0441\u0442\u044C\u0434\u0435\u0441\u044F\u0442;60;0;2;2
+\u0441\u0435\u043C\u044C\u0434\u0435\u0441\u044F\u0442;70;0;2;2
+\u0432\u043E\u0441\u0435\u043C\u044C\u0434\u0435\u0441\u044F\u0442;80;0;2;2
+\u0434\u0435\u0432\u044F\u043D\u043E\u0441\u0442\u043E;90;0;2;2
+\u0441\u0442\u043E;100;0;0;3
+\u0441\u043E\u0442\u043D\u044F;100;1;2;3
+\u0434\u0432\u0435\u0441\u0442\u0438;200;0;1;3
+\u0442\u0440\u0438\u0441\u0442\u0430;300;0;1;3
+\u0447\u0435\u0442\u044B\u0440\u0435\u0441\u0442\u0430;400;0;2;3
+\u043F\u044F\u0442\u044C\u0441\u043E\u0442;500;0;2;3
+\u0448\u0435\u0441\u0442\u044C\u0441\u043E\u0442;600;0;2;3
+\u0441\u0435\u043C\u044C\u0441\u043E\u0442;700;0;2;3
+\u0432\u043E\u0441\u0435\u043C\u044C\u0441\u043E\u0442;800;0;2;3
+\u0434\u0435\u0432\u044F\u0442\u044C\u0441\u043E\u0442;900;0;2;3
+\u0442\u044B\u0441\u044F\u0447\u0430;1000;1;2;4
+\u0442\u044B\u0449\u0430;1000;1;1;4
+\u043C\u0438\u043B\u043B\u0438\u043E\u043D;1000000;1;2;7
+\u043C\u0438\u043B\u043B\u0438\u0430\u0440\u0434;1000000000;1;2;10
+\u0442\u0440\u0438\u043B\u043B\u0438\u043E\u043D;1000000000000;1;2;13
+\u043F\u0435\u0440\u0432\u044B\u0439;1;0;2;1
+\u0432\u0442\u043E\u0440\u043E\u0439;2;0;2;1
+\u0442\u0440\u0435\u0442\u0438\u0439;3;0;2;1
+\u0442\u0440\u0435\u0442\u044C\u0435\u0433\u043E;3;0;0;1
+\u043F\u044F\u0442\u044B\u0439;5;0;1;1
+\u043F\u044F\u0442\u0430\u044F;5;0;1;1
+\u043F\u044F\u0442\u043E\u0433\u043E;5;0;1;1
+\u043F\u044F\u0442\u044B\u043C\u0438;5;0;1;1
+\u0448\u0435\u0441\u0442\u043E\u0439;6;0;2;1
+\u0441\u0435\u0434\u044C\u043C\u043E\u0439;7;0;2;1
+\u0432\u043E\u0441\u044C\u043C\u043E\u0439;8;0;2;1
+\u0434\u0435\u0432\u044F\u0442\u044B\u0439;9;0;2;1
+\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u0439;4;0;0;1
+\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0430\u044F;4;0;0;1
+\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u043E\u0435;4;0;0;1
+\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u043E\u0433\u043E;4;0;0;1
+\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u0435;4;0;0;1
+\u043F\u043E\u043B\u0442\u043E\u0440\u0430;1.5;0;0;1
+\u043F\u043E\u043B\u0442\u043E\u0440\u044B;1.5;0;0;1`;
+      FILES = {
+        "EN.csv": EN_CSV.replace(/\n/g, "\r\n"),
+        "RU.csv": RU_CSV.replace(/\n/g, "\r\n")
+      };
+      fs_browser_shim_default = {
+        readFileSync,
+        readdirSync
+      };
+    }
+  });
+
+  // node_modules/@alordash/parse-word-to-number/lib/loader.js
+  var require_loader = __commonJS({
+    "node_modules/@alordash/parse-word-to-number/lib/loader.js"(exports, module) {
+      var fs = (init_fs_browser_shim(), __toCommonJS(fs_browser_shim_exports));
+      var Expression = class {
+        /**@type {String} */
+        text;
+        /**@type {Number} */
+        value;
+        /**@type {Number} */
+        multiply_level;
+        /**@type {Number} */
+        limit;
+        /**@type {Number} */
+        rank;
+        /**
+         * @param {String} text 
+         * @param {Number} value 
+         * @param {Number} multiply_level 
+         * @param {Number} limit 
+         * @param {Number} rank 
+         */
+        constructor(text, value, multiply_level, limit, rank) {
+          this.text = text;
+          this.value = value;
+          this.multiply_level = multiply_level;
+          this.limit = limit;
+          this.rank = rank;
+        }
+      };
+      var ParsingRules = class {
+        /**@type {String} */
+        separators;
+        /**@type {Array.<Expression>} */
+        expressions;
+        /**
+         * @param {String} separators
+         * @param {Array.<Expression>} expressions 
+         */
+        constructor(separators, Expressions) {
+          this.separators = separators;
+          this.expressions = Expressions;
+        }
+      };
+      function LoadExpressionsFile(fileName) {
+        let raw = fs.readFileSync(__dirname + `/expressions/${fileName}`, { encoding: "utf-8" }).split(/\r\n/);
+        let arr = raw.slice(4);
+        for (let i in arr) {
+          let val = arr[i].split(";");
+          arr[i] = new Expression(val[0], +val[1], +val[2], +val[3], +val[4], val[5]);
+        }
+        return new ParsingRules(raw.slice(2, 3)[0].split(";")[0], arr);
+      }
+      function LoadExpressions() {
+        let filenames = fs.readdirSync(__dirname + "/expressions/");
+        let parsingRules = [];
+        for (const filename of filenames) {
+          if (filename.split(".").pop() == "csv") {
+            parsingRules.push(LoadExpressionsFile(filename));
+          }
+        }
+        return parsingRules;
+      }
+      module.exports = {
+        Expression,
+        ParsingRules,
+        LoadExpressionsFile,
+        LoadExpressions
+      };
+    }
+  });
+
+  // node_modules/@alordash/parse-word-to-number/lib/parse-word-to-number.js
+  var require_parse_word_to_number = __commonJS({
+    "node_modules/@alordash/parse-word-to-number/lib/parse-word-to-number.js"(exports, module) {
+      var { distance } = require_damerau_levenshtein2();
+      var { Expression, LoadExpressions } = require_loader();
+      var ConvertedWord = class {
+        /**@type {String} */
+        text;
+        /**@type {Array.<Number>} */
+        indexes;
+        /**@param {String} text 
+         * @param {Array.<Numbe>} indexes 
+         */
+        constructor(text, indexes) {
+          this.text = `${text}`;
+          this.indexes = indexes;
+        }
+      };
+      function isInteger(word) {
+        return !isNaN(word) && !isNaN(parseInt(word)) && word == (+word).toString();
+      }
+      function numLength(num) {
+        return Math.ceil(Math.log10(num + 1));
+      }
+      function parseWord(word, errorLimit = 1) {
+        let parsingRules = LoadExpressions();
+        let foundExpression;
+        let result = [];
+        let min;
+        if (word != "") {
+          for (const parsingRule of parsingRules) {
+            for (const separator of parsingRule.separators) {
+              let index;
+              if ((index = word.indexOf(separator)) >= 0) {
+                let divided = parseWord(word.substring(0, index), errorLimit);
+                if (divided != void 0) {
+                  result.push(...divided);
+                }
+                divided = parseWord(word.substring(index + 1), errorLimit);
+                if (divided != void 0) {
+                  result.push(...divided);
+                }
+              }
+            }
+            for (const expression of parsingRule.expressions) {
+              let dst = distance(word.toLowerCase(), expression.text);
+              if (dst <= expression.limit * errorLimit && (min == void 0 || dst < min)) {
+                min = dst;
+                foundExpression = expression;
+              }
+            }
+          }
+          if (foundExpression != void 0) {
+            result.push(foundExpression);
+          }
+        }
+        return result;
+      }
+      function joinResult(array) {
+        let result = array[0].text.toString();
+        for (let i = 1; i < array.length; i++) {
+          result = `${result} ${array[i].text.toString()}`;
+        }
+        return result;
+      }
+      function parseString(string, errorLimit = 1) {
+        let words = string.split(/ +/);
+        return joinResult(parse(words, errorLimit));
+      }
+      function arrayParseString(string, errorLimit = 1) {
+        let words = string.split(/ +/);
+        for (let i = 0; i < words.length; i++) {
+          let word = words[i];
+          if (word != "\n") {
+            let index = word.indexOf("\n");
+            if (index != -1) {
+              let p1 = word.substring(0, index);
+              let p2 = word.substring(index, index + 1);
+              let p3 = word.substring(index + 1);
+              words.splice(i + 1, 0, p2, p3);
+              words[i] = word = p1;
+            }
+          }
+        }
+        return parse(words, errorLimit);
+      }
+      function parse(words, errorLimit) {
+        let result = [];
+        let Sum = 0;
+        let Rank = Number.MAX_SAFE_INTEGER;
+        let sum = 0;
+        let rank = Number.MAX_SAFE_INTEGER;
+        let multiply_level = 0;
+        let nums;
+        let isNum = false;
+        let prevIsNum = false;
+        let usedWords = [];
+        let divIndex = -1;
+        for (let i = 0; i < words.length; i++) {
+          const word = words[i];
+          usedWords.push(i);
+          if (isInteger(word) && word != "") {
+            nums = numberToWord(+word);
+            isNum = true;
+            nums = [nums];
+          } else {
+            if ((nums = parseWord(word, errorLimit)).length > 0) {
+              isNum = false;
+            }
+          }
+          if (nums.length > 0) {
+            let _sum = 0;
+            let _rank = Number.MAX_SAFE_INTEGER;
+            let _multiply_level = 0;
+            let multiplyed = false;
+            for (const num of nums) {
+              if (num.rank < _rank) {
+                _sum += num.value;
+                _rank = num.rank;
+                _multiply_level = Math.max(_multiply_level, num.multiply_level);
+              } else if (num.multiply_level > 0) {
+                _sum *= num.value;
+                _rank = num.rank;
+                _multiply_level = num.multiply_level;
+                multiplyed = true;
+              }
+            }
+            if (multiplyed && _multiply_level <= 1) {
+              if (_rank < Rank) {
+                Sum += _sum;
+              } else {
+                if (rank < Rank) {
+                  Sum += sum;
+                  sum = 0;
+                  rank = Number.MAX_SAFE_INTEGER;
+                  usedWords.splice(-1, 1);
+                }
+                result.push(new ConvertedWord(Sum, usedWords));
+                usedWords = [i];
+                Sum = _sum;
+              }
+              Rank = _rank;
+            } else if (multiplyed && _multiply_level > 1) {
+              if (rank < Rank) {
+                Sum += sum;
+              }
+              if (_rank < Rank && Rank != Number.MAX_SAFE_INTEGER) {
+                sum = _sum;
+                rank = _rank;
+              } else {
+                sum = 0;
+                rank = Number.MAX_SAFE_INTEGER;
+                if (Rank < Number.MAX_SAFE_INTEGER) {
+                  usedWords.splice(-1, 1);
+                  result.push(new ConvertedWord(Sum, usedWords));
+                  usedWords = [i];
+                }
+                Sum = _sum;
+                Rank = _rank;
+              }
+            } else if (_rank < rank && !prevIsNum) {
+              sum += _sum;
+              rank = _rank;
+              if (i > 0 && divIndex < 0) {
+                divIndex = i;
+              }
+            } else if (_multiply_level > 0) {
+              if (_multiply_level > 1 && multiply_level != _multiply_level) {
+                sum *= _sum;
+                rank = _rank;
+                if (rank >= Rank) {
+                  let leftWords = [i];
+                  if (divIndex >= 0) {
+                    let index = usedWords.indexOf(divIndex);
+                    leftWords = usedWords.splice(index, usedWords.length - index);
+                  }
+                  result.push(new ConvertedWord(Sum, usedWords));
+                  usedWords = leftWords;
+                  Sum = 0;
+                  Rank = Number.MAX_SAFE_INTEGER;
+                }
+              } else {
+                if (_rank < Rank) {
+                  Sum += Math.max(1, sum) * _sum;
+                  Rank = _rank;
+                  sum = 0;
+                  rank = Number.MAX_SAFE_INTEGER;
+                } else {
+                  usedWords.splice(-1, 1);
+                  result.push(new ConvertedWord(Sum + sum, usedWords));
+                  usedWords = [i];
+                  sum = _sum;
+                  rank = _rank;
+                  Sum = 0;
+                  Rank = Number.MAX_SAFE_INTEGER;
+                }
+              }
+            } else {
+              if (rank < Rank) {
+                Sum += sum;
+                usedWords.splice(-1, 1);
+                result.push(new ConvertedWord(Sum, usedWords));
+                usedWords = [i];
+                Sum = 0;
+                Rank = Number.MAX_SAFE_INTEGER;
+              } else {
+                result.push(new ConvertedWord(Sum, usedWords));
+                usedWords = [];
+              }
+              sum = _sum;
+              rank = _rank;
+            }
+            multiply_level = _multiply_level;
+            prevIsNum = isNum;
+          } else {
+            if (Sum > 0 || sum > 0) {
+              if (numLength(sum) < numLength(Sum)) {
+                usedWords.splice(-1, 1);
+                result.push(new ConvertedWord(Sum + sum, usedWords));
+                usedWords = [i];
+              } else {
+                let leftWords = usedWords;
+                if (Sum > 0) {
+                  if (divIndex >= 0) {
+                    let index = usedWords.indexOf(divIndex);
+                    leftWords = usedWords.splice(
+                      /*divIndex*/
+                      index,
+                      usedWords.length - index
+                    );
+                  }
+                  result.push(new ConvertedWord(Sum, usedWords));
+                  usedWords = [];
+                }
+                if (sum > 0) {
+                  leftWords.splice(-1, 1);
+                  result.push(new ConvertedWord(sum, leftWords));
+                  usedWords = [i];
+                }
+              }
+            }
+            result.push(new ConvertedWord(word, usedWords));
+            usedWords = [];
+            prevIsNum = false;
+            Sum = 0;
+            Rank = Number.MAX_SAFE_INTEGER;
+            sum = 0;
+            rank = Number.MAX_SAFE_INTEGER;
+          }
+        }
+        if (sum != 0) {
+          Sum += sum;
+        }
+        if (Sum != 0 || nums.length > 0) {
+          result.push(new ConvertedWord(Sum, usedWords));
+        }
+        return result;
+      }
+      function numberToWord(num) {
+        let word;
+        let expressions = LoadExpressions();
+        let found = false;
+        let i = 0;
+        while (!found && i < expressions.length) {
+          let expression = expressions[i];
+          if (num == expression.value) {
+            word = expression;
+            found = true;
+          }
+          i++;
+        }
+        if (!found) {
+          word = {
+            text: "",
+            value: num,
+            multipliable: 0,
+            limit: 0,
+            rank: num.toString().length
+          };
+        }
+        return word;
+      }
+      module.exports = {
+        parseWord,
+        parseString,
+        arrayParseString,
+        joinResult
+      };
+    }
+  });
+
+  // node_modules/@alordash/parse-word-to-number/index.js
+  var require_parse_word_to_number2 = __commonJS({
+    "node_modules/@alordash/parse-word-to-number/index.js"(exports, module) {
+      module.exports = require_parse_word_to_number();
+    }
+  });
+
   // src/core/settings.ts
   var SETTINGS_STORAGE_KEY = "settings";
   var DEFAULT_FEATURE_SETTINGS = {
     hotkeysHelp: true,
     rowActions: true,
     speakerWorkflowHotkeys: true,
+    selectedNumberToSkaz: true,
     textMove: true,
     quickRegionAutocomplete: true,
     disableNativeArrowSeek: true,
@@ -15,7 +720,7 @@
     magnifier: true,
     customLinter: true,
     proportionalCursorRestore: true,
-    wavesurferTooltipEllipsis: false
+    wavesurferTooltipEllipsis: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -24,6 +729,7 @@
     "hotkeysHelp",
     "rowActions",
     "speakerWorkflowHotkeys",
+    "selectedNumberToSkaz",
     "textMove",
     "quickRegionAutocomplete",
     "disableNativeArrowSeek",
@@ -87,6 +793,9 @@
     if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
       rows.push(["Alt + 1 / Alt + 2", "Switch active speaker workflow lane"]);
       rows.push(["Alt + ~", "Reset lanes: show both, unmute both, select All Tracks"]);
+    }
+    if (featureSettings.selectedNumberToSkaz) {
+      rows.push(["Alt + A / Ctrl + Alt + A", "Auto-convert selection into `digits {\u0421\u041A\u0410\u0417: words}`"]);
     }
     if (featureSettings.rowActions) {
       for (const shortcut of PLAYBACK_REWIND_SHORTCUTS) {
@@ -5823,6 +6532,605 @@
     };
   }
 
+  // src/hooks/selected-number-to-skaz.ts
+  var import_parse_word_to_number = __toESM(require_parse_word_to_number2(), 1);
+  var INTEGER_PATTERN = /^-?\d+$/;
+  var DECIMAL_COMMA_PATTERN = /^-?\d+,\d+$/;
+  var SLASH_FRACTION_PATTERN = /^-?\d+\s*\/\s*[1-9]\d*$/;
+  var INTEGER_RANGE_PATTERN = /^-?\d+(?:\s*-\s*-?\d+)+$/;
+  var PERCENT_PATTERN = /^(-?\d+)\s*%$/;
+  var MAX_SUPPORTED_DIGITS = 12;
+  var STRICT_PARSE_ERROR_LIMIT = 0;
+  var HUNDREDS = [
+    "\u0441\u0442\u043E",
+    "\u0434\u0432\u0435\u0441\u0442\u0438",
+    "\u0442\u0440\u0438\u0441\u0442\u0430",
+    "\u0447\u0435\u0442\u044B\u0440\u0435\u0441\u0442\u0430",
+    "\u043F\u044F\u0442\u044C\u0441\u043E\u0442",
+    "\u0448\u0435\u0441\u0442\u044C\u0441\u043E\u0442",
+    "\u0441\u0435\u043C\u044C\u0441\u043E\u0442",
+    "\u0432\u043E\u0441\u0435\u043C\u044C\u0441\u043E\u0442",
+    "\u0434\u0435\u0432\u044F\u0442\u044C\u0441\u043E\u0442"
+  ];
+  var TENS = [
+    "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0442\u0440\u0438\u0434\u0446\u0430\u0442\u044C",
+    "\u0441\u043E\u0440\u043E\u043A",
+    "\u043F\u044F\u0442\u044C\u0434\u0435\u0441\u044F\u0442",
+    "\u0448\u0435\u0441\u0442\u044C\u0434\u0435\u0441\u044F\u0442",
+    "\u0441\u0435\u043C\u044C\u0434\u0435\u0441\u044F\u0442",
+    "\u0432\u043E\u0441\u0435\u043C\u044C\u0434\u0435\u0441\u044F\u0442",
+    "\u0434\u0435\u0432\u044F\u043D\u043E\u0441\u0442\u043E"
+  ];
+  var TEENS = [
+    "\u0434\u0435\u0441\u044F\u0442\u044C",
+    "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C",
+    "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C"
+  ];
+  var UNITS_MALE = [
+    "\u043E\u0434\u0438\u043D",
+    "\u0434\u0432\u0430",
+    "\u0442\u0440\u0438",
+    "\u0447\u0435\u0442\u044B\u0440\u0435",
+    "\u043F\u044F\u0442\u044C",
+    "\u0448\u0435\u0441\u0442\u044C",
+    "\u0441\u0435\u043C\u044C",
+    "\u0432\u043E\u0441\u0435\u043C\u044C",
+    "\u0434\u0435\u0432\u044F\u0442\u044C"
+  ];
+  var UNITS_FEMALE = [
+    "\u043E\u0434\u043D\u0430",
+    "\u0434\u0432\u0435",
+    "\u0442\u0440\u0438",
+    "\u0447\u0435\u0442\u044B\u0440\u0435",
+    "\u043F\u044F\u0442\u044C",
+    "\u0448\u0435\u0441\u0442\u044C",
+    "\u0441\u0435\u043C\u044C",
+    "\u0432\u043E\u0441\u0435\u043C\u044C",
+    "\u0434\u0435\u0432\u044F\u0442\u044C"
+  ];
+  var SCALE_FORMS = [
+    ["", "", ""],
+    ["\u0442\u044B\u0441\u044F\u0447\u0430", "\u0442\u044B\u0441\u044F\u0447\u0438", "\u0442\u044B\u0441\u044F\u0447"],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D", "\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u0430", "\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043E\u0432"],
+    ["\u043C\u0438\u043B\u043B\u0438\u0430\u0440\u0434", "\u043C\u0438\u043B\u043B\u0438\u0430\u0440\u0434\u0430", "\u043C\u0438\u043B\u043B\u0438\u0430\u0440\u0434\u043E\u0432"]
+  ];
+  var SPOKEN_DIGIT_WORDS = /* @__PURE__ */ new Map([
+    ["\u043D\u043E\u043B\u044C", "0"],
+    ["\u043E\u0434\u0438\u043D", "1"],
+    ["\u043E\u0434\u043D\u0430", "1"],
+    ["\u0434\u0432\u0430", "2"],
+    ["\u0434\u0432\u0435", "2"],
+    ["\u0442\u0440\u0438", "3"],
+    ["\u0447\u0435\u0442\u044B\u0440\u0435", "4"],
+    ["\u043F\u044F\u0442\u044C", "5"],
+    ["\u0448\u0435\u0441\u0442\u044C", "6"],
+    ["\u0441\u0435\u043C\u044C", "7"],
+    ["\u0432\u043E\u0441\u0435\u043C\u044C", "8"],
+    ["\u0434\u0435\u0432\u044F\u0442\u044C", "9"]
+  ]);
+  var DIGIT_WORDS = ["\u043D\u043E\u043B\u044C", "\u043E\u0434\u0438\u043D", "\u0434\u0432\u0430", "\u0442\u0440\u0438", "\u0447\u0435\u0442\u044B\u0440\u0435", "\u043F\u044F\u0442\u044C", "\u0448\u0435\u0441\u0442\u044C", "\u0441\u0435\u043C\u044C", "\u0432\u043E\u0441\u0435\u043C\u044C", "\u0434\u0435\u0432\u044F\u0442\u044C"];
+  var MIXED_DECIMAL_WHOLE_WORDS = /* @__PURE__ */ new Set(["\u0446\u0435\u043B\u0430\u044F", "\u0446\u0435\u043B\u044B\u0445", "\u0446\u0435\u043B\u043E\u0435"]);
+  var CARDINAL_PARSE_NORMALIZATION = /* @__PURE__ */ new Map([
+    ["\u043E\u0434\u043D\u0430", "\u043E\u0434\u0438\u043D"],
+    ["\u043E\u0434\u043D\u043E\u0439", "\u043E\u0434\u0438\u043D"],
+    ["\u043E\u0434\u043D\u0443", "\u043E\u0434\u0438\u043D"],
+    ["\u043E\u0434\u043D\u0438\u043C", "\u043E\u0434\u0438\u043D"],
+    ["\u043E\u0434\u043D\u043E\u043C", "\u043E\u0434\u0438\u043D"],
+    ["\u043E\u0434\u043D\u043E\u0433\u043E", "\u043E\u0434\u0438\u043D"],
+    ["\u0434\u0432\u0435", "\u0434\u0432\u0430"],
+    ["\u0434\u0432\u0443\u0445", "\u0434\u0432\u0430"],
+    ["\u0434\u0432\u0443\u043C", "\u0434\u0432\u0430"],
+    ["\u0434\u0432\u0443\u043C\u044F", "\u0434\u0432\u0430"],
+    ["\u0442\u0440\u0435\u0445", "\u0442\u0440\u0438"],
+    ["\u0442\u0440\u0451\u043C", "\u0442\u0440\u0438"],
+    ["\u0442\u0440\u0435\u043C\u044F", "\u0442\u0440\u0438"],
+    ["\u0447\u0435\u0442\u044B\u0440\u0435\u0445", "\u0447\u0435\u0442\u044B\u0440\u0435"],
+    ["\u0447\u0435\u0442\u044B\u0440\u0451\u043C", "\u0447\u0435\u0442\u044B\u0440\u0435"],
+    ["\u0447\u0435\u0442\u044B\u0440\u044C\u043C\u044F", "\u0447\u0435\u0442\u044B\u0440\u0435"],
+    ["\u043F\u044F\u0442\u0438", "\u043F\u044F\u0442\u044C"],
+    ["\u0448\u0435\u0441\u0442\u0438", "\u0448\u0435\u0441\u0442\u044C"],
+    ["\u0441\u0435\u043C\u0438", "\u0441\u0435\u043C\u044C"],
+    ["\u0432\u043E\u0441\u044C\u043C\u0438", "\u0432\u043E\u0441\u0435\u043C\u044C"],
+    ["\u0434\u0435\u0432\u044F\u0442\u0438", "\u0434\u0435\u0432\u044F\u0442\u044C"],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438", "\u0434\u0435\u0441\u044F\u0442\u044C"],
+    ["\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0438", "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044C"],
+    ["\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u0438", "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044C"]
+  ]);
+  var FRACTION_DENOMINATORS = /* @__PURE__ */ new Map([
+    [2, { singular: "\u0432\u0442\u043E\u0440\u0430\u044F", plural: "\u0432\u0442\u043E\u0440\u044B\u0445", forms: ["\u0432\u0442\u043E\u0440\u0430\u044F", "\u0432\u0442\u043E\u0440\u0443\u044E", "\u0432\u0442\u043E\u0440\u043E\u0439", "\u0432\u0442\u043E\u0440\u044B\u0445", "\u0432\u0442\u043E\u0440\u044B\u0435"] }],
+    [3, { singular: "\u0442\u0440\u0435\u0442\u044C\u044F", plural: "\u0442\u0440\u0435\u0442\u044C\u0438\u0445", forms: ["\u0442\u0440\u0435\u0442\u044C\u044F", "\u0442\u0440\u0435\u0442\u044C\u044E", "\u0442\u0440\u0435\u0442\u044C\u0435\u0439", "\u0442\u0440\u0435\u0442\u044C\u0438\u0445", "\u0442\u0440\u0435\u0442\u044C\u0438"] }],
+    [4, { singular: "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0430\u044F", plural: "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u0445", pluralFew: "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0438", forms: ["\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0430\u044F", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0443\u044E", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u043E\u0439", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u0445", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u044B\u0435", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0438", "\u0447\u0435\u0442\u0432\u0435\u0440\u0442\u0435\u0439"] }],
+    [5, { singular: "\u043F\u044F\u0442\u0430\u044F", plural: "\u043F\u044F\u0442\u044B\u0445", forms: ["\u043F\u044F\u0442\u0430\u044F", "\u043F\u044F\u0442\u0443\u044E", "\u043F\u044F\u0442\u043E\u0439", "\u043F\u044F\u0442\u044B\u0445", "\u043F\u044F\u0442\u044B\u0435"] }],
+    [6, { singular: "\u0448\u0435\u0441\u0442\u0430\u044F", plural: "\u0448\u0435\u0441\u0442\u044B\u0445", forms: ["\u0448\u0435\u0441\u0442\u0430\u044F", "\u0448\u0435\u0441\u0442\u0443\u044E", "\u0448\u0435\u0441\u0442\u043E\u0439", "\u0448\u0435\u0441\u0442\u044B\u0445", "\u0448\u0435\u0441\u0442\u044B\u0435"] }],
+    [7, { singular: "\u0441\u0435\u0434\u044C\u043C\u0430\u044F", plural: "\u0441\u0435\u0434\u044C\u043C\u044B\u0445", forms: ["\u0441\u0435\u0434\u044C\u043C\u0430\u044F", "\u0441\u0435\u0434\u044C\u043C\u0443\u044E", "\u0441\u0435\u0434\u044C\u043C\u043E\u0439", "\u0441\u0435\u0434\u044C\u043C\u044B\u0445", "\u0441\u0435\u0434\u044C\u043C\u044B\u0435"] }],
+    [8, { singular: "\u0432\u043E\u0441\u044C\u043C\u0430\u044F", plural: "\u0432\u043E\u0441\u044C\u043C\u044B\u0445", forms: ["\u0432\u043E\u0441\u044C\u043C\u0430\u044F", "\u0432\u043E\u0441\u044C\u043C\u0443\u044E", "\u0432\u043E\u0441\u044C\u043C\u043E\u0439", "\u0432\u043E\u0441\u044C\u043C\u044B\u0445", "\u0432\u043E\u0441\u044C\u043C\u044B\u0435"] }],
+    [9, { singular: "\u0434\u0435\u0432\u044F\u0442\u0430\u044F", plural: "\u0434\u0435\u0432\u044F\u0442\u044B\u0445", forms: ["\u0434\u0435\u0432\u044F\u0442\u0430\u044F", "\u0434\u0435\u0432\u044F\u0442\u0443\u044E", "\u0434\u0435\u0432\u044F\u0442\u043E\u0439", "\u0434\u0435\u0432\u044F\u0442\u044B\u0445", "\u0434\u0435\u0432\u044F\u0442\u044B\u0435"] }],
+    [10, { singular: "\u0434\u0435\u0441\u044F\u0442\u0430\u044F", plural: "\u0434\u0435\u0441\u044F\u0442\u044B\u0445", forms: ["\u0434\u0435\u0441\u044F\u0442\u0430\u044F", "\u0434\u0435\u0441\u044F\u0442\u0443\u044E", "\u0434\u0435\u0441\u044F\u0442\u043E\u0439", "\u0434\u0435\u0441\u044F\u0442\u044B\u0445", "\u0434\u0435\u0441\u044F\u0442\u044B\u0435"] }],
+    [11, { singular: "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u043E\u0434\u0438\u043D\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [12, { singular: "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0434\u0432\u0435\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [13, { singular: "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0442\u0440\u0438\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [14, { singular: "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0447\u0435\u0442\u044B\u0440\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [15, { singular: "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u043F\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [16, { singular: "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0448\u0435\u0441\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [17, { singular: "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [18, { singular: "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0432\u043E\u0441\u0435\u043C\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [19, { singular: "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0434\u0435\u0432\u044F\u0442\u043D\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }],
+    [20, { singular: "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u0430\u044F", plural: "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044B\u0445", forms: ["\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u0430\u044F", "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u0443\u044E", "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u043E\u0439", "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044B\u0445", "\u0434\u0432\u0430\u0434\u0446\u0430\u0442\u044B\u0435"] }]
+  ]);
+  var MIXED_DECIMAL_DENOMINATORS = /* @__PURE__ */ new Map([
+    ["\u0434\u0435\u0441\u044F\u0442\u0430\u044F", 1],
+    ["\u0434\u0435\u0441\u044F\u0442\u0443\u044E", 1],
+    ["\u0434\u0435\u0441\u044F\u0442\u043E\u0439", 1],
+    ["\u0434\u0435\u0441\u044F\u0442\u044B\u0445", 1],
+    ["\u0434\u0435\u0441\u044F\u0442\u044B\u0435", 1],
+    ["\u0441\u043E\u0442\u0430\u044F", 2],
+    ["\u0441\u043E\u0442\u0443\u044E", 2],
+    ["\u0441\u043E\u0442\u043E\u0439", 2],
+    ["\u0441\u043E\u0442\u044B\u0445", 2],
+    ["\u0441\u043E\u0442\u044B\u0435", 2],
+    ["\u0442\u044B\u0441\u044F\u0447\u043D\u0430\u044F", 3],
+    ["\u0442\u044B\u0441\u044F\u0447\u043D\u0443\u044E", 3],
+    ["\u0442\u044B\u0441\u044F\u0447\u043D\u043E\u0439", 3],
+    ["\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0445", 3],
+    ["\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0435", 3],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438\u0442\u044B\u0441\u044F\u0447\u043D\u0430\u044F", 4],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438\u0442\u044B\u0441\u044F\u0447\u043D\u0443\u044E", 4],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438\u0442\u044B\u0441\u044F\u0447\u043D\u043E\u0439", 4],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0445", 4],
+    ["\u0434\u0435\u0441\u044F\u0442\u0438\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0435", 4],
+    ["\u0441\u0442\u043E\u0442\u044B\u0441\u044F\u0447\u043D\u0430\u044F", 5],
+    ["\u0441\u0442\u043E\u0442\u044B\u0441\u044F\u0447\u043D\u0443\u044E", 5],
+    ["\u0441\u0442\u043E\u0442\u044B\u0441\u044F\u0447\u043D\u043E\u0439", 5],
+    ["\u0441\u0442\u043E\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0445", 5],
+    ["\u0441\u0442\u043E\u0442\u044B\u0441\u044F\u0447\u043D\u044B\u0435", 5],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043D\u0430\u044F", 6],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043D\u0443\u044E", 6],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043D\u043E\u0439", 6],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043D\u044B\u0445", 6],
+    ["\u043C\u0438\u043B\u043B\u0438\u043E\u043D\u043D\u044B\u0435", 6]
+  ]);
+  var FRACTION_DENOMINATOR_BY_FORM = /* @__PURE__ */ new Map();
+  for (const [value, spec] of FRACTION_DENOMINATORS) {
+    for (const form of spec.forms) {
+      FRACTION_DENOMINATOR_BY_FORM.set(form, value);
+    }
+  }
+  function dispatchInputEvent(element) {
+    element.dispatchEvent(
+      typeof InputEvent === "function" ? new InputEvent("input", {
+        bubbles: true,
+        cancelable: false,
+        data: null,
+        inputType: "insertText"
+      }) : new Event("input", {
+        bubbles: true,
+        cancelable: false
+      })
+    );
+  }
+  function setTextControlValue(element, value) {
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (typeof setter === "function") {
+      setter.call(element, value);
+    } else {
+      element.value = value;
+    }
+  }
+  function isTextControl(element) {
+    if (element instanceof HTMLTextAreaElement) {
+      return true;
+    }
+    if (!(element instanceof HTMLInputElement)) {
+      return false;
+    }
+    return ["text", "search", "url", "tel", "password", "email", "number"].includes(element.type || "text");
+  }
+  function pickPluralForm(value, one, twoToFour, many) {
+    const absolute = Math.abs(value);
+    const mod10 = absolute % 10;
+    const mod100 = absolute % 100;
+    if (mod10 === 1 && mod100 !== 11) {
+      return one;
+    }
+    if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) {
+      return twoToFour;
+    }
+    return many;
+  }
+  function threeDigitToWords(value, isFeminine = false) {
+    const parts = [];
+    const hundreds = Math.floor(value / 100);
+    const remainder = value % 100;
+    const tens = Math.floor(remainder / 10);
+    const units = remainder % 10;
+    if (hundreds > 0) {
+      parts.push(HUNDREDS[hundreds - 1]);
+    }
+    if (remainder >= 10 && remainder <= 19) {
+      parts.push(TEENS[remainder - 10]);
+      return parts.join(" ");
+    }
+    if (tens >= 2) {
+      parts.push(TENS[tens - 2]);
+    }
+    if (units > 0) {
+      parts.push((isFeminine ? UNITS_FEMALE : UNITS_MALE)[units - 1]);
+    }
+    return parts.join(" ");
+  }
+  function integerTextToRussianWords(numberText, lastTriadFeminine = false) {
+    let signPrefix = "";
+    let digits = numberText;
+    if (digits.startsWith("-")) {
+      signPrefix = "\u043C\u0438\u043D\u0443\u0441 ";
+      digits = digits.slice(1);
+    }
+    digits = digits.replace(/^0+/, "");
+    if (!digits) {
+      return `${signPrefix}\u043D\u043E\u043B\u044C`;
+    }
+    if (digits.length > MAX_SUPPORTED_DIGITS) {
+      return "";
+    }
+    const triads = [];
+    while (digits.length > 0) {
+      triads.unshift(digits.slice(-3));
+      digits = digits.slice(0, -3);
+    }
+    const parts = [];
+    for (let index = 0; index < triads.length; index += 1) {
+      const triadValue = Number(triads[index]);
+      if (!triadValue) {
+        continue;
+      }
+      const scaleIndex = triads.length - index - 1;
+      const isFeminine = scaleIndex === 1 || scaleIndex === 0 && lastTriadFeminine;
+      const triadWords = threeDigitToWords(triadValue, isFeminine);
+      if (!triadWords) {
+        continue;
+      }
+      if (scaleIndex > 0) {
+        const [one, twoToFour, many] = SCALE_FORMS[scaleIndex];
+        parts.push(`${triadWords} ${pickPluralForm(triadValue, one, twoToFour, many)}`);
+      } else {
+        parts.push(triadWords);
+      }
+    }
+    if (!parts.length) {
+      return `${signPrefix}\u043D\u043E\u043B\u044C`;
+    }
+    return `${signPrefix}${parts.join(" ")}`;
+  }
+  function parseStrictIntegerWords(text) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalizedInput = trimmed.toLowerCase().split(/\s+/).map((token) => CARDINAL_PARSE_NORMALIZATION.get(token) ?? token).join(" ");
+    const normalized = import_parse_word_to_number.default.parseString(normalizedInput, STRICT_PARSE_ERROR_LIMIT).trim();
+    return INTEGER_PATTERN.test(normalized) ? normalized : null;
+  }
+  function chooseFractionDenominatorWord(denominator, numerator) {
+    const spec = FRACTION_DENOMINATORS.get(denominator);
+    if (!spec) {
+      return null;
+    }
+    const absolute = Math.abs(numerator);
+    const mod10 = absolute % 10;
+    const mod100 = absolute % 100;
+    if (mod10 === 1 && mod100 !== 11) {
+      return spec.singular;
+    }
+    if (spec.pluralFew && mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) {
+      return spec.pluralFew;
+    }
+    return spec.plural;
+  }
+  function parseSpokenSimpleFraction(text) {
+    const trimmed = text.trim().toLowerCase();
+    if (!trimmed) {
+      return null;
+    }
+    const tokens = trimmed.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) {
+      return null;
+    }
+    const denominatorValue = FRACTION_DENOMINATOR_BY_FORM.get(tokens[tokens.length - 1]) ?? null;
+    if (!denominatorValue) {
+      return null;
+    }
+    const numeratorText = parseStrictIntegerWords(tokens.slice(0, -1).join(" "));
+    if (!numeratorText) {
+      return null;
+    }
+    return { numeratorText, denominatorValue };
+  }
+  function parseSpokenMixedDecimal(text) {
+    const trimmed = text.trim().toLowerCase();
+    if (!trimmed) {
+      return null;
+    }
+    const tokens = trimmed.split(/\s+/).filter(Boolean);
+    if (tokens.length < 4) {
+      return null;
+    }
+    const wholeIndex = tokens.findIndex((token) => MIXED_DECIMAL_WHOLE_WORDS.has(token));
+    if (wholeIndex <= 0 || wholeIndex >= tokens.length - 2) {
+      return null;
+    }
+    const scale = MIXED_DECIMAL_DENOMINATORS.get(tokens[tokens.length - 1]) ?? null;
+    if (!scale) {
+      return null;
+    }
+    const integerText = parseStrictIntegerWords(tokens.slice(0, wholeIndex).join(" "));
+    const fractionNumeratorText = parseStrictIntegerWords(tokens.slice(wholeIndex + 1, -1).join(" "));
+    if (!integerText || !fractionNumeratorText) {
+      return null;
+    }
+    const unsignedFraction = fractionNumeratorText.startsWith("-") ? fractionNumeratorText.slice(1) : fractionNumeratorText;
+    if (fractionNumeratorText.startsWith("-") || unsignedFraction.length > scale) {
+      return null;
+    }
+    const fractionPart = unsignedFraction.padStart(scale, "0");
+    return `${integerText},${fractionPart}`;
+  }
+  function buildSkazFromSlashFraction(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!SLASH_FRACTION_PATTERN.test(trimmed)) {
+      return null;
+    }
+    const match = trimmed.match(/^(-?\d+)\s*\/\s*(\d+)$/);
+    if (!match) {
+      return null;
+    }
+    const numeratorText = match[1];
+    const denominatorValue = Number(match[2]);
+    if (!Number.isInteger(denominatorValue) || denominatorValue < 2 || denominatorValue > 20) {
+      return null;
+    }
+    const numeratorValue = Number(numeratorText);
+    if (!Number.isInteger(numeratorValue)) {
+      return null;
+    }
+    const numeratorWords = integerTextToRussianWords(numeratorText, true);
+    const denominatorWord = chooseFractionDenominatorWord(denominatorValue, numeratorValue);
+    if (!numeratorWords || !denominatorWord) {
+      return null;
+    }
+    return `${trimmed} {\u0421\u041A\u0410\u0417: ${numeratorWords} ${denominatorWord}}`;
+  }
+  function buildSlashFractionFromWords(selectedText) {
+    const trimmed = selectedText.trim();
+    const parsed = parseSpokenSimpleFraction(trimmed);
+    if (!parsed) {
+      return null;
+    }
+    return `${parsed.numeratorText}/${parsed.denominatorValue} {\u0421\u041A\u0410\u0417: ${trimmed}}`;
+  }
+  function buildDecimalFromWords(selectedText) {
+    const trimmed = selectedText.trim();
+    const decimalText = parseSpokenMixedDecimal(trimmed);
+    if (!decimalText) {
+      return null;
+    }
+    return `${formatGroupedDecimalText(decimalText)} {\u0421\u041A\u0410\u0417: ${trimmed}}`;
+  }
+  function formatGroupedIntegerText(numberText) {
+    if (!INTEGER_PATTERN.test(numberText)) {
+      return numberText;
+    }
+    const sign = numberText.startsWith("-") ? "-" : "";
+    const digits = sign ? numberText.slice(1) : numberText;
+    if (digits.length <= 3 || digits.length > 1 && digits.startsWith("0")) {
+      return numberText;
+    }
+    const groupedDigits = digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    return `${sign}${groupedDigits}`;
+  }
+  function formatGroupedDecimalText(numberText) {
+    if (!DECIMAL_COMMA_PATTERN.test(numberText)) {
+      return numberText;
+    }
+    const sign = numberText.startsWith("-") ? "-" : "";
+    const unsigned = sign ? numberText.slice(1) : numberText;
+    const [integerPart, fractionPart] = unsigned.split(",");
+    const groupedIntegerPart = formatGroupedIntegerText(`${sign}${integerPart}`);
+    const normalizedIntegerPart = sign && groupedIntegerPart.startsWith("-") ? groupedIntegerPart.slice(1) : groupedIntegerPart;
+    return `${sign}${normalizedIntegerPart},${fractionPart}`;
+  }
+  function decimalCommaTextToRussianWords(numberText) {
+    if (!DECIMAL_COMMA_PATTERN.test(numberText)) {
+      return "";
+    }
+    const signPrefix = numberText.startsWith("-") ? "\u043C\u0438\u043D\u0443\u0441 " : "";
+    const unsigned = signPrefix ? numberText.slice(1) : numberText;
+    const [integerPart, fractionPart] = unsigned.split(",");
+    const integerWords = numberTextToRussianWords(integerPart);
+    if (!integerWords) {
+      return "";
+    }
+    const fractionWords = fractionPart.split("").map((digit) => DIGIT_WORDS[Number(digit)] ?? "").filter(Boolean);
+    if (!fractionWords.length || fractionWords.length !== fractionPart.length) {
+      return "";
+    }
+    return `${signPrefix}${integerWords} \u0438 ${fractionWords.join(" ")}`;
+  }
+  function numberTextToRussianWords(numberText) {
+    return integerTextToRussianWords(numberText, false);
+  }
+  function buildExpandedSkazText(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (DECIMAL_COMMA_PATTERN.test(trimmed)) {
+      const words2 = decimalCommaTextToRussianWords(trimmed);
+      if (!words2) {
+        return null;
+      }
+      return `${formatGroupedDecimalText(trimmed)} {\u0421\u041A\u0410\u0417: ${words2}}`;
+    }
+    if (!INTEGER_PATTERN.test(trimmed)) {
+      return null;
+    }
+    const words = numberTextToRussianWords(trimmed);
+    if (!words) {
+      return null;
+    }
+    return `${formatGroupedIntegerText(trimmed)} {\u0421\u041A\u0410\u0417: ${words}}`;
+  }
+  function buildExpandedSkazForNumericPattern(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const percentMatch = trimmed.match(PERCENT_PATTERN);
+    if (percentMatch) {
+      const digits = percentMatch[1];
+      const words2 = numberTextToRussianWords(digits);
+      if (!words2) {
+        return null;
+      }
+      const percentWord = pickPluralForm(Number(digits), "\u043F\u0440\u043E\u0446\u0435\u043D\u0442", "\u043F\u0440\u043E\u0446\u0435\u043D\u0442\u0430", "\u043F\u0440\u043E\u0446\u0435\u043D\u0442\u043E\u0432");
+      return `${formatGroupedIntegerText(digits)} % {\u0421\u041A\u0410\u0417: ${words2} ${percentWord}}`;
+    }
+    if (!INTEGER_RANGE_PATTERN.test(trimmed)) {
+      return null;
+    }
+    const parts = trimmed.split(/\s*-\s*/);
+    const words = parts.map((part) => numberTextToRussianWords(part));
+    if (words.some((part) => !part)) {
+      return null;
+    }
+    return `${parts.map((part) => formatGroupedIntegerText(part)).join("-")} {\u0421\u041A\u0410\u0417: ${words.join(" ")}}`;
+  }
+  function buildNormalizedNumberText(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalized = import_parse_word_to_number.default.parseString(trimmed, STRICT_PARSE_ERROR_LIMIT).trim();
+    if (!normalized || normalized === trimmed) {
+      return null;
+    }
+    return normalized.replace(/-?\d+(?:\.\d+)?/g, (match) => {
+      if (match.includes(".")) {
+        return formatGroupedDecimalText(match.replace(".", ","));
+      }
+      return formatGroupedIntegerText(match);
+    });
+  }
+  function buildSkazFromNumberWords(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalized = buildNormalizedNumberText(trimmed);
+    if (!normalized) {
+      return null;
+    }
+    return `${normalized} {\u0421\u041A\u0410\u0417: ${trimmed}}`;
+  }
+  function buildSkazFromSpokenDigitSequence(selectedText) {
+    const trimmed = selectedText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const tokens = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) {
+      return null;
+    }
+    const digits = tokens.map((token) => SPOKEN_DIGIT_WORDS.get(token) ?? "");
+    if (digits.some((token) => !token)) {
+      return null;
+    }
+    return `${digits.join("-")} {\u0421\u041A\u0410\u0417: ${trimmed}}`;
+  }
+  function buildAutoConvertedNumberText(selectedText) {
+    return buildExpandedSkazText(selectedText) ?? buildSkazFromSlashFraction(selectedText) ?? buildExpandedSkazForNumericPattern(selectedText) ?? buildDecimalFromWords(selectedText) ?? buildSlashFractionFromWords(selectedText) ?? buildSkazFromSpokenDigitSequence(selectedText) ?? buildSkazFromNumberWords(selectedText);
+  }
+  function replaceSelectionInTextControl(control, replacement) {
+    const start = typeof control.selectionStart === "number" ? control.selectionStart : null;
+    const end = typeof control.selectionEnd === "number" ? control.selectionEnd : null;
+    if (start === null || end === null || start === end) {
+      return false;
+    }
+    const nextValue = `${control.value.slice(0, start)}${replacement}${control.value.slice(end)}`;
+    setTextControlValue(control, nextValue);
+    control.focus({ preventScroll: true });
+    const cursor = start + replacement.length;
+    try {
+      control.setSelectionRange(cursor, cursor);
+    } catch (_error) {
+    }
+    dispatchInputEvent(control);
+    return true;
+  }
+  function replaceDocumentSelection(replacement) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount < 1 || selection.isCollapsed) {
+      return false;
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(replacement);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+  function getSelectedTextFromTextControl(control) {
+    const start = typeof control.selectionStart === "number" ? control.selectionStart : null;
+    const end = typeof control.selectionEnd === "number" ? control.selectionEnd : null;
+    if (start === null || end === null || start === end) {
+      return "";
+    }
+    return control.value.slice(start, end);
+  }
+  function autoConvertSelectedNumberText(target) {
+    const targetNode = target ?? null;
+    let activeTarget = null;
+    if (isTextControl(targetNode)) {
+      activeTarget = targetNode;
+    } else if (isTextControl(document.activeElement)) {
+      activeTarget = document.activeElement;
+    }
+    if (activeTarget) {
+      const selectedText2 = getSelectedTextFromTextControl(activeTarget);
+      const replacement2 = buildAutoConvertedNumberText(selectedText2);
+      if (!replacement2) {
+        return false;
+      }
+      return replaceSelectionInTextControl(activeTarget, replacement2);
+    }
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+    const replacement = buildAutoConvertedNumberText(selectedText);
+    if (!replacement) {
+      return false;
+    }
+    return replaceDocumentSelection(replacement);
+  }
+
   // src/core/lifecycle.ts
   function registerLifecycle(helper) {
     if (!helper || helper.__mainInitialized) {
@@ -6066,6 +7374,19 @@
           event.stopPropagation();
           if (helper.analytics) {
             helper.analytics.record("hotkey:rewind", { seconds: Number(rewindShortcut.seconds), code: event.code });
+          }
+        }
+        return;
+      }
+      if (isFeatureEnabled("selectedNumberToSkaz") && event.code === "KeyA" && event.altKey && !event.shiftKey && !event.metaKey) {
+        const handled2 = autoConvertSelectedNumberText(event.target);
+        if (handled2) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (helper.analytics) {
+            helper.analytics.record("hotkey:selected-number-auto-convert", {
+              ctrlKey: event.ctrlKey
+            });
           }
         }
         return;

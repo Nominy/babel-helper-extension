@@ -1,3 +1,4 @@
+var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
 "use strict";
 (() => {
   // src/core/settings.ts
@@ -6,6 +7,7 @@
     hotkeysHelp: true,
     rowActions: true,
     speakerWorkflowHotkeys: true,
+    selectedNumberToSkaz: true,
     textMove: true,
     quickRegionAutocomplete: true,
     disableNativeArrowSeek: true,
@@ -15,7 +17,7 @@
     magnifier: true,
     customLinter: true,
     proportionalCursorRestore: true,
-    wavesurferTooltipEllipsis: false
+    wavesurferTooltipEllipsis: true
   };
   var DEFAULT_EXTENSION_SETTINGS = {
     features: DEFAULT_FEATURE_SETTINGS
@@ -24,6 +26,7 @@
     "hotkeysHelp",
     "rowActions",
     "speakerWorkflowHotkeys",
+    "selectedNumberToSkaz",
     "textMove",
     "quickRegionAutocomplete",
     "disableNativeArrowSeek",
@@ -47,6 +50,10 @@
     speakerWorkflowHotkeys: {
       label: "Speaker Workflow Hotkeys",
       description: "Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts."
+    },
+    selectedNumberToSkaz: {
+      label: "Selected Number to SKAZ",
+      description: "Enable Alt + A to auto-convert selected digits or Russian number words into `digits {\u0421\u041A\u0410\u0417: words}`."
     },
     textMove: {
       label: "Text Move",

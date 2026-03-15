@@ -1,3 +1,4 @@
+var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
 "use strict";
 (() => {
   // src/content/magnifier-bridge.ts

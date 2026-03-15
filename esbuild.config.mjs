@@ -1,6 +1,18 @@
-﻿import { build, context } from 'esbuild';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build, context } from 'esbuild';
 
 const watch = process.argv.includes('--watch');
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
+
+const fsShimPlugin = {
+  name: 'fs-browser-shim',
+  setup(buildApi) {
+    buildApi.onResolve({ filter: /^fs$/ }, () => ({
+      path: path.join(rootDir, 'src/build/fs-browser-shim.js')
+    }));
+  }
+};
 
 const shared = {
   bundle: true,
@@ -8,7 +20,11 @@ const shared = {
   sourcemap: true,
   target: 'chrome114',
   format: 'iife',
-  logLevel: 'info'
+  logLevel: 'info',
+  banner: {
+    js: 'var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";'
+  },
+  plugins: [fsShimPlugin]
 };
 
 const tasks = [
