@@ -4498,17 +4498,12 @@ text;value;multiply level;errors limit;rank
         setSelectionLoopDebug("no-time-range");
         return false;
       }
-      const playback = getSelectionPlaybackTarget(preview);
-      if (!playback) {
-        setSelectionLoopDebug("no-playback");
-        return false;
-      }
       const existing = helper.state.selectionLoop;
       if (existing && existing.preview === preview && Math.abs(existing.startSeconds - timeRange.startSeconds) < 0.01 && Math.abs(existing.endSeconds - timeRange.endSeconds) < 0.01) {
         setSelectionLoopDebug("toggle-off", {
           startSeconds: timeRange.startSeconds,
           endSeconds: timeRange.endSeconds,
-          kind: playback.kind || "unknown"
+          kind: existing.kind || "unknown"
         });
         helper.stopSelectionLoop();
         return true;
@@ -4530,6 +4525,7 @@ text;value;multiply level;errors limit;rank
           helper.state.selectionLoop = {
             preview,
             host,
+            kind: "bridge",
             hostMarker,
             startSeconds: timeRange.startSeconds,
             endSeconds: timeRange.endSeconds,
@@ -4548,9 +4544,15 @@ text;value;multiply level;errors limit;rank
           setSelectionLoopDebug("bridge-failed");
         }
       }
+      const playback = getSelectionPlaybackTarget(preview);
+      if (!playback) {
+        setSelectionLoopDebug("no-playback");
+        return false;
+      }
       const loop = {
         preview,
         playback,
+        kind: playback.kind || "unknown",
         startSeconds: timeRange.startSeconds,
         endSeconds: timeRange.endSeconds,
         lastTime: playback.getCurrentTime() || 0,

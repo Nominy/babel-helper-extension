@@ -1307,8 +1307,12 @@ export function initMagnifierBridge() {
       const container = getCandidateContainer(wave);
       const wrapper = safe(() => (typeof wave.getWrapper === 'function' ? wave.getWrapper() : null), null);
       const wrapperRoot = wrapper && typeof wrapper.getRootNode === 'function' ? wrapper.getRootNode() : null;
-      const containerMatches = container === host;
-      const wrapperMatches = wrapperRoot instanceof ShadowRoot && wrapperRoot.host === host;
+      const wrapperHost = wrapperRoot instanceof ShadowRoot ? wrapperRoot.host : null;
+      const containerMatches = container instanceof HTMLElement && elementsOverlapContext(host, container);
+      const wrapperMatches =
+        wrapper instanceof HTMLElement
+          ? elementsOverlapContext(host, wrapper)
+          : wrapperHost instanceof HTMLElement && elementsOverlapContext(host, wrapperHost);
       const pathMatchesTrack =
         trackId && typeof record.path === 'string'
           ? record.path.indexOf('.' + trackId + '.wavesurfer') !== -1
@@ -1327,7 +1331,12 @@ export function initMagnifierBridge() {
       }
     }
 
-    return wrapperMatch || trackMatch || null;
+    if (wrapperMatch || trackMatch) {
+      return wrapperMatch || trackMatch;
+    }
+
+    const broader = findWaveCandidate(host);
+    return broader && broader.candidate ? broader.candidate : null;
   }
 
   function getVisibleWaveHosts() {

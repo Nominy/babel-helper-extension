@@ -1465,12 +1465,6 @@ export function registerTimelineSelectionService(helper: any) {
       return false;
     }
 
-    const playback = getSelectionPlaybackTarget(preview);
-    if (!playback) {
-      setSelectionLoopDebug('no-playback');
-      return false;
-    }
-
     const existing = helper.state.selectionLoop;
     if (
       existing &&
@@ -1481,7 +1475,7 @@ export function registerTimelineSelectionService(helper: any) {
       setSelectionLoopDebug('toggle-off', {
         startSeconds: timeRange.startSeconds,
         endSeconds: timeRange.endSeconds,
-        kind: playback.kind || 'unknown'
+        kind: existing.kind || 'unknown'
       });
       helper.stopSelectionLoop();
       return true;
@@ -1507,6 +1501,7 @@ export function registerTimelineSelectionService(helper: any) {
         helper.state.selectionLoop = {
           preview,
           host,
+          kind: 'bridge',
           hostMarker,
           startSeconds: timeRange.startSeconds,
           endSeconds: timeRange.endSeconds,
@@ -1527,9 +1522,16 @@ export function registerTimelineSelectionService(helper: any) {
       }
     }
 
+    const playback = getSelectionPlaybackTarget(preview);
+    if (!playback) {
+      setSelectionLoopDebug('no-playback');
+      return false;
+    }
+
     const loop = {
       preview,
       playback,
+      kind: playback.kind || 'unknown',
       startSeconds: timeRange.startSeconds,
       endSeconds: timeRange.endSeconds,
       lastTime: playback.getCurrentTime() || 0,
