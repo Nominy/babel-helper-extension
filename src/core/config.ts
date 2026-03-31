@@ -34,7 +34,6 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
     }
     rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
     rows.push(['Alt + Shift + Down', 'Merge with next segment']);
-    rows.push(['Del', 'Delete current segment']);
     rows.push(['D', 'Delete current segment when not typing']);
   }
 

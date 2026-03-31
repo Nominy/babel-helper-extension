@@ -45,7 +45,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     },
     rowActions: {
       label: "Row Actions",
-      description: "Enable Delete, D, and Alt + Shift + Arrow merge shortcuts."
+      description: "Enable D and Alt + Shift + Arrow merge shortcuts."
     },
     speakerWorkflowHotkeys: {
       label: "Speaker Workflow Hotkeys",

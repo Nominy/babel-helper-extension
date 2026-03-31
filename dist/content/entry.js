@@ -804,7 +804,6 @@ text;value;multiply level;errors limit;rank
       }
       rows.push(["Alt + Shift + Up", "Merge with previous segment"]);
       rows.push(["Alt + Shift + Down", "Merge with next segment"]);
-      rows.push(["Del", "Delete current segment"]);
       rows.push(["D", "Delete current segment when not typing"]);
     }
     if (featureSettings.customLinter) {
@@ -7351,13 +7350,6 @@ text;value;multiply level;errors limit;rank
           event.preventDefault();
           event.stopPropagation();
         }
-        return;
-      }
-      if (isFeatureEnabled("rowActions") && event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && helper.getCurrentRow({ allowFallback: false })) {
-        if (helper.analytics) {
-          helper.analytics.record("hotkey:delete", { key: "Delete" });
-        }
-        tryDeleteCurrentRow(event);
         return;
       }
       if (isFeatureEnabled("rowActions") && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === "KeyD" && !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)) {

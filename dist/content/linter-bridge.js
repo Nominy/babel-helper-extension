@@ -12,6 +12,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
     const QUOTE_PLACEMENT_RULE_REASON = "Double quotes must not have stray spaces inside or be glued to surrounding words.";
     const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
+    const TERMINAL_PUNCTUATION_RULE_REASON = "Segments must end with one of: ?, ..., !, --, or .";
+    const SEGMENT_START_CAPITALIZATION_RULE_REASON = "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
     const RULE_SEVERITY = "error";
     const AUTO_LINT_MAX_ATTEMPTS = 20;
     const AUTO_LINT_RETRY_DELAY_MS = 250;
@@ -105,36 +107,77 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!root || typeof root !== "object") {
         return [];
       }
-      const queue = [root];
+      function normalizeSpeakerKey(value) {
+        return typeof value === "string" ? value.trim() : "";
+      }
+      function readSpeakerKey(source) {
+        if (!source || typeof source !== "object") {
+          return "";
+        }
+        const direct = readStringProp(source, [
+          "processedRecordingId",
+          "trackLabel",
+          "speakerKey",
+          "speakerId",
+          "speakerName",
+          "speaker"
+        ]);
+        if (direct) {
+          return normalizeSpeakerKey(direct);
+        }
+        const annotation = source.annotation && typeof source.annotation === "object" ? source.annotation : null;
+        const nested = readStringProp(annotation, [
+          "processedRecordingId",
+          "trackLabel",
+          "speakerKey",
+          "speakerId",
+          "speakerName",
+          "speaker"
+        ]);
+        return normalizeSpeakerKey(nested);
+      }
       const seen = /* @__PURE__ */ new Set();
-      const byAnnotationId = /* @__PURE__ */ new Map();
-      while (queue.length) {
-        const current = queue.shift();
+      const orderedEntries = [];
+      const entryById = /* @__PURE__ */ new Map();
+      function visit(current) {
         if (!current || typeof current !== "object" || seen.has(current)) {
-          continue;
+          return;
         }
         seen.add(current);
         if (Array.isArray(current)) {
           for (const item of current) {
-            queue.push(item);
+            visit(item);
           }
-          continue;
+          return;
         }
         const annotationId = readStringProp(current, ["annotationId", "id"]);
         const text = readStringProp(current, ["text", "content", "value", "segmentText"]);
         if (annotationId && typeof text === "string") {
-          byAnnotationId.set(annotationId, text);
+          const speakerKey = readSpeakerKey(current);
+          const existing = entryById.get(annotationId);
+          if (existing) {
+            existing.text = text;
+            if (!existing.speakerKey && speakerKey) {
+              existing.speakerKey = speakerKey;
+            }
+          } else {
+            const entry = {
+              annotationId,
+              text,
+              speakerKey
+            };
+            entryById.set(annotationId, entry);
+            orderedEntries.push(entry);
+          }
         }
         for (const value of Object.values(current)) {
           if (value && typeof value === "object") {
-            queue.push(value);
+            visit(value);
           }
         }
       }
-      return Array.from(byAnnotationId.entries()).map(([annotationId, text]) => ({
-        annotationId,
-        text
-      }));
+      visit(root);
+      return orderedEntries;
     }
     function hasCommaSpacingViolation(text) {
       if (typeof text !== "string" || text.indexOf(",") === -1) {
@@ -220,9 +263,148 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return stack.length > 0;
     }
+    function hasTerminalPunctuationViolation(text) {
+      if (typeof text !== "string") {
+        return false;
+      }
+      const trimmed = stripTrailingTagTokens(text);
+      if (!trimmed) {
+        return false;
+      }
+      return !/(?:\.\.\.|--|[?!.])$/.test(trimmed);
+    }
+    function isUppercaseLetter(char) {
+      return typeof char === "string" && /[\p{L}]/u.test(char) && char === char.toLocaleUpperCase() && char !== char.toLocaleLowerCase();
+    }
+    function isLowercaseLetter(char) {
+      return typeof char === "string" && /[\p{L}]/u.test(char) && char === char.toLocaleLowerCase() && char !== char.toLocaleUpperCase();
+    }
+    function findFirstLetterIndex(text, startIndex = 0) {
+      if (typeof text !== "string") {
+        return -1;
+      }
+      for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
+        if (/[\p{L}]/u.test(text[index])) {
+          return index;
+        }
+      }
+      return -1;
+    }
+    function skipLeadingCapitalizationTokens(text, startIndex = 0) {
+      if (typeof text !== "string") {
+        return startIndex;
+      }
+      let index = Math.max(0, startIndex);
+      while (index < text.length) {
+        const char = text[index];
+        if (/\s/.test(char)) {
+          index += 1;
+          continue;
+        }
+        if (char === "[" || char === "{") {
+          const closeChar = char === "[" ? "]" : "}";
+          const closeIndex = text.indexOf(closeChar, index + 1);
+          if (closeIndex === -1) {
+            break;
+          }
+          index = closeIndex + 1;
+          continue;
+        }
+        if (char === "<") {
+          const closeIndex = text.indexOf(">", index + 1);
+          if (closeIndex === -1) {
+            break;
+          }
+          index = closeIndex + 1;
+          continue;
+        }
+        break;
+      }
+      return index;
+    }
+    function stripTrailingTagTokens(text) {
+      if (typeof text !== "string") {
+        return "";
+      }
+      let result = text.trimEnd();
+      while (result) {
+        const lastChar = result[result.length - 1];
+        if (lastChar === "]") {
+          const openIndex = result.lastIndexOf("[");
+          if (openIndex === -1) {
+            break;
+          }
+          result = result.slice(0, openIndex).trimEnd();
+          continue;
+        }
+        if (lastChar === "}") {
+          const openIndex = result.lastIndexOf("{");
+          if (openIndex === -1) {
+            break;
+          }
+          result = result.slice(0, openIndex).trimEnd();
+          continue;
+        }
+        if (lastChar === ">") {
+          const openIndex = result.lastIndexOf("<");
+          if (openIndex === -1) {
+            break;
+          }
+          result = result.slice(0, openIndex).trimEnd();
+          continue;
+        }
+        break;
+      }
+      return result;
+    }
+    function endsWithLowercaseContinuationMarker(text) {
+      return typeof text === "string" && /(?:\.\.\.|--)\s*$/.test(text);
+    }
+    function previousSameSpeakerAllowsLowercase(annotationEntries, index) {
+      const current = annotationEntries[index];
+      if (!current || !current.speakerKey) {
+        return false;
+      }
+      for (let pointer = index - 1; pointer >= 0; pointer -= 1) {
+        const candidate = annotationEntries[pointer];
+        if (!candidate || candidate.speakerKey !== current.speakerKey) {
+          continue;
+        }
+        return endsWithLowercaseContinuationMarker(candidate.text);
+      }
+      return false;
+    }
+    function hasSegmentStartCapitalizationViolation(entry, annotationEntries, index) {
+      if (!entry || typeof entry.text !== "string") {
+        return false;
+      }
+      const trimmed = entry.text.trim();
+      if (!trimmed) {
+        return false;
+      }
+      if (trimmed.startsWith("...")) {
+        const ellipsisLetterIndex = findFirstLetterIndex(
+          trimmed,
+          skipLeadingCapitalizationTokens(trimmed, 3)
+        );
+        if (ellipsisLetterIndex === -1) {
+          return false;
+        }
+        return isUppercaseLetter(trimmed[ellipsisLetterIndex]);
+      }
+      const firstLetterIndex = findFirstLetterIndex(trimmed, skipLeadingCapitalizationTokens(trimmed));
+      if (firstLetterIndex === -1) {
+        return false;
+      }
+      if (!isLowercaseLetter(trimmed[firstLetterIndex])) {
+        return false;
+      }
+      return !previousSameSpeakerAllowsLowercase(annotationEntries, index);
+    }
     function buildCustomIssues(annotationEntries) {
       const issues = [];
-      for (const entry of annotationEntries) {
+      for (let index = 0; index < annotationEntries.length; index += 1) {
+        const entry = annotationEntries[index];
         if (!entry || typeof entry.annotationId !== "string") {
           continue;
         }
@@ -250,6 +432,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           issues.push({
             annotationId: entry.annotationId,
             reason: CURLY_SPACING_RULE_REASON,
+            severity: RULE_SEVERITY
+          });
+        }
+        if (hasTerminalPunctuationViolation(entry.text)) {
+          issues.push({
+            annotationId: entry.annotationId,
+            reason: TERMINAL_PUNCTUATION_RULE_REASON,
+            severity: RULE_SEVERITY
+          });
+        }
+        if (hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)) {
+          issues.push({
+            annotationId: entry.annotationId,
+            reason: SEGMENT_START_CAPITALIZATION_RULE_REASON,
             severity: RULE_SEVERITY
           });
         }
@@ -773,6 +969,51 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       result = result.replace(/\}([\p{L}\p{N}])/gu, "} $1");
       return result;
     }
+    function fixTerminalPunctuation(text) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      const trimmed = stripTrailingTagTokens(text);
+      if (!trimmed || /(?:\.\.\.|--|[?!.])$/.test(trimmed)) {
+        return text;
+      }
+      const insertionIndex = trimmed.length;
+      return text.slice(0, insertionIndex) + "." + text.slice(insertionIndex);
+    }
+    function replaceCharAt(text, index, nextChar) {
+      if (typeof text !== "string" || index < 0 || index >= text.length || typeof nextChar !== "string") {
+        return text;
+      }
+      return text.slice(0, index) + nextChar + text.slice(index + 1);
+    }
+    function fixSegmentStartCapitalization(text, previousSameSpeakerText) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return text;
+      }
+      if (trimmed.startsWith("...")) {
+        const sourceIndex = text.indexOf("...");
+        const letterIndex2 = findFirstLetterIndex(
+          text,
+          skipLeadingCapitalizationTokens(text, sourceIndex === -1 ? 0 : sourceIndex + 3)
+        );
+        if (letterIndex2 === -1 || !isUppercaseLetter(text[letterIndex2])) {
+          return text;
+        }
+        return replaceCharAt(text, letterIndex2, text[letterIndex2].toLocaleLowerCase());
+      }
+      const letterIndex = findFirstLetterIndex(text, skipLeadingCapitalizationTokens(text));
+      if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
+        return text;
+      }
+      if (endsWithLowercaseContinuationMarker(previousSameSpeakerText)) {
+        return text;
+      }
+      return replaceCharAt(text, letterIndex, text[letterIndex].toLocaleUpperCase());
+    }
     function applyAllFixes(text) {
       if (typeof text !== "string") {
         return text;
@@ -783,7 +1024,39 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       result = fixCommaSpacing(result);
       result = fixQuotePlacement(result);
       result = fixCurlySpacing(result);
+      result = fixTerminalPunctuation(result);
       return result;
+    }
+    function getRowSpeakerKey(row) {
+      if (!(row instanceof HTMLTableRowElement)) {
+        return "";
+      }
+      const speakerCell = row.children[1];
+      return speakerCell instanceof HTMLElement ? speakerCell.innerText.trim() : "";
+    }
+    function getRowTextValue(row) {
+      if (!(row instanceof HTMLTableRowElement)) {
+        return "";
+      }
+      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+      return textarea instanceof HTMLTextAreaElement ? textarea.value || "" : "";
+    }
+    function getPreviousSameSpeakerText(row) {
+      if (!(row instanceof HTMLTableRowElement)) {
+        return "";
+      }
+      const speakerKey = getRowSpeakerKey(row);
+      if (!speakerKey) {
+        return "";
+      }
+      let current = row.previousElementSibling;
+      while (current) {
+        if (current instanceof HTMLTableRowElement && getRowSpeakerKey(current) === speakerKey) {
+          return getRowTextValue(current);
+        }
+        current = current.previousElementSibling;
+      }
+      return "";
     }
     function setTextareaValue(textarea, value) {
       const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
@@ -799,12 +1072,14 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       textarea.dispatchEvent(new Event("change", { bubbles: true }));
     }
-    function autoFixTextarea(textarea) {
+    function autoFixTextarea(textarea, options = {}) {
       if (!(textarea instanceof HTMLTextAreaElement)) {
         return { fixed: false, reason: "not-textarea" };
       }
       const original = textarea.value || "";
-      const fixed = applyAllFixes(original);
+      const previousSameSpeakerText = options && typeof options.previousSameSpeakerText === "string" ? options.previousSameSpeakerText : "";
+      let fixed = applyAllFixes(original);
+      fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
       if (fixed === original) {
         return { fixed: false, reason: "no-changes" };
       }
@@ -824,7 +1099,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return { fixed: false, reason: "not-element" };
       }
       const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-      return autoFixTextarea(textarea);
+      return autoFixTextarea(textarea, { previousSameSpeakerText: getPreviousSameSpeakerText(row) });
     }
     function autoFixAll() {
       const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
@@ -832,7 +1107,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       let totalCount = 0;
       for (const textarea of textareas) {
         totalCount += 1;
-        const result = autoFixTextarea(textarea);
+        const row = textarea instanceof HTMLTextAreaElement ? textarea.closest("tr") : null;
+        const result = autoFixTextarea(textarea, {
+          previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : ""
+        });
         if (result.fixed) {
           fixedCount += 1;
         }
@@ -842,14 +1120,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     function autoFixCurrent() {
       const active = document.activeElement;
       if (active instanceof HTMLTextAreaElement && active.matches(ROW_TEXTAREA_SELECTOR)) {
-        return autoFixTextarea(active);
+        const row2 = active.closest("tr");
+        return autoFixTextarea(active, {
+          previousSameSpeakerText: row2 ? getPreviousSameSpeakerText(row2) : ""
+        });
       }
       const activeRow = document.querySelector("tbody tr.bg-neutral-100.ring-1.ring-neutral-300");
       if (activeRow) {
         return autoFixRow(activeRow);
       }
       const first = document.querySelector(ROW_TEXTAREA_SELECTOR);
-      return autoFixTextarea(first);
+      const row = first instanceof HTMLTextAreaElement ? first.closest("tr") : null;
+      return autoFixTextarea(first, {
+        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : ""
+      });
     }
     window.addEventListener(
       AUTOFIX_REQUEST_EVENT,
@@ -887,7 +1171,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       autoFixAll,
       applyAllFixes,
       fixLeadingTrailingSpaces,
-      fixDoubleSpaces
+      fixDoubleSpaces,
+      fixTerminalPunctuation,
+      fixSegmentStartCapitalization
     };
   }
   initLinterBridge();

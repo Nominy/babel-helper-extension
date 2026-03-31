@@ -300,22 +300,6 @@ export function registerLifecycle(helper: any) {
 
     if (
       isFeatureEnabled('rowActions') &&
-      event.key === 'Delete' &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      helper.getCurrentRow({ allowFallback: false })
-    ) {
-      if (helper.analytics) {
-        helper.analytics.record('hotkey:delete', { key: 'Delete' });
-      }
-      tryDeleteCurrentRow(event);
-      return;
-    }
-
-    if (
-      isFeatureEnabled('rowActions') &&
       !event.ctrlKey &&
       !event.metaKey &&
       !event.altKey &&
