@@ -638,20 +638,39 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     function getDuration(wave) {
       return safe(() => wave.getDuration(), 0) || safe(() => wave.options.duration, 0) || 0;
     }
+    function getWaveRenderWidth(wave, wrapper, pixelsPerSecondOverride) {
+      const duration = getDuration(wave);
+      const fallbackPixelsPerSecond = Number(pixelsPerSecondOverride);
+      const candidateWidths = [];
+      if (wrapper instanceof HTMLElement) {
+        candidateWidths.push(Number(wrapper.scrollWidth) || 0);
+        candidateWidths.push(parsePixels(wrapper.style.width || "") || 0);
+        candidateWidths.push(safe(() => wrapper.getBoundingClientRect().width, 0) || 0);
+      }
+      if (duration > 0 && Number.isFinite(fallbackPixelsPerSecond) && fallbackPixelsPerSecond > 0) {
+        candidateWidths.push(fallbackPixelsPerSecond * duration);
+      }
+      for (const width of candidateWidths) {
+        if (Number.isFinite(width) && width > 0) {
+          return width;
+        }
+      }
+      return 0;
+    }
     function getSourcePixelsPerSecond(wave) {
       const duration = getDuration(wave);
       if (!(duration > 0)) {
         return 0;
       }
       const rendererWrapper = safe(() => wave && wave.renderer ? wave.renderer.wrapper : null, null);
-      const rendererWidth = rendererWrapper instanceof HTMLElement ? Number(rendererWrapper.scrollWidth) || parsePixels(rendererWrapper.style.width || "") || safe(() => rendererWrapper.getBoundingClientRect().width, 0) : 0;
+      const rendererWidth = getWaveRenderWidth(wave, rendererWrapper, null);
       if (rendererWidth > 0) {
         return rendererWidth / duration;
       }
       const container = wave.container instanceof HTMLElement ? wave.container : null;
       const scope = container && container.shadowRoot ? container.shadowRoot : null;
       const wrapper = scope && scope.querySelector ? scope.querySelector('[part="wrapper"]') : null;
-      const width = wrapper instanceof HTMLElement ? parsePixels(wrapper.style.width || "") || safe(() => wrapper.getBoundingClientRect().width, 0) : 0;
+      const width = getWaveRenderWidth(wave, wrapper, null);
       if (width > 0) {
         return width / duration;
       }
@@ -980,7 +999,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       record.mount.style.top = verticalOffset + "px";
       record.mount.style.width = width + "px";
       record.mount.style.height = renderHeight + "px";
-      const wrapperWidth = parsePixels(wrapper.style.width || "") || safe(() => wrapper.getBoundingClientRect().width, 0) || targetPixelsPerSecond * duration;
+      const wrapperWidth = getWaveRenderWidth(record.wave, wrapper, targetPixelsPerSecond);
+      if (wrapperWidth > 0) {
+        wrapper.style.width = wrapperWidth + "px";
+      }
       const maxScroll = Math.max(0, wrapperWidth - width);
       const scrollLeft = clamp(time * targetPixelsPerSecond - width / 2, 0, maxScroll);
       scroll.scrollLeft = scrollLeft;
