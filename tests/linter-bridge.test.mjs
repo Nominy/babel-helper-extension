@@ -112,6 +112,14 @@ function hasCurlySpacingViolation(text) {
   return stack.length > 0;
 }
 
+function hasDoubleDashPunctuationViolation(text) {
+  if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    return false;
+  }
+
+  return /--[.,?!:;]/.test(text);
+}
+
 function hasTerminalPunctuationViolation(text) {
   if (typeof text !== 'string') {
     return false;
@@ -373,6 +381,15 @@ function fixCurlySpacing(text) {
   return result;
 }
 
+function fixDoubleDashPunctuation(text) {
+  if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    return text;
+  }
+
+  // Remove punctuation immediately after double dash
+  return text.replace(/--[.,?!:;]+/g, '--');
+}
+
 function fixTerminalPunctuation(text) {
   if (typeof text !== 'string') {
     return text;
@@ -441,6 +458,7 @@ function applyAllFixes(text) {
   result = fixCommaSpacing(result);
   result = fixQuotePlacement(result);
   result = fixCurlySpacing(result);
+  result = fixDoubleDashPunctuation(result);
   result = fixTerminalPunctuation(result);
   return result;
 }
@@ -582,4 +600,27 @@ test('fixSegmentStartCapitalization respects same-speaker continuations and elli
   assert.equal(fixSegmentStartCapitalization('[laughs] lowercase start.', 'Previous sentence.'), '[laughs] Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('<i>lowercase start.</i>', 'Previous sentence.'), '<i>Lowercase start.</i>');
   assert.equal(fixSegmentStartCapitalization('...[laughs] Upper after ellipsis.', 'Previous sentence.'), '...[laughs] upper after ellipsis.');
+});
+
+
+test('flags double dash punctuation violation', () => {
+  assert.equal(hasDoubleDashPunctuationViolation('wait--.'), true);
+  assert.equal(hasDoubleDashPunctuationViolation('wait--,'), true);
+  assert.equal(hasDoubleDashPunctuationViolation('wait--?'), true);
+  assert.equal(hasDoubleDashPunctuationViolation('wait--!'), true);
+  assert.equal(hasDoubleDashPunctuationViolation('wait-- '), false);
+  assert.equal(hasDoubleDashPunctuationViolation('wait.--'), false);
+});
+
+test('fixes double dash punctuation', () => {
+  assert.equal(fixDoubleDashPunctuation('wait--.'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--,'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--?'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--!'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--...'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--?!'), 'wait--');
+});
+
+test('applyAllFixes includes double dash punctuation fix', () => {
+  assert.equal(applyAllFixes('wait--.'), 'wait--');
 });

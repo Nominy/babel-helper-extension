@@ -10,6 +10,8 @@ export function initLinterBridge() {
   const QUOTE_BALANCE_RULE_REASON = 'Double quotes must be balanced.';
   const QUOTE_PLACEMENT_RULE_REASON = 'Double quotes must not have stray spaces inside or be glued to surrounding words.';
   const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
+  const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
+    'Punctuation immediately after double dash is typically avoided.';
   const TERMINAL_PUNCTUATION_RULE_REASON =
     'Segments must end with one of: ?, ..., !, --, or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
@@ -319,6 +321,14 @@ export function initLinterBridge() {
     return stack.length > 0;
   }
 
+  function hasDoubleDashPunctuationViolation(text) {
+    if (typeof text !== 'string' || text.indexOf('--') === -1) {
+      return false;
+    }
+
+    return /--[.,?!:;]/.test(text);
+  }
+
   function hasTerminalPunctuationViolation(text) {
     if (typeof text !== 'string') {
       return false;
@@ -538,6 +548,14 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: CURLY_SPACING_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      }
+
+      if (hasDoubleDashPunctuationViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
           severity: RULE_SEVERITY
         });
       }
@@ -1215,6 +1233,15 @@ export function initLinterBridge() {
     return result;
   }
 
+  function fixDoubleDashPunctuation(text) {
+    if (typeof text !== 'string' || text.indexOf('--') === -1) {
+      return text;
+    }
+
+    // Remove punctuation immediately after double dash
+    return text.replace(/--[.,?!:;]+/g, '--');
+  }
+
   function fixTerminalPunctuation(text) {
     if (typeof text !== 'string') {
       return text;
@@ -1283,6 +1310,7 @@ export function initLinterBridge() {
     result = fixCommaSpacing(result);
     result = fixQuotePlacement(result);
     result = fixCurlySpacing(result);
+    result = fixDoubleDashPunctuation(result);
     result = fixTerminalPunctuation(result);
     return result;
   }
@@ -1477,6 +1505,7 @@ export function initLinterBridge() {
     applyAllFixes,
     fixLeadingTrailingSpaces,
     fixDoubleSpaces,
+    fixDoubleDashPunctuation,
     fixTerminalPunctuation,
     fixSegmentStartCapitalization
   };
