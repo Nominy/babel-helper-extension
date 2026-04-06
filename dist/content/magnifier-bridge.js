@@ -840,6 +840,133 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }, null);
       return rendered;
     }
+    const minimapPeakCache = /* @__PURE__ */ new WeakMap();
+    function resamplePeaksLinear(source, binCount) {
+      if (!source || !source.length || !(binCount > 0)) {
+        return [];
+      }
+      if (source.length === binCount) {
+        return Array.from(source);
+      }
+      const out = [];
+      const last = source.length - 1;
+      for (let i = 0; i < binCount; i += 1) {
+        const t = binCount === 1 ? 0 : i / (binCount - 1) * last;
+        const i0 = Math.floor(t);
+        const i1 = Math.min(last, i0 + 1);
+        const f = t - i0;
+        const v0 = Number(source[i0]) || 0;
+        const v1 = Number(source[i1]) || 0;
+        out.push(v0 * (1 - f) + v1 * f);
+      }
+      return out;
+    }
+    function normalizeExportPeaksChannels(exported) {
+      if (!exported) {
+        return [];
+      }
+      if (Array.isArray(exported) && exported.length) {
+        const first = exported[0];
+        if (ArrayBuffer.isView(first) || Array.isArray(first)) {
+          return exported;
+        }
+      }
+      if (ArrayBuffer.isView(exported) || Array.isArray(exported)) {
+        return [exported];
+      }
+      return [];
+    }
+    function peaksFromExportPeaks(wave, binCount) {
+      if (!wave || typeof wave.exportPeaks !== "function") {
+        return null;
+      }
+      const exported = safe(() => wave.exportPeaks(), null);
+      const channels = normalizeExportPeaksChannels(exported);
+      if (!channels.length) {
+        return null;
+      }
+      const lengths = channels.map((ch) => ch && ch.length ? ch.length : 0);
+      const maxLen = Math.max(0, ...lengths);
+      if (!(maxLen > 0)) {
+        return null;
+      }
+      const merged = new Array(maxLen);
+      for (let i = 0; i < maxLen; i += 1) {
+        let m = 0;
+        for (const ch of channels) {
+          if (!ch || !ch.length) {
+            continue;
+          }
+          const v = Math.abs(Number(ch[i]) || 0);
+          if (v > m) {
+            m = v;
+          }
+        }
+        merged[i] = m;
+      }
+      return resamplePeaksLinear(merged, binCount);
+    }
+    function getDecodedAudioForPeaks(wave) {
+      return safe(() => wave.getDecodedData(), null) || safe(() => wave.decodedData, null) || safe(() => wave.renderer && wave.renderer.audioData, null);
+    }
+    function downsampleAbsPeaksBounded(channelData, binCount) {
+      if (!channelData || !channelData.length || !(binCount > 0)) {
+        return [];
+      }
+      const len = channelData.length;
+      const samplesPerBin = len / binCount;
+      const MAX_INNER = 640;
+      const out = [];
+      for (let i = 0; i < binCount; i += 1) {
+        const start = Math.floor(i * samplesPerBin);
+        const end = Math.min(len, Math.floor((i + 1) * samplesPerBin));
+        const span = end - start;
+        const step = Math.max(1, Math.ceil(span / MAX_INNER));
+        let max = 0;
+        for (let s = start; s < end; s += step) {
+          const v = Math.abs(Number(channelData[s]) || 0);
+          if (v > max) {
+            max = v;
+          }
+        }
+        out.push(max);
+      }
+      return out;
+    }
+    function peaksFromDecodedAudio(wave, binCount) {
+      const audio = getDecodedAudioForPeaks(wave);
+      if (!audio || typeof audio.getChannelData !== "function") {
+        return null;
+      }
+      const channelData = safe(() => audio.getChannelData(0), null);
+      if (!channelData || !channelData.length) {
+        return null;
+      }
+      return downsampleAbsPeaksBounded(channelData, binCount);
+    }
+    function computeMinimapPeaksRaw(wave, binCount) {
+      const fromExport = peaksFromExportPeaks(wave, binCount);
+      if (fromExport && fromExport.length) {
+        return fromExport;
+      }
+      const fromDecoded = peaksFromDecodedAudio(wave, binCount);
+      return fromDecoded && fromDecoded.length ? fromDecoded : [];
+    }
+    function collectMinimapPeaks(wave, requestedBins) {
+      const bins = clamp(Math.floor(Number(requestedBins) || 512), 64, 2048);
+      const cacheBins = Math.max(bins, 1024);
+      let base = minimapPeakCache.get(wave);
+      if (!base || !base.length) {
+        base = computeMinimapPeaksRaw(wave, cacheBins);
+        if (base.length) {
+          minimapPeakCache.set(wave, base);
+        }
+      }
+      if (!base || !base.length) {
+        return [];
+      }
+      return bins === base.length ? Array.from(base) : resamplePeaksLinear(base, bins);
+    }
     function getSourceRegionEntries(sourceWave) {
       if (!sourceWave || !sourceWave.plugins || typeof sourceWave.plugins !== "object") {
         return [];
@@ -955,7 +1082,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         scroll
       };
     }
-    function getMinimapData(hostMarker) {
+    function getMinimapData(hostMarker, payload) {
       const resolved = resolveWaveForHost(hostMarker);
       const host = resolved.host;
       const wave = resolved.wave;
@@ -968,6 +1095,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       const duration = getDuration(wave);
       const sourcePixelsPerSecond = getSourcePixelsPerSecond(wave);
       const viewport = getViewportMetrics(host, wave);
+      const peakBins = clamp(Math.floor(Number(payload && payload.peakBins) || 512), 64, 2048);
       return {
         ok: true,
         duration,
@@ -976,7 +1104,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         totalWidth: viewport.totalWidth,
         visibleWidth: viewport.visibleWidth,
         scrollLeft: viewport.scrollLeft,
-        regions: getSourceRegionEntries(wave)
+        regions: getSourceRegionEntries(wave),
+        peaks: collectMinimapPeaks(wave, peakBins)
       };
     }
     function ensureLens(hostMarker, mountMarker, height, scale) {
@@ -1386,7 +1515,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return;
       }
       if (operation === "minimap-data") {
-        respond(id, getMinimapData(payload.hostMarker));
+        respond(id, getMinimapData(payload.hostMarker, payload));
         return;
       }
     });

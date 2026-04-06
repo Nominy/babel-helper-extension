@@ -15,6 +15,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     timelineSelection: true,
     timelineZoomDefaults: true,
     magnifier: true,
+    minimap: true,
     customLinter: true,
     proportionalCursorRestore: true,
     wavesurferTooltipEllipsis: true
@@ -34,6 +35,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     "timelineSelection",
     "timelineZoomDefaults",
     "magnifier",
+    "minimap",
     "customLinter",
     "proportionalCursorRestore",
     "wavesurferTooltipEllipsis"
@@ -82,6 +84,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     magnifier: {
       label: "Magnifier",
       description: "Show live waveform magnifier while dragging timeline segment edges."
+    },
+    minimap: {
+      label: "Minimap",
+      description: "Show a full-timeline minimap with the current viewing window highlighted."
     },
     customLinter: {
       label: "Custom Linter",

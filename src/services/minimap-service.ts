@@ -196,14 +196,26 @@ export function registerMinimapService(helper: any) {
     tint.style.background = 'rgba(148, 163, 184, 0.08)';
     lane.appendChild(tint);
 
+    const waveform = document.createElement('canvas');
+    waveform.style.position = 'absolute';
+    waveform.style.inset = '0';
+    waveform.style.width = '100%';
+    waveform.style.height = '100%';
+    waveform.style.pointerEvents = 'none';
+    waveform.style.zIndex = '1';
+    waveform.style.display = 'block';
+    lane.appendChild(waveform);
+
     const regions = document.createElement('div');
     regions.style.position = 'absolute';
     regions.style.inset = '0';
     regions.style.pointerEvents = 'none';
+    regions.style.zIndex = '2';
     lane.appendChild(regions);
 
     return {
       lane,
+      waveform,
       regions
     };
   }
@@ -218,6 +230,12 @@ export function registerMinimapService(helper: any) {
       if (index >= visibleCount) {
         lane.lane.style.display = 'none';
         lane.regions.replaceChildren();
+        if (lane.waveform instanceof HTMLCanvasElement) {
+          const ctx = lane.waveform.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, lane.waveform.width, lane.waveform.height);
+          }
+        }
         continue;
       }
 
@@ -264,6 +282,55 @@ export function registerMinimapService(helper: any) {
     regionRoot.appendChild(fragment);
   }
 
+  function drawMinimapWaveform(canvas, peaks) {
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+
+    if (canvas.width !== w) {
+      canvas.width = w;
+    }
+    if (canvas.height !== h) {
+      canvas.height = h;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return;
+    }
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (!Array.isArray(peaks) || !peaks.length) {
+      return;
+    }
+
+    let maxP = 0;
+    for (let i = 0; i < peaks.length; i += 1) {
+      const v = Math.abs(Number(peaks[i]) || 0);
+      if (v > maxP) {
+        maxP = v;
+      }
+    }
+
+    const scale = maxP > 0 ? 1 / maxP : 1;
+    const mid = h / 2;
+    const n = peaks.length;
+    const barW = w / n;
+    ctx.fillStyle = 'rgba(71, 85, 105, 0.55)';
+
+    for (let i = 0; i < n; i += 1) {
+      const amp = Math.min(1, Math.abs(Number(peaks[i]) || 0) * scale) * mid * 0.9;
+      const x = i * barW;
+      ctx.fillRect(x, mid - amp, Math.max(1, barW + 0.5), amp * 2);
+    }
+  }
+
   function setViewport(minimap, leftRatio, widthRatio) {
     if (!(widthRatio > 0)) {
       minimap.viewport.style.display = 'none';
@@ -285,6 +352,12 @@ export function registerMinimapService(helper: any) {
     minimap.playhead.style.display = 'none';
     for (const lane of minimap.lanes) {
       lane.regions.replaceChildren();
+      if (lane.waveform instanceof HTMLCanvasElement) {
+        const ctx = lane.waveform.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, lane.waveform.width, lane.waveform.height);
+        }
+      }
     }
   }
 
@@ -576,6 +649,13 @@ export function registerMinimapService(helper: any) {
 
       bindHostObservers(minimap, hosts);
 
+      const containerRect = minimap.container.getBoundingClientRect();
+      const peakBins = clamp(
+        Math.ceil((Number(containerRect.width) || 180) * Math.min(2, window.devicePixelRatio || 1)),
+        128,
+        1200
+      );
+
       const tracks = [];
       for (let index = 0; index < hosts.length; index += 1) {
         const host = hosts[index];
@@ -583,7 +663,8 @@ export function registerMinimapService(helper: any) {
         host.setAttribute(HOST_ATTR, hostMarker);
 
         const result = await callBridge('minimap-data', {
-          hostMarker
+          hostMarker,
+          peakBins
         });
         if (result && result.ok) {
           tracks.push(result);
@@ -602,6 +683,7 @@ export function registerMinimapService(helper: any) {
       for (let index = 0; index < minimap.lanes.length; index += 1) {
         const lane = minimap.lanes[index];
         const track = tracks[index];
+        drawMinimapWaveform(lane.waveform, track && track.peaks ? track.peaks : []);
         renderRegions(lane.regions, track ? track.regions : [], duration);
       }
 
