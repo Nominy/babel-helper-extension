@@ -9,6 +9,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     const REQUEST_EVENT = "babel-helper-magnifier-request";
     const RESPONSE_EVENT = "babel-helper-magnifier-response";
     const HOST_ATTR = "data-babel-helper-magnifier-host";
+    const MINIMAP_HOST_ATTR = "data-babel-helper-minimap-host";
     const MOUNT_ATTR = "data-babel-helper-magnifier-mount";
     const LOOP_HOST_ATTR = "data-babel-helper-selection-loop-host";
     const instances = /* @__PURE__ */ new Map();
@@ -120,7 +121,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       return safe(() => root.querySelector("[" + attr + '="' + marker + '"]'), null);
     }
     function findHostElement(hostMarker) {
-      const host = queryMarker(document, HOST_ATTR, hostMarker);
+      const host = queryMarker(document, HOST_ATTR, hostMarker) || queryMarker(document, MINIMAP_HOST_ATTR, hostMarker);
       return host instanceof HTMLElement ? host : null;
     }
     function findLoopHostElement(hostMarker) {
@@ -918,6 +919,66 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return null;
     }
+    function resolveWaveForHost(hostMarker) {
+      const host = findHostElement(hostMarker);
+      if (!(host instanceof HTMLElement)) {
+        return {
+          host: null,
+          wave: null
+        };
+      }
+      const exact = findExactWaveCandidate(host);
+      const selection = exact || safe(() => findWaveCandidate(host).candidate, null);
+      return {
+        host,
+        wave: selection && selection.value ? selection.value : null
+      };
+    }
+    function getViewportMetrics(host, wave) {
+      const renderRoot = getRenderRoot(host) || getRenderRoot(getCandidateContainer(wave));
+      if (!renderRoot) {
+        return {
+          totalWidth: 0,
+          visibleWidth: 0,
+          scrollLeft: 0
+        };
+      }
+      const wrapper = renderRoot.querySelector('[part="wrapper"]');
+      const scroll = renderRoot.querySelector('[part="scroll"]');
+      const totalWidth = getWaveRenderWidth(wave, wrapper, getSourcePixelsPerSecond(wave));
+      const visibleWidth = scroll instanceof HTMLElement ? Number(scroll.clientWidth) || 0 : wrapper instanceof HTMLElement ? Number(wrapper.clientWidth) || 0 : 0;
+      const scrollLeft = scroll instanceof HTMLElement ? Number(scroll.scrollLeft) || 0 : 0;
+      return {
+        totalWidth,
+        visibleWidth,
+        scrollLeft,
+        scroll
+      };
+    }
+    function getMinimapData(hostMarker) {
+      const resolved = resolveWaveForHost(hostMarker);
+      const host = resolved.host;
+      const wave = resolved.wave;
+      if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
+        return {
+          ok: false,
+          reason: "missing-wave"
+        };
+      }
+      const duration = getDuration(wave);
+      const sourcePixelsPerSecond = getSourcePixelsPerSecond(wave);
+      const viewport = getViewportMetrics(host, wave);
+      return {
+        ok: true,
+        duration,
+        currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
+        sourcePixelsPerSecond,
+        totalWidth: viewport.totalWidth,
+        visibleWidth: viewport.visibleWidth,
+        scrollLeft: viewport.scrollLeft,
+        regions: getSourceRegionEntries(wave)
+      };
+    }
     function ensureLens(hostMarker, mountMarker, height, scale) {
       const host = findHostElement(hostMarker);
       const mount = findMountElement(host, mountMarker);
@@ -960,7 +1021,12 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       };
       syncLensDecodedAudio(record);
       instances.set(id, record);
-      return { ok: true, id };
+      return {
+        ok: true,
+        id,
+        duration: getDuration(sourceWave),
+        sourcePixelsPerSecond: getSourcePixelsPerSecond(sourceWave)
+      };
     }
     function updateLens(id, time, width, height, scale) {
       const record = instances.get(id);
@@ -972,7 +1038,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         if (record.wave && typeof record.wave.setOptions === "function") {
           record.wave.setOptions({
             minPxPerSec: targetPixelsPerSecond,
-            height: Number(record.sourceMetrics && record.sourceMetrics.renderHeight) > 0 ? Number(record.sourceMetrics.renderHeight) : height
+            height
           });
         } else if (record.wave && typeof record.wave.zoom === "function") {
           record.wave.zoom(targetPixelsPerSecond);
@@ -992,8 +1058,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!(wrapper instanceof HTMLElement) || !(scroll instanceof HTMLElement)) {
         return { ok: false, reason: "missing-scroll" };
       }
-      const renderHeight = Number(record.sourceMetrics && record.sourceMetrics.renderHeight) > 0 ? Number(record.sourceMetrics.renderHeight) : height;
-      const verticalOffset = Math.round((height - renderHeight) / 2);
+      const renderHeight = height;
+      const verticalOffset = 0;
       record.mount.style.inset = "auto";
       record.mount.style.left = "0";
       record.mount.style.top = verticalOffset + "px";
@@ -1010,7 +1076,54 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         ok: true,
         windowStart: scrollLeft / targetPixelsPerSecond,
         windowEnd: (scrollLeft + width) / targetPixelsPerSecond,
+        duration,
+        sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
         regions: getSourceRegionEntries(record.sourceWave)
+      };
+    }
+    function seekSource(hostMarker, time) {
+      const resolved = resolveWaveForHost(hostMarker);
+      const host = resolved.host;
+      const wave = resolved.wave;
+      if (!(host instanceof HTMLElement) || !wave || typeof wave.setTime !== "function") {
+        return { ok: false };
+      }
+      wave.setTime(time);
+      return { ok: true };
+    }
+    function navigateSource(hostMarker, time) {
+      const resolved = resolveWaveForHost(hostMarker);
+      const host = resolved.host;
+      const wave = resolved.wave;
+      if (!(host instanceof HTMLElement) || !wave || typeof wave.setTime !== "function") {
+        return {
+          ok: false,
+          reason: "missing-wave"
+        };
+      }
+      const duration = getDuration(wave);
+      const targetTime = clamp(Number(time) || 0, 0, duration > 0 ? duration : Number(time) || 0);
+      wave.setTime(targetTime);
+      const viewport = getViewportMetrics(host, wave);
+      if (viewport.scroll instanceof HTMLElement && viewport.totalWidth > 0 && viewport.visibleWidth > 0) {
+        const pixelsPerSecond = getSourcePixelsPerSecond(wave);
+        if (pixelsPerSecond > 0) {
+          const maxScroll = Math.max(0, viewport.totalWidth - viewport.visibleWidth);
+          const desiredLeft = clamp(
+            targetTime * pixelsPerSecond - viewport.visibleWidth / 2,
+            0,
+            maxScroll
+          );
+          viewport.scroll.scrollLeft = desiredLeft;
+          viewport.scrollLeft = desiredLeft;
+        }
+      }
+      return {
+        ok: true,
+        time: targetTime,
+        totalWidth: viewport.totalWidth,
+        visibleWidth: viewport.visibleWidth,
+        scrollLeft: viewport.scrollLeft
       };
     }
     function destroyLens(id) {
@@ -1262,6 +1375,19 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       if (operation === "loop-stop") {
         respond(id, stopLoop(payload.hostMarker));
+        return;
+      }
+      if (operation === "seek-source") {
+        respond(id, seekSource(payload.hostMarker, payload.time));
+        return;
+      }
+      if (operation === "navigate-source") {
+        respond(id, navigateSource(payload.hostMarker, payload.time));
+        return;
+      }
+      if (operation === "minimap-data") {
+        respond(id, getMinimapData(payload.hostMarker));
+        return;
       }
     });
     window.__babelHelperMagnifierBridge = { instances, loops };

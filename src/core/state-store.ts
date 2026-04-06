@@ -39,7 +39,8 @@
     playbackRowSyncTimer: null,
     playbackRowSyncInFlight: false,
     lastPlaybackRow: null,
-    lastPlaybackRowIdentity: null
+    lastPlaybackRowIdentity: null,
+    onLoadedCalled: false
   };
 }
 

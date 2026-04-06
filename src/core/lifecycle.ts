@@ -54,6 +54,7 @@ export function registerLifecycle(helper: any) {
   function resetRouteRefreshWindow() {
     helper.state.routeRefreshAttempts = 0;
     helper.state.routeRefreshWindowStartedAt = Date.now();
+    helper.state.onLoadedCalled = false;
   }
 
   function startHotkeysEnhanceFrame() {
@@ -773,6 +774,14 @@ export function registerLifecycle(helper: any) {
 
     if (hasTranscriptSurface()) {
       bindSessionFeatures();
+
+      if (!helper.state.onLoadedCalled) {
+        helper.state.onLoadedCalled = true;
+        if (typeof helper.runtime.onLoaded === 'function') {
+          void helper.runtime.onLoaded();
+        }
+      }
+
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
       helper.state.routeRefreshWindowStartedAt = 0;

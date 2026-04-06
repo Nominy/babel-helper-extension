@@ -10,6 +10,7 @@ export type FeatureSettingKey =
   | 'timelineSelection'
   | 'timelineZoomDefaults'
   | 'magnifier'
+  | 'minimap'
   | 'customLinter'
   | 'proportionalCursorRestore'
   | 'wavesurferTooltipEllipsis';
@@ -26,6 +27,7 @@ export interface FeatureSettings {
   timelineSelection: boolean;
   timelineZoomDefaults: boolean;
   magnifier: boolean;
+  minimap: boolean;
   customLinter: boolean;
   proportionalCursorRestore: boolean;
   wavesurferTooltipEllipsis: boolean;
@@ -54,6 +56,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   timelineSelection: true,
   timelineZoomDefaults: true,
   magnifier: true,
+  minimap: true,
   customLinter: true,
   proportionalCursorRestore: true,
   wavesurferTooltipEllipsis: true
@@ -75,6 +78,7 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'timelineSelection',
   'timelineZoomDefaults',
   'magnifier',
+  'minimap',
   'customLinter',
   'proportionalCursorRestore',
   'wavesurferTooltipEllipsis'
@@ -124,6 +128,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   magnifier: {
     label: 'Magnifier',
     description: 'Show live waveform magnifier while dragging timeline segment edges.'
+  },
+  minimap: {
+    label: 'Minimap',
+    description: 'Show a full-timeline minimap with the current viewing window highlighted.'
   },
   customLinter: {
     label: 'Custom Linter',

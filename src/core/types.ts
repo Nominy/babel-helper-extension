@@ -20,6 +20,7 @@ export interface FeatureModule {
   dependsOn?: string[];
   register?: (ctx: FeatureContext) => void;
   start?: (ctx: FeatureContext) => void | Promise<void>;
+  onLoaded?: (ctx: FeatureContext) => void | Promise<void>;
   stop?: (ctx: FeatureContext) => void | Promise<void>;
 }
 
@@ -32,6 +33,7 @@ export interface ServiceRegistry {
   timelineSelection: any;
   smartSplit: any;
   magnifier: any;
+  minimap: any;
   bridge: any;
 }
 

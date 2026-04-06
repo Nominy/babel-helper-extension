@@ -6,6 +6,7 @@ import { createTextMoveFeature } from './text-move-feature';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createTimelineSelectionFeature } from './timeline-selection-feature';
 import { createMagnifierFeature } from './magnifier-feature';
+import { createMinimapFeature } from './minimap-feature';
 import { createCustomLinterFeature } from './custom-linter-feature';
 import { createQuickRegionAutocompleteFeature } from './quick-region-autocomplete-feature';
 import { createWavesurferTooltipEllipsisFeature } from './wavesurfer-tooltip-ellipsis-feature';
@@ -18,6 +19,7 @@ const FEATURE_ID_TO_SETTING_KEY: Record<string, keyof FeatureSettings> = {
   'focus-toggle': 'focusToggle',
   'timeline-selection': 'timelineSelection',
   magnifier: 'magnifier',
+  minimap: 'minimap',
   'custom-linter': 'customLinter',
   'wavesurfer-tooltip-ellipsis': 'wavesurferTooltipEllipsis'
 };
@@ -30,6 +32,7 @@ export function createFeatureModules(featureSettings: FeatureSettings): FeatureM
     createFocusToggleFeature(),
     createTimelineSelectionFeature(),
     createMagnifierFeature(),
+    createMinimapFeature(),
     createCustomLinterFeature(),
     createQuickRegionAutocompleteFeature(),
     createWavesurferTooltipEllipsisFeature()

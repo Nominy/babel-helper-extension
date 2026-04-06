@@ -13,6 +13,7 @@ import { registerRowService } from '../services/row-service';
 import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
 import { registerTimelineSelectionService } from '../services/timeline-selection-service';
 import { registerMagnifierService } from '../services/magnifier-service';
+import { registerMinimapService } from '../services/minimap-service';
 import { registerLifecycle } from './lifecycle';
 import { createDisposerStack } from './disposables';
 import type { FeatureContext, FeatureModule, ServiceRegistry } from './types';
@@ -53,6 +54,9 @@ export function createHelperKernel() {
       },
       isSessionInteractive() {
         return false;
+      },
+      onLoaded() {
+        return runFeatures('onLoaded');
       }
     },
     isEditable,
@@ -86,6 +90,10 @@ export function createHelperKernel() {
     if (helper.isFeatureEnabled('magnifier')) {
       registerMagnifierService(helper);
     }
+
+    if (helper.isFeatureEnabled('minimap')) {
+      registerMinimapService(helper);
+    }
   }
 
   const services: ServiceRegistry = {
@@ -99,6 +107,7 @@ export function createHelperKernel() {
     timelineSelection: helper,
     smartSplit: helper,
     magnifier: helper,
+    minimap: helper,
     bridge: helper
   };
 
@@ -116,7 +125,7 @@ export function createHelperKernel() {
 
   let features: FeatureModule[] = [];
 
-  const runFeatures = async (method: 'register' | 'start' | 'stop') => {
+  const runFeatures = async (method: 'register' | 'start' | 'stop' | 'onLoaded') => {
     for (const feature of features) {
       const fn = feature[method];
       if (typeof fn === 'function') {
@@ -137,6 +146,9 @@ export function createHelperKernel() {
       await runFeatures('register');
       await runFeatures('start');
       registerLifecycle(helper);
+    },
+    async onLoaded() {
+      await runFeatures('onLoaded');
     },
     async stop() {
       await runFeatures('stop');
