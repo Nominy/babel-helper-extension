@@ -48,10 +48,7 @@ const {
   buildExpandedSkazText,
   buildExpandedSkazForNumericPattern,
   buildSkazFromSlashFraction,
-  buildSlashFractionFromWords,
-  buildDecimalFromWords,
   buildSkazFromSpokenDigitSequence,
-  buildSkazFromNumberWords,
   buildAutoConvertedNumberText,
 } = selectedNumberModule;
 
@@ -84,21 +81,6 @@ test("buildExpandedSkazText preserves digit formatting as written", () => {
     buildExpandedSkazText("1000,25"),
     "1 000,25 {СКАЗ: одна тысяча и два пять}",
   );
-});
-
-test("buildSkazFromNumberWords converts Russian number words into digit-plus-SKAZ form", () => {
-  assert.equal(buildSkazFromNumberWords("один"), "1 {СКАЗ: один}");
-  assert.equal(
-    buildSkazFromNumberWords("сто двадцать три"),
-    "123 {СКАЗ: сто двадцать три}",
-  );
-  assert.equal(buildSkazFromNumberWords("пять"), "5 {СКАЗ: пять}");
-  assert.equal(
-    buildSkazFromNumberWords("один миллион"),
-    "1 000 000 {СКАЗ: один миллион}",
-  );
-  assert.equal(buildSkazFromNumberWords("пятый"), "5 {СКАЗ: пятый}");
-  assert.equal(buildSkazFromNumberWords("полтора"), "1,5 {СКАЗ: полтора}");
 });
 
 test("buildExpandedSkazForNumericPattern handles ranges and percent forms", () => {
@@ -135,40 +117,6 @@ test("buildSkazFromSlashFraction handles direct slash fractions", () => {
   assert.equal(buildSkazFromSlashFraction("2/21"), null);
 });
 
-test("buildSlashFractionFromWords handles spoken fractions", () => {
-  assert.equal(
-    buildSlashFractionFromWords("две третьих"),
-    "2/3 {СКАЗ: две третьих}",
-  );
-  assert.equal(
-    buildSlashFractionFromWords("одна вторая"),
-    "1/2 {СКАЗ: одна вторая}",
-  );
-  assert.equal(
-    buildSlashFractionFromWords("три четверти"),
-    "3/4 {СКАЗ: три четверти}",
-  );
-  assert.equal(
-    buildSlashFractionFromWords("семь пятнадцатых"),
-    "7/15 {СКАЗ: семь пятнадцатых}",
-  );
-});
-
-test("buildDecimalFromWords handles spoken mixed decimals", () => {
-  assert.equal(
-    buildDecimalFromWords("две целых три десятых"),
-    "2,3 {СКАЗ: две целых три десятых}",
-  );
-  assert.equal(
-    buildDecimalFromWords("одна целая пять сотых"),
-    "1,05 {СКАЗ: одна целая пять сотых}",
-  );
-  assert.equal(
-    buildDecimalFromWords("три целых двадцать пять тысячных"),
-    "3,025 {СКАЗ: три целых двадцать пять тысячных}",
-  );
-});
-
 test("buildSkazFromSpokenDigitSequence handles spoken digit ranges", () => {
   assert.equal(
     buildSkazFromSpokenDigitSequence("пять шесть"),
@@ -177,7 +125,7 @@ test("buildSkazFromSpokenDigitSequence handles spoken digit ranges", () => {
   assert.equal(buildSkazFromSpokenDigitSequence("двадцать три"), null);
 });
 
-test("buildAutoConvertedNumberText chooses digits path first and words path second", () => {
+test("buildAutoConvertedNumberText handles direct digits and digit patterns", () => {
   assert.equal(buildAutoConvertedNumberText("42"), "42 {СКАЗ: сорок два}");
   assert.equal(
     buildAutoConvertedNumberText("1000"),
@@ -186,16 +134,6 @@ test("buildAutoConvertedNumberText chooses digits path first and words path seco
   assert.equal(
     buildAutoConvertedNumberText("-42"),
     "-42 {СКАЗ: минус сорок два}",
-  );
-  assert.equal(
-    buildAutoConvertedNumberText("сорок два"),
-    "42 {СКАЗ: сорок два}",
-  );
-  assert.equal(buildAutoConvertedNumberText("пятый"), "5 {СКАЗ: пятый}");
-  assert.equal(buildAutoConvertedNumberText("полтора"), "1,5 {СКАЗ: полтора}");
-  assert.equal(
-    buildAutoConvertedNumberText("один миллион"),
-    "1 000 000 {СКАЗ: один миллион}",
   );
   assert.equal(buildAutoConvertedNumberText("2-3"), "2-3 {СКАЗ: два три}");
   assert.equal(
@@ -211,26 +149,14 @@ test("buildAutoConvertedNumberText chooses digits path first and words path seco
     "20-30-40 {СКАЗ: двадцать тридцать сорок}",
   );
   assert.equal(buildAutoConvertedNumberText("2/3"), "2/3 {СКАЗ: две третьих}");
-  assert.equal(
-    buildAutoConvertedNumberText("две третьих"),
-    "2/3 {СКАЗ: две третьих}",
-  );
-  assert.equal(
-    buildAutoConvertedNumberText("три четверти"),
-    "3/4 {СКАЗ: три четверти}",
-  );
-  assert.equal(
-    buildAutoConvertedNumberText("две целых три десятых"),
-    "2,3 {СКАЗ: две целых три десятых}",
-  );
-  assert.equal(
-    buildAutoConvertedNumberText("одна целая пять сотых"),
-    "1,05 {СКАЗ: одна целая пять сотых}",
-  );
   assert.equal(buildAutoConvertedNumberText("1,5"), "1,5 {СКАЗ: один и пять}");
   assert.equal(
     buildAutoConvertedNumberText("1000,25"),
     "1 000,25 {СКАЗ: одна тысяча и два пять}",
   );
   assert.equal(buildAutoConvertedNumberText("hello world"), null);
+  // Word conversions are removed:
+  assert.equal(buildAutoConvertedNumberText("сорок два"), null);
+  assert.equal(buildAutoConvertedNumberText("один миллион"), null);
+  assert.equal(buildAutoConvertedNumberText("две третьих"), null);
 });

@@ -99,7 +99,7 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   },
   selectedNumberToSkaz: {
     label: 'Selected Number to SKAZ',
-    description: 'Enable Alt + A to auto-convert selected digits or Russian number words into `digits {СКАЗ: words}`.'
+    description: 'Enable immediate digit-to-SKAZ conversion (Select text + type digit) and Alt + A to convert selected digits into `digits {СКАЗ: words}`.'
   },
   textMove: {
     label: 'Text Move',

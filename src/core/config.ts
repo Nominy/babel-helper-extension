@@ -24,7 +24,8 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
   }
 
   if (featureSettings.selectedNumberToSkaz) {
-    rows.push(['Alt + A / Ctrl + Alt + A', 'Auto-convert selection into `digits {СКАЗ: words}`']);
+    rows.push(['Digit', 'Replace selection with `digit {СКАЗ: original}`']);
+    rows.push(['Alt + A', 'Auto-convert selected digits into `digits {СКАЗ: words}`']);
   }
 
   if (featureSettings.rowActions) {

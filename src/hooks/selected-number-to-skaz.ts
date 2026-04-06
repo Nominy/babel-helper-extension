@@ -1,12 +1,9 @@
-import parseWordToNumber from '@alordash/parse-word-to-number';
-
 const INTEGER_PATTERN = /^-?\d+$/;
 const DECIMAL_COMMA_PATTERN = /^-?\d+,\d+$/;
 const SLASH_FRACTION_PATTERN = /^-?\d+\s*\/\s*[1-9]\d*$/;
 const INTEGER_RANGE_PATTERN = /^-?\d+(?:\s*-\s*-?\d+)+$/;
 const PERCENT_PATTERN = /^(-?\d+)\s*%$/;
 const MAX_SUPPORTED_DIGITS = 12;
-const STRICT_PARSE_ERROR_LIMIT = 0;
 
 const HUNDREDS = [
   'сто',
@@ -91,41 +88,6 @@ const SPOKEN_DIGIT_WORDS = new Map<string, string>([
 ]);
 
 const DIGIT_WORDS = ['ноль', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'];
-const MIXED_DECIMAL_WHOLE_WORDS = new Set(['целая', 'целых', 'целое']);
-const CARDINAL_PARSE_NORMALIZATION = new Map<string, string>([
-  ['одна', 'один'],
-  ['одной', 'один'],
-  ['одну', 'один'],
-  ['одним', 'один'],
-  ['одном', 'один'],
-  ['одного', 'один'],
-  ['две', 'два'],
-  ['двух', 'два'],
-  ['двум', 'два'],
-  ['двумя', 'два'],
-  ['трех', 'три'],
-  ['трём', 'три'],
-  ['тремя', 'три'],
-  ['четырех', 'четыре'],
-  ['четырём', 'четыре'],
-  ['четырьмя', 'четыре'],
-  ['пяти', 'пять'],
-  ['шести', 'шесть'],
-  ['семи', 'семь'],
-  ['восьми', 'восемь'],
-  ['девяти', 'девять'],
-  ['десяти', 'десять'],
-  ['одиннадцати', 'одиннадцать'],
-  ['двенадцати', 'двенадцать'],
-  ['тринадцати', 'тринадцать'],
-  ['четырнадцати', 'четырнадцать'],
-  ['пятнадцати', 'пятнадцать'],
-  ['шестнадцати', 'шестнадцать'],
-  ['семнадцати', 'семнадцать'],
-  ['восемнадцати', 'восемнадцать'],
-  ['девятнадцати', 'девятнадцать'],
-  ['двадцати', 'двадцать']
-]);
 
 type FractionDenominatorSpec = {
   singular: string;
@@ -156,22 +118,6 @@ const FRACTION_DENOMINATORS = new Map<number, FractionDenominatorSpec>([
   [20, { singular: 'двадцатая', plural: 'двадцатых', forms: ['двадцатая', 'двадцатую', 'двадцатой', 'двадцатых', 'двадцатые'] }]
 ]);
 
-const MIXED_DECIMAL_DENOMINATORS = new Map<string, number>([
-  ['десятая', 1], ['десятую', 1], ['десятой', 1], ['десятых', 1], ['десятые', 1],
-  ['сотая', 2], ['сотую', 2], ['сотой', 2], ['сотых', 2], ['сотые', 2],
-  ['тысячная', 3], ['тысячную', 3], ['тысячной', 3], ['тысячных', 3], ['тысячные', 3],
-  ['десятитысячная', 4], ['десятитысячную', 4], ['десятитысячной', 4], ['десятитысячных', 4], ['десятитысячные', 4],
-  ['стотысячная', 5], ['стотысячную', 5], ['стотысячной', 5], ['стотысячных', 5], ['стотысячные', 5],
-  ['миллионная', 6], ['миллионную', 6], ['миллионной', 6], ['миллионных', 6], ['миллионные', 6]
-]);
-
-const FRACTION_DENOMINATOR_BY_FORM = new Map<string, number>();
-for (const [value, spec] of FRACTION_DENOMINATORS) {
-  for (const form of spec.forms) {
-    FRACTION_DENOMINATOR_BY_FORM.set(form, value);
-  }
-}
-
 function dispatchInputEvent(element: HTMLInputElement | HTMLTextAreaElement) {
   element.dispatchEvent(
     typeof InputEvent === 'function'
@@ -200,7 +146,7 @@ function setTextControlValue(element: HTMLInputElement | HTMLTextAreaElement, va
   }
 }
 
-function isTextControl(
+export function isTextControl(
   element: EventTarget | null
 ): element is HTMLInputElement | HTMLTextAreaElement {
   if (element instanceof HTMLTextAreaElement) {
@@ -310,22 +256,6 @@ function integerTextToRussianWords(numberText: string, lastTriadFeminine = false
   return `${signPrefix}${parts.join(' ')}`;
 }
 
-function parseStrictIntegerWords(text: string) {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const normalizedInput = trimmed
-    .toLowerCase()
-    .split(/\s+/)
-    .map((token) => CARDINAL_PARSE_NORMALIZATION.get(token) ?? token)
-    .join(' ');
-
-  const normalized = parseWordToNumber.parseString(normalizedInput, STRICT_PARSE_ERROR_LIMIT).trim();
-  return INTEGER_PATTERN.test(normalized) ? normalized : null;
-}
-
 function chooseFractionDenominatorWord(denominator: number, numerator: number) {
   const spec = FRACTION_DENOMINATORS.get(denominator);
   if (!spec) {
@@ -344,68 +274,6 @@ function chooseFractionDenominatorWord(denominator: number, numerator: number) {
   }
 
   return spec.plural;
-}
-
-function parseSpokenSimpleFraction(text: string) {
-  const trimmed = text.trim().toLowerCase();
-  if (!trimmed) {
-    return null;
-  }
-
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
-  if (tokens.length < 2) {
-    return null;
-  }
-
-  const denominatorValue = FRACTION_DENOMINATOR_BY_FORM.get(tokens[tokens.length - 1]) ?? null;
-  if (!denominatorValue) {
-    return null;
-  }
-
-  const numeratorText = parseStrictIntegerWords(tokens.slice(0, -1).join(' '));
-  if (!numeratorText) {
-    return null;
-  }
-
-  return { numeratorText, denominatorValue };
-}
-
-function parseSpokenMixedDecimal(text: string) {
-  const trimmed = text.trim().toLowerCase();
-  if (!trimmed) {
-    return null;
-  }
-
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
-  if (tokens.length < 4) {
-    return null;
-  }
-
-  const wholeIndex = tokens.findIndex((token) => MIXED_DECIMAL_WHOLE_WORDS.has(token));
-  if (wholeIndex <= 0 || wholeIndex >= tokens.length - 2) {
-    return null;
-  }
-
-  const scale = MIXED_DECIMAL_DENOMINATORS.get(tokens[tokens.length - 1]) ?? null;
-  if (!scale) {
-    return null;
-  }
-
-  const integerText = parseStrictIntegerWords(tokens.slice(0, wholeIndex).join(' '));
-  const fractionNumeratorText = parseStrictIntegerWords(tokens.slice(wholeIndex + 1, -1).join(' '));
-  if (!integerText || !fractionNumeratorText) {
-    return null;
-  }
-
-  const unsignedFraction = fractionNumeratorText.startsWith('-')
-    ? fractionNumeratorText.slice(1)
-    : fractionNumeratorText;
-  if (fractionNumeratorText.startsWith('-') || unsignedFraction.length > scale) {
-    return null;
-  }
-
-  const fractionPart = unsignedFraction.padStart(scale, '0');
-  return `${integerText},${fractionPart}`;
 }
 
 export function buildSkazFromSlashFraction(selectedText: string) {
@@ -437,26 +305,6 @@ export function buildSkazFromSlashFraction(selectedText: string) {
   }
 
   return `${trimmed} {СКАЗ: ${numeratorWords} ${denominatorWord}}`;
-}
-
-export function buildSlashFractionFromWords(selectedText: string) {
-  const trimmed = selectedText.trim();
-  const parsed = parseSpokenSimpleFraction(trimmed);
-  if (!parsed) {
-    return null;
-  }
-
-  return `${parsed.numeratorText}/${parsed.denominatorValue} {СКАЗ: ${trimmed}}`;
-}
-
-export function buildDecimalFromWords(selectedText: string) {
-  const trimmed = selectedText.trim();
-  const decimalText = parseSpokenMixedDecimal(trimmed);
-  if (!decimalText) {
-    return null;
-  }
-
-  return `${formatGroupedDecimalText(decimalText)} {СКАЗ: ${trimmed}}`;
 }
 
 export function formatGroupedIntegerText(numberText: string) {
@@ -576,41 +424,6 @@ export function buildExpandedSkazForNumericPattern(selectedText: string) {
   return `${parts.map((part) => formatGroupedIntegerText(part)).join('-')} {СКАЗ: ${words.join(' ')}}`;
 }
 
-export function buildNormalizedNumberText(selectedText: string) {
-  const trimmed = selectedText.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const normalized = parseWordToNumber.parseString(trimmed, STRICT_PARSE_ERROR_LIMIT).trim();
-  if (!normalized || normalized === trimmed) {
-    return null;
-  }
-
-  return normalized
-    .replace(/-?\d+(?:\.\d+)?/g, (match) => {
-      if (match.includes('.')) {
-        return formatGroupedDecimalText(match.replace('.', ','));
-      }
-
-      return formatGroupedIntegerText(match);
-    });
-}
-
-export function buildSkazFromNumberWords(selectedText: string) {
-  const trimmed = selectedText.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const normalized = buildNormalizedNumberText(trimmed);
-  if (!normalized) {
-    return null;
-  }
-
-  return `${normalized} {СКАЗ: ${trimmed}}`;
-}
-
 export function buildSkazFromSpokenDigitSequence(selectedText: string) {
   const trimmed = selectedText.trim();
   if (!trimmed) {
@@ -635,16 +448,14 @@ export function buildAutoConvertedNumberText(selectedText: string) {
     buildExpandedSkazText(selectedText) ??
     buildSkazFromSlashFraction(selectedText) ??
     buildExpandedSkazForNumericPattern(selectedText) ??
-    buildDecimalFromWords(selectedText) ??
-    buildSlashFractionFromWords(selectedText) ??
-    buildSkazFromSpokenDigitSequence(selectedText) ??
-    buildSkazFromNumberWords(selectedText)
+    buildSkazFromSpokenDigitSequence(selectedText)
   );
 }
 
-function replaceSelectionInTextControl(
+export function replaceSelectionInTextControl(
   control: HTMLInputElement | HTMLTextAreaElement,
-  replacement: string
+  replacement: string,
+  cursorOffset?: number
 ) {
   const start = typeof control.selectionStart === 'number' ? control.selectionStart : null;
   const end = typeof control.selectionEnd === 'number' ? control.selectionEnd : null;
@@ -655,7 +466,7 @@ function replaceSelectionInTextControl(
   const nextValue = `${control.value.slice(0, start)}${replacement}${control.value.slice(end)}`;
   setTextControlValue(control, nextValue);
   control.focus({ preventScroll: true });
-  const cursor = start + replacement.length;
+  const cursor = start + (cursorOffset ?? replacement.length);
   try {
     control.setSelectionRange(cursor, cursor);
   } catch (_error) {
@@ -683,7 +494,7 @@ function replaceDocumentSelection(replacement: string) {
   return true;
 }
 
-function getSelectedTextFromTextControl(control: HTMLInputElement | HTMLTextAreaElement) {
+export function getSelectedTextFromTextControl(control: HTMLInputElement | HTMLTextAreaElement) {
   const start = typeof control.selectionStart === 'number' ? control.selectionStart : null;
   const end = typeof control.selectionEnd === 'number' ? control.selectionEnd : null;
   if (start === null || end === null || start === end) {
@@ -691,66 +502,6 @@ function getSelectedTextFromTextControl(control: HTMLInputElement | HTMLTextArea
   }
 
   return control.value.slice(start, end);
-}
-
-export function expandSelectedNumberToSkaz(target?: EventTarget | null) {
-  const targetNode = target ?? null;
-  let activeTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
-
-  if (isTextControl(targetNode)) {
-    activeTarget = targetNode;
-  } else if (isTextControl(document.activeElement)) {
-    activeTarget = document.activeElement;
-  }
-
-  if (activeTarget) {
-    const selectedText = getSelectedTextFromTextControl(activeTarget);
-    const replacement = buildExpandedSkazText(selectedText);
-    if (!replacement) {
-      return false;
-    }
-
-    return replaceSelectionInTextControl(activeTarget, replacement);
-  }
-
-  const selection = window.getSelection();
-  const selectedText = selection?.toString() ?? '';
-  const replacement = buildExpandedSkazText(selectedText);
-  if (!replacement) {
-    return false;
-  }
-
-  return replaceDocumentSelection(replacement);
-}
-
-export function normalizeSelectedNumberWords(target?: EventTarget | null) {
-  const targetNode = target ?? null;
-  let activeTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
-
-  if (isTextControl(targetNode)) {
-    activeTarget = targetNode;
-  } else if (isTextControl(document.activeElement)) {
-    activeTarget = document.activeElement;
-  }
-
-  if (activeTarget) {
-    const selectedText = getSelectedTextFromTextControl(activeTarget);
-    const replacement = buildNormalizedNumberText(selectedText);
-    if (!replacement) {
-      return false;
-    }
-
-    return replaceSelectionInTextControl(activeTarget, replacement);
-  }
-
-  const selection = window.getSelection();
-  const selectedText = selection?.toString() ?? '';
-  const replacement = buildNormalizedNumberText(selectedText);
-  if (!replacement) {
-    return false;
-  }
-
-  return replaceDocumentSelection(replacement);
 }
 
 export function autoConvertSelectedNumberText(target?: EventTarget | null) {
@@ -781,4 +532,18 @@ export function autoConvertSelectedNumberText(target?: EventTarget | null) {
   }
 
   return replaceDocumentSelection(replacement);
+}
+
+export function convertSelectionWithDigit(target: EventTarget | null, digit: string) {
+  if (!isTextControl(target)) {
+    return false;
+  }
+
+  const selectedText = getSelectedTextFromTextControl(target);
+  if (!selectedText || selectedText.trim().length === 0) {
+    return false;
+  }
+
+  const replacement = `${digit} {СКАЗ: ${selectedText}}`;
+  return replaceSelectionInTextControl(target, replacement, digit.length);
 }
