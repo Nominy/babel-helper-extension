@@ -1387,6 +1387,20 @@ export function initMagnifierBridge() {
     const duration = getDuration(wave);
     const sourcePixelsPerSecond = getSourcePixelsPerSecond(wave);
     const viewport = getViewportMetrics(host, wave);
+    const viewportOnly = Boolean(payload && payload.viewportOnly);
+
+    if (viewportOnly) {
+      return {
+        ok: true,
+        duration,
+        currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
+        sourcePixelsPerSecond,
+        totalWidth: viewport.totalWidth,
+        visibleWidth: viewport.visibleWidth,
+        scrollLeft: viewport.scrollLeft
+      };
+    }
+
     const peakBins = clamp(Math.floor(Number(payload && payload.peakBins) || 512), 64, 2048);
 
     return {

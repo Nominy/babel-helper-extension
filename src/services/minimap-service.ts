@@ -14,6 +14,7 @@ export function registerMinimapService(helper: any) {
   const BRIDGE_TIMEOUT_MS = 700;
   const MINIMAP_HEIGHT = 44;
   const MINIMAP_MAX_TRACKS = 2;
+  const MUTATION_DEBOUNCE_MS = 220;
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
@@ -120,7 +121,7 @@ export function registerMinimapService(helper: any) {
     });
   }
 
-  function getWaveformHosts() {
+  function discoverWaveformHosts() {
     return Array.from(document.querySelectorAll('div')).filter((node) => {
       if (
         !(node instanceof HTMLDivElement) ||
@@ -138,6 +139,24 @@ export function registerMinimapService(helper: any) {
           helper.isVisible(scroll)
       );
     });
+  }
+
+  function resolveWaveformHosts() {
+    const stamped = Array.from(document.querySelectorAll('div[' + HOST_ATTR + ']')).filter((node) => {
+      if (!(node instanceof HTMLDivElement) || !node.isConnected) {
+        return false;
+      }
+      if (!(node.shadowRoot instanceof ShadowRoot)) {
+        return false;
+      }
+      const wrapper = node.shadowRoot.querySelector('[part="wrapper"]');
+      const scroll = node.shadowRoot.querySelector('[part="scroll"]');
+      return Boolean(wrapper instanceof HTMLElement && scroll instanceof HTMLElement);
+    });
+    if (stamped.length) {
+      return stamped.slice(0, MINIMAP_MAX_TRACKS);
+    }
+    return discoverWaveformHosts().slice(0, MINIMAP_MAX_TRACKS);
   }
 
   function getScrollElement(host) {
@@ -347,6 +366,7 @@ export function registerMinimapService(helper: any) {
   }
 
   function clearRender(minimap) {
+    minimap.fullSyncOk = false;
     layoutTrackLanes(minimap, 1);
     minimap.viewport.style.display = 'none';
     minimap.playhead.style.display = 'none';
@@ -396,6 +416,84 @@ export function registerMinimapService(helper: any) {
     });
   }
 
+  function scheduleViewportUpdate(minimap = helper.state.minimap) {
+    if (!minimap || minimap.destroyed) {
+      return;
+    }
+    if (!minimap.fullSyncOk) {
+      scheduleSync(minimap);
+      return;
+    }
+    if (minimap.viewportRafId) {
+      return;
+    }
+    minimap.viewportRafId = window.requestAnimationFrame(() => {
+      minimap.viewportRafId = 0;
+      void updateMinimapViewportOnly(minimap);
+    });
+  }
+
+  async function updateMinimapViewportOnly(minimap) {
+    if (!minimap || minimap.destroyed || !minimap.fullSyncOk) {
+      return;
+    }
+    if (minimap.syncPending) {
+      return;
+    }
+
+    if (!ensureContainer(minimap)) {
+      return;
+    }
+
+    if (!minimap.hostMarkers[0]) {
+      scheduleSync(minimap);
+      return;
+    }
+
+    minimap.syncPending = true;
+    try {
+      const hostMarker = minimap.hostMarkers[0];
+      const result = await callBridge('minimap-data', {
+        hostMarker,
+        viewportOnly: true
+      });
+      if (!result || !result.ok) {
+        minimap.fullSyncOk = false;
+        scheduleSync(minimap);
+        return;
+      }
+
+      const duration = Number(result.duration) || 0;
+      if (minimap.duration > 0 && duration > 0 && Math.abs(duration - minimap.duration) > 1) {
+        scheduleSync(minimap);
+        return;
+      }
+
+      const totalWidth = Number(result.totalWidth) || 0;
+      const visibleWidth = Number(result.visibleWidth) || 0;
+      const scrollLeft = Number(result.scrollLeft) || 0;
+
+      if (totalWidth > 0 && visibleWidth > 0) {
+        const leftRatio = scrollLeft / totalWidth;
+        const widthRatio = visibleWidth / totalWidth;
+        setViewport(minimap, leftRatio, widthRatio);
+      } else {
+        minimap.viewport.style.display = 'none';
+      }
+
+      setPlayhead(minimap, Number(result.currentTime) || 0, duration || minimap.duration);
+    } catch (_error) {
+      minimap.fullSyncOk = false;
+      scheduleSync(minimap);
+    } finally {
+      minimap.syncPending = false;
+      if (minimap.syncQueued) {
+        minimap.syncQueued = false;
+        scheduleSync(minimap);
+      }
+    }
+  }
+
   function disconnectHostObservers(minimap) {
     for (const dispose of minimap.scrollDisposers) {
       dispose();
@@ -429,7 +527,7 @@ export function registerMinimapService(helper: any) {
     for (const host of hosts) {
       const scroll = getScrollElement(host);
       if (scroll instanceof HTMLElement) {
-        const onScroll = () => scheduleSync(minimap);
+        const onScroll = () => scheduleViewportUpdate(minimap);
         scroll.addEventListener('scroll', onScroll, { passive: true });
         minimap.scrollDisposers.push(() => {
           scroll.removeEventListener('scroll', onScroll);
@@ -510,7 +608,10 @@ export function registerMinimapService(helper: any) {
       navigateInFlight: false,
       resizeObserver: null,
       mutationObserver: null,
-      onWindowResize: null
+      onWindowResize: null,
+      viewportRafId: 0,
+      fullSyncOk: false,
+      mutationDebounceTimer: 0
     };
 
     container.replaceChildren();
@@ -579,12 +680,18 @@ export function registerMinimapService(helper: any) {
     }
 
     if (document.body instanceof HTMLElement && typeof MutationObserver === 'function') {
-      state.mutationObserver = new MutationObserver(() => {
-        scheduleSync(state);
-      });
+      const requestDebouncedFullSync = () => {
+        if (state.mutationDebounceTimer) {
+          window.clearTimeout(state.mutationDebounceTimer);
+        }
+        state.mutationDebounceTimer = window.setTimeout(() => {
+          state.mutationDebounceTimer = 0;
+          scheduleSync(state);
+        }, MUTATION_DEBOUNCE_MS);
+      };
+      state.mutationObserver = new MutationObserver(requestDebouncedFullSync);
       state.mutationObserver.observe(document.body, {
         childList: true,
-        attributes: true,
         subtree: true
       });
     }
@@ -638,7 +745,7 @@ export function registerMinimapService(helper: any) {
         return;
       }
 
-      const hosts = getWaveformHosts().slice(0, MINIMAP_MAX_TRACKS);
+      const hosts = resolveWaveformHosts();
       if (!hosts.length) {
         disconnectHostObservers(minimap);
         minimap.hostMarkers = [];
@@ -701,6 +808,7 @@ export function registerMinimapService(helper: any) {
       }
 
       setPlayhead(minimap, Number(primary.currentTime) || 0, duration);
+      minimap.fullSyncOk = true;
     } catch (_error) {
       clearRender(minimap);
     } finally {
@@ -722,6 +830,14 @@ export function registerMinimapService(helper: any) {
     if (minimap.rafId) {
       window.cancelAnimationFrame(minimap.rafId);
       minimap.rafId = 0;
+    }
+    if (minimap.viewportRafId) {
+      window.cancelAnimationFrame(minimap.viewportRafId);
+      minimap.viewportRafId = 0;
+    }
+    if (minimap.mutationDebounceTimer) {
+      window.clearTimeout(minimap.mutationDebounceTimer);
+      minimap.mutationDebounceTimer = 0;
     }
     disconnectHostObservers(minimap);
 
@@ -763,6 +879,14 @@ export function registerMinimapService(helper: any) {
       return;
     }
 
+    if (minimap.viewportRafId) {
+      window.cancelAnimationFrame(minimap.viewportRafId);
+      minimap.viewportRafId = 0;
+    }
+    if (minimap.mutationDebounceTimer) {
+      window.clearTimeout(minimap.mutationDebounceTimer);
+      minimap.mutationDebounceTimer = 0;
+    }
     disconnectHostObservers(minimap);
     if (minimap.mutationObserver) {
       minimap.mutationObserver.disconnect();
