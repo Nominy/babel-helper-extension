@@ -143,7 +143,7 @@ export function registerMinimapService(helper: any) {
 
   function resolveWaveformHosts() {
     const stamped = Array.from(document.querySelectorAll('div[' + HOST_ATTR + ']')).filter((node) => {
-      if (!(node instanceof HTMLDivElement) || !node.isConnected) {
+      if (!(node instanceof HTMLDivElement) || !node.isConnected || !helper.isVisible(node)) {
         return false;
       }
       if (!(node.shadowRoot instanceof ShadowRoot)) {
@@ -151,7 +151,11 @@ export function registerMinimapService(helper: any) {
       }
       const wrapper = node.shadowRoot.querySelector('[part="wrapper"]');
       const scroll = node.shadowRoot.querySelector('[part="scroll"]');
-      return Boolean(wrapper instanceof HTMLElement && scroll instanceof HTMLElement);
+      return Boolean(
+        wrapper instanceof HTMLElement &&
+          scroll instanceof HTMLElement &&
+          helper.isVisible(scroll)
+      );
     });
     if (stamped.length) {
       return stamped.slice(0, MINIMAP_MAX_TRACKS);
@@ -692,7 +696,9 @@ export function registerMinimapService(helper: any) {
       state.mutationObserver = new MutationObserver(requestDebouncedFullSync);
       state.mutationObserver.observe(document.body, {
         childList: true,
-        subtree: true
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'hidden']
       });
     }
 

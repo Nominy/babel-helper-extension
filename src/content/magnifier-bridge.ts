@@ -1377,10 +1377,26 @@ export function initMagnifierBridge() {
     const resolved = resolveWaveForHost(hostMarker);
     const host = resolved.host;
     const wave = resolved.wave;
-    if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
+    if (!(host instanceof HTMLElement) || !host.isConnected || !wave || !isUsableWaveCandidate(wave, host)) {
       return {
         ok: false,
         reason: 'missing-wave'
+      };
+    }
+
+    const rect = host.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) {
+      return {
+        ok: false,
+        reason: 'hidden-host'
+      };
+    }
+
+    const style = window.getComputedStyle(host);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return {
+        ok: false,
+        reason: 'hidden-style'
       };
     }
 
