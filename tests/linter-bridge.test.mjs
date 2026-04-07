@@ -120,6 +120,14 @@ function hasDoubleDashPunctuationViolation(text) {
   return /--[.,?!:;]/.test(text);
 }
 
+function hasSingleDashPunctuationViolation(text) {
+  if (typeof text !== 'string' || text.indexOf('-') === -1) {
+    return false;
+  }
+
+  return /(?<!-)-[.,?!:;]/.test(text);
+}
+
 function hasTerminalPunctuationViolation(text) {
   if (typeof text !== 'string') {
     return false;
@@ -130,7 +138,7 @@ function hasTerminalPunctuationViolation(text) {
     return false;
   }
 
-  return !/(?:\.\.\.|--|[?!.])$/.test(trimmed);
+  return !/(?:\.\.\.|--|[?!."])$/.test(trimmed);
 }
 
 function isUppercaseLetter(char) {
@@ -390,13 +398,23 @@ function fixDoubleDashPunctuation(text) {
   return text.replace(/--[.,?!:;]+/g, '--');
 }
 
+function fixSingleDashPunctuation(text) {
+  if (typeof text !== 'string' || text.indexOf('-') === -1) {
+    return text;
+  }
+
+  // Remove punctuation immediately after single dash
+  // A single dash is a '-' not preceded by '-' and not followed by '-'
+  return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, '-');
+}
+
 function fixTerminalPunctuation(text) {
   if (typeof text !== 'string') {
     return text;
   }
 
   const trimmed = stripTrailingTagTokens(text);
-  if (!trimmed || /(?:\.\.\.|--|[?!.])$/.test(trimmed)) {
+  if (!trimmed || /(?:\.\.\.|--|[?!."-])$/.test(trimmed)) {
     return text;
   }
 
@@ -459,6 +477,7 @@ function applyAllFixes(text) {
   result = fixQuotePlacement(result);
   result = fixCurlySpacing(result);
   result = fixDoubleDashPunctuation(result);
+  result = fixSingleDashPunctuation(result);
   result = fixTerminalPunctuation(result);
   return result;
 }
@@ -508,10 +527,12 @@ test('flags missing terminal punctuation and accepts allowed endings', () => {
   assert.equal(hasTerminalPunctuationViolation('hello world?'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world...'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world--'), false);
+  assert.equal(hasTerminalPunctuationViolation('hello world"'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world.</i>'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world</i>'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world [laughs]'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world. [laughs]'), false);
+  assert.equal(hasTerminalPunctuationViolation('hello world" [laughs]'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world {TAG: X}'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world. {TAG: X}'), false);
   assert.equal(hasTerminalPunctuationViolation('   '), false);
@@ -574,6 +595,10 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
     'foo "bar" baz.'
   );
   assert.equal(
+    applyAllFixes('He said, "Hello"'),
+    'He said, "Hello"'
+  );
+  assert.equal(
     applyAllFixes('already done!'),
     'already done!'
   );
@@ -623,4 +648,26 @@ test('fixes double dash punctuation', () => {
 
 test('applyAllFixes includes double dash punctuation fix', () => {
   assert.equal(applyAllFixes('wait--.'), 'wait--');
+});
+
+test('flags single dash punctuation violation', () => {
+  assert.equal(hasSingleDashPunctuationViolation('wait-.'), true);
+  assert.equal(hasSingleDashPunctuationViolation('wait-,'), true);
+  assert.equal(hasSingleDashPunctuationViolation('wait-?'), true);
+  assert.equal(hasSingleDashPunctuationViolation('wait-!'), true);
+  assert.equal(hasSingleDashPunctuationViolation('wait- '), false);
+  assert.equal(hasSingleDashPunctuationViolation('wait.-'), false);
+  assert.equal(hasSingleDashPunctuationViolation('wait--.'), false); // Handled by double dash rule
+});
+
+test('fixes single dash punctuation', () => {
+  assert.equal(fixSingleDashPunctuation('wait-.'), 'wait-');
+  assert.equal(fixSingleDashPunctuation('wait-,'), 'wait-');
+  assert.equal(fixSingleDashPunctuation('wait-?'), 'wait-');
+  assert.equal(fixSingleDashPunctuation('wait-!'), 'wait-');
+  assert.equal(fixSingleDashPunctuation('wait--.'), 'wait--.'); // Should not touch double dash
+});
+
+test('applyAllFixes includes single dash punctuation fix', () => {
+  assert.equal(applyAllFixes('wait-.'), 'wait-');
 });

@@ -12,8 +12,10 @@ export function initLinterBridge() {
   const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
     'Punctuation immediately after double dash is typically avoided.';
+  const SINGLE_DASH_PUNCTUATION_RULE_REASON =
+    'Punctuation immediately after single dash is typically avoided.';
   const TERMINAL_PUNCTUATION_RULE_REASON =
-    'Segments must end with one of: ?, ..., !, --, or .';
+    'Segments must end with one of: ?, ..., !, --, ", or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
     'Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.';
   const RULE_SEVERITY = 'error';
@@ -329,6 +331,14 @@ export function initLinterBridge() {
     return /--[.,?!:;]/.test(text);
   }
 
+  function hasSingleDashPunctuationViolation(text) {
+    if (typeof text !== 'string' || text.indexOf('-') === -1) {
+      return false;
+    }
+
+    return /(?<!-)-[.,?!:;]/.test(text);
+  }
+
   function hasTerminalPunctuationViolation(text) {
     if (typeof text !== 'string') {
       return false;
@@ -339,7 +349,7 @@ export function initLinterBridge() {
       return false;
     }
 
-    return !/(?:\.\.\.|--|[?!.])$/.test(trimmed);
+    return !/(?:\.\.\.|--|[?!."])$/.test(trimmed);
   }
 
   function isUppercaseLetter(char) {
@@ -556,6 +566,14 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      }
+
+      if (hasSingleDashPunctuationViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: SINGLE_DASH_PUNCTUATION_RULE_REASON,
           severity: RULE_SEVERITY
         });
       }
@@ -1242,13 +1260,23 @@ export function initLinterBridge() {
     return text.replace(/--[.,?!:;]+/g, '--');
   }
 
+  function fixSingleDashPunctuation(text) {
+    if (typeof text !== 'string' || text.indexOf('-') === -1) {
+      return text;
+    }
+
+    // Remove punctuation immediately after single dash
+    // A single dash is a '-' not preceded by '-' and not followed by '-'
+    return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, '-');
+  }
+
   function fixTerminalPunctuation(text) {
     if (typeof text !== 'string') {
       return text;
     }
 
     const trimmed = stripTrailingTagTokens(text);
-    if (!trimmed || /(?:\.\.\.|--|[?!.])$/.test(trimmed)) {
+    if (!trimmed || /(?:\.\.\.|--|[?!."-])$/.test(trimmed)) {
       return text;
     }
 
@@ -1311,6 +1339,7 @@ export function initLinterBridge() {
     result = fixQuotePlacement(result);
     result = fixCurlySpacing(result);
     result = fixDoubleDashPunctuation(result);
+    result = fixSingleDashPunctuation(result);
     result = fixTerminalPunctuation(result);
     return result;
   }
@@ -1506,6 +1535,7 @@ export function initLinterBridge() {
     fixLeadingTrailingSpaces,
     fixDoubleSpaces,
     fixDoubleDashPunctuation,
+    fixSingleDashPunctuation,
     fixTerminalPunctuation,
     fixSegmentStartCapitalization
   };

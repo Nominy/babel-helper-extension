@@ -55,7 +55,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     },
     selectedNumberToSkaz: {
       label: "Selected Number to SKAZ",
-      description: "Enable Alt + A to auto-convert selected digits or Russian number words into `digits {\u0421\u041A\u0410\u0417: words}`."
+      description: "Enable immediate digit-to-SKAZ conversion (Select text + type digit) and Alt + A to convert selected digits into `digits {\u0421\u041A\u0410\u0417: words}`."
     },
     textMove: {
       label: "Text Move",
