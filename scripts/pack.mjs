@@ -26,7 +26,7 @@ const skipBuild = process.argv.includes('--no-build');
 // 1. Build
 if (!skipBuild) {
   console.log('Building...');
-  execSync('node esbuild.config.mjs', { cwd: ROOT, stdio: 'inherit' });
+  execSync('npm run build', { cwd: ROOT, stdio: 'inherit' });
 }
 
 // 2. Read version from manifest

@@ -86,24 +86,47 @@ export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean;
 
 export function createCustomLinterFeature(): FeatureModule {
   let startPromise: Promise<boolean> | null = null;
+  let bridgeReady = false;
+
+  async function ensureBridgeReady(ctx: FeatureContext): Promise<boolean> {
+    if (!startPromise) {
+      startPromise = injectBridge();
+    }
+
+    const ready = await startPromise;
+    if (!ready) {
+      startPromise = null;
+      bridgeReady = false;
+      ctx.logger.warn('Custom linter bridge did not load');
+      return false;
+    }
+
+    bridgeReady = true;
+    return true;
+  }
 
   return {
     id: 'custom-linter',
     async start(ctx: FeatureContext) {
-      if (!startPromise) {
-        startPromise = injectBridge();
-      }
-
-      const ready = await startPromise;
+      const ready = await ensureBridgeReady(ctx);
       if (!ready) {
-        startPromise = null;
-        ctx.logger.warn('Custom linter bridge did not load');
         return;
       }
 
       setBridgeEnabled(true);
     },
+    async onLoaded(ctx: FeatureContext) {
+      if (!bridgeReady) {
+        const ready = await ensureBridgeReady(ctx);
+        if (!ready) {
+          return;
+        }
+      }
+
+      setBridgeEnabled(true);
+    },
     stop() {
+      bridgeReady = false;
       setBridgeEnabled(false);
     }
   };

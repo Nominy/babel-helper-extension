@@ -6585,21 +6585,41 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
   }
   function createCustomLinterFeature() {
     let startPromise = null;
+    let bridgeReady = false;
+    async function ensureBridgeReady(ctx) {
+      if (!startPromise) {
+        startPromise = injectBridge();
+      }
+      const ready = await startPromise;
+      if (!ready) {
+        startPromise = null;
+        bridgeReady = false;
+        ctx.logger.warn("Custom linter bridge did not load");
+        return false;
+      }
+      bridgeReady = true;
+      return true;
+    }
     return {
       id: "custom-linter",
       async start(ctx) {
-        if (!startPromise) {
-          startPromise = injectBridge();
-        }
-        const ready = await startPromise;
+        const ready = await ensureBridgeReady(ctx);
         if (!ready) {
-          startPromise = null;
-          ctx.logger.warn("Custom linter bridge did not load");
           return;
         }
         setBridgeEnabled(true);
       },
+      async onLoaded(ctx) {
+        if (!bridgeReady) {
+          const ready = await ensureBridgeReady(ctx);
+          if (!ready) {
+            return;
+          }
+        }
+        setBridgeEnabled(true);
+      },
       stop() {
+        bridgeReady = false;
         setBridgeEnabled(false);
       }
     };

@@ -1,9 +1,10 @@
 {
   "name": "babel-helper-extension",
-  "version": "1.0.5",
+  "version": "1.0.11",
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/increment-version.mjs",
     "build": "node esbuild.config.mjs",
     "build:watch": "node esbuild.config.mjs --watch",
     "build:zip": "node scripts/pack.mjs",

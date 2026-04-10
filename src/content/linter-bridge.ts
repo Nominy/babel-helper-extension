@@ -14,24 +14,60 @@ export function initLinterBridge() {
     'Punctuation immediately after double dash is typically avoided.';
   const SINGLE_DASH_PUNCTUATION_RULE_REASON =
     'Punctuation immediately after single dash is typically avoided.';
+  const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
+    'Incorrect interjection forms must use dictionary spelling.';
   const TERMINAL_PUNCTUATION_RULE_REASON =
     'Segments must end with one of: ?, ..., !, --, ", or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
     'Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.';
   const RULE_SEVERITY = 'error';
   const AUTO_LINT_MAX_ATTEMPTS = 20;
-  const AUTO_LINT_RETRY_DELAY_MS = 250;
+  const AUTO_LINT_RETRY_DELAY_MS = 100;
+  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
 
   const originalFetch = window.fetch.bind(window);
   let enabled = true;
   let autoLintAttemptCount = 0;
   let autoLintTimer = 0;
+  let textareaVisibilityObserver = null;
+  let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
+  const routeLintCallCounts = new Map();
   const debugState = {
     totalLintCalls: 0,
     last: null,
     autoLint: null
   };
+  const INTERJECTION_CORRECTION_SPECS = [
+    { canonical: 'а', variants: ['аа', 'а-а', 'а-а-а'] },
+    { canonical: 'ага', variants: ['ага-а', 'агаа'] },
+    { canonical: 'Ам', variants: ['А-м', 'а-ам'] },
+    { canonical: 'ах', variants: ['ахх', 'а-а-ах'] },
+    { canonical: 'блин', variants: ['бли-ин'] },
+    { canonical: 'Вау', variants: ['уау'] },
+    { canonical: 'вот', variants: ['вооот'] },
+    { canonical: 'ей-богу', variants: ['ейбогу', 'ей богу'] },
+    { canonical: 'м-да', variants: ['мда', 'мдя'] },
+    { canonical: 'мгм', variants: ['мм-гм', 'мхм'] },
+    { canonical: 'м', variants: ['мм', 'Ммм', 'м-м-м'] },
+    { canonical: 'Н-да', variants: ['Нда'] },
+    { canonical: 'ну', variants: ['нууу', 'ну-у'] },
+    { canonical: 'Ну да', variants: ['Ну, да'] },
+    { canonical: 'о да', variants: ['о, да'] },
+    { canonical: 'о нет', variants: ['о, нет'] },
+    { canonical: 'ой', variants: ['оой', 'ойй'] },
+    { canonical: 'окей', variants: ["о'кей", 'ОК'] },
+    { canonical: 'ох', variants: ['охх'] },
+    { canonical: 'угу', variants: ['у-г-у', 'угуу'] },
+    { canonical: 'ух', variants: ['ухх'] },
+    { canonical: 'фу', variants: ['фу-у'] },
+    { canonical: 'ха-ха', variants: ['хахаха'] },
+    { canonical: 'ха', variants: ['ха-а', 'хаха'] },
+    { canonical: 'хм', variants: ['хмм', 'гм'] },
+    { canonical: 'чёрт', variants: ['чорт'] },
+    { canonical: 'э', variants: ['э-э', 'эээ', 'э…э'] },
+    { canonical: 'эх', variants: ['э-эх', 'эхх'] }
+  ];
 
   function safeJsonParse(text) {
     if (typeof text !== 'string') {
@@ -248,6 +284,93 @@ export function initLinterBridge() {
     return typeof char === 'string' && /[\p{L}\p{N}]/u.test(char);
   }
 
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function getLetterCaseShape(text) {
+    if (typeof text !== 'string' || !text) {
+      return 'mixed';
+    }
+
+    const letters = Array.from(text).filter((char) => /[\p{L}]/u.test(char));
+    if (!letters.length) {
+      return 'mixed';
+    }
+
+    const allUpper = letters.every((char) => char === char.toLocaleUpperCase());
+    if (allUpper) {
+      return 'upper';
+    }
+
+    const allLower = letters.every((char) => char === char.toLocaleLowerCase());
+    if (allLower) {
+      return 'lower';
+    }
+
+    const [first, ...rest] = letters;
+    if (
+      first === first.toLocaleUpperCase() &&
+      rest.every((char) => char === char.toLocaleLowerCase())
+    ) {
+      return 'title';
+    }
+
+    return 'mixed';
+  }
+
+  function applyLetterCaseShape(text, shape) {
+    if (typeof text !== 'string' || !text) {
+      return text;
+    }
+
+    if (shape === 'upper') {
+      return text.toLocaleUpperCase();
+    }
+
+    if (shape === 'lower') {
+      return text.toLocaleLowerCase();
+    }
+
+    if (shape === 'title') {
+      let applied = false;
+      let result = '';
+      for (const char of text) {
+        if (!/[\p{L}]/u.test(char)) {
+          result += char;
+          continue;
+        }
+
+        if (!applied) {
+          result += char.toLocaleUpperCase();
+          applied = true;
+        } else {
+          result += char.toLocaleLowerCase();
+        }
+      }
+
+      return result;
+    }
+
+    return text;
+  }
+
+  const INTERJECTION_CORRECTIONS = INTERJECTION_CORRECTION_SPECS
+    .flatMap((entry) =>
+      entry.variants.map((variant) => ({
+        canonical: entry.canonical,
+        variant
+      }))
+    )
+    .sort((left, right) => right.variant.length - left.variant.length)
+    .map((entry) => ({
+      canonical: entry.canonical,
+      pattern: new RegExp(
+        `(^|[^\\p{L}\\p{N}\\p{M}])(${escapeRegExp(entry.variant)})(?=$|[^\\p{L}\\p{N}\\p{M}])`,
+        'giu'
+      )
+    }));
+
   function hasQuotePlacementViolation(text) {
     const quoteIndices = getQuoteIndices(text);
     if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
@@ -337,6 +460,27 @@ export function initLinterBridge() {
     }
 
     return /(?<!-)-[.,?!:;]/.test(text);
+  }
+
+  function normalizeIncorrectInterjectionForms(text) {
+    if (typeof text !== 'string' || !text) {
+      return text;
+    }
+
+    let result = text;
+    for (const correction of INTERJECTION_CORRECTIONS) {
+      correction.pattern.lastIndex = 0;
+      result = result.replace(correction.pattern, (_match, prefix, matchedVariant) => {
+        const caseShape = getLetterCaseShape(matchedVariant);
+        return prefix + applyLetterCaseShape(correction.canonical, caseShape);
+      });
+    }
+
+    return result;
+  }
+
+  function hasIncorrectInterjectionFormsViolation(text) {
+    return typeof text === 'string' && normalizeIncorrectInterjectionForms(text) !== text;
   }
 
   function hasTerminalPunctuationViolation(text) {
@@ -574,6 +718,14 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: SINGLE_DASH_PUNCTUATION_RULE_REASON,
+          severity: RULE_SEVERITY
+        });
+      }
+
+      if (hasIncorrectInterjectionFormsViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
           severity: RULE_SEVERITY
         });
       }
@@ -871,6 +1023,162 @@ export function initLinterBridge() {
     return String(window.location.pathname || '') + String(window.location.search || '');
   }
 
+  let currentRouteKey = getRouteKey();
+
+  function getRouteLintCallCount(routeKey) {
+    if (!routeKey) {
+      return 0;
+    }
+
+    return routeLintCallCounts.get(routeKey) || 0;
+  }
+
+  function recordLintCallForRoute(routeKey) {
+    if (!routeKey) {
+      return;
+    }
+
+    routeLintCallCounts.set(routeKey, getRouteLintCallCount(routeKey) + 1);
+  }
+
+  function isElementVisible(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findLintTriggerTextarea() {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLTextAreaElement &&
+      activeElement.matches(ROW_TEXTAREA_SELECTOR) &&
+      isElementVisible(activeElement)
+    ) {
+      return activeElement;
+    }
+
+    const activeRowTextarea = document.querySelector(
+      `tbody tr.bg-neutral-100.ring-1.ring-neutral-300 ${ROW_TEXTAREA_SELECTOR}`
+    );
+    if (activeRowTextarea instanceof HTMLTextAreaElement && isElementVisible(activeRowTextarea)) {
+      return activeRowTextarea;
+    }
+
+    const visibleTextarea = Array.from(document.querySelectorAll(ROW_TEXTAREA_SELECTOR)).find(
+      (node) => node instanceof HTMLTextAreaElement && isElementVisible(node)
+    );
+    if (visibleTextarea instanceof HTMLTextAreaElement) {
+      return visibleTextarea;
+    }
+
+    const fallbackTextarea = document.querySelector(ROW_TEXTAREA_SELECTOR);
+    return fallbackTextarea instanceof HTMLTextAreaElement ? fallbackTextarea : null;
+  }
+
+  function stopTextareaVisibilityObservers() {
+    if (textareaVisibilityObserver && typeof textareaVisibilityObserver.disconnect === 'function') {
+      textareaVisibilityObserver.disconnect();
+    }
+    if (textareaMountObserver && typeof textareaMountObserver.disconnect === 'function') {
+      textareaMountObserver.disconnect();
+    }
+
+    textareaVisibilityObserver = null;
+    textareaMountObserver = null;
+  }
+
+  function handleVisibleTextarea(routeKey, reason) {
+    if (!enabled) {
+      return;
+    }
+
+    const activeRouteKey = getRouteKey();
+    if (!activeRouteKey || activeRouteKey !== routeKey || autoLintTriggeredRoutes.has(activeRouteKey)) {
+      return;
+    }
+
+    stopTextareaVisibilityObservers();
+    scheduleInitialNativeLintTrigger(reason);
+  }
+
+  function observeTextareaCandidate(candidate, routeKey, reason) {
+    if (
+      !(candidate instanceof HTMLTextAreaElement) ||
+      !candidate.matches(ROW_TEXTAREA_SELECTOR) ||
+      !textareaVisibilityObserver
+    ) {
+      return;
+    }
+
+    if (isElementVisible(candidate)) {
+      handleVisibleTextarea(routeKey, reason);
+      return;
+    }
+
+    textareaVisibilityObserver.observe(candidate);
+  }
+
+  function startTextareaVisibilityObserver(reason) {
+    if (!enabled || typeof IntersectionObserver !== 'function') {
+      return;
+    }
+
+    const routeKey = getRouteKey();
+    if (!routeKey || autoLintTriggeredRoutes.has(routeKey)) {
+      return;
+    }
+
+    stopTextareaVisibilityObservers();
+
+    textareaVisibilityObserver = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+        return;
+      }
+
+      handleVisibleTextarea(routeKey, reason);
+    });
+
+    for (const textarea of document.querySelectorAll(ROW_TEXTAREA_SELECTOR)) {
+      observeTextareaCandidate(textarea, routeKey, reason);
+      if (!textareaVisibilityObserver) {
+        return;
+      }
+    }
+
+    if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+      return;
+    }
+
+    textareaMountObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof HTMLElement)) {
+            continue;
+          }
+
+          if (node.matches?.(ROW_TEXTAREA_SELECTOR)) {
+            observeTextareaCandidate(node, routeKey, reason);
+          }
+
+          for (const textarea of node.querySelectorAll?.(ROW_TEXTAREA_SELECTOR) || []) {
+            observeTextareaCandidate(textarea, routeKey, reason);
+            if (!textareaVisibilityObserver) {
+              return;
+            }
+          }
+        }
+      }
+    });
+
+    textareaMountObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
   function dispatchInputEvent(target, inputType, data) {
     try {
       target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType, data }));
@@ -880,7 +1188,7 @@ export function initLinterBridge() {
   }
 
   function triggerLintViaNoOpInput() {
-    const textarea = document.querySelector('textarea');
+    const textarea = findLintTriggerTextarea();
     if (!(textarea instanceof HTMLTextAreaElement)) {
       return {
         ok: false,
@@ -979,6 +1287,8 @@ export function initLinterBridge() {
       autoLintTimer = 0;
     }
 
+    stopTextareaVisibilityObservers();
+
     const attempt = () => {
       if (!enabled) {
         return;
@@ -989,8 +1299,9 @@ export function initLinterBridge() {
         return;
       }
 
-      if (debugState.totalLintCalls > 0) {
+      if (getRouteLintCallCount(activeRouteKey) > 0) {
         autoLintTriggeredRoutes.add(activeRouteKey);
+        stopTextareaVisibilityObservers();
         debugState.autoLint = {
           changed: true,
           reason: 'already-linted',
@@ -1004,27 +1315,26 @@ export function initLinterBridge() {
       autoLintAttemptCount += 1;
       const kick = triggerLintViaNoOpInput();
       if (kick.ok) {
-        autoLintTriggeredRoutes.add(activeRouteKey);
         debugState.autoLint = {
-          changed: true,
+          changed: false,
           reason: kick.reason,
           route: activeRouteKey,
           attempts: autoLintAttemptCount,
           source: reason
         };
-        return;
+      } else {
+        debugState.autoLint = {
+          changed: false,
+          reason: kick.reason,
+          route: activeRouteKey,
+          attempts: autoLintAttemptCount,
+          source: reason,
+          error: kick.error
+        };
       }
 
-      debugState.autoLint = {
-        changed: false,
-        reason: kick.reason,
-        route: activeRouteKey,
-        attempts: autoLintAttemptCount,
-        source: reason,
-        error: kick.error
-      };
-
       if (autoLintAttemptCount >= AUTO_LINT_MAX_ATTEMPTS) {
+        stopTextareaVisibilityObservers();
         return;
       }
 
@@ -1035,8 +1345,36 @@ export function initLinterBridge() {
     autoLintTimer = window.setTimeout(attempt, AUTO_LINT_RETRY_DELAY_MS);
   }
 
-  async function maybeAugmentLintResponse(response, annotationEntries) {
+  function notifyRouteChange(source) {
+    const nextRouteKey = getRouteKey();
+    if (!nextRouteKey || nextRouteKey === currentRouteKey) {
+      return;
+    }
+
+    currentRouteKey = nextRouteKey;
+    startTextareaVisibilityObserver(`${source}-textarea-visible`);
+    scheduleInitialNativeLintTrigger(source);
+  }
+
+  function patchHistoryMethod(methodName) {
+    const historyMethod = window.history && window.history[methodName];
+    if (typeof historyMethod !== 'function' || historyMethod.__babelHelperLinterPatched) {
+      return;
+    }
+
+    const wrapped = function patchedHistoryMethod(...args) {
+      const result = historyMethod.apply(this, args);
+      window.setTimeout(() => notifyRouteChange(`history-${methodName}`), 0);
+      return result;
+    };
+
+    wrapped.__babelHelperLinterPatched = true;
+    window.history[methodName] = wrapped;
+  }
+
+  async function maybeAugmentLintResponse(response, annotationEntries, routeKey) {
     debugState.totalLintCalls += 1;
+    recordLintCallForRoute(routeKey);
     if (!(response instanceof Response)) {
       debugState.last = {
         changed: false,
@@ -1130,9 +1468,10 @@ export function initLinterBridge() {
       return originalFetch(input, init);
     }
 
+    const routeKey = getRouteKey();
     const annotationEntries = await getAnnotationEntriesFromRequest(input, init);
     const response = await originalFetch(input, init);
-    return maybeAugmentLintResponse(response, annotationEntries);
+    return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   };
 
   window.addEventListener(
@@ -1140,13 +1479,26 @@ export function initLinterBridge() {
     (event) => {
       const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
       enabled = nextEnabled;
+      if (!enabled && autoLintTimer) {
+        window.clearTimeout(autoLintTimer);
+        autoLintTimer = 0;
+      }
+      if (!enabled) {
+        stopTextareaVisibilityObservers();
+      }
       if (enabled) {
+        startTextareaVisibilityObserver('toggle-enable-textarea-visible');
         scheduleInitialNativeLintTrigger('toggle-enable');
       }
     },
     true
   );
 
+  patchHistoryMethod('pushState');
+  patchHistoryMethod('replaceState');
+  window.addEventListener('popstate', () => notifyRouteChange('popstate'), true);
+
+  startTextareaVisibilityObserver('boot-textarea-visible');
   scheduleInitialNativeLintTrigger('boot');
 
   // ---------------------------------------------------------------------------
@@ -1155,8 +1507,6 @@ export function initLinterBridge() {
 
   const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
   const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
-  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
-
   function fixLeadingTrailingSpaces(text) {
     if (typeof text !== 'string' || !text) {
       return text;
@@ -1340,6 +1690,7 @@ export function initLinterBridge() {
     result = fixCurlySpacing(result);
     result = fixDoubleDashPunctuation(result);
     result = fixSingleDashPunctuation(result);
+    result = normalizeIncorrectInterjectionForms(result);
     result = fixTerminalPunctuation(result);
     return result;
   }
@@ -1536,6 +1887,7 @@ export function initLinterBridge() {
     fixDoubleSpaces,
     fixDoubleDashPunctuation,
     fixSingleDashPunctuation,
+    normalizeIncorrectInterjectionForms,
     fixTerminalPunctuation,
     fixSegmentStartCapitalization
   };

@@ -128,6 +128,145 @@ function hasSingleDashPunctuationViolation(text) {
   return /(?<!-)-[.,?!:;]/.test(text);
 }
 
+const INTERJECTION_CORRECTION_SPECS = [
+  { canonical: 'а', variants: ['аа', 'а-а', 'а-а-а'] },
+  { canonical: 'ага', variants: ['ага-а', 'агаа'] },
+  { canonical: 'Ам', variants: ['А-м', 'а-ам'] },
+  { canonical: 'ах', variants: ['ахх', 'а-а-ах'] },
+  { canonical: 'блин', variants: ['бли-ин'] },
+  { canonical: 'Вау', variants: ['уау'] },
+  { canonical: 'вот', variants: ['вооот'] },
+  { canonical: 'ей-богу', variants: ['ейбогу', 'ей богу'] },
+  { canonical: 'м-да', variants: ['мда', 'мдя'] },
+  { canonical: 'мгм', variants: ['мм-гм', 'мхм'] },
+  { canonical: 'м', variants: ['мм', 'Ммм', 'м-м-м'] },
+  { canonical: 'Н-да', variants: ['Нда'] },
+  { canonical: 'ну', variants: ['нууу', 'ну-у'] },
+  { canonical: 'Ну да', variants: ['Ну, да'] },
+  { canonical: 'о да', variants: ['о, да'] },
+  { canonical: 'о нет', variants: ['о, нет'] },
+  { canonical: 'ой', variants: ['оой', 'ойй'] },
+  { canonical: 'окей', variants: ["о'кей", 'ОК'] },
+  { canonical: 'ох', variants: ['охх'] },
+  { canonical: 'угу', variants: ['у-г-у', 'угуу'] },
+  { canonical: 'ух', variants: ['ухх'] },
+  { canonical: 'фу', variants: ['фу-у'] },
+  { canonical: 'ха-ха', variants: ['хахаха'] },
+  { canonical: 'ха', variants: ['ха-а', 'хаха'] },
+  { canonical: 'хм', variants: ['хмм', 'гм'] },
+  { canonical: 'чёрт', variants: ['чорт'] },
+  { canonical: 'э', variants: ['э-э', 'эээ', 'э…э'] },
+  { canonical: 'эх', variants: ['э-эх', 'эхх'] }
+];
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getLetterCaseShape(text) {
+  if (typeof text !== 'string' || !text) {
+    return 'mixed';
+  }
+
+  const letters = Array.from(text).filter((char) => /[\p{L}]/u.test(char));
+  if (!letters.length) {
+    return 'mixed';
+  }
+
+  const allUpper = letters.every((char) => char === char.toLocaleUpperCase());
+  if (allUpper) {
+    return 'upper';
+  }
+
+  const allLower = letters.every((char) => char === char.toLocaleLowerCase());
+  if (allLower) {
+    return 'lower';
+  }
+
+  const [first, ...rest] = letters;
+  if (
+    first === first.toLocaleUpperCase() &&
+    rest.every((char) => char === char.toLocaleLowerCase())
+  ) {
+    return 'title';
+  }
+
+  return 'mixed';
+}
+
+function applyLetterCaseShape(text, shape) {
+  if (typeof text !== 'string' || !text) {
+    return text;
+  }
+
+  if (shape === 'upper') {
+    return text.toLocaleUpperCase();
+  }
+
+  if (shape === 'lower') {
+    return text.toLocaleLowerCase();
+  }
+
+  if (shape === 'title') {
+    let applied = false;
+    let result = '';
+    for (const char of text) {
+      if (!/[\p{L}]/u.test(char)) {
+        result += char;
+        continue;
+      }
+
+      if (!applied) {
+        result += char.toLocaleUpperCase();
+        applied = true;
+      } else {
+        result += char.toLocaleLowerCase();
+      }
+    }
+
+    return result;
+  }
+
+  return text;
+}
+
+const INTERJECTION_CORRECTIONS = INTERJECTION_CORRECTION_SPECS
+  .flatMap((entry) =>
+    entry.variants.map((variant) => ({
+      canonical: entry.canonical,
+      variant
+    }))
+  )
+  .sort((left, right) => right.variant.length - left.variant.length)
+  .map((entry) => ({
+    canonical: entry.canonical,
+    pattern: new RegExp(
+      `(^|[^\\p{L}\\p{N}\\p{M}])(${escapeRegExp(entry.variant)})(?=$|[^\\p{L}\\p{N}\\p{M}])`,
+      'giu'
+    )
+  }));
+
+function normalizeIncorrectInterjectionForms(text) {
+  if (typeof text !== 'string' || !text) {
+    return text;
+  }
+
+  let result = text;
+  for (const correction of INTERJECTION_CORRECTIONS) {
+    correction.pattern.lastIndex = 0;
+    result = result.replace(correction.pattern, (_match, prefix, matchedVariant) => {
+      const caseShape = getLetterCaseShape(matchedVariant);
+      return prefix + applyLetterCaseShape(correction.canonical, caseShape);
+    });
+  }
+
+  return result;
+}
+
+function hasIncorrectInterjectionFormsViolation(text) {
+  return typeof text === 'string' && normalizeIncorrectInterjectionForms(text) !== text;
+}
+
 function hasTerminalPunctuationViolation(text) {
   if (typeof text !== 'string') {
     return false;
@@ -478,6 +617,7 @@ function applyAllFixes(text) {
   result = fixCurlySpacing(result);
   result = fixDoubleDashPunctuation(result);
   result = fixSingleDashPunctuation(result);
+  result = normalizeIncorrectInterjectionForms(result);
   result = fixTerminalPunctuation(result);
   return result;
 }
@@ -670,4 +810,37 @@ test('fixes single dash punctuation', () => {
 
 test('applyAllFixes includes single dash punctuation fix', () => {
   assert.equal(applyAllFixes('wait-.'), 'wait-');
+});
+
+test('flags incorrect interjection forms at token boundaries only', () => {
+  assert.equal(hasIncorrectInterjectionFormsViolation('аа, я понял.'), true);
+  assert.equal(hasIncorrectInterjectionFormsViolation('ей богу, это так.'), true);
+  assert.equal(hasIncorrectInterjectionFormsViolation('э-э, секунду.'), true);
+  assert.equal(hasIncorrectInterjectionFormsViolation('мм, да.'), true);
+  assert.equal(hasIncorrectInterjectionFormsViolation('схммм'), false);
+  assert.equal(hasIncorrectInterjectionFormsViolation('подруга'), false);
+});
+
+test('normalizes incorrect interjection forms conservatively', () => {
+  assert.equal(normalizeIncorrectInterjectionForms('аа, я понял.'), 'а, я понял.');
+  assert.equal(normalizeIncorrectInterjectionForms('а-а, я понял.'), 'а, я понял.');
+  assert.equal(normalizeIncorrectInterjectionForms('ей богу, это так.'), 'ей-богу, это так.');
+  assert.equal(normalizeIncorrectInterjectionForms('Ну, да.'), 'Ну да.');
+  assert.equal(normalizeIncorrectInterjectionForms('о, нет!'), 'о нет!');
+  assert.equal(normalizeIncorrectInterjectionForms('э-э, секунду.'), 'э, секунду.');
+  assert.equal(normalizeIncorrectInterjectionForms('мм, да.'), 'м, да.');
+  assert.equal(normalizeIncorrectInterjectionForms('ОК, хмм.'), 'ОКЕЙ, хм.');
+  assert.equal(normalizeIncorrectInterjectionForms('хахаха!'), 'ха-ха!');
+});
+
+test('preserves case shape when normalizing incorrect interjection forms', () => {
+  assert.equal(normalizeIncorrectInterjectionForms('ОК, ХММ.'), 'ОКЕЙ, ХМ.');
+  assert.equal(normalizeIncorrectInterjectionForms('Ей богу, это так.'), 'Ей-богу, это так.');
+  assert.equal(normalizeIncorrectInterjectionForms('А-м, ну ладно.'), 'Ам, ну ладно.');
+  assert.equal(normalizeIncorrectInterjectionForms('А-М, ну ладно.'), 'АМ, ну ладно.');
+});
+
+test('applyAllFixes includes incorrect interjection normalization', () => {
+  assert.equal(applyAllFixes('ей богу'), 'ей-богу.');
+  assert.equal(applyAllFixes('ОК, хмм'), 'ОКЕЙ, хм.');
 });

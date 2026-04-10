@@ -40,6 +40,7 @@ Custom linter notes:
 - `Custom Linter` is enabled by default and augments Babel's native lint API response.
 - Built-in helper rules currently include:
   - comma formatting: enforce `, ` (comma + single space)
+  - incorrect interjection forms: normalize listed malformed spellings to dictionary forms during autofix
 - Rule injection bridge lives in `src/content/linter-bridge.ts`.
 
 ## Validation
