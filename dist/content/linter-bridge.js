@@ -61,8 +61,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       { canonical: "\u0445\u0430", variants: ["\u0445\u0430-\u0430", "\u0445\u0430\u0445\u0430"] },
       { canonical: "\u0445\u043C", variants: ["\u0445\u043C\u043C", "\u0433\u043C"] },
       { canonical: "\u0447\u0451\u0440\u0442", variants: ["\u0447\u043E\u0440\u0442"] },
-      { canonical: "\u044D", variants: ["\u044D-\u044D", "\u044D\u044D\u044D", "\u044D\u2026\u044D"] },
-      { canonical: "\u044D\u0445", variants: ["\u044D-\u044D\u0445", "\u044D\u0445\u0445"] }
+      { canonical: "\u044D", variants: ["\u044D-\u044D", "\u044D\u044D\u044D", "\u044D\u044D", "\u044D\u2026\u044D"] },
+      { canonical: "\u044D\u0445", variants: ["\u044D-\u044D\u0445", "\u044D\u0445\u0445"] },
+      { canonical: "\u043E", variants: ["\u043E\u043E", "\u043E-\u043E"] }
     ];
     function safeJsonParse(text) {
       if (typeof text !== "string") {
@@ -188,7 +189,12 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           return;
         }
         const annotationId = readStringProp(current, ["annotationId", "id"]);
-        const text = readStringProp(current, ["text", "content", "value", "segmentText"]);
+        const text = readStringProp(current, [
+          "text",
+          "content",
+          "value",
+          "segmentText"
+        ]);
         if (annotationId && typeof text === "string") {
           const speakerKey = readSpeakerKey(current);
           const existing = entryById.get(annotationId);
@@ -385,10 +391,13 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       let result = text;
       for (const correction of INTERJECTION_CORRECTIONS) {
         correction.pattern.lastIndex = 0;
-        result = result.replace(correction.pattern, (_match, prefix, matchedVariant) => {
-          const caseShape = getLetterCaseShape(matchedVariant);
-          return prefix + applyLetterCaseShape(correction.canonical, caseShape);
-        });
+        result = result.replace(
+          correction.pattern,
+          (_match, prefix, matchedVariant) => {
+            const caseShape = getLetterCaseShape(matchedVariant);
+            return prefix + applyLetterCaseShape(correction.canonical, caseShape);
+          }
+        );
       }
       return result;
     }
@@ -524,7 +533,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         }
         return isUppercaseLetter(trimmed[ellipsisLetterIndex]);
       }
-      const firstLetterIndex = findFirstLetterIndex(trimmed, skipLeadingCapitalizationTokens(trimmed));
+      const firstLetterIndex = findFirstLetterIndex(
+        trimmed,
+        skipLeadingCapitalizationTokens(trimmed)
+      );
       if (firstLetterIndex === -1) {
         return false;
       }
@@ -619,7 +631,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         if (!isLintIssueLike(item)) {
           continue;
         }
-        existing.add(item.annotationId + "\0" + item.reason + "\0" + item.severity);
+        existing.add(
+          item.annotationId + "\0" + item.reason + "\0" + item.severity
+        );
       }
       let appended = 0;
       for (const issue of additionalIssues) {
@@ -798,7 +812,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return null;
       }
       const parsedLines = lines.map(parseJsonlLine);
-      const hasCompactFrames = parsedLines.some((entry) => entry && isCompactJsonlFramePayload(entry.payload));
+      const hasCompactFrames = parsedLines.some(
+        (entry) => entry && isCompactJsonlFramePayload(entry.payload)
+      );
       let changed = false;
       const mapped = lines.map((line, index) => {
         const parsed = parsedLines[index];
@@ -851,7 +867,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (activeRowTextarea instanceof HTMLTextAreaElement && isElementVisible(activeRowTextarea)) {
         return activeRowTextarea;
       }
-      const visibleTextarea = Array.from(document.querySelectorAll(ROW_TEXTAREA_SELECTOR)).find(
+      const visibleTextarea = Array.from(
+        document.querySelectorAll(ROW_TEXTAREA_SELECTOR)
+      ).find(
         (node) => node instanceof HTMLTextAreaElement && isElementVisible(node)
       );
       if (visibleTextarea instanceof HTMLTextAreaElement) {
@@ -901,7 +919,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       stopTextareaVisibilityObservers();
       textareaVisibilityObserver = new IntersectionObserver((entries) => {
-        if (!entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+        if (!entries.some(
+          (entry) => entry.isIntersecting || entry.intersectionRatio > 0
+        )) {
           return;
         }
         handleVisibleTextarea(routeKey, reason);
@@ -924,7 +944,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
             if (node.matches?.(ROW_TEXTAREA_SELECTOR)) {
               observeTextareaCandidate(node, routeKey, reason);
             }
-            for (const textarea of node.querySelectorAll?.(ROW_TEXTAREA_SELECTOR) || []) {
+            for (const textarea of node.querySelectorAll?.(
+              ROW_TEXTAREA_SELECTOR
+            ) || []) {
               observeTextareaCandidate(textarea, routeKey, reason);
               if (!textareaVisibilityObserver) {
                 return;
@@ -940,7 +962,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     }
     function dispatchInputEvent(target, inputType, data) {
       try {
-        target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+        target.dispatchEvent(
+          new InputEvent("input", { bubbles: true, inputType, data })
+        );
       } catch (_error) {
         target.dispatchEvent(new Event("input", { bubbles: true }));
       }
@@ -953,7 +977,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           reason: "textarea-not-found"
         };
       }
-      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )?.set;
       if (typeof valueSetter !== "function") {
         return {
           ok: false,
@@ -1186,14 +1213,19 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return originalFetch(input, init);
       }
       const routeKey = getRouteKey();
-      const annotationEntries = await getAnnotationEntriesFromRequest(input, init);
+      const annotationEntries = await getAnnotationEntriesFromRequest(
+        input,
+        init
+      );
       const response = await originalFetch(input, init);
       return maybeAugmentLintResponse(response, annotationEntries, routeKey);
     };
     window.addEventListener(
       TOGGLE_EVENT,
       (event) => {
-        const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
+        const nextEnabled = Boolean(
+          event && event.detail && event.detail.enabled
+        );
         enabled = nextEnabled;
         if (!enabled && autoLintTimer) {
           window.clearTimeout(autoLintTimer);
@@ -1211,7 +1243,11 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     );
     patchHistoryMethod("pushState");
     patchHistoryMethod("replaceState");
-    window.addEventListener("popstate", () => notifyRouteChange("popstate"), true);
+    window.addEventListener(
+      "popstate",
+      () => notifyRouteChange("popstate"),
+      true
+    );
     startTextareaVisibilityObserver("boot-textarea-visible");
     scheduleInitialNativeLintTrigger("boot");
     const AUTOFIX_REQUEST_EVENT = "babel-helper-linter-autofix";
@@ -1318,21 +1354,35 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         const sourceIndex = text.indexOf("...");
         const letterIndex2 = findFirstLetterIndex(
           text,
-          skipLeadingCapitalizationTokens(text, sourceIndex === -1 ? 0 : sourceIndex + 3)
+          skipLeadingCapitalizationTokens(
+            text,
+            sourceIndex === -1 ? 0 : sourceIndex + 3
+          )
         );
         if (letterIndex2 === -1 || !isUppercaseLetter(text[letterIndex2])) {
           return text;
         }
-        return replaceCharAt(text, letterIndex2, text[letterIndex2].toLocaleLowerCase());
+        return replaceCharAt(
+          text,
+          letterIndex2,
+          text[letterIndex2].toLocaleLowerCase()
+        );
       }
-      const letterIndex = findFirstLetterIndex(text, skipLeadingCapitalizationTokens(text));
+      const letterIndex = findFirstLetterIndex(
+        text,
+        skipLeadingCapitalizationTokens(text)
+      );
       if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
         return text;
       }
       if (endsWithLowercaseContinuationMarker(previousSameSpeakerText)) {
         return text;
       }
-      return replaceCharAt(text, letterIndex, text[letterIndex].toLocaleUpperCase());
+      return replaceCharAt(
+        text,
+        letterIndex,
+        text[letterIndex].toLocaleUpperCase()
+      );
     }
     function applyAllFixes(text) {
       if (typeof text !== "string") {
@@ -1382,14 +1432,23 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       return "";
     }
     function setTextareaValue(textarea, value) {
-      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )?.set;
       if (typeof valueSetter === "function") {
         valueSetter.call(textarea, value);
       } else {
         textarea.value = value;
       }
       try {
-        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
+        textarea.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: null
+          })
+        );
       } catch (_error) {
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
       }
@@ -1422,7 +1481,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return { fixed: false, reason: "not-element" };
       }
       const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-      return autoFixTextarea(textarea, { previousSameSpeakerText: getPreviousSameSpeakerText(row) });
+      return autoFixTextarea(textarea, {
+        previousSameSpeakerText: getPreviousSameSpeakerText(row)
+      });
     }
     function autoFixAll() {
       const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
@@ -1448,7 +1509,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           previousSameSpeakerText: row2 ? getPreviousSameSpeakerText(row2) : ""
         });
       }
-      const activeRow = document.querySelector("tbody tr.bg-neutral-100.ring-1.ring-neutral-300");
+      const activeRow = document.querySelector(
+        "tbody tr.bg-neutral-100.ring-1.ring-neutral-300"
+      );
       if (activeRow) {
         return autoFixRow(activeRow);
       }
@@ -1462,9 +1525,11 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       AUTOFIX_REQUEST_EVENT,
       (event) => {
         if (!enabled) {
-          window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-            detail: { ok: false, reason: "disabled" }
-          }));
+          window.dispatchEvent(
+            new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+              detail: { ok: false, reason: "disabled" }
+            })
+          );
           return;
         }
         const detail = event && event.detail ? event.detail : {};
@@ -1476,9 +1541,11 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           result = autoFixCurrent();
         }
         scheduleInitialNativeLintTrigger("autofix");
-        window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-          detail: { ok: true, scope, ...result }
-        }));
+        window.dispatchEvent(
+          new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+            detail: { ok: true, scope, ...result }
+          })
+        );
       },
       true
     );

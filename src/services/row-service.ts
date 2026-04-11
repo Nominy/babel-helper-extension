@@ -1835,7 +1835,9 @@ export function registerRowService(helper: any) {
       return false;
     }
 
-    return helper.focusRow(rows[nextIndex]);
+    return helper.focusRow(rows[nextIndex], {
+      cursor: 'start'
+    });
   };
 
   helper.joinSegmentText = function joinSegmentText(left, right) {

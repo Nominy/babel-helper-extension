@@ -237,6 +237,29 @@ export function registerLifecycle(helper: any) {
     );
   }
 
+  function updateRightShiftState(event) {
+    if (event.code === 'ShiftRight') {
+      helper.state.rightShiftPressed = event.type === 'keydown';
+      return;
+    }
+
+    if (!event.shiftKey) {
+      helper.state.rightShiftPressed = false;
+    }
+  }
+
+  function isRightShiftSegmentNavigationShortcut(event) {
+    return Boolean(
+      isFeatureEnabled('rowActions') &&
+      helper.state.rightShiftPressed &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+    );
+  }
+
   function shouldSuppressNativeArrowHotkey(event) {
     if (!isFeatureEnabled('disableNativeArrowSeek')) {
       return false;
@@ -266,6 +289,26 @@ export function registerLifecycle(helper: any) {
   }
 
   function handleNativeArrowSuppress(event) {
+    updateRightShiftState(event);
+
+    if (isRightShiftSegmentNavigationShortcut(event)) {
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      const handled =
+        typeof helper.moveFocus === 'function' &&
+        helper.moveFocus(offset);
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (handled && helper.analytics) {
+        helper.analytics.record('hotkey:segment-nav', {
+          direction: offset > 0 ? 'next' : 'previous',
+          via: 'right-shift-arrow'
+        });
+      }
+      return;
+    }
+
     if (!shouldSuppressNativeArrowHotkey(event)) {
       return;
     }
@@ -274,6 +317,14 @@ export function registerLifecycle(helper: any) {
     if (helper.analytics) {
       helper.analytics.record('hotkey:arrow-suppressed', { key: event.key, ctrlKey: event.ctrlKey });
     }
+  }
+
+  function handleGlobalKeyup(event) {
+    updateRightShiftState(event);
+  }
+
+  function handleWindowBlur() {
+    helper.state.rightShiftPressed = false;
   }
 
   helper.handleKeydown = function handleKeydown(event) {
@@ -603,6 +654,8 @@ export function registerLifecycle(helper: any) {
     }
 
     window.addEventListener('keydown', handleNativeArrowSuppress, true);
+    window.addEventListener('keyup', handleGlobalKeyup, true);
+    window.addEventListener('blur', handleWindowBlur, true);
     document.addEventListener('keydown', helper.handleKeydown, true);
     helper.state.keydownBound = true;
     helper.state.nativeArrowSuppressBound = true;

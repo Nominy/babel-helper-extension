@@ -102,6 +102,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         const milliseconds = Math.round(shortcut.seconds * 1e3);
         rows.push([shortcut.label, "Rewind playback " + milliseconds + "ms"]);
       }
+      rows.push(["Right Shift + Left / Right", "Focus previous / next segment from start"]);
       rows.push(["Alt + Shift + Up", "Merge with previous segment"]);
       rows.push(["Alt + Shift + Down", "Merge with next segment"]);
       rows.push(["D", "Delete current segment when not typing"]);
@@ -165,6 +166,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       routeRecoveryObserver: null,
       keydownBound: false,
       nativeArrowSuppressBound: false,
+      rightShiftPressed: false,
       sessionActive: false,
       rowTrackingBound: false,
       cutListenersBound: false,
@@ -1703,7 +1705,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (nextIndex === baseIndex && currentIndex >= 0) {
         return false;
       }
-      return helper.focusRow(rows[nextIndex]);
+      return helper.focusRow(rows[nextIndex], {
+        cursor: "start"
+      });
     };
     helper.joinSegmentText = function joinSegmentText(left, right) {
       const before = typeof left === "string" ? left : String(left ?? "");
@@ -7231,6 +7235,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         (shortcut) => shortcut && matchesShortcutCode(shortcut) && Boolean(shortcut.ctrlKey) === Boolean(event.ctrlKey) && Boolean(shortcut.altKey) === Boolean(event.altKey) && Boolean(shortcut.shiftKey) === Boolean(event.shiftKey) && Boolean(shortcut.metaKey) === Boolean(event.metaKey) && Number.isFinite(Number(shortcut.seconds))
       ) || null;
     }
+    function updateRightShiftState(event) {
+      if (event.code === "ShiftRight") {
+        helper.state.rightShiftPressed = event.type === "keydown";
+        return;
+      }
+      if (!event.shiftKey) {
+        helper.state.rightShiftPressed = false;
+      }
+    }
+    function isRightShiftSegmentNavigationShortcut(event) {
+      return Boolean(
+        isFeatureEnabled("rowActions") && helper.state.rightShiftPressed && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      );
+    }
     function shouldSuppressNativeArrowHotkey(event) {
       if (!isFeatureEnabled("disableNativeArrowSeek")) {
         return false;
@@ -7253,6 +7271,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       return !event.shiftKey;
     }
     function handleNativeArrowSuppress(event) {
+      updateRightShiftState(event);
+      if (isRightShiftSegmentNavigationShortcut(event)) {
+        const offset = event.key === "ArrowRight" ? 1 : -1;
+        const handled = typeof helper.moveFocus === "function" && helper.moveFocus(offset);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (handled && helper.analytics) {
+          helper.analytics.record("hotkey:segment-nav", {
+            direction: offset > 0 ? "next" : "previous",
+            via: "right-shift-arrow"
+          });
+        }
+        return;
+      }
       if (!shouldSuppressNativeArrowHotkey(event)) {
         return;
       }
@@ -7260,6 +7292,12 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (helper.analytics) {
         helper.analytics.record("hotkey:arrow-suppressed", { key: event.key, ctrlKey: event.ctrlKey });
       }
+    }
+    function handleGlobalKeyup(event) {
+      updateRightShiftState(event);
+    }
+    function handleWindowBlur() {
+      helper.state.rightShiftPressed = false;
     }
     helper.handleKeydown = function handleKeydown(event) {
       if (!helper.runtime.isSessionInteractive()) {
@@ -7498,6 +7536,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return;
       }
       window.addEventListener("keydown", handleNativeArrowSuppress, true);
+      window.addEventListener("keyup", handleGlobalKeyup, true);
+      window.addEventListener("blur", handleWindowBlur, true);
       document.addEventListener("keydown", helper.handleKeydown, true);
       helper.state.keydownBound = true;
       helper.state.nativeArrowSuppressBound = true;

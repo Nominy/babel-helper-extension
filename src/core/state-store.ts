@@ -16,6 +16,7 @@
     routeRecoveryObserver: null,
     keydownBound: false,
     nativeArrowSuppressBound: false,
+    rightShiftPressed: false,
     sessionActive: false,
     rowTrackingBound: false,
     cutListenersBound: false,

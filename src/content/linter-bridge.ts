@@ -4,23 +4,25 @@ export function initLinterBridge() {
     return;
   }
 
-  const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
-  const LINT_PATH = '/api/trpc/transcriptions.lintAnnotations';
+  const TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
+  const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
-  const QUOTE_BALANCE_RULE_REASON = 'Double quotes must be balanced.';
-  const QUOTE_PLACEMENT_RULE_REASON = 'Double quotes must not have stray spaces inside or be glued to surrounding words.';
-  const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
+  const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
+  const QUOTE_PLACEMENT_RULE_REASON =
+    "Double quotes must not have stray spaces inside or be glued to surrounding words.";
+  const CURLY_SPACING_RULE_REASON =
+    'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
-    'Punctuation immediately after double dash is typically avoided.';
+    "Punctuation immediately after double dash is typically avoided.";
   const SINGLE_DASH_PUNCTUATION_RULE_REASON =
-    'Punctuation immediately after single dash is typically avoided.';
+    "Punctuation immediately after single dash is typically avoided.";
   const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
-    'Incorrect interjection forms must use dictionary spelling.';
+    "Incorrect interjection forms must use dictionary spelling.";
   const TERMINAL_PUNCTUATION_RULE_REASON =
     'Segments must end with one of: ?, ..., !, --, ", or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
-    'Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.';
-  const RULE_SEVERITY = 'error';
+    "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
+  const RULE_SEVERITY = "error";
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 100;
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
@@ -36,41 +38,42 @@ export function initLinterBridge() {
   const debugState = {
     totalLintCalls: 0,
     last: null,
-    autoLint: null
+    autoLint: null,
   };
   const INTERJECTION_CORRECTION_SPECS = [
-    { canonical: 'а', variants: ['аа', 'а-а', 'а-а-а'] },
-    { canonical: 'ага', variants: ['ага-а', 'агаа'] },
-    { canonical: 'Ам', variants: ['А-м', 'а-ам'] },
-    { canonical: 'ах', variants: ['ахх', 'а-а-ах'] },
-    { canonical: 'блин', variants: ['бли-ин'] },
-    { canonical: 'Вау', variants: ['уау'] },
-    { canonical: 'вот', variants: ['вооот'] },
-    { canonical: 'ей-богу', variants: ['ейбогу', 'ей богу'] },
-    { canonical: 'м-да', variants: ['мда', 'мдя'] },
-    { canonical: 'мгм', variants: ['мм-гм', 'мхм'] },
-    { canonical: 'м', variants: ['мм', 'Ммм', 'м-м-м'] },
-    { canonical: 'Н-да', variants: ['Нда'] },
-    { canonical: 'ну', variants: ['нууу', 'ну-у'] },
-    { canonical: 'Ну да', variants: ['Ну, да'] },
-    { canonical: 'о да', variants: ['о, да'] },
-    { canonical: 'о нет', variants: ['о, нет'] },
-    { canonical: 'ой', variants: ['оой', 'ойй'] },
-    { canonical: 'окей', variants: ["о'кей", 'ОК'] },
-    { canonical: 'ох', variants: ['охх'] },
-    { canonical: 'угу', variants: ['у-г-у', 'угуу'] },
-    { canonical: 'ух', variants: ['ухх'] },
-    { canonical: 'фу', variants: ['фу-у'] },
-    { canonical: 'ха-ха', variants: ['хахаха'] },
-    { canonical: 'ха', variants: ['ха-а', 'хаха'] },
-    { canonical: 'хм', variants: ['хмм', 'гм'] },
-    { canonical: 'чёрт', variants: ['чорт'] },
-    { canonical: 'э', variants: ['э-э', 'эээ', 'э…э'] },
-    { canonical: 'эх', variants: ['э-эх', 'эхх'] }
+    { canonical: "а", variants: ["аа", "а-а", "а-а-а"] },
+    { canonical: "ага", variants: ["ага-а", "агаа"] },
+    { canonical: "Ам", variants: ["А-м", "а-ам"] },
+    { canonical: "ах", variants: ["ахх", "а-а-ах"] },
+    { canonical: "блин", variants: ["бли-ин"] },
+    { canonical: "Вау", variants: ["уау"] },
+    { canonical: "вот", variants: ["вооот"] },
+    { canonical: "ей-богу", variants: ["ейбогу", "ей богу"] },
+    { canonical: "м-да", variants: ["мда", "мдя"] },
+    { canonical: "мгм", variants: ["мм-гм", "мхм"] },
+    { canonical: "м", variants: ["мм", "Ммм", "м-м-м"] },
+    { canonical: "Н-да", variants: ["Нда"] },
+    { canonical: "ну", variants: ["нууу", "ну-у"] },
+    { canonical: "Ну да", variants: ["Ну, да"] },
+    { canonical: "о да", variants: ["о, да"] },
+    { canonical: "о нет", variants: ["о, нет"] },
+    { canonical: "ой", variants: ["оой", "ойй"] },
+    { canonical: "окей", variants: ["о'кей", "ОК"] },
+    { canonical: "ох", variants: ["охх"] },
+    { canonical: "угу", variants: ["у-г-у", "угуу"] },
+    { canonical: "ух", variants: ["ухх"] },
+    { canonical: "фу", variants: ["фу-у"] },
+    { canonical: "ха-ха", variants: ["хахаха"] },
+    { canonical: "ха", variants: ["ха-а", "хаха"] },
+    { canonical: "хм", variants: ["хмм", "гм"] },
+    { canonical: "чёрт", variants: ["чорт"] },
+    { canonical: "э", variants: ["э-э", "эээ", "ээ", "э…э"] },
+    { canonical: "эх", variants: ["э-эх", "эхх"] },
+    { canonical: "о", variants: ["оо", "о-о"] },
   ];
 
   function safeJsonParse(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return null;
     }
 
@@ -82,7 +85,7 @@ export function initLinterBridge() {
   }
 
   function getRequestUrl(input) {
-    if (typeof input === 'string') {
+    if (typeof input === "string") {
       return input;
     }
 
@@ -90,37 +93,37 @@ export function initLinterBridge() {
       return input.toString();
     }
 
-    if (input && typeof input.url === 'string') {
+    if (input && typeof input.url === "string") {
       return input.url;
     }
 
-    return '';
+    return "";
   }
 
   function getRequestMethod(input, init) {
-    if (init && typeof init.method === 'string' && init.method) {
+    if (init && typeof init.method === "string" && init.method) {
       return init.method.toUpperCase();
     }
 
-    if (input && typeof input.method === 'string' && input.method) {
+    if (input && typeof input.method === "string" && input.method) {
       return input.method.toUpperCase();
     }
 
-    return 'GET';
+    return "GET";
   }
 
   function isLintRequest(input, init) {
     const method = getRequestMethod(input, init);
-    if (method !== 'POST') {
+    if (method !== "POST") {
       return false;
     }
 
     const rawUrl = getRequestUrl(input);
-    return typeof rawUrl === 'string' && rawUrl.indexOf(LINT_PATH) !== -1;
+    return typeof rawUrl === "string" && rawUrl.indexOf(LINT_PATH) !== -1;
   }
 
   async function readRequestBodyText(input, init) {
-    if (init && typeof init.body === 'string') {
+    if (init && typeof init.body === "string") {
       return init.body;
     }
 
@@ -128,21 +131,21 @@ export function initLinterBridge() {
       try {
         return await input.clone().text();
       } catch (_error) {
-        return '';
+        return "";
       }
     }
 
-    return '';
+    return "";
   }
 
   function readQueryInputPayload(urlString) {
-    if (typeof urlString !== 'string' || !urlString) {
+    if (typeof urlString !== "string" || !urlString) {
       return null;
     }
 
     try {
       const url = new URL(urlString, window.location.origin);
-      const encodedInput = url.searchParams.get('input');
+      const encodedInput = url.searchParams.get("input");
       if (!encodedInput) {
         return null;
       }
@@ -155,8 +158,8 @@ export function initLinterBridge() {
 
   function readStringProp(source, keys) {
     for (const key of keys) {
-      const value = source && typeof source === 'object' ? source[key] : null;
-      if (typeof value === 'string' && value) {
+      const value = source && typeof source === "object" ? source[key] : null;
+      if (typeof value === "string" && value) {
         return value;
       }
     }
@@ -165,40 +168,42 @@ export function initLinterBridge() {
   }
 
   function extractAnnotationEntries(root) {
-    if (!root || typeof root !== 'object') {
+    if (!root || typeof root !== "object") {
       return [];
     }
 
     function normalizeSpeakerKey(value) {
-      return typeof value === 'string' ? value.trim() : '';
+      return typeof value === "string" ? value.trim() : "";
     }
 
     function readSpeakerKey(source) {
-      if (!source || typeof source !== 'object') {
-        return '';
+      if (!source || typeof source !== "object") {
+        return "";
       }
 
       const direct = readStringProp(source, [
-        'processedRecordingId',
-        'trackLabel',
-        'speakerKey',
-        'speakerId',
-        'speakerName',
-        'speaker'
+        "processedRecordingId",
+        "trackLabel",
+        "speakerKey",
+        "speakerId",
+        "speakerName",
+        "speaker",
       ]);
       if (direct) {
         return normalizeSpeakerKey(direct);
       }
 
       const annotation =
-        source.annotation && typeof source.annotation === 'object' ? source.annotation : null;
+        source.annotation && typeof source.annotation === "object"
+          ? source.annotation
+          : null;
       const nested = readStringProp(annotation, [
-        'processedRecordingId',
-        'trackLabel',
-        'speakerKey',
-        'speakerId',
-        'speakerName',
-        'speaker'
+        "processedRecordingId",
+        "trackLabel",
+        "speakerKey",
+        "speakerId",
+        "speakerName",
+        "speaker",
       ]);
       return normalizeSpeakerKey(nested);
     }
@@ -208,7 +213,7 @@ export function initLinterBridge() {
     const entryById = new Map();
 
     function visit(current) {
-      if (!current || typeof current !== 'object' || seen.has(current)) {
+      if (!current || typeof current !== "object" || seen.has(current)) {
         return;
       }
 
@@ -221,9 +226,14 @@ export function initLinterBridge() {
         return;
       }
 
-      const annotationId = readStringProp(current, ['annotationId', 'id']);
-      const text = readStringProp(current, ['text', 'content', 'value', 'segmentText']);
-      if (annotationId && typeof text === 'string') {
+      const annotationId = readStringProp(current, ["annotationId", "id"]);
+      const text = readStringProp(current, [
+        "text",
+        "content",
+        "value",
+        "segmentText",
+      ]);
+      if (annotationId && typeof text === "string") {
         const speakerKey = readSpeakerKey(current);
         const existing = entryById.get(annotationId);
         if (existing) {
@@ -235,7 +245,7 @@ export function initLinterBridge() {
           const entry = {
             annotationId,
             text,
-            speakerKey
+            speakerKey,
           };
           entryById.set(annotationId, entry);
           orderedEntries.push(entry);
@@ -243,7 +253,7 @@ export function initLinterBridge() {
       }
 
       for (const value of Object.values(current)) {
-        if (value && typeof value === 'object') {
+        if (value && typeof value === "object") {
           visit(value);
         }
       }
@@ -254,16 +264,20 @@ export function initLinterBridge() {
   }
 
   function hasCommaSpacingViolation(text) {
-    if (typeof text !== 'string' || text.indexOf(',') === -1) {
+    if (typeof text !== "string" || text.indexOf(",") === -1) {
       return false;
     }
 
-    return /\s+,/.test(text) || /(?<!\d),(?![\d ]|$)/.test(text) || /, {2,}/.test(text);
+    return (
+      /\s+,/.test(text) ||
+      /(?<!\d),(?![\d ]|$)/.test(text) ||
+      /, {2,}/.test(text)
+    );
   }
 
   function getQuoteIndices(text) {
     const indices = [];
-    if (typeof text !== 'string' || text.indexOf('"') === -1) {
+    if (typeof text !== "string" || text.indexOf('"') === -1) {
       return indices;
     }
 
@@ -281,31 +295,31 @@ export function initLinterBridge() {
   }
 
   function isWordCharacter(char) {
-    return typeof char === 'string' && /[\p{L}\p{N}]/u.test(char);
+    return typeof char === "string" && /[\p{L}\p{N}]/u.test(char);
   }
 
   function escapeRegExp(text) {
-    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function getLetterCaseShape(text) {
-    if (typeof text !== 'string' || !text) {
-      return 'mixed';
+    if (typeof text !== "string" || !text) {
+      return "mixed";
     }
 
     const letters = Array.from(text).filter((char) => /[\p{L}]/u.test(char));
     if (!letters.length) {
-      return 'mixed';
+      return "mixed";
     }
 
     const allUpper = letters.every((char) => char === char.toLocaleUpperCase());
     if (allUpper) {
-      return 'upper';
+      return "upper";
     }
 
     const allLower = letters.every((char) => char === char.toLocaleLowerCase());
     if (allLower) {
-      return 'lower';
+      return "lower";
     }
 
     const [first, ...rest] = letters;
@@ -313,28 +327,28 @@ export function initLinterBridge() {
       first === first.toLocaleUpperCase() &&
       rest.every((char) => char === char.toLocaleLowerCase())
     ) {
-      return 'title';
+      return "title";
     }
 
-    return 'mixed';
+    return "mixed";
   }
 
   function applyLetterCaseShape(text, shape) {
-    if (typeof text !== 'string' || !text) {
+    if (typeof text !== "string" || !text) {
       return text;
     }
 
-    if (shape === 'upper') {
+    if (shape === "upper") {
       return text.toLocaleUpperCase();
     }
 
-    if (shape === 'lower') {
+    if (shape === "lower") {
       return text.toLocaleLowerCase();
     }
 
-    if (shape === 'title') {
+    if (shape === "title") {
       let applied = false;
-      let result = '';
+      let result = "";
       for (const char of text) {
         if (!/[\p{L}]/u.test(char)) {
           result += char;
@@ -355,20 +369,20 @@ export function initLinterBridge() {
     return text;
   }
 
-  const INTERJECTION_CORRECTIONS = INTERJECTION_CORRECTION_SPECS
-    .flatMap((entry) =>
+  const INTERJECTION_CORRECTIONS = INTERJECTION_CORRECTION_SPECS.flatMap(
+    (entry) =>
       entry.variants.map((variant) => ({
         canonical: entry.canonical,
-        variant
-      }))
-    )
+        variant,
+      })),
+  )
     .sort((left, right) => right.variant.length - left.variant.length)
     .map((entry) => ({
       canonical: entry.canonical,
       pattern: new RegExp(
         `(^|[^\\p{L}\\p{N}\\p{M}])(${escapeRegExp(entry.variant)})(?=$|[^\\p{L}\\p{N}\\p{M}])`,
-        'giu'
-      )
+        "giu",
+      ),
     }));
 
   function hasQuotePlacementViolation(text) {
@@ -380,10 +394,11 @@ export function initLinterBridge() {
     for (let index = 0; index < quoteIndices.length; index += 2) {
       const openIndex = quoteIndices[index];
       const closeIndex = quoteIndices[index + 1];
-      const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
-      const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
-      const prevCharBeforeClose = closeIndex > 0 ? text[closeIndex - 1] : '';
-      const nextChar = closeIndex + 1 < text.length ? text[closeIndex + 1] : '';
+      const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
+      const nextCharAfterOpen =
+        openIndex + 1 < text.length ? text[openIndex + 1] : "";
+      const prevCharBeforeClose = closeIndex > 0 ? text[closeIndex - 1] : "";
+      const nextChar = closeIndex + 1 < text.length ? text[closeIndex + 1] : "";
 
       if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
         return true;
@@ -398,12 +413,12 @@ export function initLinterBridge() {
   }
 
   function hasCurlySpacingViolation(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return false;
     }
 
-    const hasOpen = text.indexOf('{') !== -1;
-    const hasClose = text.indexOf('}') !== -1;
+    const hasOpen = text.indexOf("{") !== -1;
+    const hasClose = text.indexOf("}") !== -1;
     if (!hasOpen && !hasClose) {
       return false;
     }
@@ -415,12 +430,12 @@ export function initLinterBridge() {
     const stack = [];
     for (let index = 0; index < text.length; index += 1) {
       const char = text[index];
-      if (char === '{') {
+      if (char === "{") {
         stack.push(index);
         continue;
       }
 
-      if (char !== '}') {
+      if (char !== "}") {
         continue;
       }
 
@@ -429,10 +444,11 @@ export function initLinterBridge() {
       }
 
       const openIndex = stack.pop();
-      const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
-      const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
-      const prevCharBeforeClose = index > 0 ? text[index - 1] : '';
-      const nextChar = index + 1 < text.length ? text[index + 1] : '';
+      const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
+      const nextCharAfterOpen =
+        openIndex + 1 < text.length ? text[openIndex + 1] : "";
+      const prevCharBeforeClose = index > 0 ? text[index - 1] : "";
+      const nextChar = index + 1 < text.length ? text[index + 1] : "";
 
       if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
         return true;
@@ -447,7 +463,7 @@ export function initLinterBridge() {
   }
 
   function hasDoubleDashPunctuationViolation(text) {
-    if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    if (typeof text !== "string" || text.indexOf("--") === -1) {
       return false;
     }
 
@@ -455,7 +471,7 @@ export function initLinterBridge() {
   }
 
   function hasSingleDashPunctuationViolation(text) {
-    if (typeof text !== 'string' || text.indexOf('-') === -1) {
+    if (typeof text !== "string" || text.indexOf("-") === -1) {
       return false;
     }
 
@@ -463,28 +479,34 @@ export function initLinterBridge() {
   }
 
   function normalizeIncorrectInterjectionForms(text) {
-    if (typeof text !== 'string' || !text) {
+    if (typeof text !== "string" || !text) {
       return text;
     }
 
     let result = text;
     for (const correction of INTERJECTION_CORRECTIONS) {
       correction.pattern.lastIndex = 0;
-      result = result.replace(correction.pattern, (_match, prefix, matchedVariant) => {
-        const caseShape = getLetterCaseShape(matchedVariant);
-        return prefix + applyLetterCaseShape(correction.canonical, caseShape);
-      });
+      result = result.replace(
+        correction.pattern,
+        (_match, prefix, matchedVariant) => {
+          const caseShape = getLetterCaseShape(matchedVariant);
+          return prefix + applyLetterCaseShape(correction.canonical, caseShape);
+        },
+      );
     }
 
     return result;
   }
 
   function hasIncorrectInterjectionFormsViolation(text) {
-    return typeof text === 'string' && normalizeIncorrectInterjectionForms(text) !== text;
+    return (
+      typeof text === "string" &&
+      normalizeIncorrectInterjectionForms(text) !== text
+    );
   }
 
   function hasTerminalPunctuationViolation(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return false;
     }
 
@@ -498,7 +520,7 @@ export function initLinterBridge() {
 
   function isUppercaseLetter(char) {
     return (
-      typeof char === 'string' &&
+      typeof char === "string" &&
       /[\p{L}]/u.test(char) &&
       char === char.toLocaleUpperCase() &&
       char !== char.toLocaleLowerCase()
@@ -507,7 +529,7 @@ export function initLinterBridge() {
 
   function isLowercaseLetter(char) {
     return (
-      typeof char === 'string' &&
+      typeof char === "string" &&
       /[\p{L}]/u.test(char) &&
       char === char.toLocaleLowerCase() &&
       char !== char.toLocaleUpperCase()
@@ -515,7 +537,7 @@ export function initLinterBridge() {
   }
 
   function findFirstLetterIndex(text, startIndex = 0) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return -1;
     }
 
@@ -529,7 +551,7 @@ export function initLinterBridge() {
   }
 
   function skipLeadingCapitalizationTokens(text, startIndex = 0) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return startIndex;
     }
 
@@ -541,8 +563,8 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (char === '[' || char === '{') {
-        const closeChar = char === '[' ? ']' : '}';
+      if (char === "[" || char === "{") {
+        const closeChar = char === "[" ? "]" : "}";
         const closeIndex = text.indexOf(closeChar, index + 1);
         if (closeIndex === -1) {
           break;
@@ -552,8 +574,8 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (char === '<') {
-        const closeIndex = text.indexOf('>', index + 1);
+      if (char === "<") {
+        const closeIndex = text.indexOf(">", index + 1);
         if (closeIndex === -1) {
           break;
         }
@@ -569,15 +591,15 @@ export function initLinterBridge() {
   }
 
   function stripTrailingTagTokens(text) {
-    if (typeof text !== 'string') {
-      return '';
+    if (typeof text !== "string") {
+      return "";
     }
 
     let result = text.trimEnd();
     while (result) {
       const lastChar = result[result.length - 1];
-      if (lastChar === ']') {
-        const openIndex = result.lastIndexOf('[');
+      if (lastChar === "]") {
+        const openIndex = result.lastIndexOf("[");
         if (openIndex === -1) {
           break;
         }
@@ -586,8 +608,8 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (lastChar === '}') {
-        const openIndex = result.lastIndexOf('{');
+      if (lastChar === "}") {
+        const openIndex = result.lastIndexOf("{");
         if (openIndex === -1) {
           break;
         }
@@ -596,8 +618,8 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (lastChar === '>') {
-        const openIndex = result.lastIndexOf('<');
+      if (lastChar === ">") {
+        const openIndex = result.lastIndexOf("<");
         if (openIndex === -1) {
           break;
         }
@@ -613,7 +635,7 @@ export function initLinterBridge() {
   }
 
   function endsWithLowercaseContinuationMarker(text) {
-    return typeof text === 'string' && /(?:\.\.\.|--)\s*$/.test(text);
+    return typeof text === "string" && /(?:\.\.\.|--)\s*$/.test(text);
   }
 
   function previousSameSpeakerAllowsLowercase(annotationEntries, index) {
@@ -634,8 +656,12 @@ export function initLinterBridge() {
     return false;
   }
 
-  function hasSegmentStartCapitalizationViolation(entry, annotationEntries, index) {
-    if (!entry || typeof entry.text !== 'string') {
+  function hasSegmentStartCapitalizationViolation(
+    entry,
+    annotationEntries,
+    index,
+  ) {
+    if (!entry || typeof entry.text !== "string") {
       return false;
     }
 
@@ -644,10 +670,10 @@ export function initLinterBridge() {
       return false;
     }
 
-    if (trimmed.startsWith('...')) {
+    if (trimmed.startsWith("...")) {
       const ellipsisLetterIndex = findFirstLetterIndex(
         trimmed,
-        skipLeadingCapitalizationTokens(trimmed, 3)
+        skipLeadingCapitalizationTokens(trimmed, 3),
       );
       if (ellipsisLetterIndex === -1) {
         return false;
@@ -656,7 +682,10 @@ export function initLinterBridge() {
       return isUppercaseLetter(trimmed[ellipsisLetterIndex]);
     }
 
-    const firstLetterIndex = findFirstLetterIndex(trimmed, skipLeadingCapitalizationTokens(trimmed));
+    const firstLetterIndex = findFirstLetterIndex(
+      trimmed,
+      skipLeadingCapitalizationTokens(trimmed),
+    );
     if (firstLetterIndex === -1) {
       return false;
     }
@@ -672,7 +701,7 @@ export function initLinterBridge() {
     const issues = [];
     for (let index = 0; index < annotationEntries.length; index += 1) {
       const entry = annotationEntries[index];
-      if (!entry || typeof entry.annotationId !== 'string') {
+      if (!entry || typeof entry.annotationId !== "string") {
         continue;
       }
 
@@ -680,7 +709,7 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: COMMA_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -688,13 +717,13 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: QUOTE_BALANCE_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       } else if (hasQuotePlacementViolation(entry.text)) {
         issues.push({
           annotationId: entry.annotationId,
           reason: QUOTE_PLACEMENT_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -702,7 +731,7 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: CURLY_SPACING_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -710,7 +739,7 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -718,7 +747,7 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: SINGLE_DASH_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -726,7 +755,7 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
@@ -734,15 +763,17 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: TERMINAL_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
 
-      if (hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)) {
+      if (
+        hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)
+      ) {
         issues.push({
           annotationId: entry.annotationId,
           reason: SEGMENT_START_CAPITALIZATION_RULE_REASON,
-          severity: RULE_SEVERITY
+          severity: RULE_SEVERITY,
         });
       }
     }
@@ -753,15 +784,19 @@ export function initLinterBridge() {
   function isLintIssueLike(value) {
     return Boolean(
       value &&
-        typeof value === 'object' &&
-        typeof value.annotationId === 'string' &&
-        typeof value.reason === 'string' &&
-        typeof value.severity === 'string'
+      typeof value === "object" &&
+      typeof value.annotationId === "string" &&
+      typeof value.reason === "string" &&
+      typeof value.severity === "string",
     );
   }
 
   function appendIssuesToArray(target, additionalIssues) {
-    if (!Array.isArray(target) || !Array.isArray(additionalIssues) || !additionalIssues.length) {
+    if (
+      !Array.isArray(target) ||
+      !Array.isArray(additionalIssues) ||
+      !additionalIssues.length
+    ) {
       return false;
     }
 
@@ -771,12 +806,19 @@ export function initLinterBridge() {
         continue;
       }
 
-      existing.add(item.annotationId + '\u0000' + item.reason + '\u0000' + item.severity);
+      existing.add(
+        item.annotationId + "\u0000" + item.reason + "\u0000" + item.severity,
+      );
     }
 
     let appended = 0;
     for (const issue of additionalIssues) {
-      const key = issue.annotationId + '\u0000' + issue.reason + '\u0000' + issue.severity;
+      const key =
+        issue.annotationId +
+        "\u0000" +
+        issue.reason +
+        "\u0000" +
+        issue.severity;
       if (existing.has(key)) {
         continue;
       }
@@ -793,7 +835,7 @@ export function initLinterBridge() {
     let changed = false;
 
     function visit(value) {
-      if (!value || typeof value !== 'object') {
+      if (!value || typeof value !== "object") {
         return;
       }
 
@@ -804,7 +846,8 @@ export function initLinterBridge() {
         return;
       }
 
-      const candidate = value.result && value.result.data && value.result.data.json;
+      const candidate =
+        value.result && value.result.data && value.result.data.json;
       if (Array.isArray(candidate)) {
         if (appendIssuesToArray(candidate, additionalIssues)) {
           changed = true;
@@ -821,7 +864,7 @@ export function initLinterBridge() {
   }
 
   function appendIssuesByHeuristic(root, additionalIssues) {
-    if (!root || typeof root !== 'object') {
+    if (!root || typeof root !== "object") {
       return false;
     }
 
@@ -832,7 +875,7 @@ export function initLinterBridge() {
 
     while (queue.length) {
       const current = queue.shift();
-      if (!current || typeof current !== 'object' || seen.has(current)) {
+      if (!current || typeof current !== "object" || seen.has(current)) {
         continue;
       }
 
@@ -840,7 +883,7 @@ export function initLinterBridge() {
 
       if (Array.isArray(current)) {
         for (const item of current) {
-          if (item && typeof item === 'object') {
+          if (item && typeof item === "object") {
             queue.push(item);
           }
         }
@@ -850,7 +893,7 @@ export function initLinterBridge() {
       for (const [key, nested] of Object.entries(current)) {
         if (Array.isArray(nested)) {
           let score = 0;
-          if (key === 'json') {
+          if (key === "json") {
             score += 4;
           }
 
@@ -864,7 +907,7 @@ export function initLinterBridge() {
             bestScore = score;
             best = nested;
           }
-        } else if (nested && typeof nested === 'object') {
+        } else if (nested && typeof nested === "object") {
           queue.push(nested);
         }
       }
@@ -890,7 +933,12 @@ export function initLinterBridge() {
   }
 
   function appendIssuesToCompactJsonlFrame(payload, additionalIssues) {
-    if (!payload || typeof payload !== 'object' || !Array.isArray(additionalIssues) || !additionalIssues.length) {
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      !Array.isArray(additionalIssues) ||
+      !additionalIssues.length
+    ) {
       return false;
     }
 
@@ -919,16 +967,21 @@ export function initLinterBridge() {
   }
 
   function isCompactJsonlFramePayload(payload) {
-    if (!payload || typeof payload !== 'object') {
+    if (!payload || typeof payload !== "object") {
       return false;
     }
 
     const frame = payload.json;
-    return Array.isArray(frame) && frame.length >= 3 && typeof frame[0] === 'number' && Array.isArray(frame[2]);
+    return (
+      Array.isArray(frame) &&
+      frame.length >= 3 &&
+      typeof frame[0] === "number" &&
+      Array.isArray(frame[2])
+    );
   }
 
   function parseJsonlLine(line) {
-    if (typeof line !== 'string') {
+    if (typeof line !== "string") {
       return null;
     }
 
@@ -940,8 +993,8 @@ export function initLinterBridge() {
     const plainParsed = safeJsonParse(trimmed);
     if (plainParsed != null) {
       return {
-        prefix: '',
-        payload: plainParsed
+        prefix: "",
+        payload: plainParsed,
       };
     }
 
@@ -956,19 +1009,19 @@ export function initLinterBridge() {
     }
 
     return {
-      prefix: prefixedMatch[1] + ':',
-      payload: prefixedParsed
+      prefix: prefixedMatch[1] + ":",
+      payload: prefixedParsed,
     };
   }
 
   function cloneResponseWithBody(response, bodyText) {
     const headers = new Headers(response.headers);
-    headers.delete('content-length');
-    headers.delete('content-encoding');
+    headers.delete("content-length");
+    headers.delete("content-encoding");
     return new Response(bodyText, {
       status: response.status,
       statusText: response.statusText,
-      headers
+      headers,
     });
   }
 
@@ -992,7 +1045,9 @@ export function initLinterBridge() {
     }
 
     const parsedLines = lines.map(parseJsonlLine);
-    const hasCompactFrames = parsedLines.some((entry) => entry && isCompactJsonlFramePayload(entry.payload));
+    const hasCompactFrames = parsedLines.some(
+      (entry) => entry && isCompactJsonlFramePayload(entry.payload),
+    );
 
     let changed = false;
     const mapped = lines.map((line, index) => {
@@ -1016,11 +1071,14 @@ export function initLinterBridge() {
       return null;
     }
 
-    return mapped.join('\n');
+    return mapped.join("\n");
   }
 
   function getRouteKey() {
-    return String(window.location.pathname || '') + String(window.location.search || '');
+    return (
+      String(window.location.pathname || "") +
+      String(window.location.search || "")
+    );
   }
 
   let currentRouteKey = getRouteKey();
@@ -1061,28 +1119,41 @@ export function initLinterBridge() {
     }
 
     const activeRowTextarea = document.querySelector(
-      `tbody tr.bg-neutral-100.ring-1.ring-neutral-300 ${ROW_TEXTAREA_SELECTOR}`
+      `tbody tr.bg-neutral-100.ring-1.ring-neutral-300 ${ROW_TEXTAREA_SELECTOR}`,
     );
-    if (activeRowTextarea instanceof HTMLTextAreaElement && isElementVisible(activeRowTextarea)) {
+    if (
+      activeRowTextarea instanceof HTMLTextAreaElement &&
+      isElementVisible(activeRowTextarea)
+    ) {
       return activeRowTextarea;
     }
 
-    const visibleTextarea = Array.from(document.querySelectorAll(ROW_TEXTAREA_SELECTOR)).find(
-      (node) => node instanceof HTMLTextAreaElement && isElementVisible(node)
+    const visibleTextarea = Array.from(
+      document.querySelectorAll(ROW_TEXTAREA_SELECTOR),
+    ).find(
+      (node) => node instanceof HTMLTextAreaElement && isElementVisible(node),
     );
     if (visibleTextarea instanceof HTMLTextAreaElement) {
       return visibleTextarea;
     }
 
     const fallbackTextarea = document.querySelector(ROW_TEXTAREA_SELECTOR);
-    return fallbackTextarea instanceof HTMLTextAreaElement ? fallbackTextarea : null;
+    return fallbackTextarea instanceof HTMLTextAreaElement
+      ? fallbackTextarea
+      : null;
   }
 
   function stopTextareaVisibilityObservers() {
-    if (textareaVisibilityObserver && typeof textareaVisibilityObserver.disconnect === 'function') {
+    if (
+      textareaVisibilityObserver &&
+      typeof textareaVisibilityObserver.disconnect === "function"
+    ) {
       textareaVisibilityObserver.disconnect();
     }
-    if (textareaMountObserver && typeof textareaMountObserver.disconnect === 'function') {
+    if (
+      textareaMountObserver &&
+      typeof textareaMountObserver.disconnect === "function"
+    ) {
       textareaMountObserver.disconnect();
     }
 
@@ -1096,7 +1167,11 @@ export function initLinterBridge() {
     }
 
     const activeRouteKey = getRouteKey();
-    if (!activeRouteKey || activeRouteKey !== routeKey || autoLintTriggeredRoutes.has(activeRouteKey)) {
+    if (
+      !activeRouteKey ||
+      activeRouteKey !== routeKey ||
+      autoLintTriggeredRoutes.has(activeRouteKey)
+    ) {
       return;
     }
 
@@ -1122,7 +1197,7 @@ export function initLinterBridge() {
   }
 
   function startTextareaVisibilityObserver(reason) {
-    if (!enabled || typeof IntersectionObserver !== 'function') {
+    if (!enabled || typeof IntersectionObserver !== "function") {
       return;
     }
 
@@ -1134,7 +1209,11 @@ export function initLinterBridge() {
     stopTextareaVisibilityObservers();
 
     textareaVisibilityObserver = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+      if (
+        !entries.some(
+          (entry) => entry.isIntersecting || entry.intersectionRatio > 0,
+        )
+      ) {
         return;
       }
 
@@ -1148,7 +1227,10 @@ export function initLinterBridge() {
       }
     }
 
-    if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+    if (
+      !(document.body instanceof HTMLElement) ||
+      typeof MutationObserver !== "function"
+    ) {
       return;
     }
 
@@ -1163,7 +1245,9 @@ export function initLinterBridge() {
             observeTextareaCandidate(node, routeKey, reason);
           }
 
-          for (const textarea of node.querySelectorAll?.(ROW_TEXTAREA_SELECTOR) || []) {
+          for (const textarea of node.querySelectorAll?.(
+            ROW_TEXTAREA_SELECTOR,
+          ) || []) {
             observeTextareaCandidate(textarea, routeKey, reason);
             if (!textareaVisibilityObserver) {
               return;
@@ -1175,15 +1259,17 @@ export function initLinterBridge() {
 
     textareaMountObserver.observe(document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
     });
   }
 
   function dispatchInputEvent(target, inputType, data) {
     try {
-      target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType, data }));
+      target.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType, data }),
+      );
     } catch (_error) {
-      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
@@ -1192,15 +1278,18 @@ export function initLinterBridge() {
     if (!(textarea instanceof HTMLTextAreaElement)) {
       return {
         ok: false,
-        reason: 'textarea-not-found'
+        reason: "textarea-not-found",
       };
     }
 
-    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-    if (typeof valueSetter !== 'function') {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    if (typeof valueSetter !== "function") {
       return {
         ok: false,
-        reason: 'value-setter-unavailable'
+        reason: "value-setter-unavailable",
       };
     }
 
@@ -1216,14 +1305,14 @@ export function initLinterBridge() {
         textarea.focus();
       }
 
-      valueSetter.call(textarea, originalValue + ' ');
-      dispatchInputEvent(textarea, 'insertText', ' ');
+      valueSetter.call(textarea, originalValue + " ");
+      dispatchInputEvent(textarea, "insertText", " ");
 
       valueSetter.call(textarea, originalValue);
-      dispatchInputEvent(textarea, 'deleteContentBackward', null);
-      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+      dispatchInputEvent(textarea, "deleteContentBackward", null);
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
 
-      if (typeof start === 'number' && typeof end === 'number') {
+      if (typeof start === "number" && typeof end === "number") {
         textarea.setSelectionRange(start, end);
       }
 
@@ -1240,9 +1329,9 @@ export function initLinterBridge() {
       if (document.activeElement === textarea) {
         const sink = document.body || document.documentElement;
         if (sink instanceof HTMLElement) {
-          const hadTabIndex = sink.hasAttribute('tabindex');
+          const hadTabIndex = sink.hasAttribute("tabindex");
           if (!hadTabIndex) {
-            sink.setAttribute('tabindex', '-1');
+            sink.setAttribute("tabindex", "-1");
           }
 
           try {
@@ -1252,7 +1341,7 @@ export function initLinterBridge() {
           }
 
           if (!hadTabIndex) {
-            sink.removeAttribute('tabindex');
+            sink.removeAttribute("tabindex");
           }
         }
 
@@ -1261,13 +1350,13 @@ export function initLinterBridge() {
 
       return {
         ok: true,
-        reason: 'textarea-noop-input'
+        reason: "textarea-noop-input",
       };
     } catch (error) {
       return {
         ok: false,
-        reason: 'textarea-noop-throw',
-        error: String(error && error.message ? error.message : error)
+        reason: "textarea-noop-throw",
+        error: String(error && error.message ? error.message : error),
       };
     }
   }
@@ -1304,10 +1393,10 @@ export function initLinterBridge() {
         stopTextareaVisibilityObservers();
         debugState.autoLint = {
           changed: true,
-          reason: 'already-linted',
+          reason: "already-linted",
           route: activeRouteKey,
           attempts: autoLintAttemptCount,
-          source: reason
+          source: reason,
         };
         return;
       }
@@ -1320,7 +1409,7 @@ export function initLinterBridge() {
           reason: kick.reason,
           route: activeRouteKey,
           attempts: autoLintAttemptCount,
-          source: reason
+          source: reason,
         };
       } else {
         debugState.autoLint = {
@@ -1329,7 +1418,7 @@ export function initLinterBridge() {
           route: activeRouteKey,
           attempts: autoLintAttemptCount,
           source: reason,
-          error: kick.error
+          error: kick.error,
         };
       }
 
@@ -1358,7 +1447,10 @@ export function initLinterBridge() {
 
   function patchHistoryMethod(methodName) {
     const historyMethod = window.history && window.history[methodName];
-    if (typeof historyMethod !== 'function' || historyMethod.__babelHelperLinterPatched) {
+    if (
+      typeof historyMethod !== "function" ||
+      historyMethod.__babelHelperLinterPatched
+    ) {
       return;
     }
 
@@ -1372,14 +1464,18 @@ export function initLinterBridge() {
     window.history[methodName] = wrapped;
   }
 
-  async function maybeAugmentLintResponse(response, annotationEntries, routeKey) {
+  async function maybeAugmentLintResponse(
+    response,
+    annotationEntries,
+    routeKey,
+  ) {
     debugState.totalLintCalls += 1;
     recordLintCallForRoute(routeKey);
     if (!(response instanceof Response)) {
       debugState.last = {
         changed: false,
-        reason: 'non-response',
-        issueCount: 0
+        reason: "non-response",
+        issueCount: 0,
       };
       return response;
     }
@@ -1388,20 +1484,20 @@ export function initLinterBridge() {
     if (!additionalIssues.length) {
       debugState.last = {
         changed: false,
-        reason: 'no-custom-issues',
-        issueCount: 0
+        reason: "no-custom-issues",
+        issueCount: 0,
       };
       return response;
     }
 
-    let responseText = '';
+    let responseText = "";
     try {
       responseText = await response.clone().text();
     } catch (_error) {
       debugState.last = {
         changed: false,
-        reason: 'response-read-failed',
-        issueCount: additionalIssues.length
+        reason: "response-read-failed",
+        issueCount: additionalIssues.length,
       };
       return response;
     }
@@ -1409,38 +1505,38 @@ export function initLinterBridge() {
     if (!responseText) {
       debugState.last = {
         changed: false,
-        reason: 'empty-response-text',
-        issueCount: additionalIssues.length
+        reason: "empty-response-text",
+        issueCount: additionalIssues.length,
       };
       return response;
     }
 
     const asJsonText = tryAugmentJsonText(responseText, additionalIssues);
-    if (typeof asJsonText === 'string') {
+    if (typeof asJsonText === "string") {
       debugState.last = {
         changed: true,
-        reason: 'json',
-        issueCount: additionalIssues.length
+        reason: "json",
+        issueCount: additionalIssues.length,
       };
       return cloneResponseWithBody(response, asJsonText);
     }
 
     const asJsonLinesText = tryAugmentJsonLines(responseText, additionalIssues);
-    if (typeof asJsonLinesText === 'string') {
+    if (typeof asJsonLinesText === "string") {
       debugState.last = {
         changed: true,
-        reason: 'jsonl',
+        reason: "jsonl",
         issueCount: additionalIssues.length,
-        responsePreview: asJsonLinesText.slice(0, 240)
+        responsePreview: asJsonLinesText.slice(0, 240),
       };
       return cloneResponseWithBody(response, asJsonLinesText);
     }
 
     debugState.last = {
       changed: false,
-      reason: 'no-target-found',
+      reason: "no-target-found",
       issueCount: additionalIssues.length,
-      responsePreview: responseText.slice(0, 240)
+      responsePreview: responseText.slice(0, 240),
     };
     return response;
   }
@@ -1448,7 +1544,7 @@ export function initLinterBridge() {
   async function getAnnotationEntriesFromRequest(input, init) {
     const bodyText = await readRequestBodyText(input, init);
     const bodyPayload = safeJsonParse(bodyText);
-    if (bodyPayload && typeof bodyPayload === 'object') {
+    if (bodyPayload && typeof bodyPayload === "object") {
       const entries = extractAnnotationEntries(bodyPayload);
       if (entries.length) {
         return entries;
@@ -1456,7 +1552,7 @@ export function initLinterBridge() {
     }
 
     const urlPayload = readQueryInputPayload(getRequestUrl(input));
-    if (urlPayload && typeof urlPayload === 'object') {
+    if (urlPayload && typeof urlPayload === "object") {
       return extractAnnotationEntries(urlPayload);
     }
 
@@ -1469,7 +1565,10 @@ export function initLinterBridge() {
     }
 
     const routeKey = getRouteKey();
-    const annotationEntries = await getAnnotationEntriesFromRequest(input, init);
+    const annotationEntries = await getAnnotationEntriesFromRequest(
+      input,
+      init,
+    );
     const response = await originalFetch(input, init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   };
@@ -1477,7 +1576,9 @@ export function initLinterBridge() {
   window.addEventListener(
     TOGGLE_EVENT,
     (event) => {
-      const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
+      const nextEnabled = Boolean(
+        event && event.detail && event.detail.enabled,
+      );
       enabled = nextEnabled;
       if (!enabled && autoLintTimer) {
         window.clearTimeout(autoLintTimer);
@@ -1487,58 +1588,62 @@ export function initLinterBridge() {
         stopTextareaVisibilityObservers();
       }
       if (enabled) {
-        startTextareaVisibilityObserver('toggle-enable-textarea-visible');
-        scheduleInitialNativeLintTrigger('toggle-enable');
+        startTextareaVisibilityObserver("toggle-enable-textarea-visible");
+        scheduleInitialNativeLintTrigger("toggle-enable");
       }
     },
-    true
+    true,
   );
 
-  patchHistoryMethod('pushState');
-  patchHistoryMethod('replaceState');
-  window.addEventListener('popstate', () => notifyRouteChange('popstate'), true);
+  patchHistoryMethod("pushState");
+  patchHistoryMethod("replaceState");
+  window.addEventListener(
+    "popstate",
+    () => notifyRouteChange("popstate"),
+    true,
+  );
 
-  startTextareaVisibilityObserver('boot-textarea-visible');
-  scheduleInitialNativeLintTrigger('boot');
+  startTextareaVisibilityObserver("boot-textarea-visible");
+  scheduleInitialNativeLintTrigger("boot");
 
   // ---------------------------------------------------------------------------
   // Auto-fix functions
   // ---------------------------------------------------------------------------
 
-  const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
-  const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
+  const AUTOFIX_REQUEST_EVENT = "babel-helper-linter-autofix";
+  const AUTOFIX_RESPONSE_EVENT = "babel-helper-linter-autofix-response";
   function fixLeadingTrailingSpaces(text) {
-    if (typeof text !== 'string' || !text) {
+    if (typeof text !== "string" || !text) {
       return text;
     }
 
-    return text.replace(/^[ \t]+|[ \t]+$/g, '');
+    return text.replace(/^[ \t]+|[ \t]+$/g, "");
   }
 
   function fixDoubleSpaces(text) {
-    if (typeof text !== 'string' || text.indexOf('  ') === -1) {
+    if (typeof text !== "string" || text.indexOf("  ") === -1) {
       return text;
     }
 
     // Only collapse repeated in-line spaces between non-space characters.
     // Leading/trailing whitespace is handled separately.
-    return text.replace(/(\S) {2,}(?=\S)/g, '$1 ');
+    return text.replace(/(\S) {2,}(?=\S)/g, "$1 ");
   }
 
   function fixCommaSpacing(text) {
-    if (typeof text !== 'string' || text.indexOf(',') === -1) {
+    if (typeof text !== "string" || text.indexOf(",") === -1) {
       return text;
     }
 
     let result = text;
     // Remove whitespace before commas: "word ,next" -> "word,next"
-    result = result.replace(/\s+,/g, ',');
+    result = result.replace(/\s+,/g, ",");
     // Ensure exactly one space after comma (except when followed by digit,
     // end of string, or already a single space). Handle digits specially:
     // "1,000" should stay as-is but "word,next" -> "word, next".
-    result = result.replace(/,(?![\d ]|$)/g, ', ');
+    result = result.replace(/,(?![\d ]|$)/g, ", ");
     // Collapse multiple spaces after comma to single space: ",  x" -> ", x"
-    result = result.replace(/, {2,}/g, ', ');
+    result = result.replace(/, {2,}/g, ", ");
 
     return result;
   }
@@ -1555,7 +1660,7 @@ export function initLinterBridge() {
       const openIndex = quoteIndices[index];
       const closeIndex = quoteIndices[index + 1];
       const inner = result.substring(openIndex + 1, closeIndex);
-      const trimmedInner = inner.replace(/^\s+/, '').replace(/\s+$/, '');
+      const trimmedInner = inner.replace(/^\s+/, "").replace(/\s+$/, "");
 
       // Rebuild segment: before open + quote pair + after close
       const before = result.substring(0, openIndex);
@@ -1564,13 +1669,13 @@ export function initLinterBridge() {
       // Ensure space before opening quote if preceded by a word character
       let prefix = before;
       if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
-        prefix = prefix + ' ';
+        prefix = prefix + " ";
       }
 
       // Ensure space after closing quote if followed by a word character
       let suffix = after;
       if (suffix.length > 0 && isWordCharacter(suffix[0])) {
-        suffix = ' ' + suffix;
+        suffix = " " + suffix;
       }
 
       result = prefix + '"' + trimmedInner + '"' + suffix;
@@ -1580,48 +1685,48 @@ export function initLinterBridge() {
   }
 
   function fixCurlySpacing(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return text;
     }
 
-    const hasOpen = text.indexOf('{') !== -1;
-    const hasClose = text.indexOf('}') !== -1;
+    const hasOpen = text.indexOf("{") !== -1;
+    const hasClose = text.indexOf("}") !== -1;
     if (!hasOpen || !hasClose) {
       return text;
     }
 
     // Fix spacing inside curly braces: trim leading/trailing spaces inside { }
-    let result = text.replace(/\{\s+/g, '{').replace(/\s+\}/g, '}');
+    let result = text.replace(/\{\s+/g, "{").replace(/\s+\}/g, "}");
 
     // Ensure space before opening brace if preceded by a word character
-    result = result.replace(/([\p{L}\p{N}])\{/gu, '$1 {');
+    result = result.replace(/([\p{L}\p{N}])\{/gu, "$1 {");
     // Ensure space after closing brace if followed by a word character
-    result = result.replace(/\}([\p{L}\p{N}])/gu, '} $1');
+    result = result.replace(/\}([\p{L}\p{N}])/gu, "} $1");
 
     return result;
   }
 
   function fixDoubleDashPunctuation(text) {
-    if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    if (typeof text !== "string" || text.indexOf("--") === -1) {
       return text;
     }
 
     // Remove punctuation immediately after double dash
-    return text.replace(/--[.,?!:;]+/g, '--');
+    return text.replace(/--[.,?!:;]+/g, "--");
   }
 
   function fixSingleDashPunctuation(text) {
-    if (typeof text !== 'string' || text.indexOf('-') === -1) {
+    if (typeof text !== "string" || text.indexOf("-") === -1) {
       return text;
     }
 
     // Remove punctuation immediately after single dash
     // A single dash is a '-' not preceded by '-' and not followed by '-'
-    return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, '-');
+    return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, "-");
   }
 
   function fixTerminalPunctuation(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return text;
     }
 
@@ -1631,11 +1736,16 @@ export function initLinterBridge() {
     }
 
     const insertionIndex = trimmed.length;
-    return text.slice(0, insertionIndex) + '.' + text.slice(insertionIndex);
+    return text.slice(0, insertionIndex) + "." + text.slice(insertionIndex);
   }
 
   function replaceCharAt(text, index, nextChar) {
-    if (typeof text !== 'string' || index < 0 || index >= text.length || typeof nextChar !== 'string') {
+    if (
+      typeof text !== "string" ||
+      index < 0 ||
+      index >= text.length ||
+      typeof nextChar !== "string"
+    ) {
       return text;
     }
 
@@ -1643,7 +1753,7 @@ export function initLinterBridge() {
   }
 
   function fixSegmentStartCapitalization(text, previousSameSpeakerText) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return text;
     }
 
@@ -1652,20 +1762,30 @@ export function initLinterBridge() {
       return text;
     }
 
-    if (trimmed.startsWith('...')) {
-      const sourceIndex = text.indexOf('...');
+    if (trimmed.startsWith("...")) {
+      const sourceIndex = text.indexOf("...");
       const letterIndex = findFirstLetterIndex(
         text,
-        skipLeadingCapitalizationTokens(text, sourceIndex === -1 ? 0 : sourceIndex + 3)
+        skipLeadingCapitalizationTokens(
+          text,
+          sourceIndex === -1 ? 0 : sourceIndex + 3,
+        ),
       );
       if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
         return text;
       }
 
-      return replaceCharAt(text, letterIndex, text[letterIndex].toLocaleLowerCase());
+      return replaceCharAt(
+        text,
+        letterIndex,
+        text[letterIndex].toLocaleLowerCase(),
+      );
     }
 
-    const letterIndex = findFirstLetterIndex(text, skipLeadingCapitalizationTokens(text));
+    const letterIndex = findFirstLetterIndex(
+      text,
+      skipLeadingCapitalizationTokens(text),
+    );
     if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
       return text;
     }
@@ -1674,11 +1794,15 @@ export function initLinterBridge() {
       return text;
     }
 
-    return replaceCharAt(text, letterIndex, text[letterIndex].toLocaleUpperCase());
+    return replaceCharAt(
+      text,
+      letterIndex,
+      text[letterIndex].toLocaleUpperCase(),
+    );
   }
 
   function applyAllFixes(text) {
-    if (typeof text !== 'string') {
+    if (typeof text !== "string") {
       return text;
     }
 
@@ -1697,30 +1821,32 @@ export function initLinterBridge() {
 
   function getRowSpeakerKey(row) {
     if (!(row instanceof HTMLTableRowElement)) {
-      return '';
+      return "";
     }
 
     const speakerCell = row.children[1];
-    return speakerCell instanceof HTMLElement ? speakerCell.innerText.trim() : '';
+    return speakerCell instanceof HTMLElement
+      ? speakerCell.innerText.trim()
+      : "";
   }
 
   function getRowTextValue(row) {
     if (!(row instanceof HTMLTableRowElement)) {
-      return '';
+      return "";
     }
 
     const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-    return textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
+    return textarea instanceof HTMLTextAreaElement ? textarea.value || "" : "";
   }
 
   function getPreviousSameSpeakerText(row) {
     if (!(row instanceof HTMLTableRowElement)) {
-      return '';
+      return "";
     }
 
     const speakerKey = getRowSpeakerKey(row);
     if (!speakerKey) {
-      return '';
+      return "";
     }
 
     let current = row.previousElementSibling;
@@ -1735,40 +1861,49 @@ export function initLinterBridge() {
       current = current.previousElementSibling;
     }
 
-    return '';
+    return "";
   }
 
   function setTextareaValue(textarea, value) {
-    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-    if (typeof valueSetter === 'function') {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    if (typeof valueSetter === "function") {
       valueSetter.call(textarea, value);
     } else {
       textarea.value = value;
     }
 
     try {
-      textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: null }));
+      textarea.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: null,
+        }),
+      );
     } catch (_error) {
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
   function autoFixTextarea(textarea, options = {}) {
     if (!(textarea instanceof HTMLTextAreaElement)) {
-      return { fixed: false, reason: 'not-textarea' };
+      return { fixed: false, reason: "not-textarea" };
     }
 
-    const original = textarea.value || '';
+    const original = textarea.value || "";
     const previousSameSpeakerText =
-      options && typeof options.previousSameSpeakerText === 'string'
+      options && typeof options.previousSameSpeakerText === "string"
         ? options.previousSameSpeakerText
-        : '';
+        : "";
     let fixed = applyAllFixes(original);
     fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
     if (fixed === original) {
-      return { fixed: false, reason: 'no-changes' };
+      return { fixed: false, reason: "no-changes" };
     }
 
     // Preserve selection relative to text changes
@@ -1786,16 +1921,18 @@ export function initLinterBridge() {
       // Ignore selection errors
     }
 
-    return { fixed: true, reason: 'applied', original, result: fixed };
+    return { fixed: true, reason: "applied", original, result: fixed };
   }
 
   function autoFixRow(row) {
     if (!(row instanceof HTMLElement)) {
-      return { fixed: false, reason: 'not-element' };
+      return { fixed: false, reason: "not-element" };
     }
 
     const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-    return autoFixTextarea(textarea, { previousSameSpeakerText: getPreviousSameSpeakerText(row) });
+    return autoFixTextarea(textarea, {
+      previousSameSpeakerText: getPreviousSameSpeakerText(row),
+    });
   }
 
   function autoFixAll() {
@@ -1805,9 +1942,10 @@ export function initLinterBridge() {
 
     for (const textarea of textareas) {
       totalCount += 1;
-      const row = textarea instanceof HTMLTextAreaElement ? textarea.closest('tr') : null;
+      const row =
+        textarea instanceof HTMLTextAreaElement ? textarea.closest("tr") : null;
       const result = autoFixTextarea(textarea, {
-        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : ''
+        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
       });
       if (result.fixed) {
         fixedCount += 1;
@@ -1821,24 +1959,30 @@ export function initLinterBridge() {
     // Fix the textarea that is currently focused, or the first one in the
     // active row (detected by Babel's active-row styling).
     const active = document.activeElement;
-    if (active instanceof HTMLTextAreaElement && active.matches(ROW_TEXTAREA_SELECTOR)) {
-      const row = active.closest('tr');
+    if (
+      active instanceof HTMLTextAreaElement &&
+      active.matches(ROW_TEXTAREA_SELECTOR)
+    ) {
+      const row = active.closest("tr");
       return autoFixTextarea(active, {
-        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : ''
+        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
       });
     }
 
     // Fall back to the row with Babel's active highlight
-    const activeRow = document.querySelector('tbody tr.bg-neutral-100.ring-1.ring-neutral-300');
+    const activeRow = document.querySelector(
+      "tbody tr.bg-neutral-100.ring-1.ring-neutral-300",
+    );
     if (activeRow) {
       return autoFixRow(activeRow);
     }
 
     // Last resort: first textarea
     const first = document.querySelector(ROW_TEXTAREA_SELECTOR);
-    const row = first instanceof HTMLTextAreaElement ? first.closest('tr') : null;
+    const row =
+      first instanceof HTMLTextAreaElement ? first.closest("tr") : null;
     return autoFixTextarea(first, {
-      previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : ''
+      previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
     });
   }
 
@@ -1846,30 +1990,34 @@ export function initLinterBridge() {
     AUTOFIX_REQUEST_EVENT,
     (event) => {
       if (!enabled) {
-        window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-          detail: { ok: false, reason: 'disabled' }
-        }));
+        window.dispatchEvent(
+          new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+            detail: { ok: false, reason: "disabled" },
+          }),
+        );
         return;
       }
 
       const detail = event && event.detail ? event.detail : {};
-      const scope = detail.scope || 'current';
+      const scope = detail.scope || "current";
       let result;
 
-      if (scope === 'all') {
+      if (scope === "all") {
         result = autoFixAll();
       } else {
         result = autoFixCurrent();
       }
 
       // Re-trigger lint after fixes so the linter UI updates
-      scheduleInitialNativeLintTrigger('autofix');
+      scheduleInitialNativeLintTrigger("autofix");
 
-      window.dispatchEvent(new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-        detail: { ok: true, scope, ...result }
-      }));
+      window.dispatchEvent(
+        new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+          detail: { ok: true, scope, ...result },
+        }),
+      );
     },
-    true
+    true,
   );
 
   window.__babelHelperLinterBridge = {
@@ -1889,7 +2037,7 @@ export function initLinterBridge() {
     fixSingleDashPunctuation,
     normalizeIncorrectInterjectionForms,
     fixTerminalPunctuation,
-    fixSegmentStartCapitalization
+    fixSegmentStartCapitalization,
   };
 }
 
