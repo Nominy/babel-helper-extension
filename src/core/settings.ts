@@ -9,6 +9,7 @@ export type FeatureSettingKey =
   | 'focusToggle'
   | 'timelineSelection'
   | 'timelineZoomDefaults'
+  | 'waveformScaleUnlock'
   | 'magnifier'
   | 'minimap'
   | 'customLinter'
@@ -26,6 +27,7 @@ export interface FeatureSettings {
   focusToggle: boolean;
   timelineSelection: boolean;
   timelineZoomDefaults: boolean;
+  waveformScaleUnlock: boolean;
   magnifier: boolean;
   minimap: boolean;
   customLinter: boolean;
@@ -55,6 +57,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   focusToggle: true,
   timelineSelection: true,
   timelineZoomDefaults: true,
+  waveformScaleUnlock: true,
   magnifier: true,
   minimap: true,
   customLinter: true,
@@ -77,6 +80,7 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'focusToggle',
   'timelineSelection',
   'timelineZoomDefaults',
+  'waveformScaleUnlock',
   'magnifier',
   'minimap',
   'customLinter',
@@ -124,6 +128,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   timelineZoomDefaults: {
     label: 'Timeline Zoom Defaults',
     description: 'Remember last timeline zoom and apply it when a transcription session starts.'
+  },
+  waveformScaleUnlock: {
+    label: 'Waveform Scale Unlock',
+    description: 'Raise Babel’s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders.'
   },
   magnifier: {
     label: 'Magnifier',

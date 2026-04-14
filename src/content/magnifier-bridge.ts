@@ -13,6 +13,17 @@ export function initMagnifierBridge() {
   const instances = new Map();
   const loops = new Map();
   const MAX_CANDIDATES = 12;
+  const WAVEFORM_SCALE_SELECTOR = '[role="slider"][data-orientation="vertical"]';
+  const WAVEFORM_SCALE_PATCH_ATTR = 'data-babel-helper-waveform-scale-max';
+  const WAVEFORM_SCALE_DEFAULT_MIN = 0.3;
+  const WAVEFORM_SCALE_DEFAULT_MAX = 20;
+  const WAVEFORM_SCALE_DEFAULT_STEP = 0.001;
+  const waveformScaleState = {
+    enabled: false,
+    max: 1000,
+    drag: null,
+    observer: null
+  };
 
   function safe(callback, fallbackValue) {
     try {
@@ -1772,6 +1783,520 @@ export function initMagnifierBridge() {
     return callbacks;
   }
 
+  function getSliderNumericProp(slider, propName, fallbackValue) {
+    if (!(slider instanceof HTMLElement)) {
+      return fallbackValue;
+    }
+
+    let node = getReactFiber(slider);
+    let depth = 0;
+    while (node && typeof node === 'object' && depth < 40) {
+      const props = safe(() => node.memoizedProps, null);
+      const numeric = Number(props && typeof props === 'object' ? props[propName] : NaN);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+
+      node = safe(() => node.return, null);
+      depth += 1;
+    }
+
+    return fallbackValue;
+  }
+
+  function patchSliderNumericProps(slider, propName, nextValue) {
+    if (!(slider instanceof HTMLElement)) {
+      return 0;
+    }
+
+    let patched = 0;
+    let node = getReactFiber(slider);
+    let depth = 0;
+    while (node && typeof node === 'object' && depth < 40) {
+      const memoizedProps = safe(() => node.memoizedProps, null);
+      if (
+        memoizedProps &&
+        typeof memoizedProps === 'object' &&
+        Number.isFinite(Number(memoizedProps[propName]))
+      ) {
+        memoizedProps[propName] = nextValue;
+        patched += 1;
+      }
+
+      const pendingProps = safe(() => node.pendingProps, null);
+      if (
+        pendingProps &&
+        typeof pendingProps === 'object' &&
+        Number.isFinite(Number(pendingProps[propName]))
+      ) {
+        pendingProps[propName] = nextValue;
+        patched += 1;
+      }
+
+      node = safe(() => node.return, null);
+      depth += 1;
+    }
+
+    return patched;
+  }
+
+  function isWaveformScaleSlider(slider) {
+    if (!(slider instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (slider.getAttribute('data-orientation') !== 'vertical') {
+      return false;
+    }
+
+    const min = Number(slider.getAttribute('aria-valuemin'));
+    return Number.isFinite(min) && Math.abs(min - WAVEFORM_SCALE_DEFAULT_MIN) < 0.01;
+  }
+
+  function getWaveformScaleTrack(slider) {
+    if (!(slider instanceof HTMLElement)) {
+      return null;
+    }
+
+    let current = slider.parentElement;
+    while (current instanceof HTMLElement) {
+      if (
+        current.getAttribute('data-orientation') === 'vertical' &&
+        current !== slider &&
+        current.getBoundingClientRect().height > slider.getBoundingClientRect().height + 4
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+
+    return slider.parentElement instanceof HTMLElement ? slider.parentElement : slider;
+  }
+
+  function getWaveformScaleVisualParts(slider) {
+    const wrapper = slider instanceof HTMLElement ? slider.parentElement : null;
+    const root = wrapper instanceof HTMLElement ? wrapper.parentElement : null;
+    const track =
+      root instanceof HTMLElement ? root.querySelector(':scope > span:first-child') : null;
+    const range =
+      track instanceof HTMLElement ? track.querySelector(':scope > span') : null;
+    const tooltip =
+      slider instanceof HTMLElement ? slider.querySelector('div') : null;
+
+    return {
+      wrapper: wrapper instanceof HTMLElement ? wrapper : null,
+      root: root instanceof HTMLElement ? root : null,
+      track: track instanceof HTMLElement ? track : null,
+      range: range instanceof HTMLElement ? range : null,
+      tooltip: tooltip instanceof HTMLElement ? tooltip : null
+    };
+  }
+
+  function formatWaveformScaleLabel(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return '';
+    }
+
+    if (Math.abs(numeric - Math.round(numeric)) < 0.001) {
+      return Math.round(numeric) + 'x';
+    }
+
+    return numeric.toFixed(1).replace(/\.0$/, '') + 'x';
+  }
+
+  function applyWaveformScaleVisuals(slider, value, min, max) {
+    if (!(slider instanceof HTMLElement)) {
+      return;
+    }
+
+    const numericValue = Number(value);
+    const numericMin = Number(min);
+    const numericMax = Number(max);
+    if (
+      !Number.isFinite(numericValue) ||
+      !Number.isFinite(numericMin) ||
+      !Number.isFinite(numericMax) ||
+      numericMax <= numericMin
+    ) {
+      return;
+    }
+
+    const ratio = clamp((numericValue - numericMin) / (numericMax - numericMin), 0, 1);
+    const percent = ratio * 100;
+    const visuals = getWaveformScaleVisualParts(slider);
+    if (visuals.wrapper) {
+      visuals.wrapper.style.bottom = 'calc(' + percent + '% - 6px)';
+    }
+    if (visuals.range) {
+      visuals.range.style.bottom = '0%';
+      visuals.range.style.top = (100 - percent) + '%';
+    }
+
+    const label = formatWaveformScaleLabel(numericValue);
+    if (label) {
+      slider.setAttribute('aria-valuetext', label);
+      if (visuals.tooltip) {
+        visuals.tooltip.textContent = label;
+      }
+    }
+  }
+
+  function patchWaveformScaleSlider(slider) {
+    if (!isWaveformScaleSlider(slider)) {
+      return false;
+    }
+
+    const nextMax = Math.max(WAVEFORM_SCALE_DEFAULT_MAX, Number(waveformScaleState.max) || 1000);
+    const patchedMax = patchSliderNumericProps(slider, 'max', nextMax);
+    const currentMin = getSliderNumericProp(slider, 'min', WAVEFORM_SCALE_DEFAULT_MIN);
+    if (Number.isFinite(currentMin)) {
+      patchSliderNumericProps(slider, 'min', currentMin);
+    }
+
+    if (slider.getAttribute('aria-valuemax') !== String(nextMax)) {
+      slider.setAttribute('aria-valuemax', String(nextMax));
+    }
+    if (slider.getAttribute(WAVEFORM_SCALE_PATCH_ATTR) !== String(nextMax)) {
+      slider.setAttribute(WAVEFORM_SCALE_PATCH_ATTR, String(nextMax));
+    }
+
+    const currentValue = Number(slider.getAttribute('aria-valuenow'));
+    if (Number.isFinite(currentValue)) {
+      applyWaveformScaleVisuals(
+        slider,
+        currentValue,
+        Number.isFinite(currentMin) ? currentMin : WAVEFORM_SCALE_DEFAULT_MIN,
+        nextMax
+      );
+    }
+
+    return patchedMax > 0;
+  }
+
+  function patchWaveformScaleSliders() {
+    let patched = 0;
+    for (const slider of Array.from(document.querySelectorAll(WAVEFORM_SCALE_SELECTOR))) {
+      if (patchWaveformScaleSlider(slider)) {
+        patched += 1;
+      }
+    }
+    return patched;
+  }
+
+  function getWaveformScaleSliderByIndex(index) {
+    const numericIndex = Math.max(0, Math.floor(Number(index) || 0));
+    const sliders = Array.from(document.querySelectorAll(WAVEFORM_SCALE_SELECTOR)).filter((slider) =>
+      isWaveformScaleSlider(slider)
+    );
+    const target = sliders[numericIndex];
+    return target instanceof HTMLElement ? target : null;
+  }
+
+  function getWaveformScaleControl(target) {
+    const slider =
+      target instanceof HTMLElement
+        ? target.closest(WAVEFORM_SCALE_SELECTOR)
+        : null;
+    if (!(slider instanceof HTMLElement) || !isWaveformScaleSlider(slider)) {
+      return null;
+    }
+
+    patchWaveformScaleSlider(slider);
+
+    const track = getWaveformScaleTrack(slider);
+    const callbacks = getZoomValueCallbacks(slider);
+    if (!callbacks.length) {
+      return null;
+    }
+
+    return {
+      slider,
+      track,
+      callbacks,
+      min: getSliderNumericProp(slider, 'min', Number(slider.getAttribute('aria-valuemin')) || WAVEFORM_SCALE_DEFAULT_MIN),
+      max: Math.max(
+        Number(waveformScaleState.max) || 1000,
+        getSliderNumericProp(slider, 'max', Number(slider.getAttribute('aria-valuemax')) || WAVEFORM_SCALE_DEFAULT_MAX)
+      ),
+      step: getSliderNumericProp(slider, 'step', WAVEFORM_SCALE_DEFAULT_STEP),
+      value: Number(slider.getAttribute('aria-valuenow'))
+    };
+  }
+
+  function setWaveformScaleValue(control, value) {
+    if (!control || !Array.isArray(control.callbacks) || !control.callbacks.length) {
+      return { ok: false, reason: 'missing-control' };
+    }
+
+    patchWaveformScaleSlider(control.slider);
+
+    const target = clamp(
+      Number(value),
+      Number.isFinite(control.min) ? control.min : WAVEFORM_SCALE_DEFAULT_MIN,
+      Number.isFinite(control.max) ? control.max : Number(waveformScaleState.max) || 1000
+    );
+    if (!Number.isFinite(target)) {
+      return { ok: false, reason: 'invalid-value' };
+    }
+
+    for (const callback of control.callbacks) {
+      try {
+        callback([target]);
+      } catch (_error) {
+        // Ignore duplicate callback wrappers; another callback may succeed.
+      }
+    }
+
+    control.slider.setAttribute('aria-valuenow', String(target));
+    applyWaveformScaleVisuals(control.slider, target, control.min, control.max);
+
+    return {
+      ok: true,
+      target,
+      current: Number(control.slider.getAttribute('aria-valuenow')) || null
+    };
+  }
+
+  function getWaveformScaleValueFromPointer(control, clientY) {
+    const track = control && control.track instanceof HTMLElement ? control.track : null;
+    if (!track) {
+      return null;
+    }
+
+    const rect = track.getBoundingClientRect();
+    if (!(rect.height > 0)) {
+      return null;
+    }
+
+    const ratio = clamp((rect.bottom - Number(clientY)) / rect.height, 0, 1);
+    return control.min + ratio * (control.max - control.min);
+  }
+
+  function handleWaveformScalePointerDown(event) {
+    if (!waveformScaleState.enabled || !event || event.button !== 0) {
+      return;
+    }
+
+    const control = getWaveformScaleControl(event.target);
+    if (!control) {
+      return;
+    }
+
+    const nextValue = getWaveformScaleValueFromPointer(control, event.clientY);
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    waveformScaleState.drag = {
+      pointerId: typeof event.pointerId === 'number' ? event.pointerId : 1,
+      slider: control.slider
+    };
+
+    setWaveformScaleValue(control, nextValue);
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function handleWaveformScalePointerMove(event) {
+    const drag = waveformScaleState.drag;
+    if (!waveformScaleState.enabled || !drag) {
+      return;
+    }
+
+    const pointerId = typeof event.pointerId === 'number' ? event.pointerId : 1;
+    if (pointerId !== drag.pointerId) {
+      return;
+    }
+
+    const control = getWaveformScaleControl(drag.slider);
+    if (!control) {
+      waveformScaleState.drag = null;
+      return;
+    }
+
+    const nextValue = getWaveformScaleValueFromPointer(control, event.clientY);
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    setWaveformScaleValue(control, nextValue);
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function handleWaveformScalePointerEnd(event) {
+    const drag = waveformScaleState.drag;
+    if (!drag) {
+      return;
+    }
+
+    const pointerId = typeof event.pointerId === 'number' ? event.pointerId : 1;
+    if (pointerId !== drag.pointerId) {
+      return;
+    }
+
+    waveformScaleState.drag = null;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function handleWaveformScaleKeyDown(event) {
+    if (!waveformScaleState.enabled) {
+      return;
+    }
+
+    const control = getWaveformScaleControl(event.target);
+    if (!control) {
+      return;
+    }
+
+    let nextValue = null;
+    const step = Number.isFinite(control.step) && control.step > 0 ? control.step : WAVEFORM_SCALE_DEFAULT_STEP;
+    const largeStep = step * 10;
+    const current = Number.isFinite(control.value) ? control.value : control.min;
+
+    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') {
+      nextValue = current + (event.shiftKey ? largeStep : step);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') {
+      nextValue = current - (event.shiftKey ? largeStep : step);
+    } else if (event.key === 'PageUp') {
+      nextValue = current + largeStep;
+    } else if (event.key === 'PageDown') {
+      nextValue = current - largeStep;
+    } else if (event.key === 'Home') {
+      nextValue = control.min;
+    } else if (event.key === 'End') {
+      nextValue = control.max;
+    }
+
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    setWaveformScaleValue(control, nextValue);
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function bindWaveformScaleUnlock() {
+    if (waveformScaleState.enabled) {
+      patchWaveformScaleSliders();
+      return true;
+    }
+
+    waveformScaleState.enabled = true;
+    patchWaveformScaleSliders();
+
+    if (typeof MutationObserver === 'function' && document.body instanceof HTMLElement) {
+      waveformScaleState.observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === 'attributes') {
+            if (mutation.target instanceof HTMLElement && isWaveformScaleSlider(mutation.target)) {
+              patchWaveformScaleSlider(mutation.target);
+              return;
+            }
+            continue;
+          }
+
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof HTMLElement)) {
+              continue;
+            }
+
+            if (isWaveformScaleSlider(node) || node.querySelector(WAVEFORM_SCALE_SELECTOR)) {
+              patchWaveformScaleSliders();
+              return;
+            }
+          }
+        }
+      });
+
+      waveformScaleState.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['aria-valuemax', 'aria-valuenow']
+      });
+    }
+
+    document.addEventListener('pointerdown', handleWaveformScalePointerDown, true);
+    document.addEventListener('pointermove', handleWaveformScalePointerMove, true);
+    document.addEventListener('pointerup', handleWaveformScalePointerEnd, true);
+    document.addEventListener('pointercancel', handleWaveformScalePointerEnd, true);
+    document.addEventListener('keydown', handleWaveformScaleKeyDown, true);
+    return true;
+  }
+
+  function unbindWaveformScaleUnlock() {
+    waveformScaleState.enabled = false;
+    waveformScaleState.drag = null;
+
+    document.removeEventListener('pointerdown', handleWaveformScalePointerDown, true);
+    document.removeEventListener('pointermove', handleWaveformScalePointerMove, true);
+    document.removeEventListener('pointerup', handleWaveformScalePointerEnd, true);
+    document.removeEventListener('pointercancel', handleWaveformScalePointerEnd, true);
+    document.removeEventListener('keydown', handleWaveformScaleKeyDown, true);
+
+    if (waveformScaleState.observer && typeof waveformScaleState.observer.disconnect === 'function') {
+      waveformScaleState.observer.disconnect();
+    }
+
+    waveformScaleState.observer = null;
+    return { ok: true };
+  }
+
+  function enableWaveformScaleUnlock(max) {
+    const numericMax = Number(max);
+    if (Number.isFinite(numericMax) && numericMax > WAVEFORM_SCALE_DEFAULT_MAX) {
+      waveformScaleState.max = numericMax;
+    }
+
+    bindWaveformScaleUnlock();
+    return {
+      ok: true,
+      max: waveformScaleState.max,
+      patched: patchWaveformScaleSliders()
+    };
+  }
+
+  function setWaveformScaleByIndex(index, value, max) {
+    const numericMax = Number(max);
+    if (Number.isFinite(numericMax) && numericMax > WAVEFORM_SCALE_DEFAULT_MAX) {
+      waveformScaleState.max = numericMax;
+    }
+
+    bindWaveformScaleUnlock();
+
+    const slider = getWaveformScaleSliderByIndex(index);
+    if (!(slider instanceof HTMLElement)) {
+      return { ok: false, reason: 'missing-slider' };
+    }
+
+    const control = getWaveformScaleControl(slider);
+    if (!control) {
+      return { ok: false, reason: 'missing-control' };
+    }
+
+    const result = setWaveformScaleValue(control, value);
+    return {
+      ...result,
+      index: Number(index) || 0
+    };
+  }
+
   function setZoomValue(value) {
     const slider = getZoomSliderElement();
     if (!(slider instanceof HTMLElement)) {
@@ -1920,6 +2445,21 @@ export function initMagnifierBridge() {
 
     if (operation === 'zoom-set') {
       respond(id, setZoomValue(payload.value));
+      return;
+    }
+
+    if (operation === 'waveform-scale-unlock-enable') {
+      respond(id, enableWaveformScaleUnlock(payload.max));
+      return;
+    }
+
+    if (operation === 'waveform-scale-unlock-disable') {
+      respond(id, unbindWaveformScaleUnlock());
+      return;
+    }
+
+    if (operation === 'waveform-scale-set') {
+      respond(id, setWaveformScaleByIndex(payload.index, payload.value, payload.max));
       return;
     }
 

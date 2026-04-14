@@ -1,13 +1,17 @@
 export interface WorkflowDefaults {
   lastZoomValue: number | null;
+  waveformScales: Record<string, number | null>;
 }
 
 export const WORKFLOW_DEFAULTS_STORAGE_KEY = 'workflowDefaults';
 export const MIN_ZOOM_VALUE = 10;
 export const MAX_ZOOM_VALUE = 2000;
+export const MIN_WAVEFORM_SCALE_VALUE = 0.3;
+export const MAX_WAVEFORM_SCALE_VALUE = 1000;
 
 export const DEFAULT_WORKFLOW_DEFAULTS: WorkflowDefaults = {
-  lastZoomValue: null
+  lastZoomValue: null,
+  waveformScales: {}
 };
 
 function getExtensionStorage() {
@@ -28,12 +32,40 @@ export function normalizeZoomValue(value: unknown): number | null {
   return Math.min(MAX_ZOOM_VALUE, Math.max(MIN_ZOOM_VALUE, Math.round(numeric)));
 }
 
+export function normalizeWaveformScaleValue(value: unknown): number | null {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  const clamped = Math.min(MAX_WAVEFORM_SCALE_VALUE, Math.max(MIN_WAVEFORM_SCALE_VALUE, numeric));
+  return Math.round(clamped * 1000) / 1000;
+}
+
+function normalizeWaveformScaleMap(source: unknown): Record<string, number | null> {
+  const incoming =
+    source && typeof source === 'object' && source !== null ? (source as Record<string, unknown>) : {};
+  const normalized: Record<string, number | null> = {};
+
+  for (const [key, value] of Object.entries(incoming)) {
+    const trimmedKey = typeof key === 'string' ? key.trim() : '';
+    if (!trimmedKey) {
+      continue;
+    }
+
+    normalized[trimmedKey] = normalizeWaveformScaleValue(value);
+  }
+
+  return normalized;
+}
+
 export function normalizeWorkflowDefaults(source: unknown): WorkflowDefaults {
   const incoming =
     source && typeof source === 'object' && source !== null ? (source as Record<string, unknown>) : {};
 
   return {
-    lastZoomValue: normalizeZoomValue(incoming.lastZoomValue)
+    lastZoomValue: normalizeZoomValue(incoming.lastZoomValue),
+    waveformScales: normalizeWaveformScaleMap(incoming.waveformScales)
   };
 }
 

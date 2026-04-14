@@ -769,6 +769,10 @@ export function registerLifecycle(helper: any) {
       helper.clearMagnifier();
     }
 
+    if (typeof helper.unbindWaveformScaleUnlock === 'function') {
+      helper.unbindWaveformScaleUnlock();
+    }
+
     if (typeof helper.unbindZoomPersistence === 'function') {
       helper.unbindZoomPersistence();
     }
@@ -799,6 +803,13 @@ export function registerLifecycle(helper: any) {
     } else {
       stopHotkeysObserver();
       stopHotkeysEnhanceFrame();
+    }
+
+    if (
+      isFeatureEnabled('waveformScaleUnlock') &&
+      typeof helper.bindWaveformScaleUnlock === 'function'
+    ) {
+      helper.bindWaveformScaleUnlock();
     }
 
     if (

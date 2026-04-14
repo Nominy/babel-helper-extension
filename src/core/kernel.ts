@@ -12,6 +12,7 @@ import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, 
 import { registerRowService } from '../services/row-service';
 import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
 import { registerTimelineSelectionService } from '../services/timeline-selection-service';
+import { registerWaveformScaleService } from '../services/waveform-scale-service';
 import { registerMagnifierService } from '../services/magnifier-service';
 import { registerMinimapService } from '../services/minimap-service';
 import { registerLifecycle } from './lifecycle';
@@ -87,6 +88,10 @@ export function createHelperKernel() {
       registerTimelineSelectionService(helper);
     }
 
+    if (helper.isFeatureEnabled('waveformScaleUnlock')) {
+      registerWaveformScaleService(helper);
+    }
+
     if (helper.isFeatureEnabled('magnifier')) {
       registerMagnifierService(helper);
     }
@@ -106,6 +111,7 @@ export function createHelperKernel() {
     hotkeysHelp: helper,
     timelineSelection: helper,
     smartSplit: helper,
+    waveformScale: helper,
     magnifier: helper,
     minimap: helper,
     bridge: helper
@@ -158,6 +164,9 @@ export function createHelperKernel() {
       }
       if (typeof helper.unbindMagnifier === 'function') {
         helper.unbindMagnifier();
+      }
+      if (typeof helper.unbindWaveformScaleUnlock === 'function') {
+        helper.unbindWaveformScaleUnlock();
       }
       if (typeof helper.unbindZoomPersistence === 'function') {
         helper.unbindZoomPersistence();

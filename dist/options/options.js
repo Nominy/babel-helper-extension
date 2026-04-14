@@ -14,6 +14,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     focusToggle: true,
     timelineSelection: true,
     timelineZoomDefaults: true,
+    waveformScaleUnlock: true,
     magnifier: true,
     minimap: true,
     customLinter: true,
@@ -34,6 +35,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     "focusToggle",
     "timelineSelection",
     "timelineZoomDefaults",
+    "waveformScaleUnlock",
     "magnifier",
     "minimap",
     "customLinter",
@@ -80,6 +82,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     timelineZoomDefaults: {
       label: "Timeline Zoom Defaults",
       description: "Remember last timeline zoom and apply it when a transcription session starts."
+    },
+    waveformScaleUnlock: {
+      label: "Waveform Scale Unlock",
+      description: "Raise Babel\u2019s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders."
     },
     magnifier: {
       label: "Magnifier",

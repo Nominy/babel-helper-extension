@@ -29,8 +29,29 @@ function getQuoteIndices(text) {
   return indices;
 }
 
+const UNICODE_DOUBLE_QUOTE_PATTERN =
+  /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
+
+function normalizeUnicodeDoubleQuoteVariants(text) {
+  if (typeof text !== 'string') {
+    return text;
+  }
+
+  UNICODE_DOUBLE_QUOTE_PATTERN.lastIndex = 0;
+  if (!UNICODE_DOUBLE_QUOTE_PATTERN.test(text)) {
+    return text;
+  }
+
+  UNICODE_DOUBLE_QUOTE_PATTERN.lastIndex = 0;
+  return text.replace(UNICODE_DOUBLE_QUOTE_PATTERN, '"');
+}
+
+function hasUnicodeQuoteViolation(text) {
+  return typeof text === 'string' && normalizeUnicodeDoubleQuoteVariants(text) !== text;
+}
+
 function hasUnbalancedDoubleQuotes(text) {
-  return getQuoteIndices(text).length % 2 === 1;
+  return getQuoteIndices(normalizeUnicodeDoubleQuoteVariants(text)).length % 2 === 1;
 }
 
 function isWordCharacter(char) {
@@ -38,7 +59,8 @@ function isWordCharacter(char) {
 }
 
 function hasQuotePlacementViolation(text) {
-  const quoteIndices = getQuoteIndices(text);
+  const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
+  const quoteIndices = getQuoteIndices(normalizedText);
   if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
     return false;
   }
@@ -46,10 +68,10 @@ function hasQuotePlacementViolation(text) {
   for (let index = 0; index < quoteIndices.length; index += 2) {
     const openIndex = quoteIndices[index];
     const closeIndex = quoteIndices[index + 1];
-    const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
-    const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
-    const prevCharBeforeClose = closeIndex > 0 ? text[closeIndex - 1] : '';
-    const nextChar = closeIndex + 1 < text.length ? text[closeIndex + 1] : '';
+    const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : '';
+    const nextCharAfterOpen = openIndex + 1 < normalizedText.length ? normalizedText[openIndex + 1] : '';
+    const prevCharBeforeClose = closeIndex > 0 ? normalizedText[closeIndex - 1] : '';
+    const nextChar = closeIndex + 1 < normalizedText.length ? normalizedText[closeIndex + 1] : '';
 
     if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
       return true;
@@ -118,6 +140,17 @@ function hasDoubleDashPunctuationViolation(text) {
   }
 
   return /--[.,?!:;]/.test(text);
+}
+
+const UNICODE_DASH_PATTERN = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
+
+function hasUnicodeDashViolation(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+
+  UNICODE_DASH_PATTERN.lastIndex = 0;
+  return UNICODE_DASH_PATTERN.test(text);
 }
 
 function hasSingleDashPunctuationViolation(text) {
@@ -272,7 +305,7 @@ function hasTerminalPunctuationViolation(text) {
     return false;
   }
 
-  const trimmed = stripTrailingTagTokens(text);
+  const trimmed = normalizeUnicodeDoubleQuoteVariants(stripTrailingTagTokens(text));
   if (!trimmed) {
     return false;
   }
@@ -511,6 +544,10 @@ function fixQuotePlacement(text) {
   return result;
 }
 
+function fixUnicodeQuotes(text) {
+  return normalizeUnicodeDoubleQuoteVariants(text);
+}
+
 function fixCurlySpacing(text) {
   if (typeof text !== 'string') {
     return text;
@@ -526,6 +563,20 @@ function fixCurlySpacing(text) {
   result = result.replace(/([\p{L}\p{N}])\{/gu, '$1 {');
   result = result.replace(/\}([\p{L}\p{N}])/gu, '} $1');
   return result;
+}
+
+function fixUnicodeDashes(text) {
+  if (typeof text !== 'string') {
+    return text;
+  }
+
+  UNICODE_DASH_PATTERN.lastIndex = 0;
+  if (!UNICODE_DASH_PATTERN.test(text)) {
+    return text;
+  }
+
+  UNICODE_DASH_PATTERN.lastIndex = 0;
+  return text.replace(UNICODE_DASH_PATTERN, '-');
 }
 
 function fixDoubleDashPunctuation(text) {
@@ -613,8 +664,10 @@ function applyAllFixes(text) {
   result = fixLeadingTrailingSpaces(result);
   result = fixDoubleSpaces(result);
   result = fixCommaSpacing(result);
+  result = fixUnicodeQuotes(result);
   result = fixQuotePlacement(result);
   result = fixCurlySpacing(result);
+  result = fixUnicodeDashes(result);
   result = fixDoubleDashPunctuation(result);
   result = fixSingleDashPunctuation(result);
   result = normalizeIncorrectInterjectionForms(result);
@@ -648,6 +701,18 @@ test('flags bad quote placement', () => {
   assert.equal(hasQuotePlacementViolation('"bar "'), true);
   assert.equal(hasQuotePlacementViolation('foo "bar" baz'), false);
   assert.equal(hasQuotePlacementViolation('foo "bar", baz'), false);
+});
+
+test('treats unicode quote variants as quote characters in analysis', () => {
+  assert.equal(hasUnbalancedDoubleQuotes('\u00abhello.'), true);
+  assert.equal(hasQuotePlacementViolation('foo\u00abbar\u00bbbaz'), true);
+});
+
+test('flags non-ascii quote variants', () => {
+  assert.equal(hasUnicodeQuoteViolation('\u00abhello\u00bb'), true);
+  assert.equal(hasUnicodeQuoteViolation('\u201chello\u201d'), true);
+  assert.equal(hasUnicodeQuoteViolation('\u300chello\u300d'), true);
+  assert.equal(hasUnicodeQuoteViolation('"hello"'), false);
 });
 
 test('flags bad curly tag spacing and imbalance', () => {
@@ -756,6 +821,17 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   );
 });
 
+test('applyAllFixes normalizes unicode quote variants before quote spacing', () => {
+  assert.equal(
+    applyAllFixes('foo\u00ab bar \u00bbbaz'),
+    'foo "bar" baz.'
+  );
+  assert.equal(
+    applyAllFixes('\u300chello\u300d'),
+    '"hello"'
+  );
+});
+
 test('fixSegmentStartCapitalization respects same-speaker continuations and ellipsis starts', () => {
   assert.equal(fixSegmentStartCapitalization('lowercase start.', 'Previous sentence.'), 'Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('lowercase continuation.', 'carry on...'), 'lowercase continuation.');
@@ -788,6 +864,32 @@ test('fixes double dash punctuation', () => {
 
 test('applyAllFixes includes double dash punctuation fix', () => {
   assert.equal(applyAllFixes('wait--.'), 'wait--');
+});
+
+test('flags unicode dash variants', () => {
+  assert.equal(hasUnicodeDashViolation('wait—what'), true);
+  assert.equal(hasUnicodeDashViolation('wait–what'), true);
+  assert.equal(hasUnicodeDashViolation('wait−what'), true);
+  assert.equal(hasUnicodeDashViolation('wait-what'), false);
+});
+
+test('fixes unicode dash variants to ascii hyphen', () => {
+  assert.equal(fixUnicodeDashes('wait—what'), 'wait-what');
+  assert.equal(fixUnicodeDashes('wait–what'), 'wait-what');
+  assert.equal(fixUnicodeDashes('wait−what'), 'wait-what');
+  assert.equal(fixUnicodeDashes('wait――what'), 'wait--what');
+});
+
+test('fixes unicode quote variants to ascii double quotes', () => {
+  assert.equal(fixUnicodeQuotes('\u00abhello\u00bb'), '"hello"');
+  assert.equal(fixUnicodeQuotes('\u201chello\u201d'), '"hello"');
+  assert.equal(fixUnicodeQuotes('\u300chello\u300d'), '"hello"');
+  assert.equal(fixUnicodeQuotes('\u301dhello\u301f'), '"hello"');
+});
+
+test('applyAllFixes normalizes unicode dashes before other dash rules', () => {
+  assert.equal(applyAllFixes('wait—.'), 'wait-');
+  assert.equal(applyAllFixes('pause――'), 'pause--');
 });
 
 test('flags single dash punctuation violation', () => {

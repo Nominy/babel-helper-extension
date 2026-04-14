@@ -11,16 +11,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
     const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
     const QUOTE_PLACEMENT_RULE_REASON = "Double quotes must not have stray spaces inside or be glued to surrounding words.";
+    const UNICODE_QUOTE_RULE_REASON = 'Use ASCII double quote (") instead of typographic or Unicode quote variants.';
     const CURLY_SPACING_RULE_REASON = 'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
+    const UNICODE_DASH_RULE_REASON = 'Use ASCII hyphen "-" instead of typographic or Unicode dash variants.';
     const DOUBLE_DASH_PUNCTUATION_RULE_REASON = "Punctuation immediately after double dash is typically avoided.";
     const SINGLE_DASH_PUNCTUATION_RULE_REASON = "Punctuation immediately after single dash is typically avoided.";
     const INCORRECT_INTERJECTION_FORMS_RULE_REASON = "Incorrect interjection forms must use dictionary spelling.";
-    const TERMINAL_PUNCTUATION_RULE_REASON = 'Segments must end with one of: ?, ..., !, --, ", or .';
+    const TERMINAL_PUNCTUATION_RULE_REASON = 'Segments must end with one of: ?, ..., !, -, --, ", or .';
     const SEGMENT_START_CAPITALIZATION_RULE_REASON = "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
     const RULE_SEVERITY = "error";
     const AUTO_LINT_MAX_ATTEMPTS = 20;
     const AUTO_LINT_RETRY_DELAY_MS = 100;
     const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+    const UNICODE_DOUBLE_QUOTE_PATTERN = /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
+    const UNICODE_DASH_PATTERN = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
     const originalFetch = window.fetch.bind(window);
     let enabled = true;
     let autoLintAttemptCount = 0;
@@ -240,8 +244,22 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return indices;
     }
+    function normalizeUnicodeDoubleQuoteVariants(text) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      UNICODE_DOUBLE_QUOTE_PATTERN.lastIndex = 0;
+      if (!UNICODE_DOUBLE_QUOTE_PATTERN.test(text)) {
+        return text;
+      }
+      UNICODE_DOUBLE_QUOTE_PATTERN.lastIndex = 0;
+      return text.replace(UNICODE_DOUBLE_QUOTE_PATTERN, '"');
+    }
+    function hasUnicodeQuoteViolation(text) {
+      return typeof text === "string" && normalizeUnicodeDoubleQuoteVariants(text) !== text;
+    }
     function hasUnbalancedDoubleQuotes(text) {
-      return getQuoteIndices(text).length % 2 === 1;
+      return getQuoteIndices(normalizeUnicodeDoubleQuoteVariants(text)).length % 2 === 1;
     }
     function isWordCharacter(char) {
       return typeof char === "string" && /[\p{L}\p{N}]/u.test(char);
@@ -313,17 +331,18 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       )
     }));
     function hasQuotePlacementViolation(text) {
-      const quoteIndices = getQuoteIndices(text);
+      const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
+      const quoteIndices = getQuoteIndices(normalizedText);
       if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
         return false;
       }
       for (let index = 0; index < quoteIndices.length; index += 2) {
         const openIndex = quoteIndices[index];
         const closeIndex = quoteIndices[index + 1];
-        const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
-        const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : "";
-        const prevCharBeforeClose = closeIndex > 0 ? text[closeIndex - 1] : "";
-        const nextChar = closeIndex + 1 < text.length ? text[closeIndex + 1] : "";
+        const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : "";
+        const nextCharAfterOpen = openIndex + 1 < normalizedText.length ? normalizedText[openIndex + 1] : "";
+        const prevCharBeforeClose = closeIndex > 0 ? normalizedText[closeIndex - 1] : "";
+        const nextChar = closeIndex + 1 < normalizedText.length ? normalizedText[closeIndex + 1] : "";
         if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
           return true;
         }
@@ -378,6 +397,13 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return /--[.,?!:;]/.test(text);
     }
+    function hasUnicodeDashViolation(text) {
+      if (typeof text !== "string") {
+        return false;
+      }
+      UNICODE_DASH_PATTERN.lastIndex = 0;
+      return UNICODE_DASH_PATTERN.test(text);
+    }
     function hasSingleDashPunctuationViolation(text) {
       if (typeof text !== "string" || text.indexOf("-") === -1) {
         return false;
@@ -408,11 +434,13 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (typeof text !== "string") {
         return false;
       }
-      const trimmed = stripTrailingTagTokens(text);
+      const trimmed = normalizeUnicodeDoubleQuoteVariants(
+        stripTrailingTagTokens(text)
+      );
       if (!trimmed) {
         return false;
       }
-      return !/(?:\.\.\.|--|[?!."])$/.test(trimmed);
+      return !/(?:\.\.\.|--|-|[?!."])$/.test(trimmed);
     }
     function isUppercaseLetter(char) {
       return typeof char === "string" && /[\p{L}]/u.test(char) && char === char.toLocaleUpperCase() && char !== char.toLocaleLowerCase();
@@ -572,10 +600,24 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
             severity: RULE_SEVERITY
           });
         }
+        if (hasUnicodeQuoteViolation(entry.text)) {
+          issues.push({
+            annotationId: entry.annotationId,
+            reason: UNICODE_QUOTE_RULE_REASON,
+            severity: RULE_SEVERITY
+          });
+        }
         if (hasCurlySpacingViolation(entry.text)) {
           issues.push({
             annotationId: entry.annotationId,
             reason: CURLY_SPACING_RULE_REASON,
+            severity: RULE_SEVERITY
+          });
+        }
+        if (hasUnicodeDashViolation(entry.text)) {
+          issues.push({
+            annotationId: entry.annotationId,
+            reason: UNICODE_DASH_RULE_REASON,
             severity: RULE_SEVERITY
           });
         }
@@ -1299,6 +1341,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return result;
     }
+    function fixUnicodeQuotes(text) {
+      return normalizeUnicodeDoubleQuoteVariants(text);
+    }
     function fixCurlySpacing(text) {
       if (typeof text !== "string") {
         return text;
@@ -1312,6 +1357,17 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       result = result.replace(/([\p{L}\p{N}])\{/gu, "$1 {");
       result = result.replace(/\}([\p{L}\p{N}])/gu, "} $1");
       return result;
+    }
+    function fixUnicodeDashes(text) {
+      if (typeof text !== "string") {
+        return text;
+      }
+      UNICODE_DASH_PATTERN.lastIndex = 0;
+      if (!UNICODE_DASH_PATTERN.test(text)) {
+        return text;
+      }
+      UNICODE_DASH_PATTERN.lastIndex = 0;
+      return text.replace(UNICODE_DASH_PATTERN, "-");
     }
     function fixDoubleDashPunctuation(text) {
       if (typeof text !== "string" || text.indexOf("--") === -1) {
@@ -1392,8 +1448,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       result = fixLeadingTrailingSpaces(result);
       result = fixDoubleSpaces(result);
       result = fixCommaSpacing(result);
+      result = fixUnicodeQuotes(result);
       result = fixQuotePlacement(result);
       result = fixCurlySpacing(result);
+      result = fixUnicodeDashes(result);
       result = fixDoubleDashPunctuation(result);
       result = fixSingleDashPunctuation(result);
       result = normalizeIncorrectInterjectionForms(result);
@@ -1562,6 +1620,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       applyAllFixes,
       fixLeadingTrailingSpaces,
       fixDoubleSpaces,
+      fixUnicodeQuotes,
+      fixUnicodeDashes,
       fixDoubleDashPunctuation,
       fixSingleDashPunctuation,
       normalizeIncorrectInterjectionForms,
