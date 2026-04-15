@@ -181,6 +181,7 @@ const INTERJECTION_CORRECTION_SPECS = [
   { canonical: 'ой', variants: ['оой', 'ойй'] },
   { canonical: 'окей', variants: ["о'кей", 'ОК'] },
   { canonical: 'ох', variants: ['охх'] },
+  { canonical: 'у', variants: ['у-у'] },
   { canonical: 'угу', variants: ['у-г-у', 'угуу'] },
   { canonical: 'ух', variants: ['ухх'] },
   { canonical: 'фу', variants: ['фу-у'] },
@@ -929,6 +930,7 @@ test('normalizes incorrect interjection forms conservatively', () => {
   assert.equal(normalizeIncorrectInterjectionForms('ей богу, это так.'), 'ей-богу, это так.');
   assert.equal(normalizeIncorrectInterjectionForms('Ну, да.'), 'Ну да.');
   assert.equal(normalizeIncorrectInterjectionForms('о, нет!'), 'о нет!');
+  assert.equal(normalizeIncorrectInterjectionForms('у-у, ясно.'), 'у, ясно.');
   assert.equal(normalizeIncorrectInterjectionForms('э-э, секунду.'), 'э, секунду.');
   assert.equal(normalizeIncorrectInterjectionForms('мм, да.'), 'м, да.');
   assert.equal(normalizeIncorrectInterjectionForms('ОК, хмм.'), 'ОКЕЙ, хм.');

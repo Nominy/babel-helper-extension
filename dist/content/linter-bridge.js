@@ -58,6 +58,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       { canonical: "\u043E\u0439", variants: ["\u043E\u043E\u0439", "\u043E\u0439\u0439"] },
       { canonical: "\u043E\u043A\u0435\u0439", variants: ["\u043E'\u043A\u0435\u0439", "\u041E\u041A"] },
       { canonical: "\u043E\u0445", variants: ["\u043E\u0445\u0445"] },
+      { canonical: "\u0443", variants: ["\u0443-\u0443"] },
       { canonical: "\u0443\u0433\u0443", variants: ["\u0443-\u0433-\u0443", "\u0443\u0433\u0443\u0443"] },
       { canonical: "\u0443\u0445", variants: ["\u0443\u0445\u0445"] },
       { canonical: "\u0444\u0443", variants: ["\u0444\u0443-\u0443"] },
