@@ -501,6 +501,20 @@ export function registerLifecycle(helper: any) {
           helper.analytics.record('hotkey:lint-autofix', { scope, ...result });
         }
       });
+    } else if (
+      !event.shiftKey &&
+      event.code === 'KeyT' &&
+      typeof helper.autoTrimCurrentRow === 'function'
+    ) {
+      handled = true;
+      void helper.autoTrimCurrentRow();
+    } else if (
+      event.shiftKey &&
+      event.code === 'KeyT' &&
+      typeof helper.autoTrimVisibleRows === 'function'
+    ) {
+      handled = true;
+      void helper.autoTrimVisibleRows();
     }
 
     if (handled) {
