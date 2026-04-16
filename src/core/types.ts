@@ -32,6 +32,7 @@ export interface ServiceRegistry {
   hotkeysHelp: any;
   timelineSelection: any;
   smartSplit: any;
+  timestampEdit: any;
   waveformScale: any;
   magnifier: any;
   minimap: any;

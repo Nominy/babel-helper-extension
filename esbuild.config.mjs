@@ -45,6 +45,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/content/timestamp-bridge.ts'],
+    outfile: 'dist/content/timestamp-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/content/linter-bridge.ts'],
     outfile: 'dist/content/linter-bridge.js'
   },

@@ -2625,6 +2625,8 @@ export function registerTimelineSelectionService(helper: any) {
     if (!beforeSnapshot || !initialOverlapPlan || !initialOverlapPlan.overlapping.length) {
       return false;
     }
+    const splitRowSnapshot = initialOverlapPlan.splitRequired ? captureRowSnapshot() : null;
+    const speakerKey = getSpeakerKeyForContainer(commitPlan.container);
 
     const smartSplitPlan =
       useSmartSplit &&
@@ -2719,34 +2721,86 @@ export function registerTimelineSelectionService(helper: any) {
       }
 
       if ((shouldTrimPrevious && !liveSnapshot.previous) || (shouldTrimNext && !liveSnapshot.next)) {
+        if (!initialOverlapPlan.splitRequired) {
+          return false;
+        }
+      }
+
+      const duplicateSplitRows =
+        initialOverlapPlan.splitRequired && splitRowSnapshot
+          ? await helper.waitFor(
+            () =>
+              findNewDuplicateSplitRows(splitRowSnapshot, {
+                speakerKey
+              }),
+            1200,
+            40
+          )
+          : null;
+
+      const previousTrimLabels =
+        shouldTrimPrevious && duplicateSplitRows && duplicateSplitRows.leftRow
+          ? getRowTimeLabels(duplicateSplitRows.leftRow)
+          : liveSnapshot.previous
+            ? {
+                startText: liveSnapshot.previous.startText,
+                endText: liveSnapshot.previous.endText
+              }
+            : null;
+      const nextTrimLabels =
+        shouldTrimNext && duplicateSplitRows && duplicateSplitRows.rightRow
+          ? getRowTimeLabels(duplicateSplitRows.rightRow)
+          : liveSnapshot.next
+            ? {
+                startText: liveSnapshot.next.startText,
+                endText: liveSnapshot.next.endText
+              }
+            : null;
+
+      if (shouldTrimPrevious && !previousTrimLabels) {
         return false;
       }
 
-      const targetStartClientX = liveSnapshot.containerRect.left + commitPlan.leftPx;
-      const targetEndClientX = liveSnapshot.containerRect.left + commitPlan.rightPx;
+      if (shouldTrimNext && !nextTrimLabels) {
+        return false;
+      }
 
-      if (shouldTrimPrevious && liveSnapshot.previous) {
-        const previousRightHandle = getHandle(liveSnapshot.previous.region, 'right');
-        if (!(previousRightHandle instanceof HTMLElement)) {
+      if (shouldTrimPrevious) {
+        if (typeof helper.setSegmentBoundaryTime !== 'function') {
           return false;
         }
 
-        const movedPrevious = await dragHandleToClientX(previousRightHandle, targetStartClientX);
-        if (!movedPrevious) {
+        const movedPrevious = await helper.setSegmentBoundaryTime({
+          side: 'right',
+          startText: previousTrimLabels.startText,
+          endText: previousTrimLabels.endText,
+          speakerKey,
+          targetSeconds: timeRange.startSeconds,
+          attempts: 2,
+          retryDelayMs: 80
+        });
+        if (!movedPrevious || !movedPrevious.ok) {
           return false;
         }
 
         await helper.sleep(48);
       }
 
-      if (shouldTrimNext && liveSnapshot.next) {
-        const nextLeftHandle = getHandle(liveSnapshot.next.region, 'left');
-        if (!(nextLeftHandle instanceof HTMLElement)) {
+      if (shouldTrimNext) {
+        if (typeof helper.setSegmentBoundaryTime !== 'function') {
           return false;
         }
 
-        const movedNext = await dragHandleToClientX(nextLeftHandle, targetEndClientX);
-        if (!movedNext) {
+        const movedNext = await helper.setSegmentBoundaryTime({
+          side: 'left',
+          startText: nextTrimLabels.startText,
+          endText: nextTrimLabels.endText,
+          speakerKey,
+          targetSeconds: timeRange.endSeconds,
+          attempts: 2,
+          retryDelayMs: 80
+        });
+        if (!movedNext || !movedNext.ok) {
           return false;
         }
       }

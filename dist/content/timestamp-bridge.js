@@ -16,22 +16,12 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return fallbackValue;
       }
     }
-    function respond(id, result) {
-      window.dispatchEvent(
-        new CustomEvent(RESPONSE_EVENT, {
-          detail: {
-            id,
-            result
-          }
-        })
-      );
-    }
     function sleep(ms) {
       return new Promise((resolve) => {
         window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
       });
     }
-    async function waitFor(callback, timeoutMs = 800, intervalMs = 40) {
+    async function waitFor(callback, timeoutMs = 1200, intervalMs = 40) {
       const startedAt = Date.now();
       while (Date.now() - startedAt <= timeoutMs) {
         const value = safe(() => callback(), null);
@@ -41,6 +31,16 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         await sleep(intervalMs);
       }
       return null;
+    }
+    function respond(id, result) {
+      window.dispatchEvent(
+        new CustomEvent(RESPONSE_EVENT, {
+          detail: {
+            id,
+            result
+          }
+        })
+      );
     }
     function normalizeText(value) {
       return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -283,37 +283,37 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return null;
     }
-    async function moveBoundary(payload) {
+    async function setBoundaryTime(payload) {
       const side = payload && payload.side === "left" ? "left" : "right";
       const targetSeconds = Number(payload?.targetSeconds);
       if (!Number.isFinite(targetSeconds)) {
         return {
           ok: false,
-          reason: "invalid-target",
-          side,
-          targetSeconds: payload?.targetSeconds ?? null
+          backend: "page-react-row-time-change",
+          reason: "invalid-target"
         };
       }
-      const row = findRowByTimeLabels(payload?.startText, payload?.endText, {
+      let row = (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) || findRowByTimeLabels(payload?.startText, payload?.endText, {
         speakerKey: payload?.speakerKey
       }) || findRowNearBoundary(side, targetSeconds, {
         speakerKey: payload?.speakerKey
       });
+      if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === "object") {
+        row = findRowByAnnotationId(payload.rowIdentity.annotationId || "");
+      }
       if (!(row instanceof HTMLTableRowElement)) {
         return {
           ok: false,
-          reason: "row-not-found",
-          side,
-          targetSeconds
+          backend: "page-react-row-time-change",
+          reason: "row-not-found"
         };
       }
       const binding = resolveRowTimeChangeBinding(row);
       if (!binding || typeof binding.onTimeChange !== "function" || typeof binding.annotationId !== "string" || !binding.annotationId) {
         return {
           ok: false,
-          reason: "binding-not-found",
-          side,
-          targetSeconds
+          backend: "page-react-row-time-change",
+          reason: "binding-not-found"
         };
       }
       const rowRange = getRowTimeRange(row);
@@ -322,9 +322,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!Number.isFinite(currentStart) || !Number.isFinite(currentEnd)) {
         return {
           ok: false,
-          reason: "current-range-invalid",
-          side,
-          targetSeconds
+          backend: "page-react-row-time-change",
+          reason: "current-range-invalid"
         };
       }
       const nextRange = side === "left" ? {
@@ -337,10 +336,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!Number.isFinite(nextRange.start) || !Number.isFinite(nextRange.end) || nextRange.end <= nextRange.start) {
         return {
           ok: false,
-          reason: "next-range-invalid",
-          side,
-          targetSeconds,
-          nextRange
+          backend: "page-react-row-time-change",
+          reason: "next-range-invalid"
         };
       }
       try {
@@ -348,9 +345,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       } catch (error) {
         return {
           ok: false,
+          backend: "page-react-row-time-change",
           reason: "apply-threw",
-          side,
-          targetSeconds,
           message: error instanceof Error ? error.message : String(error || "")
         };
       }
@@ -371,10 +367,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!(updatedRow instanceof HTMLTableRowElement)) {
         return {
           ok: false,
-          reason: "verify-timeout",
-          side,
-          targetSeconds,
-          annotationId: binding.annotationId
+          backend: "page-react-row-time-change",
+          reason: "verify-timeout"
         };
       }
       const updatedLabels = getRowTimeLabels(updatedRow);
@@ -399,10 +393,11 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!id) {
         return;
       }
-      if (operation === "move-boundary") {
-        Promise.resolve(moveBoundary(payload)).then((result) => respond(id, result)).catch(
+      if (operation === "set-boundary-time") {
+        Promise.resolve(setBoundaryTime(payload)).then((result) => respond(id, result)).catch(
           (error) => respond(id, {
             ok: false,
+            backend: "page-react-row-time-change",
             reason: "bridge-error",
             message: error instanceof Error ? error.message : String(error || "")
           })
@@ -410,7 +405,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
     });
     window.__babelHelperTimestampBridge = {
-      moveBoundary
+      setBoundaryTime
     };
   }
   initTimestampBridge();
