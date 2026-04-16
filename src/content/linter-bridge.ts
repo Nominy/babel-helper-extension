@@ -22,6 +22,10 @@ export function initLinterBridge() {
     "Punctuation immediately after single dash is typically avoided.";
   const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
     "Incorrect interjection forms must use dictionary spelling.";
+  const SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON =
+    "Words after clear sentence endings ., ?, ! must start uppercase.";
+  const POLITE_PRONOUN_CASE_RULE_REASON =
+    'Russian polite pronouns like "вы" / "ваш" must be lowercase mid-sentence.';
   const TERMINAL_PUNCTUATION_RULE_REASON =
     'Segments must end with one of: ?, ..., !, -, --, ", or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
@@ -34,6 +38,8 @@ export function initLinterBridge() {
     /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
   const UNICODE_DASH_PATTERN =
     /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
+  const POLITE_PRONOUN_PATTERN =
+    /(^|[^\p{L}\p{N}\p{M}])(вы|вас|вам|вами|ваш(?:а|е|и|его|ему|им|ем|у|ей|ею|их|ими)?)(?=$|[^\p{L}\p{N}\p{M}])/giu;
 
   const originalFetch = window.fetch.bind(window);
   let enabled = true;
@@ -641,6 +647,36 @@ export function initLinterBridge() {
     return index;
   }
 
+  function skipSentenceBoundaryTokens(text, startIndex = 0) {
+    if (typeof text !== "string") {
+      return startIndex;
+    }
+
+    let index = Math.max(0, startIndex);
+    while (index < text.length) {
+      const char = text[index];
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      if (/["'“”«»„‟‘’()\u00BB\u201D\u2019]/u.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      const nextIndex = skipLeadingCapitalizationTokens(text, index);
+      if (nextIndex !== index) {
+        index = nextIndex;
+        continue;
+      }
+
+      break;
+    }
+
+    return index;
+  }
+
   function stripTrailingTagTokens(text) {
     if (typeof text !== "string") {
       return "";
@@ -702,6 +738,124 @@ export function initLinterBridge() {
       }
 
       return endsWithLowercaseContinuationMarker(candidate.text);
+    }
+
+    return false;
+  }
+
+  function findSentenceBoundaryLowercaseIndices(text) {
+    if (typeof text !== "string" || !text) {
+      return [];
+    }
+
+    const indices = [];
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (!/[.?!]/.test(char)) {
+        continue;
+      }
+
+      if (char === "." && (text[index - 1] === "." || text[index + 1] === ".")) {
+        continue;
+      }
+
+      const letterIndex = findFirstLetterIndex(
+        text,
+        skipSentenceBoundaryTokens(text, index + 1),
+      );
+      if (letterIndex === -1) {
+        continue;
+      }
+
+      if (isLowercaseLetter(text[letterIndex])) {
+        indices.push(letterIndex);
+      }
+    }
+
+    return indices;
+  }
+
+  function hasSentenceBoundaryCapitalizationViolation(text) {
+    return findSentenceBoundaryLowercaseIndices(text).length > 0;
+  }
+
+  function getPolitePronounCaseExpectation(text, tokenIndex) {
+    if (typeof text !== "string" || tokenIndex < 0) {
+      return "neutral";
+    }
+
+    const firstLetterIndex = findFirstLetterIndex(
+      text,
+      skipLeadingCapitalizationTokens(text),
+    );
+    if (firstLetterIndex !== -1 && tokenIndex === firstLetterIndex) {
+      return "neutral";
+    }
+
+    let pointer = tokenIndex - 1;
+    while (pointer >= 0 && /\s/.test(text[pointer])) {
+      pointer -= 1;
+    }
+
+    while (
+      pointer >= 0 &&
+      /["')\]\}\u00BB\u201D\u2019]/u.test(text[pointer])
+    ) {
+      pointer -= 1;
+      while (pointer >= 0 && /\s/.test(text[pointer])) {
+        pointer -= 1;
+      }
+    }
+
+    if (pointer < 0) {
+      return "neutral";
+    }
+
+    if (text.slice(0, pointer + 1).endsWith("...")) {
+      return "neutral";
+    }
+
+    if (pointer >= 1 && text[pointer] === "-" && text[pointer - 1] === "-") {
+      return "neutral";
+    }
+
+    if (text[pointer] === "-") {
+      return "neutral";
+    }
+
+    if (/[.?!]/.test(text[pointer])) {
+      return "neutral";
+    }
+
+    return "lower";
+  }
+
+  function getPolitePronounTargetToken(text, tokenIndex, token) {
+    const normalizedToken = (token || "").toLocaleLowerCase();
+    const expectation = getPolitePronounCaseExpectation(text, tokenIndex);
+
+    if (expectation === "lower") {
+      return normalizedToken;
+    }
+
+    return token;
+  }
+
+  function hasPolitePronounCaseViolation(text) {
+    if (typeof text !== "string" || !text) {
+      return false;
+    }
+
+    POLITE_PRONOUN_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = POLITE_PRONOUN_PATTERN.exec(text))) {
+      const prefix = match[1] || "";
+      const token = match[2] || "";
+      const tokenIndex = match.index + prefix.length;
+      const targetToken = getPolitePronounTargetToken(text, tokenIndex, token);
+      if (token && targetToken && token !== targetToken) {
+        return true;
+      }
     }
 
     return false;
@@ -822,6 +976,22 @@ export function initLinterBridge() {
         issues.push({
           annotationId: entry.annotationId,
           reason: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+          severity: RULE_SEVERITY,
+        });
+      }
+
+      if (hasSentenceBoundaryCapitalizationViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
+          severity: RULE_SEVERITY,
+        });
+      }
+
+      if (hasPolitePronounCaseViolation(entry.text)) {
+        issues.push({
+          annotationId: entry.annotationId,
+          reason: POLITE_PRONOUN_CASE_RULE_REASON,
           severity: RULE_SEVERITY,
         });
       }
@@ -1824,6 +1994,46 @@ export function initLinterBridge() {
     return text.slice(0, insertionIndex) + "." + text.slice(insertionIndex);
   }
 
+  function fixSentenceBoundaryCapitalization(text) {
+    if (typeof text !== "string" || !text) {
+      return text;
+    }
+
+    const indices = findSentenceBoundaryLowercaseIndices(text);
+    if (!indices.length) {
+      return text;
+    }
+
+    let result = text;
+    for (let index = indices.length - 1; index >= 0; index -= 1) {
+      const letterIndex = indices[index];
+      result = replaceCharAt(
+        result,
+        letterIndex,
+        result[letterIndex].toLocaleUpperCase(),
+      );
+    }
+
+    return result;
+  }
+
+  function fixPolitePronounCase(text) {
+    if (typeof text !== "string" || !text) {
+      return text;
+    }
+
+    POLITE_PRONOUN_PATTERN.lastIndex = 0;
+    return text.replace(
+      POLITE_PRONOUN_PATTERN,
+      (match, prefix, token, offset) =>
+        `${prefix || ""}${getPolitePronounTargetToken(
+          text,
+          offset + (prefix || "").length,
+          token || "",
+        )}`,
+    );
+  }
+
   function replaceCharAt(text, index, nextChar) {
     if (
       typeof text !== "string" ||
@@ -1903,6 +2113,7 @@ export function initLinterBridge() {
     result = fixSingleDashPunctuation(result);
     result = normalizeIncorrectInterjectionForms(result);
     result = fixTerminalPunctuation(result);
+    result = fixSentenceBoundaryCapitalization(result);
     return result;
   }
 
@@ -1988,6 +2199,7 @@ export function initLinterBridge() {
         ? options.previousSameSpeakerText
         : "";
     let fixed = applyAllFixes(original);
+    fixed = fixPolitePronounCase(fixed);
     fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
     if (fixed === original) {
       return { fixed: false, reason: "no-changes" };
@@ -2125,9 +2337,12 @@ export function initLinterBridge() {
     fixDoubleDashPunctuation,
     fixSingleDashPunctuation,
     normalizeIncorrectInterjectionForms,
+    fixPolitePronounCase,
     fixTerminalPunctuation,
+    fixSentenceBoundaryCapitalization,
     fixSegmentStartCapitalization,
   };
 }
 
 initLinterBridge();
+

@@ -1367,9 +1367,9 @@ export function registerTimelineSelectionService(helper: any) {
     preview.element.style.borderColor = tooShort ? 'rgba(220, 38, 38, 0.95)' : 'rgba(2, 132, 199, 0.95)';
 
     if (label instanceof HTMLElement) {
-      label.textContent = Number.isFinite(duration)
-        ? duration.toFixed(2) + 's'
-        : 'Selection';
+      const labelText = Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
+      label.textContent = labelText;
+      label.style.display = labelText ? 'block' : 'none';
       label.style.background = tooShort ? 'rgba(127, 29, 29, 0.92)' : 'rgba(15, 23, 42, 0.82)';
     }
   }
@@ -1730,26 +1730,9 @@ export function registerTimelineSelectionService(helper: any) {
     label.style.pointerEvents = 'none';
     label.style.whiteSpace = 'nowrap';
 
-    const modeBadge = document.createElement('div');
-    modeBadge.setAttribute('data-babel-helper-cut-mode', 'true');
-    modeBadge.textContent = 'Selection';
-    modeBadge.style.position = 'absolute';
-    modeBadge.style.left = '6px';
-    modeBadge.style.top = '4px';
-    modeBadge.style.padding = '2px 6px';
-    modeBadge.style.borderRadius = '999px';
-    modeBadge.style.fontSize = '10px';
-    modeBadge.style.fontWeight = '700';
-    modeBadge.style.fontFamily = 'ui-monospace, SFMono-Regular, Consolas, monospace';
-    modeBadge.style.color = '#e0f2fe';
-    modeBadge.style.background = 'rgba(3, 105, 161, 0.88)';
-    modeBadge.style.pointerEvents = 'none';
-    modeBadge.style.whiteSpace = 'nowrap';
-
     preview.appendChild(leftHandle);
     preview.appendChild(rightHandle);
     preview.appendChild(label);
-    preview.appendChild(modeBadge);
     draft.container.appendChild(preview);
     rememberCutContainer(draft.container);
 
@@ -1784,6 +1767,61 @@ export function registerTimelineSelectionService(helper: any) {
     void refreshPreviewTimeRange(helper.state.cutPreview);
   }
 
+  function resetPreviewCreateAnchor(preview, clientX) {
+    if (!preview) {
+      return;
+    }
+
+    const minWidth = CUT_PREVIEW_MIN_WIDTH;
+    const anchorPx = clamp(
+      clientX - preview.containerRect.left,
+      preview.regionLeftPx,
+      preview.regionRightPx
+    );
+    let leftPx = anchorPx;
+    let rightPx = Math.min(preview.regionRightPx, anchorPx + minWidth);
+
+    if (rightPx - leftPx < minWidth) {
+      leftPx = Math.max(preview.regionLeftPx, rightPx - minWidth);
+    }
+
+    preview.leftPx = leftPx;
+    preview.rightPx = rightPx;
+    preview.dragStartClientX = preview.containerRect.left + anchorPx;
+    preview.originLeftPx = leftPx;
+    preview.originRightPx = rightPx;
+    preview.dragMode = 'create';
+    preview.timeRange = null;
+    preview.timeRangeRequest = null;
+  }
+
+  function applyAnchoredPreviewBounds(preview, anchorPx, currentPx) {
+    if (!preview) {
+      return;
+    }
+
+    const minWidth = CUT_PREVIEW_MIN_WIDTH;
+    const normalizedAnchor = clamp(anchorPx, preview.regionLeftPx, preview.regionRightPx);
+    const normalizedCurrent = clamp(currentPx, preview.regionLeftPx, preview.regionRightPx);
+
+    if (normalizedCurrent <= normalizedAnchor) {
+      preview.rightPx = normalizedAnchor;
+      preview.leftPx = Math.min(normalizedCurrent, normalizedAnchor - minWidth);
+      preview.leftPx = Math.max(preview.regionLeftPx, preview.leftPx);
+      if (preview.rightPx - preview.leftPx < minWidth) {
+        preview.leftPx = Math.max(preview.regionLeftPx, preview.rightPx - minWidth);
+      }
+      return;
+    }
+
+    preview.leftPx = normalizedAnchor;
+    preview.rightPx = Math.max(normalizedCurrent, normalizedAnchor + minWidth);
+    preview.rightPx = Math.min(preview.regionRightPx, preview.rightPx);
+    if (preview.rightPx - preview.leftPx < minWidth) {
+      preview.rightPx = Math.min(preview.regionRightPx, preview.leftPx + minWidth);
+    }
+  }
+
   function beginPreviewDrag(event) {
     if (event.button !== 0) {
       if (event.button === 1) {
@@ -1810,15 +1848,26 @@ export function registerTimelineSelectionService(helper: any) {
     const nearRightEdge = localX >= previewRect.width - CUT_PREVIEW_HANDLE_HIT_WIDTH;
 
     preview.pointerId = typeof event.pointerId === 'number' ? event.pointerId : 1;
-    preview.dragStartClientX = event.clientX;
-    preview.originLeftPx = preview.leftPx;
-    preview.originRightPx = preview.rightPx;
     helper.stopSelectionLoop();
-    if (nearLeftEdge && !nearRightEdge) {
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      resetPreviewCreateAnchor(preview, event.clientX);
+      updatePreviewElement();
+    } else if (nearLeftEdge && !nearRightEdge) {
+      preview.dragStartClientX = event.clientX;
+      preview.originLeftPx = preview.leftPx;
+      preview.originRightPx = preview.rightPx;
+      preview.dragAnchorPx = preview.rightPx;
       preview.dragMode = 'resize-left';
     } else if (nearRightEdge) {
+      preview.dragStartClientX = event.clientX;
+      preview.originLeftPx = preview.leftPx;
+      preview.originRightPx = preview.rightPx;
+      preview.dragAnchorPx = preview.leftPx;
       preview.dragMode = 'resize-right';
     } else {
+      preview.dragStartClientX = event.clientX;
+      preview.originLeftPx = preview.leftPx;
+      preview.originRightPx = preview.rightPx;
       preview.dragMode = 'locked';
     }
 
@@ -1852,20 +1901,22 @@ export function registerTimelineSelectionService(helper: any) {
         preview.regionLeftPx,
         preview.regionRightPx
       );
-      preview.leftPx = Math.min(startX, currentX);
-      preview.rightPx = Math.max(preview.leftPx + minWidth, currentX);
+      const anchorLeft = Math.min(startX, currentX);
+      const anchorRight = Math.max(startX, currentX);
+      preview.leftPx = anchorLeft;
+      preview.rightPx = Math.max(anchorLeft + minWidth, anchorRight);
       preview.rightPx = Math.min(preview.rightPx, preview.regionRightPx);
     } else if (preview.dragMode === 'resize-left') {
-      preview.leftPx = clamp(
-        preview.originLeftPx + dx,
-        preview.regionLeftPx,
-        preview.rightPx - minWidth
+      applyAnchoredPreviewBounds(
+        preview,
+        Number.isFinite(preview.dragAnchorPx) ? preview.dragAnchorPx : preview.originRightPx,
+        preview.originLeftPx + dx
       );
     } else if (preview.dragMode === 'resize-right') {
-      preview.rightPx = clamp(
-        preview.originRightPx + dx,
-        preview.leftPx + minWidth,
-        preview.regionRightPx
+      applyAnchoredPreviewBounds(
+        preview,
+        Number.isFinite(preview.dragAnchorPx) ? preview.dragAnchorPx : preview.originLeftPx,
+        preview.originRightPx + dx
       );
     } else if (preview.dragMode === 'locked') {
       // Absorb preview-body drags so they do not fall through to Babel.

@@ -143,6 +143,8 @@ function hasDoubleDashPunctuationViolation(text) {
 }
 
 const UNICODE_DASH_PATTERN = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
+const POLITE_PRONOUN_PATTERN =
+  /(^|[^\p{L}\p{N}\p{M}])(вы|вас|вам|вами|ваш(?:а|е|и|его|ему|им|ем|у|ей|ею|их|ими)?)(?=$|[^\p{L}\p{N}\p{M}])/giu;
 
 function hasUnicodeDashViolation(text) {
   if (typeof text !== 'string') {
@@ -386,6 +388,36 @@ function skipLeadingCapitalizationTokens(text, startIndex = 0) {
   return index;
 }
 
+function skipSentenceBoundaryTokens(text, startIndex = 0) {
+  if (typeof text !== 'string') {
+    return startIndex;
+  }
+
+  let index = Math.max(0, startIndex);
+  while (index < text.length) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (/["'“”«»„‟‘’()\u00BB\u201D\u2019]/u.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    const nextIndex = skipLeadingCapitalizationTokens(text, index);
+    if (nextIndex !== index) {
+      index = nextIndex;
+      continue;
+    }
+
+    break;
+  }
+
+  return index;
+}
+
 function stripTrailingTagTokens(text) {
   if (typeof text !== 'string') {
     return '';
@@ -447,6 +479,118 @@ function previousSameSpeakerAllowsLowercase(annotationEntries, index) {
     }
 
     return endsWithLowercaseContinuationMarker(candidate.text);
+  }
+
+  return false;
+}
+
+function findSentenceBoundaryLowercaseIndices(text) {
+  if (typeof text !== 'string' || !text) {
+    return [];
+  }
+
+  const indices = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (!/[.?!]/.test(char)) {
+      continue;
+    }
+
+    if (char === '.' && (text[index - 1] === '.' || text[index + 1] === '.')) {
+      continue;
+    }
+
+    const letterIndex = findFirstLetterIndex(
+      text,
+      skipSentenceBoundaryTokens(text, index + 1)
+    );
+    if (letterIndex === -1) {
+      continue;
+    }
+
+    if (isLowercaseLetter(text[letterIndex])) {
+      indices.push(letterIndex);
+    }
+  }
+
+  return indices;
+}
+
+function hasSentenceBoundaryCapitalizationViolation(text) {
+  return findSentenceBoundaryLowercaseIndices(text).length > 0;
+}
+
+function getPolitePronounCaseExpectation(text, tokenIndex) {
+  if (typeof text !== 'string' || tokenIndex < 0) {
+    return 'neutral';
+  }
+
+  const firstLetterIndex = findFirstLetterIndex(text, skipLeadingCapitalizationTokens(text));
+  if (firstLetterIndex !== -1 && tokenIndex === firstLetterIndex) {
+    return 'neutral';
+  }
+
+  let pointer = tokenIndex - 1;
+  while (pointer >= 0 && /\s/.test(text[pointer])) {
+    pointer -= 1;
+  }
+
+  while (pointer >= 0 && /["')\]\}\u00BB\u201D\u2019]/u.test(text[pointer])) {
+    pointer -= 1;
+    while (pointer >= 0 && /\s/.test(text[pointer])) {
+      pointer -= 1;
+    }
+  }
+
+  if (pointer < 0) {
+    return 'neutral';
+  }
+
+  if (text.slice(0, pointer + 1).endsWith('...')) {
+    return 'neutral';
+  }
+
+  if (pointer >= 1 && text[pointer] === '-' && text[pointer - 1] === '-') {
+    return 'neutral';
+  }
+
+  if (text[pointer] === '-') {
+    return 'neutral';
+  }
+
+  if (/[.?!]/.test(text[pointer])) {
+    return 'neutral';
+  }
+
+  return 'lower';
+}
+
+function getPolitePronounTargetToken(text, tokenIndex, token) {
+  const normalizedToken = (token || '').toLocaleLowerCase();
+  const expectation = getPolitePronounCaseExpectation(text, tokenIndex);
+
+  if (expectation === 'lower') {
+    return normalizedToken;
+  }
+
+  return token;
+}
+
+function hasPolitePronounCaseViolation(text) {
+  if (typeof text !== 'string' || !text) {
+    return false;
+  }
+
+  POLITE_PRONOUN_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = POLITE_PRONOUN_PATTERN.exec(text))) {
+    const prefix = match[1] || '';
+    const token = match[2] || '';
+    const tokenIndex = match.index + prefix.length;
+    const targetToken = getPolitePronounTargetToken(text, tokenIndex, token);
+    if (token && targetToken && token !== targetToken) {
+      return true;
+    }
   }
 
   return false;
@@ -613,6 +757,42 @@ function fixTerminalPunctuation(text) {
   return text.slice(0, insertionIndex) + '.' + text.slice(insertionIndex);
 }
 
+function fixSentenceBoundaryCapitalization(text) {
+  if (typeof text !== 'string' || !text) {
+    return text;
+  }
+
+  const indices = findSentenceBoundaryLowercaseIndices(text);
+  if (!indices.length) {
+    return text;
+  }
+
+  let result = text;
+  for (let index = indices.length - 1; index >= 0; index -= 1) {
+    const letterIndex = indices[index];
+    result = replaceCharAt(result, letterIndex, result[letterIndex].toLocaleUpperCase());
+  }
+
+  return result;
+}
+
+function fixPolitePronounCase(text) {
+  if (typeof text !== 'string' || !text) {
+    return text;
+  }
+
+  POLITE_PRONOUN_PATTERN.lastIndex = 0;
+  return text.replace(
+    POLITE_PRONOUN_PATTERN,
+    (_match, prefix, token, offset) =>
+      `${prefix || ''}${getPolitePronounTargetToken(
+        text,
+        offset + (prefix || '').length,
+        token || ''
+      )}`
+  );
+}
+
 function replaceCharAt(text, index, nextChar) {
   if (typeof text !== 'string' || index < 0 || index >= text.length || typeof nextChar !== 'string') {
     return text;
@@ -673,6 +853,7 @@ function applyAllFixes(text) {
   result = fixSingleDashPunctuation(result);
   result = normalizeIncorrectInterjectionForms(result);
   result = fixTerminalPunctuation(result);
+  result = fixSentenceBoundaryCapitalization(result);
   return result;
 }
 
@@ -744,6 +925,17 @@ test('flags missing terminal punctuation and accepts allowed endings', () => {
   assert.equal(hasTerminalPunctuationViolation('   '), false);
 });
 
+test('flags lowercase words after clear sentence boundaries inside a segment', () => {
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello. world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello? world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello! world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello... world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello -- world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello - world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello. "world"'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello. [laughs] world'), true);
+});
+
 test('flags lowercase starts unless same-speaker continuation allows them', () => {
   const entries = [
     { annotationId: 'a', speakerKey: 'speaker-1', text: 'Hello there.' },
@@ -778,6 +970,37 @@ test('capitalization rule ignores leading tags before the real text start', () =
   assert.equal(hasSegmentStartCapitalizationViolation(entries[2], entries, 2), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[3], entries, 3), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[4], entries, 4), false);
+});
+
+test('flags polite Russian pronouns only when sentence context requires a different case', () => {
+  assert.equal(hasPolitePronounCaseViolation('\u0412\u044b \u043f\u0440\u0430\u0432\u044b.'), false);
+  assert.equal(hasPolitePronounCaseViolation('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.'), false);
+  assert.equal(
+    hasPolitePronounCaseViolation('\u0421\u043f\u0430\u0441\u0438\u0431\u043e, \u0412\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'),
+    true
+  );
+  assert.equal(
+    hasPolitePronounCaseViolation('\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'),
+    false
+  );
+  assert.equal(
+    hasPolitePronounCaseViolation('\u0414\u0430. --\u0412\u0430\u043c\u0438 \u044d\u0442\u043e \u0441\u0434\u0435\u043b\u0430\u043d\u043e.'),
+    false
+  );
+  assert.equal(
+    hasPolitePronounCaseViolation('\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.'),
+    false
+  );
+});
+
+test('segment capitalization rule uses sentence-start case for polite pronouns', () => {
+  const entries = [
+    { annotationId: 'a', speakerKey: 'speaker-1', text: '\u0432\u044b \u043f\u0440\u0430\u0432\u044b.' },
+    { annotationId: 'b', speakerKey: 'speaker-1', text: '[laughs] \u0432\u0430\u0448\u0430 \u0432\u0435\u0440\u0441\u0438\u044f \u043b\u0443\u0447\u0448\u0435.' }
+  ];
+
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[0], entries, 0), true);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[1], entries, 1), true);
 });
 
 test('fixes native Babel-style leading and trailing spaces', () => {
@@ -820,6 +1043,10 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
     applyAllFixes('hello world [laughs]'),
     'hello world. [laughs]'
   );
+  assert.equal(
+    applyAllFixes('hello. world'),
+    'hello. World.'
+  );
 });
 
 test('applyAllFixes normalizes unicode quote variants before quote spacing', () => {
@@ -837,6 +1064,9 @@ test('fixSegmentStartCapitalization respects same-speaker continuations and elli
   assert.equal(fixSegmentStartCapitalization('lowercase start.', 'Previous sentence.'), 'Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('lowercase continuation.', 'carry on...'), 'lowercase continuation.');
   assert.equal(fixSegmentStartCapitalization('lowercase continuation.', 'carry on--'), 'lowercase continuation.');
+  assert.equal(fixSegmentStartCapitalization('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.', 'Previous sentence.'), '\u0412\u044b \u043f\u0440\u0430\u0432\u044b.');
+  assert.equal(fixSegmentStartCapitalization('[laughs] \u0432\u0430\u0448\u0430 \u0432\u0435\u0440\u0441\u0438\u044f.', 'Previous sentence.'), '[laughs] \u0412\u0430\u0448\u0430 \u0432\u0435\u0440\u0441\u0438\u044f.');
+  assert.equal(fixSegmentStartCapitalization('\u0412\u044b \u043f\u0440\u0430\u0432\u044b.', 'carry on...'), '\u0412\u044b \u043f\u0440\u0430\u0432\u044b.');
   assert.equal(fixSegmentStartCapitalization('...Upper after ellipsis.', 'Previous sentence.'), '...upper after ellipsis.');
   assert.equal(fixSegmentStartCapitalization('...lower after ellipsis.', 'Previous sentence.'), '...lower after ellipsis.');
   assert.equal(fixSegmentStartCapitalization('[laughs] lowercase start.', 'Previous sentence.'), '[laughs] Lowercase start.');
@@ -947,4 +1177,27 @@ test('preserves case shape when normalizing incorrect interjection forms', () =>
 test('applyAllFixes includes incorrect interjection normalization', () => {
   assert.equal(applyAllFixes('ей богу'), 'ей-богу.');
   assert.equal(applyAllFixes('ОК, хмм'), 'ОКЕЙ, хм.');
+});
+test('fixes polite Russian pronouns according to sentence context', () => {
+  assert.equal(fixPolitePronounCase('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.'), '\u0432\u044b \u043f\u0440\u0430\u0432\u044b.');
+  assert.equal(fixPolitePronounCase('\u0421\u043f\u0430\u0441\u0438\u0431\u043e, \u0412\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'), '\u0421\u043f\u0430\u0441\u0438\u0431\u043e, \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.');
+  assert.equal(fixPolitePronounCase('\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'), '\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.');
+  assert.equal(fixPolitePronounCase('\u0414\u0430. --\u0412\u0430\u043c\u0438 \u044d\u0442\u043e \u0441\u0434\u0435\u043b\u0430\u043d\u043e.'), '\u0414\u0430. --\u0412\u0430\u043c\u0438 \u044d\u0442\u043e \u0441\u0434\u0435\u043b\u0430\u043d\u043e.');
+  assert.equal(fixPolitePronounCase('\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.'), '\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.');
+});
+
+test('applyAllFixes includes polite Russian pronoun normalization', () => {
+  assert.equal(fixPolitePronounCase(applyAllFixes('\u0432\u044b \u043f\u0440\u0430\u0432\u044b')), '\u0432\u044b \u043f\u0440\u0430\u0432\u044b.');
+  assert.equal(fixPolitePronounCase(applyAllFixes('\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.')), '\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0412\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.');
+});
+
+test('fixes lowercase words after clear sentence boundaries inside a segment', () => {
+  assert.equal(fixSentenceBoundaryCapitalization('Hello. world'), 'Hello. World');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello? world'), 'Hello? World');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello! world'), 'Hello! World');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello... world'), 'Hello... world');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello -- world'), 'Hello -- world');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello - world'), 'Hello - world');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello. "world"'), 'Hello. "World"');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello. [laughs] world'), 'Hello. [laughs] World');
 });
