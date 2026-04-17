@@ -3046,6 +3046,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     const BRIDGE_SCRIPT_PATH3 = "dist/content/magnifier-bridge.js";
     const BRIDGE_TIMEOUT_MS = 700;
     const ZOOM_PERSIST_DEBOUNCE_MS = 240;
+    const AUDIO_TRIM_THRESHOLD = Math.pow(10, -62 / 20);
+    const AUDIO_TRIM_PADDING_SECONDS = 5e-3;
+    const AUDIO_TRIM_EPSILON_SECONDS = 15e-4;
     helper.state.cutDraft = null;
     helper.state.cutPreview = null;
     helper.state.cutCommitPending = false;
@@ -3053,6 +3056,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     helper.state.smartSplitClickDraft = null;
     helper.state.smartSplitClickContext = null;
     helper.state.selectionLoop = null;
+    helper.config.hotkeysHelpRows.unshift(["Alt + Shift + R", "Trim all visible segments to nearby visible audio"]);
+    helper.config.hotkeysHelpRows.unshift(["Alt + R", "Trim current segment to nearby visible audio"]);
     helper.config.hotkeysHelpRows.unshift(["Shift + Ctrl/Cmd + Click", "Run native split and redistribute words"]);
     helper.config.hotkeysHelpRows.unshift(["L", "Loop the selected range until playback caret moves"]);
     helper.config.hotkeysHelpRows.unshift(["Shift + S", "Split the selected range"]);
@@ -3256,7 +3261,14 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return "";
       }
       const tooltip = region.querySelector(selector);
-      return tooltip instanceof HTMLElement ? helper.normalizeText(tooltip) : "";
+      if (!(tooltip instanceof HTMLElement)) {
+        return "";
+      }
+      const normalized = helper.normalizeText(tooltip);
+      if (normalized) {
+        return normalized;
+      }
+      return typeof tooltip.textContent === "string" ? tooltip.textContent.replace(/\s+/g, " ").trim() : "";
     }
     function getRowTimeLabels(row) {
       if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
@@ -3864,6 +3876,50 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       const root = container.getRootNode();
       return root instanceof ShadowRoot && root.host instanceof HTMLElement ? root.host : null;
     }
+    function discoverWaveformContainers() {
+      const containers = [];
+      const seen = /* @__PURE__ */ new Set();
+      if (helper.state.cutLastContainer instanceof HTMLElement && helper.state.cutLastContainer.isConnected) {
+        seen.add(helper.state.cutLastContainer);
+        containers.push(helper.state.cutLastContainer);
+      }
+      for (const node of Array.from(document.querySelectorAll("div"))) {
+        if (!(node instanceof HTMLDivElement) || !(node.shadowRoot instanceof ShadowRoot) || !helper.isVisible(node)) {
+          continue;
+        }
+        const container = node.shadowRoot.querySelector('[part="regions-container"]') || (() => {
+          const region = node.shadowRoot.querySelector('[part~="region"]');
+          return region instanceof HTMLElement ? region.parentElement : null;
+        })();
+        if (!(container instanceof HTMLElement) || seen.has(container) || !container.isConnected) {
+          continue;
+        }
+        seen.add(container);
+        containers.push(container);
+      }
+      return containers;
+    }
+    function getTrackDetailsForHost(host) {
+      if (!(host instanceof HTMLElement)) {
+        return null;
+      }
+      let fiber = getReactFiber(host);
+      if (!fiber && host.parentElement instanceof HTMLElement) {
+        fiber = getReactFiber(host.parentElement);
+      }
+      let owner = fiber;
+      let ownerDepth = 0;
+      while (owner && typeof owner === "object" && ownerDepth < 20) {
+        const props = owner.memoizedProps;
+        const track = props && typeof props === "object" && props.track && typeof props.track === "object" ? props.track : null;
+        if (track) {
+          return track;
+        }
+        owner = owner.return;
+        ownerDepth += 1;
+      }
+      return null;
+    }
     function getWaveformRegistryFromHost(host) {
       let fiber = getReactFiber(host);
       if (!fiber && host instanceof HTMLElement) {
@@ -3896,30 +3952,17 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       return null;
     }
     function getTrackIdForHost(host) {
-      if (!(host instanceof HTMLElement)) {
-        return null;
-      }
-      let fiber = getReactFiber(host);
-      if (!fiber && host.parentElement instanceof HTMLElement) {
-        fiber = getReactFiber(host.parentElement);
-      }
-      let owner = fiber;
-      let ownerDepth = 0;
-      while (owner && typeof owner === "object" && ownerDepth < 20) {
-        const props = owner.memoizedProps;
-        const track = props && typeof props === "object" && props.track && typeof props.track === "object" ? props.track : null;
-        if (track && track.id != null) {
-          return String(track.id);
-        }
-        owner = owner.return;
-        ownerDepth += 1;
-      }
-      return null;
+      const track = getTrackDetailsForHost(host);
+      return track && track.id != null ? String(track.id) : null;
     }
     function getSpeakerKeyForContainer(container) {
       const host = getWaveformHostFromContainer(container);
       if (!(host instanceof HTMLElement)) {
         return "";
+      }
+      const track = getTrackDetailsForHost(host);
+      if (track && typeof track.label === "string" && track.label.trim()) {
+        return track.label.trim();
       }
       return getTrackIdForHost(host) || "";
     }
@@ -4626,6 +4669,277 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return Array.from(container.children).filter((child) => isRegionBody(child));
     }
+    function findRegionEntryForRow(row, container) {
+      if (!(row instanceof HTMLTableRowElement) || !(container instanceof HTMLElement)) {
+        return null;
+      }
+      const labels = getRowTimeLabels(row);
+      const speakerKey = helper.getRowSpeakerKey(row);
+      const snapshot = collectRegionSnapshot(container);
+      if (!labels || !snapshot) {
+        return null;
+      }
+      const exactMatch = snapshot.bounds.find(
+        (entry) => entry.startText === labels.startText && entry.endText === labels.endText
+      ) || null;
+      if (exactMatch) {
+        return exactMatch;
+      }
+      const rowRange = getRowTimeRange(row);
+      if (!rowRange) {
+        return null;
+      }
+      let best = null;
+      let bestScore = -Infinity;
+      for (const entry of snapshot.bounds) {
+        if (speakerKey && getSpeakerKeyForContainer(container) !== speakerKey) {
+          break;
+        }
+        const startSeconds = parseTimeValue(entry.startText);
+        const endSeconds = parseTimeValue(entry.endText);
+        if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+          continue;
+        }
+        const overlap = Math.max(
+          0,
+          Math.min(endSeconds, rowRange.endSeconds) - Math.max(startSeconds, rowRange.startSeconds)
+        );
+        const distance = Math.abs(startSeconds - rowRange.startSeconds) + Math.abs(endSeconds - rowRange.endSeconds);
+        const score = overlap > 0 ? overlap * 100 - distance : -distance;
+        if (score > bestScore) {
+          best = entry;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+    function findCurrentSegmentTarget() {
+      const row = helper.getCurrentRow({ allowFallback: false }) || helper.getCurrentRow({ allowFallback: true });
+      if (!(row instanceof HTMLTableRowElement)) {
+        return null;
+      }
+      const rowSpeakerKey = helper.getRowSpeakerKey(row);
+      const rowLabels = getRowTimeLabels(row);
+      for (const container of discoverWaveformContainers()) {
+        if (rowSpeakerKey && getSpeakerKeyForContainer(container) !== rowSpeakerKey) {
+          continue;
+        }
+        const entry = findRegionEntryForRow(row, container);
+        if (entry) {
+          return {
+            row,
+            speakerKey: rowSpeakerKey,
+            container,
+            entry
+          };
+        }
+        if (rowLabels && rowLabels.startText && rowLabels.endText) {
+          return {
+            row,
+            speakerKey: rowSpeakerKey,
+            container,
+            entry: {
+              startText: rowLabels.startText,
+              endText: rowLabels.endText
+            }
+          };
+        }
+      }
+      if (rowLabels && rowLabels.startText && rowLabels.endText) {
+        return {
+          row,
+          speakerKey: rowSpeakerKey,
+          container: null,
+          entry: {
+            startText: rowLabels.startText,
+            endText: rowLabels.endText
+          }
+        };
+      }
+      return null;
+    }
+    function collectAllSegmentTargets() {
+      const targets = [];
+      const containers = discoverWaveformContainers();
+      for (const row of helper.getTranscriptRows()) {
+        if (!(row instanceof HTMLTableRowElement)) {
+          continue;
+        }
+        const speakerKey = helper.getRowSpeakerKey(row);
+        const labels = getRowTimeLabels(row);
+        if (!labels || !labels.startText || !labels.endText) {
+          continue;
+        }
+        const container = containers.find((candidate) => {
+          const candidateSpeakerKey = getSpeakerKeyForContainer(candidate);
+          return !speakerKey || candidateSpeakerKey === speakerKey;
+        }) || null;
+        const entry = container instanceof HTMLElement ? findRegionEntryForRow(row, container) || {
+          startText: labels.startText,
+          endText: labels.endText
+        } : {
+          startText: labels.startText,
+          endText: labels.endText
+        };
+        targets.push({
+          row,
+          speakerKey,
+          container,
+          entry
+        });
+      }
+      return targets;
+    }
+    async function requestTrimTargetsForContainer(container, entry) {
+      if (!(container instanceof HTMLElement) || !entry) {
+        return null;
+      }
+      const hostMarker = ensureSelectionHostMarker(container);
+      if (!hostMarker) {
+        return null;
+      }
+      const startSeconds = parseTimeValue(entry.startText);
+      const endSeconds = parseTimeValue(entry.endText);
+      if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+        return null;
+      }
+      return callSelectionBridge("trim-segment-audio", {
+        hostMarker,
+        startSeconds,
+        endSeconds,
+        amplitudeThreshold: AUDIO_TRIM_THRESHOLD,
+        paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
+      });
+    }
+    async function requestTrimTargetsForSpeaker(speakerKey, entry) {
+      if (!entry) {
+        return null;
+      }
+      const startSeconds = parseTimeValue(entry.startText);
+      const endSeconds = parseTimeValue(entry.endText);
+      if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+        return null;
+      }
+      return callSelectionBridge("trim-segment-audio-for-speaker", {
+        speakerKey,
+        startSeconds,
+        endSeconds,
+        amplitudeThreshold: AUDIO_TRIM_THRESHOLD,
+        paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
+      });
+    }
+    async function requestTrimTargets(target, labels, speakerKey) {
+      const primary = target && target.container instanceof HTMLElement && target.entry ? await requestTrimTargetsForContainer(target.container, target.entry) : null;
+      if (primary && primary.ok) {
+        return primary;
+      }
+      const fallbackEntry = target && target.entry ? target.entry : labels && labels.startText && labels.endText ? labels : null;
+      const fallback = await requestTrimTargetsForSpeaker(speakerKey, fallbackEntry);
+      return fallback || primary;
+    }
+    async function trimSegmentTarget(target) {
+      if (!target || !target.entry) {
+        return { ok: false, reason: "missing-target" };
+      }
+      const speakerKey = typeof target.speakerKey === "string" ? target.speakerKey : target.row instanceof HTMLTableRowElement ? helper.getRowSpeakerKey(target.row) : "";
+      const entryStartSeconds = parseTimeValue(target.entry.startText);
+      const entryEndSeconds = parseTimeValue(target.entry.endText);
+      const row = findRowByTimeLabels(target.entry.startText, target.entry.endText, {
+        speakerKey
+      }) || (Number.isFinite(entryStartSeconds) && Number.isFinite(entryEndSeconds) && entryEndSeconds > entryStartSeconds ? findRowByTimeRange(entryStartSeconds, entryEndSeconds, {
+        speakerKey
+      }) : null) || (target.row instanceof HTMLTableRowElement ? target.row : null);
+      if (!(row instanceof HTMLTableRowElement)) {
+        return { ok: false, reason: "missing-row" };
+      }
+      const labels = getRowTimeLabels(row);
+      const rowRange = getRowTimeRange(row);
+      if (!labels || !rowRange) {
+        return { ok: false, reason: "missing-row-range" };
+      }
+      const trimResult = await requestTrimTargets(target, labels, speakerKey);
+      if (!trimResult || !trimResult.ok) {
+        return { ok: false, reason: "bridge-failed", bridge: trimResult || null };
+      }
+      if (!trimResult.foundAudio) {
+        return { ok: true, changed: false, reason: "no-audio-above-threshold" };
+      }
+      let changed = false;
+      const nextEndSeconds = Number(trimResult.targetEndSeconds);
+      const nextStartSeconds = Number(trimResult.targetStartSeconds);
+      if (Number.isFinite(nextEndSeconds) && nextEndSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS && nextEndSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS) {
+        const movedRight = await helper.setSegmentBoundaryTime({
+          side: "right",
+          startText: labels.startText,
+          endText: labels.endText,
+          speakerKey,
+          targetSeconds: nextEndSeconds,
+          attempts: 2,
+          retryDelayMs: 70
+        });
+        if (!movedRight || !movedRight.ok) {
+          return { ok: false, reason: "right-trim-failed", bridge: trimResult };
+        }
+        changed = true;
+        await helper.sleep(32);
+      }
+      if (Number.isFinite(nextStartSeconds) && nextStartSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS && nextStartSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS) {
+        const movedLeft = await helper.setSegmentBoundaryTime({
+          side: "left",
+          startText: labels.startText,
+          endText: labels.endText,
+          speakerKey,
+          targetSeconds: nextStartSeconds,
+          attempts: 2,
+          retryDelayMs: 70
+        });
+        if (!movedLeft || !movedLeft.ok) {
+          return { ok: false, reason: "left-trim-failed", bridge: trimResult };
+        }
+        changed = true;
+      }
+      return {
+        ok: true,
+        changed,
+        trim: trimResult
+      };
+    }
+    helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio() {
+      const target = findCurrentSegmentTarget();
+      if (!target) {
+        return { ok: false, reason: "missing-current-segment" };
+      }
+      return trimSegmentTarget(target);
+    };
+    helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio() {
+      const targets = collectAllSegmentTargets();
+      if (!targets.length) {
+        return {
+          ok: false,
+          reason: "missing-segments",
+          changedCount: 0
+        };
+      }
+      let changedCount = 0;
+      for (const target of targets) {
+        const result = await trimSegmentTarget(target);
+        if (!result || !result.ok) {
+          return {
+            ok: false,
+            reason: result && result.reason ? result.reason : "trim-failed",
+            changedCount
+          };
+        }
+        if (result.changed) {
+          changedCount += 1;
+        }
+        await helper.sleep(16);
+      }
+      return {
+        ok: true,
+        changedCount
+      };
+    };
     function getRegionBounds(region, containerRect) {
       if (!(region instanceof HTMLElement)) {
         return null;
@@ -5270,6 +5584,28 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         if (!helper.runtime.isSessionInteractive()) {
           return false;
         }
+      }
+      if (event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyR") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.shiftKey) {
+          void helper.trimAllSegmentsToAudio();
+          return {
+            handled: true,
+            analyticsType: "hotkey:trim",
+            analyticsData: {
+              scope: "all"
+            }
+          };
+        }
+        void helper.trimCurrentSegmentToAudio();
+        return {
+          handled: true,
+          analyticsType: "hotkey:trim",
+          analyticsData: {
+            scope: "current"
+          }
+        };
       }
       if (!helper.state.cutPreview) {
         if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === "KeyL") {
@@ -8088,6 +8424,22 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     }
     function handleNativeArrowSuppress(event) {
       updateRightShiftState(event);
+      if (helper.runtime.isSessionInteractive() && isFeatureEnabled("timelineSelection") && typeof helper.handleCutPreviewKeydown === "function" && event.altKey && !event.ctrlKey && !event.metaKey && event.code === "KeyR") {
+        const timelineHotkeyResult = helper.handleCutPreviewKeydown(event);
+        if (timelineHotkeyResult) {
+          event.stopImmediatePropagation();
+          if (helper.analytics) {
+            const analyticsType = typeof timelineHotkeyResult === "object" && timelineHotkeyResult && typeof timelineHotkeyResult.analyticsType === "string" ? timelineHotkeyResult.analyticsType : "hotkey:cut-preview";
+            const analyticsData = typeof timelineHotkeyResult === "object" && timelineHotkeyResult && timelineHotkeyResult.analyticsData && typeof timelineHotkeyResult.analyticsData === "object" ? timelineHotkeyResult.analyticsData : {};
+            helper.analytics.record(analyticsType, {
+              key: event.key,
+              code: event.code,
+              ...analyticsData
+            });
+          }
+          return;
+        }
+      }
       if (isRightShiftSegmentNavigationShortcut(event)) {
         const offset = event.key === "ArrowRight" ? 1 : -1;
         const handled = typeof helper.moveFocus === "function" && helper.moveFocus(offset);
@@ -8119,13 +8471,20 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!helper.runtime.isSessionInteractive()) {
         return;
       }
-      if (event.defaultPrevented) {
+      const timelineHotkeyResult = isFeatureEnabled("timelineSelection") && typeof helper.handleCutPreviewKeydown === "function" ? helper.handleCutPreviewKeydown(event) : false;
+      if (timelineHotkeyResult) {
+        if (helper.analytics) {
+          const analyticsType = typeof timelineHotkeyResult === "object" && timelineHotkeyResult && typeof timelineHotkeyResult.analyticsType === "string" ? timelineHotkeyResult.analyticsType : "hotkey:cut-preview";
+          const analyticsData = typeof timelineHotkeyResult === "object" && timelineHotkeyResult && timelineHotkeyResult.analyticsData && typeof timelineHotkeyResult.analyticsData === "object" ? timelineHotkeyResult.analyticsData : {};
+          helper.analytics.record(analyticsType, {
+            key: event.key,
+            code: event.code,
+            ...analyticsData
+          });
+        }
         return;
       }
-      if (isFeatureEnabled("timelineSelection") && typeof helper.handleCutPreviewKeydown === "function" && helper.handleCutPreviewKeydown(event)) {
-        if (helper.analytics) {
-          helper.analytics.record("hotkey:cut-preview", { key: event.key, code: event.code });
-        }
+      if (event.defaultPrevented) {
         return;
       }
       if (isFeatureEnabled("focusToggle") && event.key === "Escape") {
