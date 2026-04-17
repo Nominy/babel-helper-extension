@@ -721,8 +721,26 @@ export function initLinterBridge() {
     return result;
   }
 
+  function stripTrailingContinuationClosers(text) {
+    if (typeof text !== "string") {
+      return "";
+    }
+
+    let result = stripTrailingTagTokens(text);
+    while (result) {
+      const lastChar = result[result.length - 1];
+      if (!/[\s"')\]\}\u00BB\u201D\u2019]/u.test(lastChar)) {
+        break;
+      }
+
+      result = result.slice(0, -1).trimEnd();
+    }
+
+    return result;
+  }
+
   function endsWithLowercaseContinuationMarker(text) {
-    return typeof text === "string" && /(?:\.\.\.|--)\s*$/.test(text);
+    return /(?:\.\.\.|--)$/.test(stripTrailingContinuationClosers(text));
   }
 
   function previousSameSpeakerAllowsLowercase(annotationEntries, index) {

@@ -1,6 +1,6 @@
 {
   "name": "babel-helper-extension",
-  "version": "1.0.71",
+  "version": "1.0.74",
   "private": true,
   "type": "module",
   "scripts": {

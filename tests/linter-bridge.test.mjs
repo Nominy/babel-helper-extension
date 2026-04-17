@@ -462,8 +462,26 @@ function stripTrailingTagTokens(text) {
   return result;
 }
 
+function stripTrailingContinuationClosers(text) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+
+  let result = stripTrailingTagTokens(text);
+  while (result) {
+    const lastChar = result[result.length - 1];
+    if (!/[\s"')\]\}\u00BB\u201D\u2019]/u.test(lastChar)) {
+      break;
+    }
+
+    result = result.slice(0, -1).trimEnd();
+  }
+
+  return result;
+}
+
 function endsWithLowercaseContinuationMarker(text) {
-  return typeof text === 'string' && /(?:\.\.\.|--)\s*$/.test(text);
+  return /(?:\.\.\.|--)$/.test(stripTrailingContinuationClosers(text));
 }
 
 function previousSameSpeakerAllowsLowercase(annotationEntries, index) {
@@ -945,7 +963,11 @@ test('flags lowercase starts unless same-speaker continuation allows them', () =
     { annotationId: 'e', speakerKey: 'speaker-2', text: 'other speaker...' },
     { annotationId: 'f', speakerKey: 'speaker-1', text: 'still wrong.' },
     { annotationId: 'g', speakerKey: 'speaker-1', text: '...Upper after ellipsis.' },
-    { annotationId: 'h', speakerKey: 'speaker-1', text: '...lower after ellipsis.' }
+    { annotationId: 'h', speakerKey: 'speaker-1', text: '...lower after ellipsis.' },
+    { annotationId: 'i', speakerKey: 'speaker-1', text: 'quoted continuation--"' },
+    { annotationId: 'j', speakerKey: 'speaker-1', text: '"lowercase after quote.' },
+    { annotationId: 'k', speakerKey: 'speaker-1', text: 'quoted ellipsis..."' },
+    { annotationId: 'l', speakerKey: 'speaker-1', text: '"still lowercase after quote.' }
   ];
 
   assert.equal(hasSegmentStartCapitalizationViolation(entries[0], entries, 0), false);
@@ -954,6 +976,8 @@ test('flags lowercase starts unless same-speaker continuation allows them', () =
   assert.equal(hasSegmentStartCapitalizationViolation(entries[5], entries, 5), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[6], entries, 6), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[7], entries, 7), false);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[9], entries, 9), false);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[11], entries, 11), false);
 });
 
 test('capitalization rule ignores leading tags before the real text start', () => {
@@ -1064,6 +1088,8 @@ test('fixSegmentStartCapitalization respects same-speaker continuations and elli
   assert.equal(fixSegmentStartCapitalization('lowercase start.', 'Previous sentence.'), 'Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('lowercase continuation.', 'carry on...'), 'lowercase continuation.');
   assert.equal(fixSegmentStartCapitalization('lowercase continuation.', 'carry on--'), 'lowercase continuation.');
+  assert.equal(fixSegmentStartCapitalization('"lowercase continuation."', 'carry on--"'), '"lowercase continuation."');
+  assert.equal(fixSegmentStartCapitalization('"lowercase continuation."', 'carry on..."'), '"lowercase continuation."');
   assert.equal(fixSegmentStartCapitalization('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.', 'Previous sentence.'), '\u0412\u044b \u043f\u0440\u0430\u0432\u044b.');
   assert.equal(fixSegmentStartCapitalization('[laughs] \u0432\u0430\u0448\u0430 \u0432\u0435\u0440\u0441\u0438\u044f.', 'Previous sentence.'), '[laughs] \u0412\u0430\u0448\u0430 \u0432\u0435\u0440\u0441\u0438\u044f.');
   assert.equal(fixSegmentStartCapitalization('\u0412\u044b \u043f\u0440\u0430\u0432\u044b.', 'carry on...'), '\u0412\u044b \u043f\u0440\u0430\u0432\u044b.');
