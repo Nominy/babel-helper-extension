@@ -11,7 +11,6 @@ import {
 import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, sleep, waitFor } from '../hooks/dom';
 import { registerRowService } from '../services/row-service';
 import { registerTimestampEditService } from '../services/timestamp-edit-service';
-import { registerAutoTrimService } from '../services/auto-trim-service';
 import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
 import { registerTimelineSelectionService } from '../services/timeline-selection-service';
 import { registerWaveformScaleService } from '../services/waveform-scale-service';
@@ -82,7 +81,6 @@ export function createHelperKernel() {
   function registerServices() {
     registerRowService(helper);
     registerTimestampEditService(helper);
-    registerAutoTrimService(helper);
 
     if (helper.isFeatureEnabled('hotkeysHelp')) {
       registerHotkeysHelpService(helper);
@@ -116,7 +114,6 @@ export function createHelperKernel() {
     timelineSelection: helper,
     smartSplit: helper,
     timestampEdit: helper,
-    autoTrim: helper,
     waveformScale: helper,
     magnifier: helper,
     minimap: helper,

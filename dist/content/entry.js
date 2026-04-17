@@ -2565,7 +2565,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     let bridgeInjected = false;
     let bridgeLoadPromise = null;
     let bridgeRequestId = 0;
-    function clamp2(value, min, max) {
+    function clamp(value, min, max) {
       return Math.min(Math.max(value, min), max);
     }
     function parseTimeValue(value) {
@@ -2831,8 +2831,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           reason: "invalid-target"
         };
       }
-      const attempts = clamp2(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
-      const retryDelayMs = clamp2(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+      const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+      const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const row = findRowByTimeLabels(settings.startText, settings.endText, {
           speakerKey: settings.speakerKey
@@ -2867,481 +2867,6 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         backend: "page-react-row-time-change",
         verification: null
       };
-    };
-  }
-
-  // src/services/auto-trim-utils.ts
-  function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
-  }
-  function collectVisibleAutoTrimEntries(rows, isVisible2, getIdentity) {
-    const entries = [];
-    for (const row of Array.isArray(rows) ? rows : []) {
-      if (!isVisible2(row)) {
-        continue;
-      }
-      const identity = getIdentity(row);
-      if (!identity || typeof identity !== "object") {
-        continue;
-      }
-      entries.push({ row, identity });
-    }
-    return entries;
-  }
-  function clampAutoTrimBoundaryTarget(input) {
-    const side = input.side === "left" ? "left" : "right";
-    const currentStartSeconds = Number(input.currentStartSeconds);
-    const currentEndSeconds = Number(input.currentEndSeconds);
-    const suggestedSeconds = Number(input.suggestedSeconds);
-    const minGapSeconds = Math.max(1e-3, Number(input.minGapSeconds) || 0.01);
-    const minDeltaMs = Math.max(0, Number(input.minDeltaMs) || 0);
-    if (!Number.isFinite(currentStartSeconds) || !Number.isFinite(currentEndSeconds) || !(currentEndSeconds > currentStartSeconds) || !Number.isFinite(suggestedSeconds)) {
-      return {
-        ok: false,
-        targetSeconds: null,
-        reason: "invalid-range",
-        deltaMs: 0,
-        clamped: false,
-        outwardDeltaMs: 0,
-        inwardDeltaMs: 0
-      };
-    }
-    const currentBoundarySeconds = side === "left" ? currentStartSeconds : currentEndSeconds;
-    const minAllowed = side === "left" ? Number.isFinite(Number(input.previousEndSeconds)) ? Number(input.previousEndSeconds) + minGapSeconds : 0 : currentStartSeconds + minGapSeconds;
-    const maxAllowed = side === "left" ? currentEndSeconds - minGapSeconds : Number.isFinite(Number(input.nextStartSeconds)) ? Number(input.nextStartSeconds) - minGapSeconds : Number.POSITIVE_INFINITY;
-    if (!(maxAllowed > minAllowed)) {
-      return {
-        ok: false,
-        targetSeconds: null,
-        reason: "invalid-neighbor-gap",
-        deltaMs: 0,
-        clamped: false,
-        outwardDeltaMs: 0,
-        inwardDeltaMs: 0
-      };
-    }
-    const targetSeconds = clamp(suggestedSeconds, minAllowed, maxAllowed);
-    const deltaMs = Math.abs(targetSeconds - currentBoundarySeconds) * 1e3;
-    const clamped = Math.abs(targetSeconds - suggestedSeconds) > 5e-4;
-    const outwardDeltaMs = side === "left" ? Math.max(0, (currentBoundarySeconds - targetSeconds) * 1e3) : Math.max(0, (targetSeconds - currentBoundarySeconds) * 1e3);
-    const inwardDeltaMs = side === "left" ? Math.max(0, (targetSeconds - currentBoundarySeconds) * 1e3) : Math.max(0, (currentBoundarySeconds - targetSeconds) * 1e3);
-    if (deltaMs < minDeltaMs) {
-      return {
-        ok: false,
-        targetSeconds,
-        reason: "below-min-delta",
-        deltaMs,
-        clamped,
-        outwardDeltaMs,
-        inwardDeltaMs
-      };
-    }
-    return {
-      ok: true,
-      targetSeconds,
-      reason: clamped ? "clamped-to-neighbor" : "ok",
-      deltaMs,
-      clamped,
-      outwardDeltaMs,
-      inwardDeltaMs
-    };
-  }
-  function summarizeAutoTrimResults(results) {
-    const summary = {
-      rowsProcessed: 0,
-      trimmed: 0,
-      boundariesTrimmed: 0,
-      skippedLowConfidence: 0,
-      skippedNoAudio: 0,
-      failedWrite: 0,
-      skippedNoop: 0,
-      skippedInvalid: 0
-    };
-    for (const result of Array.isArray(results) ? results : []) {
-      summary.rowsProcessed += 1;
-      summary.boundariesTrimmed += Math.max(0, Number(result?.boundariesTrimmed) || 0);
-      switch (result?.status) {
-        case "trimmed":
-          summary.trimmed += 1;
-          break;
-        case "skipped-low-confidence":
-          summary.skippedLowConfidence += 1;
-          break;
-        case "skipped-no-audio":
-          summary.skippedNoAudio += 1;
-          break;
-        case "failed-write":
-          summary.failedWrite += 1;
-          break;
-        case "skipped-noop":
-          summary.skippedNoop += 1;
-          break;
-        default:
-          summary.skippedInvalid += 1;
-          break;
-      }
-    }
-    return summary;
-  }
-
-  // src/services/auto-trim-service.ts
-  function registerAutoTrimService(helper) {
-    if (!helper || helper.__autoTrimRegistered) {
-      return;
-    }
-    helper.__autoTrimRegistered = true;
-    const BRIDGE_REQUEST_EVENT = "babel-helper-magnifier-request";
-    const BRIDGE_RESPONSE_EVENT = "babel-helper-magnifier-response";
-    const BRIDGE_SCRIPT_PATH3 = "dist/content/magnifier-bridge.js";
-    const BRIDGE_TIMEOUT_MS = 900;
-    const PADDING_MS = 20;
-    const MAX_OUTWARD_MS = 50;
-    const MIN_DELTA_MS = 5;
-    const MIN_GAP_SECONDS = 0.01;
-    const LEFT_WINDOW_BEFORE_MS = 250;
-    const LEFT_WINDOW_AFTER_MS = 350;
-    const RIGHT_WINDOW_BEFORE_MS = 350;
-    const RIGHT_WINDOW_AFTER_MS = 250;
-    let bridgeInjected = false;
-    let bridgeLoadPromise = null;
-    let bridgeRequestId = 0;
-    helper.state.autoTrimInFlight = false;
-    helper.state.autoTrimLastSummary = null;
-    helper.config.hotkeysHelpRows.unshift(["Alt + Shift + T", "Auto-trim visible rows"]);
-    function bridgeSupportsAutoTrim() {
-      return bridgeInjected;
-    }
-    function injectBridge3() {
-      if (bridgeInjected) {
-        return Promise.resolve(true);
-      }
-      if (bridgeLoadPromise) {
-        return bridgeLoadPromise;
-      }
-      bridgeLoadPromise = new Promise((resolve) => {
-        const parent = document.documentElement || document.head || document.body;
-        if (!parent || typeof chrome === "undefined" || !chrome.runtime || typeof chrome.runtime.getURL !== "function") {
-          bridgeLoadPromise = null;
-          resolve(false);
-          return;
-        }
-        const script = document.createElement("script");
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH3);
-        script.async = false;
-        script.onload = () => {
-          script.remove();
-          bridgeInjected = true;
-          resolve(true);
-        };
-        script.onerror = () => {
-          script.remove();
-          bridgeLoadPromise = null;
-          resolve(false);
-        };
-        parent.appendChild(script);
-      });
-      return bridgeLoadPromise;
-    }
-    async function callBridge(operation, payload) {
-      const ready = await injectBridge3();
-      if (!ready) {
-        return null;
-      }
-      return new Promise((resolve) => {
-        bridgeRequestId += 1;
-        const id = "auto-trim-request-" + bridgeRequestId;
-        let settled = false;
-        const finish = (result) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-          window.clearTimeout(timeoutId);
-          resolve(result || null);
-        };
-        const handleResponse = (event) => {
-          const detail = event.detail || {};
-          if (detail.id !== id) {
-            return;
-          }
-          finish(detail.result || null);
-        };
-        const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
-        window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-        window.dispatchEvent(
-          new CustomEvent(BRIDGE_REQUEST_EVENT, {
-            detail: {
-              id,
-              operation,
-              payload: payload || {}
-            }
-          })
-        );
-      });
-    }
-    function getTranscriptRowsSnapshot() {
-      return helper.getTranscriptRows().map((row) => ({
-        row,
-        identity: helper.getRowIdentity(row),
-        visible: helper.isVisible(row)
-      }));
-    }
-    function findSnapshotIndex(snapshot, identity) {
-      if (!Array.isArray(snapshot) || !identity) {
-        return -1;
-      }
-      return snapshot.findIndex((entry) => entry && helper.rowMatchesIdentity(entry.row, identity));
-    }
-    function resolveSnapshotRow(snapshot, index, direction) {
-      if (!Array.isArray(snapshot)) {
-        return null;
-      }
-      const startIndex = Number(index);
-      const step = direction < 0 ? -1 : 1;
-      for (let pointer = startIndex + step; pointer >= 0 && pointer < snapshot.length; pointer += step) {
-        const candidate = snapshot[pointer];
-        if (!candidate || !candidate.identity) {
-          continue;
-        }
-        const row = helper.findRowByIdentity(candidate.identity);
-        if (row instanceof HTMLTableRowElement) {
-          return row;
-        }
-      }
-      return null;
-    }
-    function getRowTimeLabels(row) {
-      return typeof helper.getTimestampEditRowTimeLabels === "function" ? helper.getTimestampEditRowTimeLabels(row) : null;
-    }
-    function getRowTimeRange(row) {
-      return typeof helper.getTimestampEditRowTimeRange === "function" ? helper.getTimestampEditRowTimeRange(row) : null;
-    }
-    async function requestVisibleRowBoundarySuggestions() {
-      const response = await callBridge("visible-row-boundary-trim-suggestions", {
-        leftWindowMsBefore: LEFT_WINDOW_BEFORE_MS,
-        leftWindowMsAfter: LEFT_WINDOW_AFTER_MS,
-        rightWindowMsBefore: RIGHT_WINDOW_BEFORE_MS,
-        rightWindowMsAfter: RIGHT_WINDOW_AFTER_MS,
-        paddingMs: PADDING_MS,
-        maxOutwardMs: MAX_OUTWARD_MS
-      });
-      if (!response || response.ok === false || !Array.isArray(response.rows)) {
-        return [];
-      }
-      return response.rows;
-    }
-    function findBridgeSuggestionForEntry(entry, bridgeRows) {
-      if (!entry || !entry.identity || !Array.isArray(bridgeRows)) {
-        return null;
-      }
-      const entryIdentity = entry.identity;
-      for (const bridgeRow of bridgeRows) {
-        const identity = bridgeRow && bridgeRow.identity ? bridgeRow.identity : null;
-        if (!identity) {
-          continue;
-        }
-        if (entryIdentity.annotationId && identity.annotationId && entryIdentity.annotationId === identity.annotationId) {
-          return bridgeRow;
-        }
-        if (entryIdentity.speakerKey && identity.speakerKey && entryIdentity.speakerKey === identity.speakerKey && entryIdentity.startText && entryIdentity.endText && entryIdentity.startText === identity.startText && entryIdentity.endText === identity.endText) {
-          return bridgeRow;
-        }
-      }
-      return null;
-    }
-    async function applyBoundaryTime(row, side, targetSeconds) {
-      const labels = getRowTimeLabels(row);
-      const identity = helper.getRowIdentity(row);
-      if (!labels || !identity) {
-        return { ok: false, reason: "missing-row-state" };
-      }
-      return helper.setSegmentBoundaryTime({
-        side,
-        startText: labels.startText,
-        endText: labels.endText,
-        speakerKey: identity.speakerKey,
-        targetSeconds,
-        attempts: 2,
-        retryDelayMs: 80
-      });
-    }
-    async function autoTrimRowBoundaries(entry, context) {
-      const baseIdentity = entry && entry.identity ? entry.identity : null;
-      const currentRow = baseIdentity ? helper.findRowByIdentity(baseIdentity) : null;
-      if (!(currentRow instanceof HTMLTableRowElement)) {
-        return {
-          status: "skipped-invalid",
-          boundariesTrimmed: 0,
-          reason: "row-missing"
-        };
-      }
-      const currentRange = getRowTimeRange(currentRow);
-      if (!currentRange) {
-        return {
-          status: "skipped-invalid",
-          boundariesTrimmed: 0,
-          reason: "range-missing"
-        };
-      }
-      const previousRow = resolveSnapshotRow(context.snapshot, entry.index, -1);
-      const nextRow = resolveSnapshotRow(context.snapshot, entry.index, 1);
-      const previousRange = getRowTimeRange(previousRow);
-      const nextRange = getRowTimeRange(nextRow);
-      const bridgeSuggestion = context && context.bridgeSuggestion ? context.bridgeSuggestion : findBridgeSuggestionForEntry(entry, context.bridgeRows);
-      const leftSuggestion = bridgeSuggestion ? bridgeSuggestion.leftSuggestion : null;
-      const rightSuggestion = bridgeSuggestion ? bridgeSuggestion.rightSuggestion : null;
-      const suggestions = [
-        { side: "left", suggestion: leftSuggestion },
-        { side: "right", suggestion: rightSuggestion }
-      ];
-      let boundariesTrimmed = 0;
-      let hadLowConfidence = false;
-      let hadNoAudio = false;
-      let hadWriteFailure = false;
-      let hadNoop = false;
-      for (const item of suggestions) {
-        const suggestion = item.suggestion;
-        if (!suggestion || suggestion.ok === false) {
-          hadNoAudio = true;
-          continue;
-        }
-        if (suggestion.confidence !== "high" || !Number.isFinite(Number(suggestion.suggestedSeconds))) {
-          hadLowConfidence = true;
-          continue;
-        }
-        const liveRow = helper.findRowByIdentity(baseIdentity);
-        const liveRange = getRowTimeRange(liveRow);
-        if (!(liveRow instanceof HTMLTableRowElement) || !liveRange) {
-          hadWriteFailure = true;
-          continue;
-        }
-        const clampResult = clampAutoTrimBoundaryTarget({
-          side: item.side,
-          currentStartSeconds: liveRange.startSeconds,
-          currentEndSeconds: liveRange.endSeconds,
-          suggestedSeconds: Number(suggestion.suggestedSeconds),
-          previousEndSeconds: previousRange ? previousRange.endSeconds : null,
-          nextStartSeconds: nextRange ? nextRange.startSeconds : null,
-          minGapSeconds: MIN_GAP_SECONDS,
-          minDeltaMs: MIN_DELTA_MS
-        });
-        if (!clampResult.ok || !Number.isFinite(Number(clampResult.targetSeconds))) {
-          hadNoop = clampResult.reason === "below-min-delta" || clampResult.reason === "clamped-to-neighbor";
-          if (!hadNoop) {
-            hadLowConfidence = true;
-          }
-          continue;
-        }
-        const writeResult = await applyBoundaryTime(
-          liveRow,
-          item.side,
-          Number(clampResult.targetSeconds)
-        );
-        if (!writeResult || !writeResult.ok) {
-          hadWriteFailure = true;
-          continue;
-        }
-        boundariesTrimmed += 1;
-        await helper.sleep(48);
-      }
-      if (boundariesTrimmed > 0) {
-        return {
-          status: "trimmed",
-          boundariesTrimmed,
-          reason: hadWriteFailure ? "partial-trim-with-write-failure" : "trimmed"
-        };
-      }
-      if (hadWriteFailure) {
-        return {
-          status: "failed-write",
-          boundariesTrimmed: 0,
-          reason: "write-failed"
-        };
-      }
-      if (hadNoAudio) {
-        return {
-          status: "skipped-no-audio",
-          boundariesTrimmed: 0,
-          reason: "audio-unavailable"
-        };
-      }
-      if (hadNoop) {
-        return {
-          status: "skipped-noop",
-          boundariesTrimmed: 0,
-          reason: "delta-too-small"
-        };
-      }
-      return {
-        status: "skipped-low-confidence",
-        boundariesTrimmed: 0,
-        reason: hadLowConfidence ? "low-confidence" : "no-suggestion"
-      };
-    }
-    helper.autoTrimVisibleRows = async function autoTrimVisibleRows() {
-      if (helper.state.autoTrimInFlight) {
-        return helper.state.autoTrimLastSummary || {
-          rowsProcessed: 0,
-          trimmed: 0,
-          boundariesTrimmed: 0,
-          skippedLowConfidence: 0,
-          skippedNoAudio: 0,
-          failedWrite: 0,
-          skippedNoop: 0,
-          skippedInvalid: 0,
-          inFlight: true
-        };
-      }
-      helper.state.autoTrimInFlight = true;
-      try {
-        const snapshot = getTranscriptRowsSnapshot();
-        const visibleEntries = collectVisibleAutoTrimEntries(
-          snapshot.map((entry) => entry.row),
-          (row) => helper.isVisible(row),
-          (row) => helper.getRowIdentity(row)
-        ).map((entry) => ({
-          ...entry,
-          index: findSnapshotIndex(snapshot, entry.identity)
-        })).filter((entry) => entry.index >= 0);
-        const bridgeRows = await requestVisibleRowBoundarySuggestions();
-        const results = [];
-        for (let index = 0; index < visibleEntries.length; index += 1) {
-          const entry = visibleEntries[index];
-          const result = await autoTrimRowBoundaries(entry, {
-            snapshot,
-            bridgeRows,
-            bridgeSuggestion: Array.isArray(bridgeRows) ? bridgeRows[index] || null : null
-          });
-          results.push(result);
-        }
-        const summary = summarizeAutoTrimResults(results);
-        helper.state.autoTrimLastSummary = summary;
-        console.info("[Babel Helper] Auto-trim visible rows", {
-          ...summary,
-          paddingMs: PADDING_MS,
-          maxOutwardMs: MAX_OUTWARD_MS
-        });
-        return summary;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("[Babel Helper] Auto-trim failed", error);
-        const summary = {
-          rowsProcessed: 0,
-          trimmed: 0,
-          boundariesTrimmed: 0,
-          skippedLowConfidence: 0,
-          skippedNoAudio: 0,
-          failedWrite: 0,
-          skippedNoop: 0,
-          skippedInvalid: 0,
-          error: message
-        };
-        helper.state.autoTrimLastSummary = summary;
-        return summary;
-      } finally {
-        helper.state.autoTrimInFlight = false;
-      }
     };
   }
 
@@ -3581,7 +3106,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       host.setAttribute(SELECTION_LOOP_HOST_ATTR, marker);
       return marker;
     }
-    function clamp2(value, min, max) {
+    function clamp(value, min, max) {
       return Math.min(Math.max(value, min), max);
     }
     function parseTimeValue(value) {
@@ -4191,7 +3716,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!(Number.isFinite(pixelsPerSecond) && pixelsPerSecond > 0)) {
         return CUT_PREVIEW_SAFETY_MIN_SECONDS;
       }
-      return clamp2(
+      return clamp(
         2 / pixelsPerSecond,
         CUT_PREVIEW_SAFETY_MIN_SECONDS,
         CUT_PREVIEW_SAFETY_MAX_SECONDS
@@ -4795,8 +4320,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       preview.zoomObserver = observer;
     }
     function createPreviewFromDraft(draft, clientX) {
-      const localX = clamp2(clientX - draft.containerRect.left, draft.regionLeftPx, draft.regionRightPx);
-      const startX = clamp2(draft.startClientX - draft.containerRect.left, draft.regionLeftPx, draft.regionRightPx);
+      const localX = clamp(clientX - draft.containerRect.left, draft.regionLeftPx, draft.regionRightPx);
+      const startX = clamp(draft.startClientX - draft.containerRect.left, draft.regionLeftPx, draft.regionRightPx);
       const leftPx = Math.min(startX, localX);
       const rightPx = Math.max(startX, localX);
       const preview = document.createElement("div");
@@ -4877,7 +4402,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return;
       }
       const minWidth = CUT_PREVIEW_MIN_WIDTH;
-      const anchorPx = clamp2(
+      const anchorPx = clamp(
         clientX - preview.containerRect.left,
         preview.regionLeftPx,
         preview.regionRightPx
@@ -4901,8 +4426,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return;
       }
       const minWidth = CUT_PREVIEW_MIN_WIDTH;
-      const normalizedAnchor = clamp2(anchorPx, preview.regionLeftPx, preview.regionRightPx);
-      const normalizedCurrent = clamp2(currentPx, preview.regionLeftPx, preview.regionRightPx);
+      const normalizedAnchor = clamp(anchorPx, preview.regionLeftPx, preview.regionRightPx);
+      const normalizedCurrent = clamp(currentPx, preview.regionLeftPx, preview.regionRightPx);
       if (normalizedCurrent <= normalizedAnchor) {
         preview.rightPx = normalizedAnchor;
         preview.leftPx = Math.min(normalizedCurrent, normalizedAnchor - minWidth);
@@ -4978,12 +4503,12 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       preview.timeRangeRequest = null;
       const minWidth = CUT_PREVIEW_MIN_WIDTH;
       if (preview.dragMode === "create") {
-        const currentX = clamp2(
+        const currentX = clamp(
           event.clientX - preview.containerRect.left,
           preview.regionLeftPx,
           preview.regionRightPx
         );
-        const startX = clamp2(
+        const startX = clamp(
           preview.dragStartClientX - preview.containerRect.left,
           preview.regionLeftPx,
           preview.regionRightPx
@@ -5071,7 +4596,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         containerRect,
         regionLeftPx: 0,
         regionRightPx: containerRect.width,
-        startClientX: clamp2(event.clientX, containerRect.left, containerRect.right)
+        startClientX: clamp(event.clientX, containerRect.left, containerRect.right)
       };
     }
     function dispatchSplitClick(target, clientX, clientY) {
@@ -5471,7 +4996,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return null;
       }
       const width = entry.rightPx - entry.leftPx;
-      const ratio = width > 0 ? clamp2((pivotPx - entry.leftPx) / width, 0, 1) : 0.5;
+      const ratio = width > 0 ? clamp((pivotPx - entry.leftPx) / width, 0, 1) : 0.5;
       return {
         sourceRow,
         sourceRowIndex,
@@ -5839,7 +5364,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!draft || draft.pointerId !== pointerId) {
         return;
       }
-      const currentX = clamp2(event.clientX, draft.containerRect.left, draft.containerRect.right);
+      const currentX = clamp(event.clientX, draft.containerRect.left, draft.containerRect.right);
       if (Math.abs(currentX - draft.startClientX) < CUT_PREVIEW_DRAG_THRESHOLD) {
         return;
       }
@@ -5914,7 +5439,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!snapshot) {
         return null;
       }
-      const localX = clamp2(event.clientX - snapshot.containerRect.left, 0, snapshot.containerRect.width);
+      const localX = clamp(event.clientX - snapshot.containerRect.left, 0, snapshot.containerRect.width);
       let entry = sourceRegion instanceof HTMLElement ? snapshot.bounds.find((candidate) => candidate.region === sourceRegion) || null : null;
       if (!entry) {
         const tolerance = 2;
@@ -5938,7 +5463,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (!entry) {
         return null;
       }
-      const pivotPx = clamp2(localX, entry.leftPx, entry.rightPx);
+      const pivotPx = clamp(localX, entry.leftPx, entry.rightPx);
       return buildSmartSplitPlanForRegion(entry, pivotPx, container);
     }
     function captureSmartSplitClickDraft(event) {
@@ -6419,7 +5944,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       "Drag Segment Edge",
       `Show ${SCALE}x waveform magnifier while trimming`
     ]);
-    function clamp2(value, min, max) {
+    function clamp(value, min, max) {
       return Math.min(Math.max(value, min), max);
     }
     function nextMarker(prefix) {
@@ -6572,7 +6097,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return null;
       }
       return {
-        x: clamp2(Number(match[1]), 0, containerRect.width),
+        x: clamp(Number(match[1]), 0, containerRect.width),
         text,
         timeSeconds
       };
@@ -6625,7 +6150,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return null;
       }
       const rect = drag.handle.getBoundingClientRect();
-      const x = clamp2(rect.left + rect.width / 2 - containerRect.left, 0, containerRect.width);
+      const x = clamp(rect.left + rect.width / 2 - containerRect.left, 0, containerRect.width);
       const boundary = getRegionBoundaryTime(drag.region, drag.side);
       if (boundary) {
         return {
@@ -6888,7 +6413,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
           48,
           Math.min(MAX_HEIGHT, Math.round(containerRect.height - INSET * 2))
         );
-        const left = clamp2(
+        const left = clamp(
           target.x - width / 2,
           INSET,
           Math.max(INSET, containerRect.width - width - INSET)
@@ -7055,7 +6580,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     let bridgeRequestId = 0;
     let markerId = 0;
     helper.state.minimap = null;
-    function clamp2(value, min, max) {
+    function clamp(value, min, max) {
       return Math.min(Math.max(value, min), max);
     }
     function nextMarker(prefix) {
@@ -7270,8 +6795,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
           continue;
         }
-        const left = clamp2(start / duration * 100, 0, 100);
-        const width = clamp2((end - start) / duration * 100, 0.35, 100);
+        const left = clamp(start / duration * 100, 0, 100);
+        const width = clamp((end - start) / duration * 100, 0.35, 100);
         const region = document.createElement("div");
         region.style.position = "absolute";
         region.style.left = left + "%";
@@ -7336,8 +6861,8 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return;
       }
       minimap.viewport.style.display = "block";
-      minimap.viewport.style.left = clamp2(leftRatio * 100, 0, 100) + "%";
-      minimap.viewport.style.width = clamp2(widthRatio * 100, 0, 100) + "%";
+      minimap.viewport.style.left = clamp(leftRatio * 100, 0, 100) + "%";
+      minimap.viewport.style.width = clamp(widthRatio * 100, 0, 100) + "%";
     }
     function setPlayhead(minimap, time, duration) {
       minimap.playhead.style.display = "none";
@@ -7566,7 +7091,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         if (!(rect.width > 0) || !(state.duration > 0) || !state.hostMarkers[0]) {
           return;
         }
-        const ratio = clamp2((event.clientX - rect.left) / rect.width, 0, 1);
+        const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
         queueNavigate(state, ratio * state.duration);
       };
       surface.addEventListener("pointerdown", (event) => {
@@ -7682,7 +7207,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         }
         bindHostObservers(minimap, hosts);
         const containerRect = minimap.container.getBoundingClientRect();
-        const peakBins = clamp2(
+        const peakBins = clamp(
           Math.ceil((Number(containerRect.width) || 180) * Math.min(2, window.devicePixelRatio || 1)),
           128,
           1200
@@ -8712,9 +8237,6 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
             helper.analytics.record("hotkey:lint-autofix", { scope, ...result });
           }
         });
-      } else if (event.shiftKey && event.code === "KeyT" && typeof helper.autoTrimVisibleRows === "function") {
-        handled = true;
-        void helper.autoTrimVisibleRows();
       }
       if (handled) {
         event.preventDefault();
@@ -9545,7 +9067,6 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     function registerServices() {
       registerRowService(helper);
       registerTimestampEditService(helper);
-      registerAutoTrimService(helper);
       if (helper.isFeatureEnabled("hotkeysHelp")) {
         registerHotkeysHelpService(helper);
       }
@@ -9573,7 +9094,6 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       timelineSelection: helper,
       smartSplit: helper,
       timestampEdit: helper,
-      autoTrim: helper,
       waveformScale: helper,
       magnifier: helper,
       minimap: helper,

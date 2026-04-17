@@ -1,11 +1,6 @@
 ﻿// @ts-nocheck
-import { analyzeBoundaryTrimEnvelope } from '../shared/boundary-trim-analysis';
-
 export function initMagnifierBridge() {
-  if (
-    window.__babelHelperMagnifierBridge &&
-    window.__babelHelperMagnifierBridge.supportsBoundaryTrimSuggestion
-  ) {
+  if (window.__babelHelperMagnifierBridge) {
     return;
   }
 
@@ -13,12 +8,10 @@ export function initMagnifierBridge() {
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
   const HOST_ATTR = 'data-babel-helper-magnifier-host';
   const MINIMAP_HOST_ATTR = 'data-babel-helper-minimap-host';
-  const AUTO_TRIM_HOST_ATTR = 'data-babel-helper-auto-trim-host';
   const MOUNT_ATTR = 'data-babel-helper-magnifier-mount';
   const LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
   const instances = new Map();
   const loops = new Map();
-  let autoTrimMarkerId = 0;
   const MAX_CANDIDATES = 12;
   const WAVEFORM_SCALE_SELECTOR = '[role="slider"][data-orientation="vertical"]';
   const WAVEFORM_SCALE_PATCH_ATTR = 'data-babel-helper-waveform-scale-max';
@@ -43,10 +36,6 @@ export function initMagnifierBridge() {
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
-  }
-
-  function normalizeText(value) {
-    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
   }
 
   function parsePixels(value) {
@@ -169,29 +158,8 @@ export function initMagnifierBridge() {
     // The minimap reuses this bridge but tags waveform hosts with its own marker attribute.
     const host =
       queryMarker(document, HOST_ATTR, hostMarker) ||
-      queryMarker(document, MINIMAP_HOST_ATTR, hostMarker) ||
-      queryMarker(document, AUTO_TRIM_HOST_ATTR, hostMarker);
+      queryMarker(document, MINIMAP_HOST_ATTR, hostMarker);
     return host instanceof HTMLElement ? host : null;
-  }
-
-  function nextAutoTrimHostMarker() {
-    autoTrimMarkerId += 1;
-    return 'auto-trim-host-' + Date.now() + '-' + autoTrimMarkerId;
-  }
-
-  function ensureAutoTrimHostMarker(host) {
-    if (!(host instanceof HTMLElement)) {
-      return '';
-    }
-
-    const existing = host.getAttribute(AUTO_TRIM_HOST_ATTR);
-    if (existing) {
-      return existing;
-    }
-
-    const marker = nextAutoTrimHostMarker();
-    host.setAttribute(AUTO_TRIM_HOST_ATTR, marker);
-    return marker;
   }
 
   function findLoopHostElement(hostMarker) {
@@ -962,55 +930,6 @@ export function initMagnifierBridge() {
     return props && typeof props === 'object' ? props : null;
   }
 
-  function getSpeakerKeysForTrack(track) {
-    const keys = [];
-
-    function push(value) {
-      if (value == null) {
-        return;
-      }
-
-      const text = String(value).trim();
-      if (!text || keys.includes(text)) {
-        return;
-      }
-
-      keys.push(text);
-    }
-
-    if (track && typeof track === 'object') {
-      push(track.id);
-      push(track.processedRecordingId);
-      push(track.trackLabel);
-      push(track.label);
-      push(track.name);
-    }
-
-    return keys;
-  }
-
-  function getSpeakerKeysForHost(host) {
-    if (!(host instanceof HTMLElement)) {
-      return [];
-    }
-
-    const props = getTrackPropsForHost(host);
-    const track = props && typeof props === 'object' ? props.track : null;
-    const keys = getSpeakerKeysForTrack(track);
-
-    const ariaLabel = host.getAttribute('aria-label') || '';
-    if (ariaLabel && !keys.includes(ariaLabel)) {
-      keys.push(ariaLabel);
-    }
-
-    const dataTrackId = host.getAttribute('data-track-id') || safe(() => host.dataset.trackId, '');
-    if (dataTrackId && !keys.includes(dataTrackId)) {
-      keys.push(dataTrackId);
-    }
-
-    return keys;
-  }
-
   function getSourceCanvasMetrics(wave) {
     const container = getCandidateContainer(wave);
     const scope = container && container.shadowRoot ? container.shadowRoot : null;
@@ -1307,225 +1226,6 @@ export function initMagnifierBridge() {
     return bins === base.length ? Array.from(base) : resamplePeaksLinear(base, bins);
   }
 
-  function mergeExportPeakChannels(wave) {
-    if (!wave || typeof wave.exportPeaks !== 'function') {
-      return [];
-    }
-
-    const exported = safe(() => wave.exportPeaks(), null);
-    const channels = normalizeExportPeaksChannels(exported);
-    if (!channels.length) {
-      return [];
-    }
-
-    const lengths = channels.map((channel) => (channel && channel.length ? channel.length : 0));
-    const maxLength = Math.max(0, ...lengths);
-    if (!(maxLength > 0)) {
-      return [];
-    }
-
-    const merged = new Array(maxLength);
-    for (let index = 0; index < maxLength; index += 1) {
-      let peak = 0;
-      for (const channel of channels) {
-        if (!channel || !channel.length) {
-          continue;
-        }
-
-        const value = Math.abs(Number(channel[index]) || 0);
-        if (value > peak) {
-          peak = value;
-        }
-      }
-      merged[index] = peak;
-    }
-
-    return merged;
-  }
-
-  function downsampleWindowMax(source, startIndex, endIndex, targetBins) {
-    if (!source || !source.length) {
-      return [];
-    }
-
-    const start = Math.max(0, Math.floor(Number(startIndex) || 0));
-    const end = Math.min(source.length, Math.ceil(Number(endIndex) || 0));
-    const span = end - start;
-    if (!(span > 0)) {
-      return [];
-    }
-
-    const bins = clamp(Math.floor(Number(targetBins) || span), 24, Math.max(24, span));
-    const actualBins = Math.max(1, Math.min(bins, span));
-    const samplesPerBin = span / actualBins;
-    const out = [];
-
-    for (let bin = 0; bin < actualBins; bin += 1) {
-      const binStart = Math.floor(start + bin * samplesPerBin);
-      const binEnd = Math.min(end, Math.ceil(start + (bin + 1) * samplesPerBin));
-      let peak = 0;
-      for (let pointer = binStart; pointer < binEnd; pointer += 1) {
-        const value = Math.abs(Number(source[pointer]) || 0);
-        if (value > peak) {
-          peak = value;
-        }
-      }
-      out.push(peak);
-    }
-
-    return out;
-  }
-
-  function getDecodedBoundaryEnvelope(wave, windowStartSeconds, windowEndSeconds) {
-    const audio = getDecodedAudioForPeaks(wave);
-    const sampleRate = Number(audio && audio.sampleRate);
-    const channelData =
-      audio && typeof audio.getChannelData === 'function'
-        ? safe(() => audio.getChannelData(0), null)
-        : null;
-    if (!channelData || !channelData.length || !(sampleRate > 0)) {
-      return null;
-    }
-
-    const startIndex = Math.max(0, Math.floor(windowStartSeconds * sampleRate));
-    const endIndex = Math.min(channelData.length, Math.ceil(windowEndSeconds * sampleRate));
-    if (!(endIndex > startIndex)) {
-      return null;
-    }
-
-    const durationSeconds = Math.max(0.001, windowEndSeconds - windowStartSeconds);
-    const targetBins = clamp(Math.round(durationSeconds / 0.0025), 80, 320);
-    const values = downsampleWindowMax(channelData, startIndex, endIndex, targetBins);
-    if (!values.length) {
-      return null;
-    }
-
-    return {
-      source: 'decoded',
-      values,
-      stepSeconds: durationSeconds / values.length
-    };
-  }
-
-  function getPeakBoundaryEnvelope(wave, windowStartSeconds, windowEndSeconds) {
-    const merged = mergeExportPeakChannels(wave);
-    const duration = getDuration(wave);
-    if (!merged.length || !(duration > 0)) {
-      return null;
-    }
-
-    const startIndex = Math.max(0, Math.floor((windowStartSeconds / duration) * merged.length));
-    const endIndex = Math.min(
-      merged.length,
-      Math.ceil((windowEndSeconds / duration) * merged.length)
-    );
-    if (!(endIndex > startIndex)) {
-      return null;
-    }
-
-    const durationSeconds = Math.max(0.001, windowEndSeconds - windowStartSeconds);
-    const targetBins = clamp(Math.round(durationSeconds / 0.005), 48, 220);
-    const values = downsampleWindowMax(merged, startIndex, endIndex, targetBins);
-    if (!values.length) {
-      return null;
-    }
-
-    return {
-      source: 'peaks',
-      values,
-      stepSeconds: durationSeconds / values.length
-    };
-  }
-
-  function getBoundaryTrimSuggestion(payload) {
-    const direct = resolveWaveForHost(payload && payload.hostMarker);
-    const bySpeakerKey =
-      (!direct.host || !direct.wave) && payload && payload.speakerKey
-        ? resolveWaveForSpeakerKey(payload.speakerKey)
-        : { host: null, wave: null };
-    const fallbackHosts = getVisibleWaveHosts();
-    const singleVisible =
-      (!direct.host || !direct.wave) &&
-      (!bySpeakerKey.host || !bySpeakerKey.wave) &&
-      fallbackHosts.length === 1
-        ? {
-            host: fallbackHosts[0],
-            wave: (() => {
-              const exact = findExactWaveCandidate(fallbackHosts[0]);
-              const selection = exact || safe(() => findWaveCandidate(fallbackHosts[0]).candidate, null);
-              return selection && selection.value ? selection.value : null;
-            })()
-          }
-        : { host: null, wave: null };
-    const resolved =
-      direct.host && direct.wave
-        ? direct
-        : bySpeakerKey.host && bySpeakerKey.wave
-          ? bySpeakerKey
-          : singleVisible;
-    const host = resolved.host;
-    const wave = resolved.wave;
-    if (!(host instanceof HTMLElement) || !host.isConnected || !wave || !isUsableWaveCandidate(wave, host)) {
-      return {
-        ok: false,
-        reason: 'missing-wave'
-      };
-    }
-
-    const side = payload && payload.side === 'left' ? 'left' : 'right';
-    const startSeconds = Number(payload && payload.startSeconds);
-    const endSeconds = Number(payload && payload.endSeconds);
-    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || !(endSeconds > startSeconds)) {
-      return {
-        ok: false,
-        reason: 'invalid-range'
-      };
-    }
-
-    const boundarySeconds = side === 'left' ? startSeconds : endSeconds;
-    const duration = getDuration(wave);
-    const windowMsBefore = Math.max(0, Number(payload && payload.windowMsBefore) || 0);
-    const windowMsAfter = Math.max(0, Number(payload && payload.windowMsAfter) || 0);
-    const windowStartSeconds = Math.max(0, boundarySeconds - windowMsBefore / 1000);
-    const windowEndSeconds =
-      duration > 0
-        ? Math.min(duration, boundarySeconds + windowMsAfter / 1000)
-        : boundarySeconds + windowMsAfter / 1000;
-    if (!(windowEndSeconds > windowStartSeconds)) {
-      return {
-        ok: false,
-        reason: 'invalid-window'
-      };
-    }
-
-    const envelope =
-      getDecodedBoundaryEnvelope(wave, windowStartSeconds, windowEndSeconds) ||
-      getPeakBoundaryEnvelope(wave, windowStartSeconds, windowEndSeconds);
-    if (!envelope || !Array.isArray(envelope.values) || !envelope.values.length) {
-      return {
-        ok: false,
-        reason: 'no-audio'
-      };
-    }
-
-    const suggestion = analyzeBoundaryTrimEnvelope({
-      side,
-      boundarySeconds,
-      windowStartSeconds,
-      stepSeconds: envelope.stepSeconds,
-      values: envelope.values,
-      paddingMs: Number(payload && payload.paddingMs) || 0,
-      maxOutwardMs: Number(payload && payload.maxOutwardMs) || 0,
-      source: envelope.source
-    });
-
-    return {
-      ok: true,
-      ...suggestion,
-      boundarySeconds
-    };
-  }
-
   function getSourceRegionEntries(sourceWave) {
     if (!sourceWave || !sourceWave.plugins || typeof sourceWave.plugins !== 'object') {
       return [];
@@ -1652,35 +1352,6 @@ export function initMagnifierBridge() {
     return {
       host,
       wave: selection && selection.value ? selection.value : null
-    };
-  }
-
-  function resolveWaveForSpeakerKey(speakerKey) {
-    const normalizedSpeakerKey = typeof speakerKey === 'string' ? speakerKey.trim() : '';
-    if (!normalizedSpeakerKey) {
-      return {
-        host: null,
-        wave: null
-      };
-    }
-
-    for (const host of getVisibleWaveHosts()) {
-      const keys = getSpeakerKeysForHost(host);
-      if (!keys.includes(normalizedSpeakerKey)) {
-        continue;
-      }
-
-      const exact = findExactWaveCandidate(host);
-      const selection = exact || safe(() => findWaveCandidate(host).candidate, null);
-      return {
-        host,
-        wave: selection && selection.value ? selection.value : null
-      };
-    }
-
-    return {
-      host: null,
-      wave: null
     };
   }
 
@@ -2026,248 +1697,6 @@ export function initMagnifierBridge() {
         element.shadowRoot.querySelector('[part="scroll"]')
       );
     });
-  }
-
-  function isElementVisible(element) {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    const rect = element.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    return style.display !== 'none' && style.visibility !== 'hidden';
-  }
-
-  function parseSegmentTimeValue(value) {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const match = trimmed.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
-    if (!match) {
-      return null;
-    }
-
-    const parts = match[0].split(':');
-    let total = 0;
-    for (const part of parts) {
-      const numeric = Number(part);
-      if (!Number.isFinite(numeric)) {
-        return null;
-      }
-
-      total = total * 60 + numeric;
-    }
-
-    return total;
-  }
-
-  function getAutoTrimRowIdentity(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return null;
-    }
-
-    const startCell = row.children[2];
-    const endCell = row.children[3];
-    const speakerCell = row.children[1];
-    const startText = startCell instanceof HTMLElement ? normalizeText(startCell.textContent || '') : '';
-    const endText = endCell instanceof HTMLElement ? normalizeText(endCell.textContent || '') : '';
-    const speakerLabel =
-      speakerCell instanceof HTMLElement ? normalizeText(speakerCell.textContent || '') : '';
-    const startSeconds = parseSegmentTimeValue(startText);
-    const endSeconds = parseSegmentTimeValue(endText);
-
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      fiber = getReactFiber(row.querySelector('textarea'));
-    }
-
-    const identity = {
-      annotationId: null,
-      processedRecordingId: null,
-      trackLabel: '',
-      speakerKey: '',
-      startText,
-      endText,
-      startSeconds,
-      endSeconds
-    };
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 12) {
-      const props = current.memoizedProps;
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id) {
-        identity.annotationId = annotation.id;
-        identity.processedRecordingId =
-          annotation.processedRecordingId != null ? String(annotation.processedRecordingId) : null;
-        identity.trackLabel =
-          typeof annotation.trackLabel === 'string' ? annotation.trackLabel.trim() : '';
-        identity.speakerKey =
-          identity.processedRecordingId ||
-          identity.trackLabel ||
-          speakerLabel;
-        break;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    if (!identity.speakerKey) {
-      identity.speakerKey = speakerLabel || '';
-    }
-
-    if (
-      !identity.annotationId &&
-      !identity.speakerKey &&
-      !identity.startText &&
-      !identity.endText
-    ) {
-      return null;
-    }
-
-    return identity;
-  }
-
-  function buildAutoTrimWaveHostIndex() {
-    const bySpeakerKey = new Map();
-    let fallbackMarker = '';
-
-    for (const host of getVisibleWaveHosts()) {
-      const marker = ensureAutoTrimHostMarker(host);
-      if (!marker) {
-        continue;
-      }
-
-      if (!fallbackMarker) {
-        fallbackMarker = marker;
-      }
-
-      for (const key of getSpeakerKeysForHost(host)) {
-        if (!key || bySpeakerKey.has(key)) {
-          continue;
-        }
-
-        bySpeakerKey.set(key, marker);
-      }
-    }
-
-    return {
-      hostCount: getVisibleWaveHosts().length,
-      bySpeakerKey,
-      fallbackMarker
-    };
-  }
-
-  function resolveAutoTrimHostMarker(speakerKey, hostIndex) {
-    const normalizedSpeakerKey = typeof speakerKey === 'string' ? speakerKey.trim() : '';
-    if (
-      normalizedSpeakerKey &&
-      hostIndex &&
-      hostIndex.bySpeakerKey instanceof Map &&
-      hostIndex.bySpeakerKey.has(normalizedSpeakerKey)
-    ) {
-      return hostIndex.bySpeakerKey.get(normalizedSpeakerKey) || '';
-    }
-
-    return hostIndex && typeof hostIndex.fallbackMarker === 'string'
-      ? hostIndex.fallbackMarker
-      : '';
-  }
-
-  function getVisibleRowBoundaryTrimSuggestions(payload) {
-    const hostIndex = buildAutoTrimWaveHostIndex();
-    const rows = Array.from(document.querySelectorAll('tbody tr'))
-      .filter((row) => row instanceof HTMLTableRowElement && isElementVisible(row))
-      .map((row) => row);
-    const windowMsBeforeLeft = Math.max(0, Number(payload && payload.leftWindowMsBefore) || 250);
-    const windowMsAfterLeft = Math.max(0, Number(payload && payload.leftWindowMsAfter) || 350);
-    const windowMsBeforeRight = Math.max(0, Number(payload && payload.rightWindowMsBefore) || 350);
-    const windowMsAfterRight = Math.max(0, Number(payload && payload.rightWindowMsAfter) || 250);
-    const paddingMs = Math.max(0, Number(payload && payload.paddingMs) || 0);
-    const maxOutwardMs = Math.max(0, Number(payload && payload.maxOutwardMs) || 0);
-    const results = [];
-
-    for (const row of rows) {
-      const identity = getAutoTrimRowIdentity(row);
-      if (!identity) {
-        results.push({
-          ok: false,
-          reason: 'identity-missing',
-          identity: null,
-          leftSuggestion: null,
-          rightSuggestion: null
-        });
-        continue;
-      }
-
-      if (
-        !Number.isFinite(identity.startSeconds) ||
-        !Number.isFinite(identity.endSeconds) ||
-        !(identity.endSeconds > identity.startSeconds)
-      ) {
-        results.push({
-          ok: false,
-          reason: 'invalid-range',
-          identity,
-          leftSuggestion: null,
-          rightSuggestion: null
-        });
-        continue;
-      }
-
-      const hostMarker = resolveAutoTrimHostMarker(identity.speakerKey, hostIndex);
-      const basePayload = {
-        hostMarker,
-        speakerKey: identity.speakerKey,
-        startSeconds: identity.startSeconds,
-        endSeconds: identity.endSeconds,
-        paddingMs,
-        maxOutwardMs
-      };
-
-      const leftSuggestion = getBoundaryTrimSuggestion({
-        ...basePayload,
-        side: 'left',
-        windowMsBefore: windowMsBeforeLeft,
-        windowMsAfter: windowMsAfterLeft
-      });
-      const rightSuggestion = getBoundaryTrimSuggestion({
-        ...basePayload,
-        side: 'right',
-        windowMsBefore: windowMsBeforeRight,
-        windowMsAfter: windowMsAfterRight
-      });
-
-      results.push({
-        ok: true,
-        reason: 'suggestions-ready',
-        identity,
-        hostMarker,
-        leftSuggestion,
-        rightSuggestion
-      });
-    }
-
-    return {
-      ok: true,
-      hostCount: hostIndex.hostCount,
-      rows: results
-    };
   }
 
   function getLoopWaveSet(hostMarker) {
@@ -2979,7 +2408,7 @@ export function initMagnifierBridge() {
     };
   }
 
-  function handleRequest(event) {
+  window.addEventListener(REQUEST_EVENT, (event) => {
     const detail = event.detail || {};
     const id = detail.id;
     const operation = detail.operation;
@@ -3053,28 +2482,9 @@ export function initMagnifierBridge() {
       respond(id, getMinimapData(payload.hostMarker, payload));
       return;
     }
+  });
 
-    if (operation === 'boundary-trim-suggestion') {
-      respond(id, getBoundaryTrimSuggestion(payload));
-      return;
-    }
-
-    if (operation === 'visible-row-boundary-trim-suggestions') {
-      respond(id, getVisibleRowBoundaryTrimSuggestions(payload));
-      return;
-    }
-  }
-
-  window.addEventListener(REQUEST_EVENT, handleRequest);
-
-  window.__babelHelperMagnifierBridge = {
-    instances,
-    loops,
-    supportsBoundaryTrimSuggestion: true,
-    dispose() {
-      window.removeEventListener(REQUEST_EVENT, handleRequest);
-    }
-  };
+  window.__babelHelperMagnifierBridge = { instances, loops };
 }
 
 initMagnifierBridge();

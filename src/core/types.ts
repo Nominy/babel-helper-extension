@@ -33,7 +33,6 @@ export interface ServiceRegistry {
   timelineSelection: any;
   smartSplit: any;
   timestampEdit: any;
-  autoTrim: any;
   waveformScale: any;
   magnifier: any;
   minimap: any;
