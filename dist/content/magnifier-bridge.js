@@ -1088,13 +1088,52 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       const threshold = Math.max(0, Number(amplitudeThreshold) || 0);
       const padding = clamp(Number(paddingSeconds) || 0, 0, 0.05);
+      const decoded = getDecodedAudioChannelsForTrim(wave);
+      if (decoded && decoded.audio.length > 1 && decoded.audio.duration > 0) {
+        const sampleLength = decoded.audio.length;
+        const startIndex = segmentStart / decoded.audio.duration * sampleLength;
+        const endIndexExclusive = segmentEnd / decoded.audio.duration * sampleLength;
+        const firstIndex = findFirstAboveThresholdInChannels(
+          decoded.channels,
+          startIndex,
+          endIndexExclusive,
+          threshold
+        );
+        const lastIndex = findLastAboveThresholdInChannels(
+          decoded.channels,
+          startIndex,
+          endIndexExclusive,
+          threshold
+        );
+        if (firstIndex < 0 || lastIndex < 0 || lastIndex < firstIndex) {
+          return {
+            ok: true,
+            foundAudio: false,
+            duration,
+            source: "decoded-audio"
+          };
+        }
+        const sampleRate = Number(decoded.audio.sampleRate) || 1;
+        const firstSeconds = clamp(firstIndex / sampleRate, segmentStart, segmentEnd);
+        const lastSeconds = clamp(lastIndex / sampleRate, segmentStart, segmentEnd);
+        return {
+          ok: true,
+          foundAudio: true,
+          duration,
+          source: "decoded-audio",
+          detectedStartSeconds: firstSeconds,
+          detectedEndSeconds: lastSeconds,
+          targetStartSeconds: clamp(firstSeconds - padding, segmentStart, segmentEnd),
+          targetEndSeconds: clamp(lastSeconds + padding, segmentStart, segmentEnd)
+        };
+      }
       const rawPeaks = getRawExportPeaks(wave);
       if (rawPeaks && rawPeaks.length > 1) {
-        const startIndex2 = segmentStart / duration * (rawPeaks.length - 1);
-        const endIndexExclusive2 = segmentEnd / duration * (rawPeaks.length - 1) + 1;
-        const firstIndex2 = findFirstAboveThresholdInArray(rawPeaks, startIndex2, endIndexExclusive2, threshold);
-        const lastIndex2 = findLastAboveThresholdInArray(rawPeaks, startIndex2, endIndexExclusive2, threshold);
-        if (firstIndex2 < 0 || lastIndex2 < 0 || lastIndex2 < firstIndex2) {
+        const startIndex = segmentStart / duration * (rawPeaks.length - 1);
+        const endIndexExclusive = segmentEnd / duration * (rawPeaks.length - 1) + 1;
+        const firstIndex = findFirstAboveThresholdInArray(rawPeaks, startIndex, endIndexExclusive, threshold);
+        const lastIndex = findLastAboveThresholdInArray(rawPeaks, startIndex, endIndexExclusive, threshold);
+        if (firstIndex < 0 || lastIndex < 0 || lastIndex < firstIndex) {
           return {
             ok: true,
             foundAudio: false,
@@ -1102,61 +1141,22 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
             source: "export-peaks"
           };
         }
-        const firstSeconds2 = indexToSeconds(firstIndex2, rawPeaks.length, duration);
-        const lastSeconds2 = indexToSeconds(lastIndex2, rawPeaks.length, duration);
+        const firstSeconds = indexToSeconds(firstIndex, rawPeaks.length, duration);
+        const lastSeconds = indexToSeconds(lastIndex, rawPeaks.length, duration);
         return {
           ok: true,
           foundAudio: true,
           duration,
           source: "export-peaks",
-          detectedStartSeconds: firstSeconds2,
-          detectedEndSeconds: lastSeconds2,
-          targetStartSeconds: clamp(firstSeconds2 - padding, segmentStart, segmentEnd),
-          targetEndSeconds: clamp(lastSeconds2 + padding, segmentStart, segmentEnd)
+          detectedStartSeconds: firstSeconds,
+          detectedEndSeconds: lastSeconds,
+          targetStartSeconds: clamp(firstSeconds - padding, segmentStart, segmentEnd),
+          targetEndSeconds: clamp(lastSeconds + padding, segmentStart, segmentEnd)
         };
       }
-      const decoded = getDecodedAudioChannelsForTrim(wave);
-      if (!decoded || !(decoded.audio.length > 1) || !(decoded.audio.duration > 0)) {
-        return {
-          ok: false,
-          reason: "missing-audio-data"
-        };
-      }
-      const sampleLength = decoded.audio.length;
-      const startIndex = segmentStart / decoded.audio.duration * sampleLength;
-      const endIndexExclusive = segmentEnd / decoded.audio.duration * sampleLength;
-      const firstIndex = findFirstAboveThresholdInChannels(
-        decoded.channels,
-        startIndex,
-        endIndexExclusive,
-        threshold
-      );
-      const lastIndex = findLastAboveThresholdInChannels(
-        decoded.channels,
-        startIndex,
-        endIndexExclusive,
-        threshold
-      );
-      if (firstIndex < 0 || lastIndex < 0 || lastIndex < firstIndex) {
-        return {
-          ok: true,
-          foundAudio: false,
-          duration,
-          source: "decoded-audio"
-        };
-      }
-      const sampleRate = Number(decoded.audio.sampleRate) || 1;
-      const firstSeconds = clamp(firstIndex / sampleRate, segmentStart, segmentEnd);
-      const lastSeconds = clamp(lastIndex / sampleRate, segmentStart, segmentEnd);
       return {
-        ok: true,
-        foundAudio: true,
-        duration,
-        source: "decoded-audio",
-        detectedStartSeconds: firstSeconds,
-        detectedEndSeconds: lastSeconds,
-        targetStartSeconds: clamp(firstSeconds - padding, segmentStart, segmentEnd),
-        targetEndSeconds: clamp(lastSeconds + padding, segmentStart, segmentEnd)
+        ok: false,
+        reason: "missing-audio-data"
       };
     }
     function normalizeSpeakerKey(value) {
