@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { getDefaultEnvFiles, loadCwsEnvironment, parseItemUrl } from './cws-env.mjs';
 
 const rootDir = resolve(import.meta.dirname, '..');
 const args = parseArgs(process.argv.slice(2));
@@ -17,35 +17,52 @@ if (!repo) {
   throw new Error('Missing target repository. Pass OWNER/REPO as the first argument or via --repo.');
 }
 
-const dataFilePath = resolve(rootDir, args.values.get('file') ?? 'data-deploy');
-const parsed = parseDeployData(await readFile(dataFilePath, 'utf8'));
-const extensionTarget = parsed['the extension'];
+const envFile = args.values.get('env-file') ?? args.values.get('file');
+const loaded = await loadCwsEnvironment(rootDir, envFile);
+const values = loaded.values;
+const itemUrl = values.CWS_ITEM_URL?.trim();
+const publisherId = values.CWS_PUBLISHER_ID?.trim();
+const extensionId = values.CWS_EXTENSION_ID?.trim();
+const clientSecret = values.CWS_CLIENT_SECRET?.trim();
+const refreshToken = values.CWS_REFRESH_TOKEN?.trim();
+const accessToken = values.CWS_ACCESS_TOKEN?.trim();
 
-if (!extensionTarget) {
-  throw new Error(`Missing "the extension:" entry in ${dataFilePath}.`);
-}
-
-const { publisherId, extensionId } = parseItemUrl(extensionTarget);
-const clientSecret = parsed.secret;
-const refreshToken = parsed['refresh-token'];
-const accessToken = parsed['access-token'];
-
-if (!clientSecret || !refreshToken || !accessToken) {
+if (!clientSecret || !refreshToken) {
   throw new Error(
-    `Expected "secret:", "refresh-token:", and "access-token:" entries in ${dataFilePath}.`
+    `Missing local Chrome Web Store credentials. Expected CWS_CLIENT_SECRET and CWS_REFRESH_TOKEN in ${
+      loaded.filePath ?? 'the environment'
+    }.`
   );
 }
 
-const clientId = parsed['client-id'] ?? (await resolveClientId(accessToken));
+const itemTarget =
+  publisherId && extensionId
+    ? { publisherId, extensionId }
+    : itemUrl
+      ? parseItemUrl(itemUrl, loaded.filePath ?? 'CWS_ITEM_URL')
+      : null;
+
+if (!itemTarget) {
+  throw new Error(
+    `Missing Chrome Web Store item target. Set CWS_ITEM_URL or both CWS_PUBLISHER_ID and CWS_EXTENSION_ID in ${
+      loaded.filePath ?? 'the environment'
+    }.`
+  );
+}
+
+const clientId = values.CWS_CLIENT_ID?.trim() ?? (await resolveClientId(accessToken, loaded.filePath));
 
 const secrets = {
   CWS_CLIENT_ID: clientId,
   CWS_CLIENT_SECRET: clientSecret,
   CWS_REFRESH_TOKEN: refreshToken,
-  CWS_ACCESS_TOKEN: accessToken,
-  CWS_PUBLISHER_ID: publisherId,
-  CWS_EXTENSION_ID: extensionId
+  CWS_PUBLISHER_ID: itemTarget.publisherId,
+  CWS_EXTENSION_ID: itemTarget.extensionId
 };
+
+if (accessToken) {
+  secrets.CWS_ACCESS_TOKEN = accessToken;
+}
 
 for (const [name, value] of Object.entries(secrets)) {
   execFileSync('gh', ['secret', 'set', name, '--repo', repo], {
@@ -94,66 +111,34 @@ function printHelp() {
 
 Options:
   --repo OWNER/REPO   Target GitHub repository
-  --file PATH         Deployment data file. Defaults to ./data-deploy
+  --env-file PATH     Local dotenv file. Defaults to first readable file in:
+                      ${getDefaultEnvFiles().join(', ')}
+  --file PATH         Alias for --env-file
   --help              Show this help
 
-The data file must contain:
-  secret:
-  refresh-token:
-  access-token:
-  the extension:
+Supported dotenv variables:
+  CWS_CLIENT_SECRET
+  CWS_REFRESH_TOKEN
+  CWS_ITEM_URL
 
 Optional:
-  client-id:
+  CWS_CLIENT_ID
+  CWS_ACCESS_TOKEN
+  CWS_PUBLISHER_ID
+  CWS_EXTENSION_ID
+
+Legacy data-deploy files are still supported as a fallback.
 `);
 }
 
-function parseDeployData(source) {
-  const result = {};
-  let currentKey = null;
-
-  for (const rawLine of source.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-
-    if (line.endsWith(':')) {
-      currentKey = line.slice(0, -1).trim().toLowerCase();
-      continue;
-    }
-
-    if (!currentKey) {
-      continue;
-    }
-
-    result[currentKey] = line;
-    currentKey = null;
+async function resolveClientId(accessToken, sourceLabel) {
+  if (!accessToken) {
+    throw new Error(
+      `Missing CWS_CLIENT_ID and CWS_ACCESS_TOKEN in ${sourceLabel ?? 'the environment'}. ` +
+        'Set CWS_CLIENT_ID directly in your local dotenv file to avoid relying on token introspection.'
+    );
   }
 
-  return result;
-}
-
-function parseItemUrl(itemUrl) {
-  let url;
-  try {
-    url = new URL(itemUrl);
-  } catch (error) {
-    throw new Error(`Invalid extension URL in deploy data: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  const match = url.pathname.match(/\/v2\/publishers\/([^/]+)\/items\/([^/]+)/);
-  if (!match) {
-    throw new Error(`Unexpected Chrome Web Store item URL: ${itemUrl}`);
-  }
-
-  return {
-    publisherId: decodeURIComponent(match[1]),
-    extensionId: decodeURIComponent(match[2])
-  };
-}
-
-async function resolveClientId(accessToken) {
   const url = new URL('https://www.googleapis.com/oauth2/v1/tokeninfo');
   url.searchParams.set('access_token', accessToken);
 
@@ -163,7 +148,7 @@ async function resolveClientId(accessToken) {
   if (!response.ok) {
     throw new Error(
       'Unable to recover the OAuth client ID from the current access token. ' +
-        'Add a "client-id:" line to data-deploy and retry.\n' +
+        'Add CWS_CLIENT_ID to your local dotenv file and retry.\n' +
         JSON.stringify(payload, null, 2)
     );
   }
@@ -171,7 +156,7 @@ async function resolveClientId(accessToken) {
   const clientId = payload.issued_to;
   if (typeof clientId !== 'string' || clientId.length === 0) {
     throw new Error(
-      'Google token info did not return "issued_to". Add a "client-id:" line to data-deploy and retry.'
+      'Google token info did not return "issued_to". Add CWS_CLIENT_ID to your local dotenv file and retry.'
     );
   }
 

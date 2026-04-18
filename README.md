@@ -75,6 +75,16 @@ Custom linter notes:
 - Optional GitHub Actions secret:
   - `CWS_ACCESS_TOKEN`
     Use this only as a short-lived fallback. The deploy script prefers refresh-token auth when the client credentials are present.
-- To seed those secrets from the local `data-deploy` file, run `node scripts/setup-github-secrets.mjs OWNER/REPO`.
-  - The helper derives `CWS_PUBLISHER_ID` and `CWS_EXTENSION_ID` from the stored Chrome Web Store item URL.
-  - If the stored access token has already expired, add a `client-id:` line to `data-deploy` before running the helper so it does not need to query Google's token info endpoint.
+- For local publishing helpers, keep Chrome Web Store credentials in `.env.cws.local` (ignored by git).
+  - Start from `.env.cws.example`.
+  - Recommended variables:
+    - `CWS_CLIENT_ID`
+    - `CWS_CLIENT_SECRET`
+    - `CWS_REFRESH_TOKEN`
+    - `CWS_ITEM_URL`
+  - Optional fallback variable:
+    - `CWS_ACCESS_TOKEN`
+- To seed GitHub Actions secrets from the local dotenv file, run `node scripts/setup-github-secrets.mjs OWNER/REPO`.
+  - The helper loads `.env.cws.local` by default and still accepts the old `data-deploy` format as a fallback.
+  - It derives `CWS_PUBLISHER_ID` and `CWS_EXTENSION_ID` from `CWS_ITEM_URL` unless those values are already set directly.
+  - If `CWS_CLIENT_ID` is missing, the helper can recover it from `CWS_ACCESS_TOKEN`, but storing `CWS_CLIENT_ID` directly in `.env.cws.local` is more reliable.

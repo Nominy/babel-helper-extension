@@ -1,5 +1,6 @@
 .env
 .env.*
+!.env.cws.example
 
 build/
 coverage/
@@ -12,7 +13,6 @@ tmp/
 Thumbs.db
 
 # Local deployment material
-data-deploy
 keys/*.pem
 
 # Packaged extension artifacts

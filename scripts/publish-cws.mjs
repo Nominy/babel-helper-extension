@@ -3,6 +3,7 @@
 import { readFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { getDefaultEnvFiles, loadCwsEnvironment, parseItemUrl } from './cws-env.mjs';
 
 const rootDir = resolve(import.meta.dirname, '..');
 const args = parseArgs(process.argv.slice(2));
@@ -11,6 +12,9 @@ if (args.flags.has('help')) {
   printHelp();
   process.exit(0);
 }
+
+const envFile = args.values.get('env-file') ?? args.values.get('file');
+const loaded = await loadCwsEnvironment(rootDir, envFile);
 
 const manifest = await readManifest();
 const zipPath = resolve(
@@ -131,6 +135,9 @@ function printHelp() {
 
 Options:
   --zip PATH               ZIP to upload. Defaults to ../babel-helper-extension-<version>.zip
+  --env-file PATH          Local dotenv file. Defaults to first readable file in:
+                           ${getDefaultEnvFiles().join(', ')}
+  --file PATH              Alias for --env-file
   --publish-type TYPE      DEFAULT_PUBLISH or STAGED_PUBLISH
   --skip-review            Request skipReview=true
   --poll-interval-ms N     Upload-status polling interval in milliseconds
@@ -159,7 +166,7 @@ async function readManifest() {
 function resolveItemTarget() {
   const itemUrl = process.env.CWS_ITEM_URL?.trim();
   if (itemUrl) {
-    return parseItemUrl(itemUrl);
+    return parseItemUrl(itemUrl, loaded.filePath ?? 'CWS_ITEM_URL');
   }
 
   const publisherId = process.env.CWS_PUBLISHER_ID?.trim();
@@ -172,25 +179,6 @@ function resolveItemTarget() {
   }
 
   return { publisherId, extensionId };
-}
-
-function parseItemUrl(itemUrl) {
-  let url;
-  try {
-    url = new URL(itemUrl);
-  } catch (error) {
-    throw new Error(`Invalid CWS_ITEM_URL: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  const match = url.pathname.match(/\/v2\/publishers\/([^/]+)\/items\/([^/]+)/);
-  if (!match) {
-    throw new Error(`CWS_ITEM_URL does not match the expected Chrome Web Store API item format: ${itemUrl}`);
-  }
-
-  return {
-    publisherId: decodeURIComponent(match[1]),
-    extensionId: decodeURIComponent(match[2])
-  };
 }
 
 async function ensureReadableFile(filePath) {
