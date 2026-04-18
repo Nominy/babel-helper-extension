@@ -34,6 +34,11 @@ Read these first when working on Babel-specific interactions:
 - `docs/babel-dashboard-snapshot/README.md`
 - `docs/babel-dashboard-snapshot/extension-engineering.md`
 
+Local workspace shortcuts:
+- `docs/workspace-links.md`
+  - Sibling links back to the old `tools/` monorepo, the original extension subtree, and nearby experiments.
+  - These are meant for local navigation on this machine and are not expected to resolve in the GitHub web UI.
+
 ## Behavior
 
 This refactor keeps existing shortcuts and workflow behavior parity while separating concerns for growth:
