@@ -8,7 +8,7 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
    - `npm install`
 2. Build extension bundles:
    - `npm run build`
-3. Load unpacked extension from `babel-helper-extension/` in `chrome://extensions`.
+3. Load unpacked extension from this repo root in `chrome://extensions`.
 
 Bundled outputs:
 - `dist/content/entry.js`
@@ -25,6 +25,14 @@ Source lives under `src/`:
 - `handlers/` keyboard/pointer/route handler adapters
 - `features/` plugin modules that consume typed context
 - `content/` extension entry points (`entry.ts`, `magnifier-bridge.ts`, `linter-bridge.ts`)
+
+Supporting reverse-engineering material lives under:
+- `docs/babel-dashboard-snapshot/`
+- `decompiles/`
+
+Read these first when working on Babel-specific interactions:
+- `docs/babel-dashboard-snapshot/README.md`
+- `docs/babel-dashboard-snapshot/extension-engineering.md`
 
 ## Behavior
 
