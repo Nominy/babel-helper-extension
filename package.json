@@ -1,6 +1,6 @@
 {
   "name": "babel-helper-extension",
-  "version": "1.0.74",
+  "version": "1.0.88",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,8 @@
     "build": "node esbuild.config.mjs",
     "build:watch": "node esbuild.config.mjs --watch",
     "build:zip": "node scripts/pack.mjs",
+    "publish:cws": "node scripts/publish-cws.mjs",
+    "setup:github-secrets": "node scripts/setup-github-secrets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs"
   },

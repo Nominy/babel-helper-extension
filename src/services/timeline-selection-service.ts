@@ -1,5 +1,9 @@
 // @ts-nocheck
-import { loadWorkflowDefaults, saveWorkflowDefaults, normalizeZoomValue } from '../core/workflow-defaults';
+import {
+  loadWorkflowDefaults,
+  updateWorkflowDefaults,
+  normalizeZoomValue
+} from '../core/workflow-defaults';
 
 export function registerTimelineSelectionService(helper: any) {
   if (!helper || helper.__cutRegistered) {
@@ -483,10 +487,10 @@ export function registerTimelineSelectionService(helper: any) {
       return;
     }
 
-    const saved = await saveWorkflowDefaults({
-      ...defaults,
+    const saved = await updateWorkflowDefaults((currentDefaults) => ({
+      ...currentDefaults,
       lastZoomValue: normalized
-    });
+    }));
     zoomPersistenceDefaults = saved;
     zoomPersistenceLoaded = true;
   }

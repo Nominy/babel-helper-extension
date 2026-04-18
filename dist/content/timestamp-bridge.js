@@ -8,6 +8,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     }
     const REQUEST_EVENT = "babel-helper-timestamp-request";
     const RESPONSE_EVENT = "babel-helper-timestamp-response";
+    const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
     function safe(callback, fallbackValue) {
       try {
         const value = callback();
@@ -111,7 +112,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
     }
     function getTranscriptRows() {
       return Array.from(document.querySelectorAll("tbody tr")).filter(
-        (row) => row instanceof HTMLTableRowElement && row.querySelector('textarea[placeholder="What was said\u2026"]')
+        (row) => row instanceof HTMLTableRowElement && row.querySelector(ROW_TEXTAREA_SELECTOR)
       );
     }
     function getRowSpeakerKey(row) {
@@ -250,7 +251,7 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       let fiber = getReactFiber(row);
       if (!fiber) {
-        fiber = getReactFiber(row.querySelector('textarea[placeholder="What was said\u2026"]'));
+        fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
       }
       let current = fiber;
       let depth = 0;

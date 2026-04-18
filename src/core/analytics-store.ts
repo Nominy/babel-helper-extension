@@ -60,6 +60,7 @@ export type AnalyticsEventType =
   | 'hotkey:text-move'                 // Alt+[/] text move
   | 'hotkey:merge'                     // Alt+Shift+Arrow merge
   | 'hotkey:rewind'                    // Alt+X rewind
+  | 'hotkey:trim'                      // Alt+R / Alt+Shift+R trim
   | 'hotkey:cut-preview'               // Cut preview keydown (S/Shift+S/L)
   | 'hotkey:arrow-suppressed'          // Native arrow seek suppressed
   | 'hotkey:lint-autofix'              // Alt+F / Alt+Shift+F lint auto-fix

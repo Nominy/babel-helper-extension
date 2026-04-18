@@ -1,7 +1,7 @@
 // @ts-nocheck
 import {
   loadWorkflowDefaults,
-  saveWorkflowDefaults,
+  updateWorkflowDefaults,
   normalizeWaveformScaleValue
 } from '../core/workflow-defaults';
 
@@ -202,10 +202,13 @@ export function registerWaveformScaleService(helper: any) {
       nextScales[row.key] = normalizeWaveformScaleValue(row.slider.getAttribute('aria-valuenow'));
     }
 
-    const saved = await saveWorkflowDefaults({
-      ...defaults,
-      waveformScales: nextScales
-    });
+    const saved = await updateWorkflowDefaults((currentDefaults) => ({
+      ...currentDefaults,
+      waveformScales: {
+        ...(currentDefaults.waveformScales || {}),
+        ...nextScales
+      }
+    }));
     cachedDefaults = saved;
     defaultsLoaded = true;
   }

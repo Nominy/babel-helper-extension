@@ -1,0 +1,21 @@
+.env
+.env.*
+
+build/
+coverage/
+tmp/
+
+*.log
+*.tmp
+
+.DS_Store
+Thumbs.db
+
+# Local deployment material
+data-deploy
+keys/*.pem
+
+# Packaged extension artifacts
+*.zip
+
+/node_modules

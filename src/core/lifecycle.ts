@@ -291,6 +291,42 @@ export function registerLifecycle(helper: any) {
   function handleNativeArrowSuppress(event) {
     updateRightShiftState(event);
 
+    if (
+      helper.runtime.isSessionInteractive() &&
+      isFeatureEnabled('timelineSelection') &&
+      typeof helper.handleCutPreviewKeydown === 'function' &&
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      event.code === 'KeyR'
+    ) {
+      const timelineHotkeyResult = helper.handleCutPreviewKeydown(event);
+      if (timelineHotkeyResult) {
+        event.stopImmediatePropagation();
+        if (helper.analytics) {
+          const analyticsType =
+            typeof timelineHotkeyResult === 'object' &&
+            timelineHotkeyResult &&
+            typeof timelineHotkeyResult.analyticsType === 'string'
+              ? timelineHotkeyResult.analyticsType
+              : 'hotkey:cut-preview';
+          const analyticsData =
+            typeof timelineHotkeyResult === 'object' &&
+            timelineHotkeyResult &&
+            timelineHotkeyResult.analyticsData &&
+            typeof timelineHotkeyResult.analyticsData === 'object'
+              ? timelineHotkeyResult.analyticsData
+              : {};
+          helper.analytics.record(analyticsType, {
+            key: event.key,
+            code: event.code,
+            ...analyticsData
+          });
+        }
+        return;
+      }
+    }
+
     if (isRightShiftSegmentNavigationShortcut(event)) {
       const offset = event.key === 'ArrowRight' ? 1 : -1;
       const handled =
@@ -332,18 +368,37 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
-    if (event.defaultPrevented) {
+    const timelineHotkeyResult =
+      isFeatureEnabled('timelineSelection') &&
+      typeof helper.handleCutPreviewKeydown === 'function'
+        ? helper.handleCutPreviewKeydown(event)
+        : false;
+
+    if (timelineHotkeyResult) {
+      if (helper.analytics) {
+        const analyticsType =
+          typeof timelineHotkeyResult === 'object' &&
+          timelineHotkeyResult &&
+          typeof timelineHotkeyResult.analyticsType === 'string'
+            ? timelineHotkeyResult.analyticsType
+            : 'hotkey:cut-preview';
+        const analyticsData =
+          typeof timelineHotkeyResult === 'object' &&
+          timelineHotkeyResult &&
+          timelineHotkeyResult.analyticsData &&
+          typeof timelineHotkeyResult.analyticsData === 'object'
+            ? timelineHotkeyResult.analyticsData
+            : {};
+        helper.analytics.record(analyticsType, {
+          key: event.key,
+          code: event.code,
+          ...analyticsData
+        });
+      }
       return;
     }
 
-    if (
-      isFeatureEnabled('timelineSelection') &&
-      typeof helper.handleCutPreviewKeydown === 'function' &&
-      helper.handleCutPreviewKeydown(event)
-    ) {
-      if (helper.analytics) {
-        helper.analytics.record('hotkey:cut-preview', { key: event.key, code: event.code });
-      }
+    if (event.defaultPrevented) {
       return;
     }
 

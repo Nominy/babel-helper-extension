@@ -85,11 +85,14 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
   function buildHotkeysHelpRows(featureSettings) {
     const rows = [];
     if (featureSettings.focusToggle) {
-      rows.push(["Esc", "Pause and blur / resume and restore cursor" + (featureSettings.proportionalCursorRestore ? " (proportional to playback position)" : "")]);
+      rows.push([
+        "Esc",
+        "Pause and blur / resume and restore cursor" + (featureSettings.proportionalCursorRestore ? " (proportional to playback position)" : "")
+      ]);
     }
     if (featureSettings.textMove) {
-      rows.push(["Alt + [ (\u0420\u0490)", "Move text before caret to previous segment"]);
-      rows.push(["Alt + ] (\u0420\u0404)", "Move text after caret to next segment"]);
+      rows.push(["Alt + [ (\u0425)", "Move text before caret to previous segment"]);
+      rows.push(["Alt + ] (\u0404)", "Move text after caret to next segment"]);
     }
     if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
       rows.push(["Alt + 1 / Alt + 2", "Switch active speaker workflow lane"]);
@@ -3025,6 +3028,17 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       });
     });
   }
+  var workflowDefaultsUpdateChain = Promise.resolve(
+    normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS)
+  );
+  async function updateWorkflowDefaults(updater) {
+    workflowDefaultsUpdateChain = workflowDefaultsUpdateChain.catch(() => normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS)).then(async () => {
+      const current = await loadWorkflowDefaults();
+      const next = await updater(current);
+      return saveWorkflowDefaults(next);
+    });
+    return workflowDefaultsUpdateChain;
+  }
 
   // src/services/timeline-selection-service.ts
   function registerTimelineSelectionService(helper) {
@@ -3412,10 +3426,10 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       if (defaults.lastZoomValue === normalized) {
         return;
       }
-      const saved = await saveWorkflowDefaults({
-        ...defaults,
+      const saved = await updateWorkflowDefaults((currentDefaults) => ({
+        ...currentDefaults,
         lastZoomValue: normalized
-      });
+      }));
       zoomPersistenceDefaults = saved;
       zoomPersistenceLoaded = true;
     }
@@ -6023,10 +6037,13 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       for (const row of getWaveformScaleRows()) {
         nextScales[row.key] = normalizeWaveformScaleValue(row.slider.getAttribute("aria-valuenow"));
       }
-      const saved = await saveWorkflowDefaults({
-        ...defaults,
-        waveformScales: nextScales
-      });
+      const saved = await updateWorkflowDefaults((currentDefaults) => ({
+        ...currentDefaults,
+        waveformScales: {
+          ...currentDefaults.waveformScales || {},
+          ...nextScales
+        }
+      }));
       cachedDefaults = saved;
       defaultsLoaded = true;
     }

@@ -1,0 +1,95 @@
+name: Deploy Babel Helper Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_type:
+        description: Chrome Web Store publish mode
+        type: choice
+        options:
+          - DEFAULT_PUBLISH
+          - STAGED_PUBLISH
+        default: DEFAULT_PUBLISH
+      skip_review:
+        description: Request skipReview=true when the item is eligible
+        type: boolean
+        default: false
+
+concurrency:
+  group: babel-helper-extension-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate extension
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build release ZIP
+        env:
+          BABEL_EXTENSION_ZIP_DIR: ${{ github.workspace }}/.artifacts
+        run: npm run build:zip
+
+      - name: Capture release metadata
+        id: metadata
+        run: |
+          VERSION=$(node --input-type=module -e "import fs from 'node:fs'; const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8')); process.stdout.write(manifest.version);")
+          ZIP_PATH="${GITHUB_WORKSPACE}/.artifacts/babel-helper-extension-${VERSION}.zip"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "zip_path=${ZIP_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: babel-helper-extension-${{ steps.metadata.outputs.version }}
+          path: ${{ steps.metadata.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: Publish to Chrome Web Store
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_ACCESS_TOKEN: ${{ secrets.CWS_ACCESS_TOKEN }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_PUBLISH_TYPE: ${{ inputs.publish_type }}
+          CWS_SKIP_REVIEW: ${{ inputs.skip_review }}
+          CWS_ZIP_PATH: ${{ steps.metadata.outputs.zip_path }}
+        run: node scripts/publish-cws.mjs
+
+      - name: Commit version bump
+        if: github.ref_type == 'branch'
+        run: |
+          if git diff --quiet -- package.json package-lock.json manifest.json; then
+            echo "Version files already match the deployed state."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json manifest.json
+          git commit -m "chore: release Babel Helper extension ${{ steps.metadata.outputs.version }}"
+          git push origin HEAD:${GITHUB_REF_NAME}

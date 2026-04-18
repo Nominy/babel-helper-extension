@@ -48,3 +48,20 @@ Custom linter notes:
 - `npm run typecheck`
 - `npm run build`
 - `npm run test`
+
+## Deployment
+
+- `npm run build:zip` bumps the patch version, rebuilds the extension, and writes `../babel-helper-extension-<version>.zip`.
+- `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, then commits the bumped version files back to the selected branch so the repo stays in sync with the store.
+- Required GitHub Actions secrets:
+  - `CWS_CLIENT_ID`
+  - `CWS_CLIENT_SECRET`
+  - `CWS_REFRESH_TOKEN`
+  - `CWS_PUBLISHER_ID`
+  - `CWS_EXTENSION_ID`
+- Optional GitHub Actions secret:
+  - `CWS_ACCESS_TOKEN`
+    Use this only as a short-lived fallback. The deploy script prefers refresh-token auth when the client credentials are present.
+- To seed those secrets from the local `data-deploy` file, run `node scripts/setup-github-secrets.mjs OWNER/REPO`.
+  - The helper derives `CWS_PUBLISHER_ID` and `CWS_EXTENSION_ID` from the stored Chrome Web Store item URL.
+  - If the stored access token has already expired, add a `client-id:` line to `data-deploy` before running the helper so it does not need to query Google's token info endpoint.

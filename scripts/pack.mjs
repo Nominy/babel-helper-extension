@@ -15,8 +15,8 @@
  */
 
 import { execSync } from 'node:child_process';
-import { createWriteStream, readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join, relative, resolve } from 'node:path';
+import { createWriteStream, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createDeflateRaw } from 'node:zlib';
 
@@ -34,7 +34,12 @@ const manifestRaw = readFileSync(join(ROOT, 'manifest.json'), 'utf-8').replace(/
 const manifest = JSON.parse(manifestRaw);
 const version = manifest.version;
 const zipName = `babel-helper-extension-${version}.zip`;
-const zipPath = resolve(ROOT, '..', zipName);
+const zipOutputDir = process.env.BABEL_EXTENSION_ZIP_DIR
+  ? resolve(ROOT, process.env.BABEL_EXTENSION_ZIP_DIR)
+  : resolve(ROOT, '..');
+const zipPath = process.env.BABEL_EXTENSION_ZIP_PATH
+  ? resolve(ROOT, process.env.BABEL_EXTENSION_ZIP_PATH)
+  : resolve(zipOutputDir, zipName);
 
 // 3. Collect files
 function collectFiles(dir, base) {
@@ -117,6 +122,8 @@ async function deflate(data) {
 }
 
 async function createZip(outPath, entries) {
+  mkdirSync(dirname(outPath), { recursive: true });
+
   const centralHeaders = [];
   let offset = 0;
   const parts = [];

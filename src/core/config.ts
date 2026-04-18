@@ -9,13 +9,16 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
   const rows: Array<[string, string]> = [];
 
   if (featureSettings.focusToggle) {
-    rows.push(['Esc', 'Pause and blur / resume and restore cursor' +
-      (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')]);
+    rows.push([
+      'Esc',
+      'Pause and blur / resume and restore cursor' +
+        (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')
+    ]);
   }
 
   if (featureSettings.textMove) {
-    rows.push(['Alt + [ (РҐ)', 'Move text before caret to previous segment']);
-    rows.push(['Alt + ] (РЄ)', 'Move text after caret to next segment']);
+    rows.push(['Alt + [ (\u0425)', 'Move text before caret to previous segment']);
+    rows.push(['Alt + ] (\u0404)', 'Move text after caret to next segment']);
   }
 
   if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
@@ -24,8 +27,8 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
   }
 
   if (featureSettings.selectedNumberToSkaz) {
-    rows.push(['Digit', 'Replace selection with `digit {СКАЗ: original}`']);
-    rows.push(['Alt + A', 'Auto-convert selected digits into `digits {СКАЗ: words}`']);
+    rows.push(['Digit', 'Replace selection with `digit {\u0421\u041a\u0410\u0417: original}`']);
+    rows.push(['Alt + A', 'Auto-convert selected digits into `digits {\u0421\u041a\u0410\u0417: words}`']);
   }
 
   if (featureSettings.rowActions) {

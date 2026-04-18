@@ -7,6 +7,7 @@ export function initTimestampBridge() {
 
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
+  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
 
   function safe(callback, fallbackValue) {
     try {
@@ -131,7 +132,7 @@ export function initTimestampBridge() {
 
   function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter(
-      (row) => row instanceof HTMLTableRowElement && row.querySelector('textarea[placeholder="What was said…"]')
+      (row) => row instanceof HTMLTableRowElement && row.querySelector(ROW_TEXTAREA_SELECTOR)
     );
   }
 
@@ -307,7 +308,7 @@ export function initTimestampBridge() {
 
     let fiber = getReactFiber(row);
     if (!fiber) {
-      fiber = getReactFiber(row.querySelector('textarea[placeholder="What was said…"]'));
+      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
     }
 
     let current = fiber;

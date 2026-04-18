@@ -101,3 +101,21 @@ export async function saveWorkflowDefaults(defaults: WorkflowDefaults): Promise<
     });
   });
 }
+
+let workflowDefaultsUpdateChain: Promise<WorkflowDefaults> = Promise.resolve(
+  normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS)
+);
+
+export async function updateWorkflowDefaults(
+  updater: (defaults: WorkflowDefaults) => WorkflowDefaults | Promise<WorkflowDefaults>
+): Promise<WorkflowDefaults> {
+  workflowDefaultsUpdateChain = workflowDefaultsUpdateChain
+    .catch(() => normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS))
+    .then(async () => {
+      const current = await loadWorkflowDefaults();
+      const next = await updater(current);
+      return saveWorkflowDefaults(next);
+    });
+
+  return workflowDefaultsUpdateChain;
+}
