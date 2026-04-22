@@ -10,6 +10,10 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
    - `npm run build`
 3. Load unpacked extension from this repo root in `chrome://extensions`.
 
+Versioning:
+- `npm run build` is pure and does not change version files.
+- `npm run version:patch` bumps `package.json`, `manifest.json`, and `package-lock.json` for the next release.
+
 Bundled outputs:
 - `dist/content/entry.js`
 - `dist/content/magnifier-bridge.js`
@@ -64,7 +68,8 @@ Custom linter notes:
 
 ## Deployment
 
-- `npm run build:zip` bumps the patch version, rebuilds the extension, and writes `.artifacts/babel-helper-extension-<version>.zip`.
+- `npm run build:zip` rebuilds the extension and writes `.artifacts/babel-helper-extension-<version>.zip`.
+- The deploy workflow runs `npm run version:patch` first, then validates, packages, publishes to Chrome Web Store, and commits the bumped version files.
 - `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, commits the bumped version files back to the selected branch, and then creates or updates the matching GitHub Release asset tagged as `v<version>`.
 - Required GitHub Actions secrets:
   - `CWS_CLIENT_ID`
