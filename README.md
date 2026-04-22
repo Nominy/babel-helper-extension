@@ -36,7 +36,7 @@ Read these first when working on Babel-specific interactions:
 
 Local workspace shortcuts:
 - `docs/workspace-links.md`
-  - Sibling links back to the old `tools/` monorepo, the original extension subtree, and nearby experiments.
+  - Local-only sibling links back to the `babel-archive` workbench copy of the old workspace.
   - These are meant for local navigation on this machine and are not expected to resolve in the GitHub web UI.
 
 ## Behavior
@@ -64,8 +64,8 @@ Custom linter notes:
 
 ## Deployment
 
-- `npm run build:zip` bumps the patch version, rebuilds the extension, and writes `../babel-helper-extension-<version>.zip`.
-- `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, then commits the bumped version files back to the selected branch so the repo stays in sync with the store.
+- `npm run build:zip` bumps the patch version, rebuilds the extension, and writes `.artifacts/babel-helper-extension-<version>.zip`.
+- `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, commits the bumped version files back to the selected branch, and then creates or updates the matching GitHub Release asset tagged as `v<version>`.
 - Required GitHub Actions secrets:
   - `CWS_CLIENT_ID`
   - `CWS_CLIENT_SECRET`

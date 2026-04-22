@@ -21,7 +21,7 @@ const zipPath = resolve(
   rootDir,
   args.values.get('zip') ??
     process.env.CWS_ZIP_PATH ??
-    resolve(rootDir, '..', `babel-helper-extension-${manifest.version}.zip`)
+    resolve(rootDir, '.artifacts', `babel-helper-extension-${manifest.version}.zip`)
 );
 const publishType = normalizePublishType(
   args.values.get('publish-type') ?? process.env.CWS_PUBLISH_TYPE ?? 'DEFAULT_PUBLISH'
@@ -134,7 +134,7 @@ function printHelp() {
   console.log(`Usage: node scripts/publish-cws.mjs [options]
 
 Options:
-  --zip PATH               ZIP to upload. Defaults to ../babel-helper-extension-<version>.zip
+  --zip PATH               ZIP to upload. Defaults to .artifacts/babel-helper-extension-<version>.zip
   --env-file PATH          Local dotenv file. Defaults to first readable file in:
                            ${getDefaultEnvFiles().join(', ')}
   --file PATH              Alias for --env-file

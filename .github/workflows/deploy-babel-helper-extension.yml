@@ -93,3 +93,25 @@ jobs:
           git add package.json package-lock.json manifest.json
           git commit -m "chore: release Babel Helper extension ${{ steps.metadata.outputs.version }}"
           git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Resolve release target
+        id: release_target
+        run: |
+          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: v${{ steps.metadata.outputs.version }}
+          ZIP_PATH: ${{ steps.metadata.outputs.zip_path }}
+          TARGET_SHA: ${{ steps.release_target.outputs.target_sha }}
+        run: |
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$ZIP_PATH" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG_NAME" "$ZIP_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$TARGET_SHA" \
+              --title "$TAG_NAME" \
+              --generate-notes
+          fi

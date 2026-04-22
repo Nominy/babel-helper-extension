@@ -5,7 +5,7 @@
  * Usage:  node scripts/pack.mjs          (runs build first)
  *         node scripts/pack.mjs --no-build
  *
- * Output: ../babel-helper-extension-<version>.zip  (one directory up)
+ * Output: .artifacts/babel-helper-extension-<version>.zip
  *
  * Only the files required at runtime are included:
  *   manifest.json
@@ -36,7 +36,7 @@ const version = manifest.version;
 const zipName = `babel-helper-extension-${version}.zip`;
 const zipOutputDir = process.env.BABEL_EXTENSION_ZIP_DIR
   ? resolve(ROOT, process.env.BABEL_EXTENSION_ZIP_DIR)
-  : resolve(ROOT, '..');
+  : resolve(ROOT, '.artifacts');
 const zipPath = process.env.BABEL_EXTENSION_ZIP_PATH
   ? resolve(ROOT, process.env.BABEL_EXTENSION_ZIP_PATH)
   : resolve(zipOutputDir, zipName);
