@@ -495,6 +495,26 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       return index;
     }
+    function startsWithNumericToken(text, startIndex = 0) {
+      if (typeof text !== "string") {
+        return false;
+      }
+      let index = Math.max(0, startIndex);
+      while (index < text.length) {
+        const nextIndex = skipLeadingCapitalizationTokens(text, index);
+        if (nextIndex !== index) {
+          index = nextIndex;
+          continue;
+        }
+        const char = text[index];
+        if (/\s/.test(char)) {
+          index += 1;
+          continue;
+        }
+        return new RegExp("\\p{N}", "u").test(char);
+      }
+      return false;
+    }
     function skipSentenceBoundaryTokens(text, startIndex = 0) {
       if (typeof text !== "string") {
         return startIndex;
@@ -686,6 +706,9 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
         return false;
       }
       if (trimmed.startsWith("...")) {
+        if (startsWithNumericToken(trimmed, 3)) {
+          return false;
+        }
         const ellipsisLetterIndex = findFirstLetterIndex(
           trimmed,
           skipLeadingCapitalizationTokens(trimmed, 3)
@@ -1589,12 +1612,16 @@ var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";
       }
       if (trimmed.startsWith("...")) {
         const sourceIndex = text.indexOf("...");
+        const contentStartIndex = skipLeadingCapitalizationTokens(
+          text,
+          sourceIndex === -1 ? 0 : sourceIndex + 3
+        );
+        if (startsWithNumericToken(text, contentStartIndex)) {
+          return text;
+        }
         const letterIndex2 = findFirstLetterIndex(
           text,
-          skipLeadingCapitalizationTokens(
-            text,
-            sourceIndex === -1 ? 0 : sourceIndex + 3
-          )
+          contentStartIndex
         );
         if (letterIndex2 === -1 || !isUppercaseLetter(text[letterIndex2])) {
           return text;

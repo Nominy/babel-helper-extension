@@ -388,6 +388,31 @@ function skipLeadingCapitalizationTokens(text, startIndex = 0) {
   return index;
 }
 
+function startsWithNumericToken(text, startIndex = 0) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+
+  let index = Math.max(0, startIndex);
+  while (index < text.length) {
+    const nextIndex = skipLeadingCapitalizationTokens(text, index);
+    if (nextIndex !== index) {
+      index = nextIndex;
+      continue;
+    }
+
+    const char = text[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    return /\p{N}/u.test(char);
+  }
+
+  return false;
+}
+
 function skipSentenceBoundaryTokens(text, startIndex = 0) {
   if (typeof text !== 'string') {
     return startIndex;
@@ -625,6 +650,10 @@ function hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)
   }
 
   if (trimmed.startsWith('...')) {
+    if (startsWithNumericToken(trimmed, 3)) {
+      return false;
+    }
+
     const ellipsisLetterIndex = findFirstLetterIndex(
       trimmed,
       skipLeadingCapitalizationTokens(trimmed, 3)
@@ -831,10 +860,15 @@ function fixSegmentStartCapitalization(text, previousSameSpeakerText) {
 
   if (trimmed.startsWith('...')) {
     const sourceIndex = text.indexOf('...');
-    const letterIndex = findFirstLetterIndex(
+    const contentStartIndex = skipLeadingCapitalizationTokens(
       text,
-      skipLeadingCapitalizationTokens(text, sourceIndex === -1 ? 0 : sourceIndex + 3)
+      sourceIndex === -1 ? 0 : sourceIndex + 3
     );
+    if (startsWithNumericToken(text, contentStartIndex)) {
+      return text;
+    }
+
+    const letterIndex = findFirstLetterIndex(text, contentStartIndex);
     if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
       return text;
     }
@@ -967,7 +1001,9 @@ test('flags lowercase starts unless same-speaker continuation allows them', () =
     { annotationId: 'i', speakerKey: 'speaker-1', text: 'quoted continuation--"' },
     { annotationId: 'j', speakerKey: 'speaker-1', text: '"lowercase after quote.' },
     { annotationId: 'k', speakerKey: 'speaker-1', text: 'quoted ellipsis..."' },
-    { annotationId: 'l', speakerKey: 'speaker-1', text: '"still lowercase after quote.' }
+    { annotationId: 'l', speakerKey: 'speaker-1', text: '"still lowercase after quote.' },
+    { annotationId: 'm', speakerKey: 'speaker-1', text: '... 123 Upper after number.' },
+    { annotationId: 'n', speakerKey: 'speaker-1', text: '... [laughs] 123 Upper after number.' }
   ];
 
   assert.equal(hasSegmentStartCapitalizationViolation(entries[0], entries, 0), false);
@@ -978,6 +1014,8 @@ test('flags lowercase starts unless same-speaker continuation allows them', () =
   assert.equal(hasSegmentStartCapitalizationViolation(entries[7], entries, 7), false);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[9], entries, 9), false);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[11], entries, 11), false);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[12], entries, 12), false);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[13], entries, 13), false);
 });
 
 test('capitalization rule ignores leading tags before the real text start', () => {
@@ -1095,6 +1133,11 @@ test('fixSegmentStartCapitalization respects same-speaker continuations and elli
   assert.equal(fixSegmentStartCapitalization('\u0412\u044b \u043f\u0440\u0430\u0432\u044b.', 'carry on...'), '\u0412\u044b \u043f\u0440\u0430\u0432\u044b.');
   assert.equal(fixSegmentStartCapitalization('...Upper after ellipsis.', 'Previous sentence.'), '...upper after ellipsis.');
   assert.equal(fixSegmentStartCapitalization('...lower after ellipsis.', 'Previous sentence.'), '...lower after ellipsis.');
+  assert.equal(fixSegmentStartCapitalization('... 123 Upper after number.', 'Previous sentence.'), '... 123 Upper after number.');
+  assert.equal(
+    fixSegmentStartCapitalization('... [laughs] 123 Upper after number.', 'Previous sentence.'),
+    '... [laughs] 123 Upper after number.'
+  );
   assert.equal(fixSegmentStartCapitalization('[laughs] lowercase start.', 'Previous sentence.'), '[laughs] Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('<i>lowercase start.</i>', 'Previous sentence.'), '<i>Lowercase start.</i>');
   assert.equal(fixSegmentStartCapitalization('...[laughs] Upper after ellipsis.', 'Previous sentence.'), '...[laughs] upper after ellipsis.');

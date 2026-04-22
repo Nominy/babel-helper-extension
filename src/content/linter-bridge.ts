@@ -647,6 +647,31 @@ export function initLinterBridge() {
     return index;
   }
 
+  function startsWithNumericToken(text, startIndex = 0) {
+    if (typeof text !== "string") {
+      return false;
+    }
+
+    let index = Math.max(0, startIndex);
+    while (index < text.length) {
+      const nextIndex = skipLeadingCapitalizationTokens(text, index);
+      if (nextIndex !== index) {
+        index = nextIndex;
+        continue;
+      }
+
+      const char = text[index];
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      return /\p{N}/u.test(char);
+    }
+
+    return false;
+  }
+
   function skipSentenceBoundaryTokens(text, startIndex = 0) {
     if (typeof text !== "string") {
       return startIndex;
@@ -894,6 +919,10 @@ export function initLinterBridge() {
     }
 
     if (trimmed.startsWith("...")) {
+      if (startsWithNumericToken(trimmed, 3)) {
+        return false;
+      }
+
       const ellipsisLetterIndex = findFirstLetterIndex(
         trimmed,
         skipLeadingCapitalizationTokens(trimmed, 3),
@@ -2077,12 +2106,17 @@ export function initLinterBridge() {
 
     if (trimmed.startsWith("...")) {
       const sourceIndex = text.indexOf("...");
+      const contentStartIndex = skipLeadingCapitalizationTokens(
+        text,
+        sourceIndex === -1 ? 0 : sourceIndex + 3,
+      );
+      if (startsWithNumericToken(text, contentStartIndex)) {
+        return text;
+      }
+
       const letterIndex = findFirstLetterIndex(
         text,
-        skipLeadingCapitalizationTokens(
-          text,
-          sourceIndex === -1 ? 0 : sourceIndex + 3,
-        ),
+        contentStartIndex,
       );
       if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
         return text;
