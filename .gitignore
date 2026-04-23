@@ -3,6 +3,7 @@
 !.env.cws.example
 
 build/
+dist/
 coverage/
 tmp/
 
