@@ -30,18 +30,12 @@ Source lives under `src/`:
 - `features/` plugin modules that consume typed context
 - `content/` extension entry points (`entry.ts`, `magnifier-bridge.ts`, `linter-bridge.ts`)
 
-Supporting reverse-engineering material lives under:
+Supporting engineering notes live under:
 - `docs/babel-dashboard-snapshot/`
-- `decompiles/`
 
 Read these first when working on Babel-specific interactions:
 - `docs/babel-dashboard-snapshot/README.md`
 - `docs/babel-dashboard-snapshot/extension-engineering.md`
-
-Local workspace shortcuts:
-- `docs/workspace-links.md`
-  - Local-only sibling links back to the `babel-archive` workbench copy of the old workspace.
-  - These are meant for local navigation on this machine and are not expected to resolve in the GitHub web UI.
 
 ## Behavior
 

@@ -1,6 +1,6 @@
 # Babel Dashboard Snapshot Docs
 
-This directory documents the saved Babel Audio transcription dashboard snapshot that lives under `decompiles/`.
+This directory documents engineering observations from a Babel Audio transcription dashboard snapshot.
 
 Important scope limits:
 - This is not the original Babel source repository.
@@ -11,7 +11,7 @@ Important scope limits:
 - If a statement is inferred rather than directly visible, it is labeled as such.
 
 What this snapshot covers:
-- A single page saved from `https://dashboard.babel.audio/transcription/RU-transcription`
+- A historical local page capture from the Babel transcription dashboard
 - The rendered DOM for that moment in time
 - The static asset set that the browser saved locally
 - Enough runtime structure to build DOM-based helper extensions

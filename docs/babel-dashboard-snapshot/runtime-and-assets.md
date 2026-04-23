@@ -3,8 +3,7 @@
 ## Source
 
 Observed from:
-- `decompiles/Babel Audio - Global Conversational Platform.html`
-- files under `decompiles/Babel Audio - Global Conversational Platform_files/`
+- historical local Babel dashboard capture, not included in this public repository
 
 This is a browser-generated asset dump, not a clean source checkout. Filenames are whatever the browser saved, including some vendor ids and the `Без названия` suffix.
 

@@ -20,3 +20,4 @@ keys/*.pem
 *.zip
 
 /node_modules
+/babel-helper-extension

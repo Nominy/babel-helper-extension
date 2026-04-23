@@ -3,7 +3,7 @@
 ## Source
 
 Observed from:
-- `decompiles/Babel Audio - Global Conversational Platform.html`
+- historical local Babel dashboard capture, not included in this public repository
 
 This is the most important file for extension work because it preserves the rendered DOM, visible labels, and a partial snapshot of portal content.
 
