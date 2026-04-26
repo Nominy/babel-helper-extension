@@ -29,6 +29,7 @@ export function registerTimelineSelectionService(helper: any) {
   const AUDIO_TRIM_THRESHOLD = Math.pow(10, -62 / 20);
   const AUDIO_TRIM_PADDING_SECONDS = 0.005;
   const AUDIO_TRIM_EPSILON_SECONDS = 0.0015;
+  const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
 
   helper.state.cutDraft = null;
   helper.state.cutPreview = null;
@@ -37,6 +38,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.smartSplitClickDraft = null;
   helper.state.smartSplitClickContext = null;
   helper.state.selectionLoop = null;
+  helper.state.longTaskProgress = null;
   helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
   helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
   helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
@@ -164,6 +166,89 @@ export function registerTimelineSelectionService(helper: any) {
 
     const numeric = Number(numericMatch[0]);
     return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function ensureLongTaskProgress() {
+    let progress = helper.state.longTaskProgress;
+    if (
+      progress &&
+      progress.root instanceof HTMLElement &&
+      progress.fill instanceof HTMLElement &&
+      progress.label instanceof HTMLElement &&
+      progress.detail instanceof HTMLElement &&
+      document.documentElement.contains(progress.root)
+    ) {
+      return progress;
+    }
+
+    const root = document.createElement('div');
+    root.id = LONG_TASK_PROGRESS_ID;
+    root.setAttribute('role', 'status');
+    root.setAttribute('aria-live', 'polite');
+    root.style.position = 'fixed';
+    root.style.right = '18px';
+    root.style.bottom = '18px';
+    root.style.width = '300px';
+    root.style.maxWidth = 'calc(100vw - 36px)';
+    root.style.padding = '12px 14px';
+    root.style.border = '1px solid rgba(15, 23, 42, 0.14)';
+    root.style.borderRadius = '8px';
+    root.style.background = 'rgba(255, 255, 255, 0.96)';
+    root.style.boxShadow = '0 16px 38px rgba(15, 23, 42, 0.18)';
+    root.style.color = '#111827';
+    root.style.font = '13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    root.style.zIndex = '2147483647';
+    root.style.pointerEvents = 'none';
+
+    const label = document.createElement('div');
+    label.style.fontWeight = '650';
+    label.style.marginBottom = '6px';
+
+    const detail = document.createElement('div');
+    detail.style.color = '#4b5563';
+    detail.style.marginBottom = '8px';
+
+    const track = document.createElement('div');
+    track.style.height = '6px';
+    track.style.overflow = 'hidden';
+    track.style.borderRadius = '999px';
+    track.style.background = '#e5e7eb';
+
+    const fill = document.createElement('div');
+    fill.style.width = '0%';
+    fill.style.height = '100%';
+    fill.style.borderRadius = '999px';
+    fill.style.background = '#2563eb';
+    fill.style.transition = 'width 120ms ease';
+
+    track.appendChild(fill);
+    root.appendChild(label);
+    root.appendChild(detail);
+    root.appendChild(track);
+    document.body.appendChild(root);
+
+    progress = { root, label, detail, fill };
+    helper.state.longTaskProgress = progress;
+    return progress;
+  }
+
+  function updateLongTaskProgress({ label, current, total }) {
+    const progress = ensureLongTaskProgress();
+    const safeTotal = Math.max(0, Number(total) || 0);
+    const safeCurrent = clamp(Number(current) || 0, 0, safeTotal || 1);
+    const percent = safeTotal > 0 ? Math.round((safeCurrent / safeTotal) * 100) : 0;
+
+    progress.label.textContent = label || 'Working...';
+    progress.detail.textContent = safeTotal > 0 ? `${safeCurrent} / ${safeTotal} segments` : 'Preparing...';
+    progress.fill.style.width = `${percent}%`;
+  }
+
+  function dismissLongTaskProgress() {
+    const progress = helper.state.longTaskProgress;
+    helper.state.longTaskProgress = null;
+    if (progress && progress.root instanceof HTMLElement) {
+      progress.root.remove();
+    }
   }
 
   function parseSecondsLabel(value) {
@@ -2452,25 +2537,47 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     let changedCount = 0;
-    for (const target of targets) {
-      const result = await trimSegmentTarget(target);
-      if (!result || !result.ok) {
-        return {
-          ok: false,
-          reason: result && result.reason ? result.reason : 'trim-failed',
-          changedCount
-        };
-      }
-      if (result.changed) {
-        changedCount += 1;
-      }
-      await helper.sleep(16);
-    }
+    updateLongTaskProgress({
+      label: 'Trimming visible segments',
+      current: 0,
+      total: targets.length
+    });
 
-    return {
-      ok: true,
-      changedCount
-    };
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        updateLongTaskProgress({
+          label: 'Trimming visible segments',
+          current: index,
+          total: targets.length
+        });
+
+        const result = await trimSegmentTarget(target);
+        if (!result || !result.ok) {
+          return {
+            ok: false,
+            reason: result && result.reason ? result.reason : 'trim-failed',
+            changedCount
+          };
+        }
+        if (result.changed) {
+          changedCount += 1;
+        }
+        updateLongTaskProgress({
+          label: 'Trimming visible segments',
+          current: index + 1,
+          total: targets.length
+        });
+        await helper.sleep(16);
+      }
+
+      return {
+        ok: true,
+        changedCount
+      };
+    } finally {
+      dismissLongTaskProgress();
+    }
   };
 
   function getRegionBounds(region, containerRect) {
