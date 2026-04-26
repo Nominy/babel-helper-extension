@@ -563,8 +563,89 @@ function hasSentenceBoundaryCapitalizationViolation(text) {
   return findSentenceBoundaryLowercaseIndices(text).length > 0;
 }
 
+function getEnclosingInlineTagRange(text, index) {
+  if (typeof text !== 'string' || index < 0 || index >= text.length) {
+    return null;
+  }
+
+  const openIndex = text.lastIndexOf('<', index);
+  const closeBeforeIndex = text.lastIndexOf('>', index);
+  if (openIndex === -1 || closeBeforeIndex > openIndex) {
+    return null;
+  }
+
+  const closeIndex = text.indexOf('>', index);
+  if (closeIndex === -1) {
+    return null;
+  }
+
+  return {
+    start: openIndex,
+    end: closeIndex + 1
+  };
+}
+
+function isInsideInlineTag(text, index) {
+  return getEnclosingInlineTagRange(text, index) !== null;
+}
+
+function isInsidePairedInlineTagContent(text, index) {
+  if (typeof text !== 'string' || index < 0 || index >= text.length) {
+    return false;
+  }
+
+  const before = text.slice(0, index);
+  const openMatch = before.match(/<([A-Za-zА-Яа-яЁё0-9_-]+)>[^<>]*$/u);
+  if (!openMatch) {
+    return false;
+  }
+
+  const tagName = openMatch[1];
+  const closePattern = new RegExp(
+    `^([^<>]*?)<\\/${escapeRegExp(tagName)}>`,
+    'u'
+  );
+  return closePattern.test(text.slice(index));
+}
+
+function skipBackwardIgnorableTokens(text, pointer) {
+  let current = pointer;
+  while (current >= 0) {
+    while (current >= 0 && /\s/.test(text[current])) {
+      current -= 1;
+    }
+
+    const tagRange = getEnclosingInlineTagRange(text, current);
+    if (tagRange) {
+      current = tagRange.start - 1;
+      continue;
+    }
+
+    while (current >= 0 && /["')\]\}\u00BB\u201D\u2019]/u.test(text[current])) {
+      current -= 1;
+      while (current >= 0 && /\s/.test(text[current])) {
+        current -= 1;
+      }
+    }
+
+    const closingTagMatch = text.slice(0, current + 1).match(/<\/[^>]+>$/u);
+    if (closingTagMatch) {
+      current -= closingTagMatch[0].length;
+      continue;
+    }
+
+    break;
+  }
+
+  return current;
+}
+
 function getPolitePronounCaseExpectation(text, tokenIndex) {
   if (typeof text !== 'string' || tokenIndex < 0) {
+    return 'neutral';
+  }
+
+  if (isInsideInlineTag(text, tokenIndex) || isInsidePairedInlineTagContent(text, tokenIndex)) {
     return 'neutral';
   }
 
@@ -573,17 +654,7 @@ function getPolitePronounCaseExpectation(text, tokenIndex) {
     return 'neutral';
   }
 
-  let pointer = tokenIndex - 1;
-  while (pointer >= 0 && /\s/.test(text[pointer])) {
-    pointer -= 1;
-  }
-
-  while (pointer >= 0 && /["')\]\}\u00BB\u201D\u2019]/u.test(text[pointer])) {
-    pointer -= 1;
-    while (pointer >= 0 && /\s/.test(text[pointer])) {
-      pointer -= 1;
-    }
-  }
+  let pointer = skipBackwardIgnorableTokens(text, tokenIndex - 1);
 
   if (pointer < 0) {
     return 'neutral';
@@ -1037,6 +1108,8 @@ test('capitalization rule ignores leading tags before the real text start', () =
 test('flags polite Russian pronouns only when sentence context requires a different case', () => {
   assert.equal(hasPolitePronounCaseViolation('\u0412\u044b \u043f\u0440\u0430\u0432\u044b.'), false);
   assert.equal(hasPolitePronounCaseViolation('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.'), false);
+  assert.equal(hasPolitePronounCaseViolation('\u0414\u0430, <\u0441\u043c\u0435\u0445-\u0432-\u0440\u0435\u0447\u0438> \u0412\u044b </\u0441\u043c\u0435\u0445-\u0432-\u0440\u0435\u0447\u0438> \u0433\u043e\u0432\u043e\u0440\u0438\u043b\u0438.'), false);
+  assert.equal(hasPolitePronounCaseViolation('\u0414\u0430, </\u0441\u043c\u0435\u0445-\u0432-\u0440\u0435\u0447\u0438> \u0412\u044b \u0433\u043e\u0432\u043e\u0440\u0438\u043b\u0438.'), true);
   assert.equal(
     hasPolitePronounCaseViolation('\u0421\u043f\u0430\u0441\u0438\u0431\u043e, \u0412\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'),
     true

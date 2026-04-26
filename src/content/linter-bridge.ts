@@ -8,6 +8,9 @@ export function initLinterBridge() {
   const TEARDOWN_EVENT = "babel-helper-bridge-teardown";
   const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
+  const NATIVE_LEADING_TRAILING_SPACES_REASON =
+    "Extra spaces at the end or beginning of segments are not allowed.";
+  const NATIVE_DOUBLE_SPACES_REASON = "Double spaces are not allowed.";
   const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
   const QUOTE_PLACEMENT_RULE_REASON =
     "Double quotes must not have stray spaces inside or be glued to surrounding words.";
@@ -32,6 +35,12 @@ export function initLinterBridge() {
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
     "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
   const RULE_SEVERITY = "error";
+  const HIGHLIGHT_STYLE_ID = "babel-helper-linter-highlight-style";
+  const HIGHLIGHT_MARK_ATTR = "data-babel-helper-linter-highlight";
+  const HIGHLIGHT_OVERLAY_ATTR = "data-babel-helper-linter-overlay";
+  const HIGHLIGHT_SWATCH_ATTR = "data-babel-helper-linter-swatch";
+  const HIGHLIGHT_PREVIEW_ATTR = "data-babel-helper-linter-preview";
+  const HIGHLIGHT_OBSERVER_DELAY_MS = 50;
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 100;
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
@@ -48,6 +57,11 @@ export function initLinterBridge() {
   let enabled = true;
   let autoLintAttemptCount = 0;
   let autoLintTimer = 0;
+  let highlightObserver = null;
+  let highlightTimer = 0;
+  let applyingHighlights = false;
+  let currentHighlightIssues = [];
+  let highlightedRow = null;
   let textareaVisibilityObserver = null;
   let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
@@ -825,8 +839,95 @@ export function initLinterBridge() {
     return findSentenceBoundaryLowercaseIndices(text).length > 0;
   }
 
+  function getEnclosingInlineTagRange(text, index) {
+    if (typeof text !== "string" || index < 0 || index >= text.length) {
+      return null;
+    }
+
+    const openIndex = text.lastIndexOf("<", index);
+    const closeBeforeIndex = text.lastIndexOf(">", index);
+    if (openIndex === -1 || closeBeforeIndex > openIndex) {
+      return null;
+    }
+
+    const closeIndex = text.indexOf(">", index);
+    if (closeIndex === -1) {
+      return null;
+    }
+
+    return {
+      start: openIndex,
+      end: closeIndex + 1,
+    };
+  }
+
+  function isInsideInlineTag(text, index) {
+    return getEnclosingInlineTagRange(text, index) !== null;
+  }
+
+  function isInsidePairedInlineTagContent(text, index) {
+    if (typeof text !== "string" || index < 0 || index >= text.length) {
+      return false;
+    }
+
+    const before = text.slice(0, index);
+    const openMatch = before.match(/<([A-Za-zА-Яа-яЁё0-9_-]+)>[^<>]*$/u);
+    if (!openMatch) {
+      return false;
+    }
+
+    const tagName = openMatch[1];
+    const closePattern = new RegExp(
+      `^([^<>]*?)<\\/${escapeRegExp(tagName)}>`,
+      "u",
+    );
+    return closePattern.test(text.slice(index));
+  }
+
+  function skipBackwardIgnorableTokens(text, pointer) {
+    let current = pointer;
+    while (current >= 0) {
+      while (current >= 0 && /\s/.test(text[current])) {
+        current -= 1;
+      }
+
+      const tagRange = getEnclosingInlineTagRange(text, current);
+      if (tagRange) {
+        current = tagRange.start - 1;
+        continue;
+      }
+
+      while (
+        current >= 0 &&
+        /["')\]\}\u00BB\u201D\u2019]/u.test(text[current])
+      ) {
+        current -= 1;
+        while (current >= 0 && /\s/.test(text[current])) {
+          current -= 1;
+        }
+      }
+
+      const closingTagMatch = text.slice(0, current + 1).match(/<\/[^>]+>$/u);
+      if (closingTagMatch) {
+        current -= closingTagMatch[0].length;
+        continue;
+      }
+
+      break;
+    }
+
+    return current;
+  }
+
   function getPolitePronounCaseExpectation(text, tokenIndex) {
     if (typeof text !== "string" || tokenIndex < 0) {
+      return "neutral";
+    }
+
+    if (
+      isInsideInlineTag(text, tokenIndex) ||
+      isInsidePairedInlineTagContent(text, tokenIndex)
+    ) {
       return "neutral";
     }
 
@@ -838,20 +939,7 @@ export function initLinterBridge() {
       return "neutral";
     }
 
-    let pointer = tokenIndex - 1;
-    while (pointer >= 0 && /\s/.test(text[pointer])) {
-      pointer -= 1;
-    }
-
-    while (
-      pointer >= 0 &&
-      /["')\]\}\u00BB\u201D\u2019]/u.test(text[pointer])
-    ) {
-      pointer -= 1;
-      while (pointer >= 0 && /\s/.test(text[pointer])) {
-        pointer -= 1;
-      }
-    }
+    let pointer = skipBackwardIgnorableTokens(text, tokenIndex - 1);
 
     if (pointer < 0) {
       return "neutral";
@@ -952,6 +1040,307 @@ export function initLinterBridge() {
     return !previousSameSpeakerAllowsLowercase(annotationEntries, index);
   }
 
+  function clampTextRange(text, start, end) {
+    if (
+      typeof text !== "string" ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end)
+    ) {
+      return null;
+    }
+
+    const clampedStart = Math.max(0, Math.min(text.length, start));
+    const clampedEnd = Math.max(clampedStart, Math.min(text.length, end));
+    if (clampedEnd <= clampedStart) {
+      return null;
+    }
+
+    return {
+      start: clampedStart,
+      end: clampedEnd,
+      text: text.slice(clampedStart, clampedEnd),
+    };
+  }
+
+  function compactMatches(matches) {
+    if (!Array.isArray(matches) || !matches.length) {
+      return [];
+    }
+
+    const seen = new Set();
+    const compacted = [];
+    for (const match of matches) {
+      if (
+        !match ||
+        typeof match.text !== "string" ||
+        !match.text ||
+        !Number.isFinite(match.start) ||
+        !Number.isFinite(match.end)
+      ) {
+        continue;
+      }
+
+      const key = `${match.start}\u0000${match.end}\u0000${match.text}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      compacted.push(match);
+    }
+
+    return compacted.slice(0, 8);
+  }
+
+  function collectRegexMatches(text, pattern, groupIndex = 0) {
+    if (typeof text !== "string" || !pattern) {
+      return [];
+    }
+
+    pattern.lastIndex = 0;
+    const matches = [];
+    let match;
+    while ((match = pattern.exec(text))) {
+      const token = match[groupIndex] || match[0] || "";
+      if (token) {
+        const tokenOffset =
+          groupIndex > 0 ? match[0].indexOf(token) : 0;
+        const start = match.index + Math.max(0, tokenOffset);
+        const range = clampTextRange(text, start, start + token.length);
+        if (range) {
+          matches.push(range);
+        }
+      }
+
+      if (match[0] === "") {
+        pattern.lastIndex += 1;
+      }
+    }
+
+    return compactMatches(matches);
+  }
+
+  function getCommaSpacingMatches(text) {
+    return collectRegexMatches(text, /\s+,|,(?![\d ]|$)|, {2,}/gu);
+  }
+
+  function getLeadingTrailingSpaceMatches(text) {
+    if (typeof text !== "string" || !text) {
+      return [];
+    }
+
+    const matches = [];
+    const leadingMatch = text.match(/^[ \t]+/);
+    if (leadingMatch) {
+      matches.push(clampTextRange(text, 0, leadingMatch[0].length));
+    }
+
+    const trailingMatch = text.match(/[ \t]+$/);
+    if (trailingMatch) {
+      matches.push(
+        clampTextRange(
+          text,
+          text.length - trailingMatch[0].length,
+          text.length,
+        ),
+      );
+    }
+
+    return compactMatches(matches.filter(Boolean));
+  }
+
+  function getDoubleSpaceMatches(text) {
+    return collectRegexMatches(text, /(\S)( {2,})(?=\S)/gu, 2);
+  }
+
+  function getUnbalancedDoubleQuoteMatches(text) {
+    const indices = getQuoteIndices(normalizeUnicodeDoubleQuoteVariants(text));
+    return compactMatches(
+      indices
+        .map((index) => clampTextRange(text, index, index + 1))
+        .filter(Boolean),
+    );
+  }
+
+  function getQuotePlacementMatches(text) {
+    const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
+    const quoteIndices = getQuoteIndices(normalizedText);
+    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
+      return [];
+    }
+
+    const matches = [];
+    for (let index = 0; index < quoteIndices.length; index += 2) {
+      const openIndex = quoteIndices[index];
+      const closeIndex = quoteIndices[index + 1];
+      const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : "";
+      const nextCharAfterOpen =
+        openIndex + 1 < normalizedText.length
+          ? normalizedText[openIndex + 1]
+          : "";
+      const prevCharBeforeClose =
+        closeIndex > 0 ? normalizedText[closeIndex - 1] : "";
+      const nextChar =
+        closeIndex + 1 < normalizedText.length
+          ? normalizedText[closeIndex + 1]
+          : "";
+
+      if (/\s/.test(nextCharAfterOpen)) {
+        matches.push(clampTextRange(text, openIndex, openIndex + 2));
+      }
+
+      if (/\s/.test(prevCharBeforeClose)) {
+        matches.push(clampTextRange(text, closeIndex - 1, closeIndex + 1));
+      }
+
+      if (isWordCharacter(prevChar)) {
+        matches.push(clampTextRange(text, openIndex - 1, openIndex + 1));
+      }
+
+      if (isWordCharacter(nextChar)) {
+        matches.push(clampTextRange(text, closeIndex, closeIndex + 2));
+      }
+    }
+
+    return compactMatches(matches.filter(Boolean));
+  }
+
+  function getCurlySpacingMatches(text) {
+    if (typeof text !== "string") {
+      return [];
+    }
+
+    const matches = [];
+    const stack = [];
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      if (char === "{") {
+        stack.push(index);
+        continue;
+      }
+
+      if (char !== "}") {
+        continue;
+      }
+
+      if (!stack.length) {
+        matches.push(clampTextRange(text, index, index + 1));
+        continue;
+      }
+
+      const openIndex = stack.pop();
+      const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
+      const nextCharAfterOpen =
+        openIndex + 1 < text.length ? text[openIndex + 1] : "";
+      const prevCharBeforeClose = index > 0 ? text[index - 1] : "";
+      const nextChar = index + 1 < text.length ? text[index + 1] : "";
+
+      if (/\s/.test(nextCharAfterOpen) || isWordCharacter(prevChar)) {
+        matches.push(
+          clampTextRange(text, Math.max(0, openIndex - 1), openIndex + 2),
+        );
+      }
+
+      if (/\s/.test(prevCharBeforeClose) || isWordCharacter(nextChar)) {
+        matches.push(
+          clampTextRange(text, Math.max(0, index - 1), Math.min(text.length, index + 2)),
+        );
+      }
+    }
+
+    for (const openIndex of stack) {
+      matches.push(clampTextRange(text, openIndex, openIndex + 1));
+    }
+
+    return compactMatches(matches.filter(Boolean));
+  }
+
+  function getSentenceBoundaryCapitalizationMatches(text) {
+    return compactMatches(
+      findSentenceBoundaryLowercaseIndices(text)
+        .map((index) => clampTextRange(text, index, index + 1))
+        .filter(Boolean),
+    );
+  }
+
+  function getPolitePronounCaseMatches(text) {
+    if (typeof text !== "string" || !text) {
+      return [];
+    }
+
+    const matches = [];
+    POLITE_PRONOUN_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = POLITE_PRONOUN_PATTERN.exec(text))) {
+      const prefix = match[1] || "";
+      const token = match[2] || "";
+      const tokenIndex = match.index + prefix.length;
+      const targetToken = getPolitePronounTargetToken(text, tokenIndex, token);
+      if (token && targetToken && token !== targetToken) {
+        matches.push(clampTextRange(text, tokenIndex, tokenIndex + token.length));
+      }
+    }
+
+    return compactMatches(matches.filter(Boolean));
+  }
+
+  function getTerminalPunctuationMatches(text) {
+    if (typeof text !== "string") {
+      return [];
+    }
+
+    const trimmed = stripTrailingTagTokens(text);
+    if (!trimmed) {
+      return [];
+    }
+
+    const end = trimmed.length;
+    const start = Math.max(0, end - 1);
+    return compactMatches([clampTextRange(text, start, end)].filter(Boolean));
+  }
+
+  function getSegmentStartCapitalizationMatches(entry) {
+    if (!entry || typeof entry.text !== "string") {
+      return [];
+    }
+
+    const text = entry.text;
+    const leadingWhitespace = text.match(/^\s*/)?.[0].length || 0;
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    if (trimmed.startsWith("...")) {
+      const localIndex = findFirstLetterIndex(
+        trimmed,
+        skipLeadingCapitalizationTokens(trimmed, 3),
+      );
+      return compactMatches(
+        [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
+      );
+    }
+
+    const localIndex = findFirstLetterIndex(
+      trimmed,
+      skipLeadingCapitalizationTokens(trimmed),
+    );
+    return compactMatches(
+      [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
+    );
+  }
+
+  function makeCustomIssue(entry, reason, matches) {
+    return {
+      annotationId: entry.annotationId,
+      reason,
+      severity: RULE_SEVERITY,
+      babelHelper: {
+        matches: compactMatches(matches),
+      },
+    };
+  }
+
   function buildCustomIssues(annotationEntries) {
     const issues = [];
     for (let index = 0; index < annotationEntries.length; index += 1) {
@@ -961,107 +1350,58 @@ export function initLinterBridge() {
       }
 
       if (hasCommaSpacingViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: COMMA_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, COMMA_RULE_REASON, getCommaSpacingMatches(entry.text)));
       }
 
       if (hasUnbalancedDoubleQuotes(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: QUOTE_BALANCE_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, QUOTE_BALANCE_RULE_REASON, getUnbalancedDoubleQuoteMatches(entry.text)));
       } else if (hasQuotePlacementViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: QUOTE_PLACEMENT_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, QUOTE_PLACEMENT_RULE_REASON, getQuotePlacementMatches(entry.text)));
       }
 
       if (hasUnicodeQuoteViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: UNICODE_QUOTE_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, UNICODE_QUOTE_RULE_REASON, collectRegexMatches(entry.text, UNICODE_DOUBLE_QUOTE_PATTERN)));
       }
 
       if (hasCurlySpacingViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: CURLY_SPACING_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, CURLY_SPACING_RULE_REASON, getCurlySpacingMatches(entry.text)));
       }
 
       if (hasUnicodeDashViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: UNICODE_DASH_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, UNICODE_DASH_RULE_REASON, collectRegexMatches(entry.text, UNICODE_DASH_PATTERN)));
       }
 
       if (hasDoubleDashPunctuationViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, DOUBLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatches(entry.text, /--[.,?!:;]+/gu)));
       }
 
       if (hasSingleDashPunctuationViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: SINGLE_DASH_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, SINGLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatches(entry.text, /(?<!-)-[.,?!:;]+/gu)));
       }
 
       if (hasIncorrectInterjectionFormsViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        const interjectionMatches = INTERJECTION_CORRECTIONS.flatMap((correction) =>
+          collectRegexMatches(entry.text, correction.pattern, 2),
+        );
+        issues.push(makeCustomIssue(entry, INCORRECT_INTERJECTION_FORMS_RULE_REASON, interjectionMatches));
       }
 
       if (hasSentenceBoundaryCapitalizationViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON, getSentenceBoundaryCapitalizationMatches(entry.text)));
       }
 
       if (hasPolitePronounCaseViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: POLITE_PRONOUN_CASE_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, POLITE_PRONOUN_CASE_RULE_REASON, getPolitePronounCaseMatches(entry.text)));
       }
 
       if (hasTerminalPunctuationViolation(entry.text)) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: TERMINAL_PUNCTUATION_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, TERMINAL_PUNCTUATION_RULE_REASON, getTerminalPunctuationMatches(entry.text)));
       }
 
       if (
         hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)
       ) {
-        issues.push({
-          annotationId: entry.annotationId,
-          reason: SEGMENT_START_CAPITALIZATION_RULE_REASON,
-          severity: RULE_SEVERITY,
-        });
+        issues.push(makeCustomIssue(entry, SEGMENT_START_CAPITALIZATION_RULE_REASON, getSegmentStartCapitalizationMatches(entry)));
       }
     }
 
@@ -1251,6 +1591,741 @@ export function initLinterBridge() {
     }
 
     return changed;
+  }
+
+  function getHighlightColor(index, total) {
+    const count = Math.max(1, total || 1);
+    const hue = Math.round((index * 360) / count) % 360;
+    return `hsl(${hue} 82% 46% / 0.2)`;
+  }
+
+  function ensureHighlightStyle() {
+    if (document.getElementById(HIGHLIGHT_STYLE_ID)) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = HIGHLIGHT_STYLE_ID;
+    style.textContent = `
+[${HIGHLIGHT_MARK_ATTR}] {
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  color: inherit;
+  padding: 0 1px;
+}
+[${HIGHLIGHT_OVERLAY_ATTR}] {
+  color: transparent;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+[${HIGHLIGHT_OVERLAY_ATTR}] [${HIGHLIGHT_MARK_ATTR}] {
+  color: transparent;
+}
+[${HIGHLIGHT_SWATCH_ATTR}] {
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  height: 10px;
+  pointer-events: none;
+  position: absolute;
+  width: 10px;
+  z-index: 3;
+}
+[${HIGHLIGHT_PREVIEW_ATTR}] {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.35;
+  max-width: min(760px, 80vw);
+  white-space: normal;
+}
+`;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function removeHighlightStyle() {
+    const style = document.getElementById(HIGHLIGHT_STYLE_ID);
+    if (style) {
+      style.remove();
+    }
+  }
+
+  function unwrapHighlightMarks(root = document) {
+    const marks = root.querySelectorAll
+      ? root.querySelectorAll(`[${HIGHLIGHT_MARK_ATTR}]`)
+      : [];
+    for (const mark of marks) {
+      const parent = mark.parentNode;
+      if (!parent) {
+        continue;
+      }
+
+      while (mark.firstChild) {
+        parent.insertBefore(mark.firstChild, mark);
+      }
+      parent.removeChild(mark);
+      parent.normalize();
+    }
+
+    const previews = root.querySelectorAll
+      ? root.querySelectorAll(`[${HIGHLIGHT_PREVIEW_ATTR}]`)
+      : [];
+    for (const preview of previews) {
+      preview.remove();
+    }
+
+    const overlays = root.querySelectorAll
+      ? root.querySelectorAll(`[${HIGHLIGHT_OVERLAY_ATTR}]`)
+      : [];
+    for (const overlay of overlays) {
+      overlay.remove();
+    }
+
+    const swatches = root.querySelectorAll
+      ? root.querySelectorAll(`[${HIGHLIGHT_SWATCH_ATTR}]`)
+      : [];
+    for (const swatch of swatches) {
+      swatch.remove();
+    }
+  }
+
+  function isHighlightableTextNode(node) {
+    if (!node || node.nodeType !== Node.TEXT_NODE || !node.nodeValue) {
+      return false;
+    }
+
+    const parent = node.parentElement;
+    if (!parent) {
+      return false;
+    }
+
+    if (
+      parent.closest(
+        "script, style, textarea, input, select, option, mark, [" +
+          HIGHLIGHT_MARK_ATTR +
+          "]",
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function highlightTextInElement(root, token, color) {
+    if (!(root instanceof HTMLElement) || typeof token !== "string" || !token) {
+      return false;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) {
+      if (isHighlightableTextNode(walker.currentNode)) {
+        textNodes.push(walker.currentNode);
+      }
+    }
+
+    let changed = false;
+    for (const node of textNodes) {
+      const text = node.nodeValue || "";
+      const index = text.indexOf(token);
+      if (index === -1) {
+        continue;
+      }
+
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + token.length);
+      const mark = document.createElement("mark");
+      mark.setAttribute(HIGHLIGHT_MARK_ATTR, "true");
+      mark.style.backgroundColor = color;
+      range.surroundContents(mark);
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  function getIssueHighlightEntries(issues) {
+    if (!Array.isArray(issues)) {
+      return [];
+    }
+
+    return issues
+      .map((issue) => {
+        const matches =
+          issue &&
+          issue.babelHelper &&
+          Array.isArray(issue.babelHelper.matches)
+            ? issue.babelHelper.matches
+            : [];
+        return {
+          reason: issue && typeof issue.reason === "string" ? issue.reason : "",
+          matches: matches
+            .map((match) =>
+              match && typeof match.text === "string" ? match.text : "",
+            )
+            .filter(Boolean),
+        };
+      })
+      .filter((entry) => entry.reason && entry.matches.length);
+  }
+
+  function getHoveredRowText() {
+    const row =
+      highlightedRow instanceof HTMLTableRowElement ? highlightedRow : null;
+    if (!row) {
+      return "";
+    }
+
+    const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+    if (textarea instanceof HTMLTextAreaElement) {
+      return textarea.value || "";
+    }
+
+    return row.innerText || "";
+  }
+
+  function getHighlightRuleKey(reason) {
+    if (typeof reason !== "string") {
+      return "";
+    }
+
+    if (
+      reason === NATIVE_LEADING_TRAILING_SPACES_REASON ||
+      reason.includes("Extra spaces at the end or beginning")
+    ) {
+      return "native-leading-trailing-spaces";
+    }
+
+    if (
+      reason === NATIVE_DOUBLE_SPACES_REASON ||
+      reason.includes("Double spaces") ||
+      reason.includes("double spaces")
+    ) {
+      return "native-double-spaces";
+    }
+
+    if (
+      reason === POLITE_PRONOUN_CASE_RULE_REASON ||
+      reason.includes("Russian polite pronouns") ||
+      reason.includes("must be lowercase mid-sentence")
+    ) {
+      return "polite-pronoun-case";
+    }
+
+    if (
+      reason === COMMA_RULE_REASON ||
+      reason.includes("Commas must be formatted")
+    ) {
+      return "comma-spacing";
+    }
+
+    if (
+      reason === SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON ||
+      reason.includes("Words after clear sentence endings") ||
+      reason.includes("must start uppercase")
+    ) {
+      return "sentence-boundary-capitalization";
+    }
+
+    return reason;
+  }
+
+  function mergeHighlightEntries(entries) {
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+
+    const merged = [];
+    const byRuleKey = new Map();
+    for (const entry of entries) {
+      if (!entry || typeof entry.reason !== "string" || !entry.reason) {
+        continue;
+      }
+
+      const ruleKey = getHighlightRuleKey(entry.reason);
+      let target = byRuleKey.get(ruleKey);
+      if (!target) {
+        target = {
+          reason: entry.reason,
+          aliases: [entry.reason],
+          matches: [],
+          ranges: [],
+        };
+        byRuleKey.set(ruleKey, target);
+        merged.push(target);
+      } else if (!target.aliases.includes(entry.reason)) {
+        target.aliases.push(entry.reason);
+      }
+
+      if (Array.isArray(entry.matches)) {
+        for (const match of entry.matches) {
+          if (typeof match === "string" && match && !target.matches.includes(match)) {
+            target.matches.push(match);
+          }
+        }
+      }
+
+      if (Array.isArray(entry.ranges)) {
+        for (const range of entry.ranges) {
+          if (
+            range &&
+            Number.isFinite(range.start) &&
+            Number.isFinite(range.end)
+          ) {
+            target.ranges.push(range);
+          }
+        }
+      }
+    }
+
+    return merged.filter(
+      (entry) => entry.matches.length || entry.ranges.length,
+    );
+  }
+
+  function getNativeTooltipHighlightEntries() {
+    if (!document.body) {
+      return [];
+    }
+
+    const rowText = getHoveredRowText();
+    if (!rowText) {
+      return [];
+    }
+
+    const entries = [];
+    const bodyText = document.body.innerText || "";
+
+    if (bodyText.includes("Extra spaces at the end or beginning")) {
+      const matches = getLeadingTrailingSpaceMatches(rowText);
+      if (matches.length) {
+        entries.push({
+          reason: NATIVE_LEADING_TRAILING_SPACES_REASON,
+          matches: matches.map((match) => match.text).filter(Boolean),
+          ranges: matches,
+        });
+      }
+    }
+
+    if (bodyText.includes("double spaces") || bodyText.includes("Double spaces")) {
+      const matches = getDoubleSpaceMatches(rowText);
+      if (matches.length) {
+        entries.push({
+          reason: NATIVE_DOUBLE_SPACES_REASON,
+          matches: matches.map((match) => match.text).filter(Boolean),
+          ranges: matches,
+        });
+      }
+    }
+
+    if (
+      bodyText.includes("Words after clear sentence endings") ||
+      bodyText.includes("must start uppercase")
+    ) {
+      const matches = getSentenceBoundaryCapitalizationMatches(rowText);
+      if (matches.length) {
+        entries.push({
+          reason: "Words after clear sentence endings",
+          matches: matches.map((match) => match.text).filter(Boolean),
+          ranges: matches,
+        });
+      }
+    }
+
+    if (
+      bodyText.includes("Russian polite pronouns") ||
+      bodyText.includes("must be lowercase mid-sentence")
+    ) {
+      const matches = getPolitePronounCaseMatches(rowText);
+      if (matches.length) {
+        entries.push({
+          reason: "Russian polite pronouns",
+          matches: matches.map((match) => match.text).filter(Boolean),
+          ranges: matches,
+        });
+      }
+    }
+
+    if (
+      bodyText.includes("must be formatted") &&
+      bodyText.includes('", "')
+    ) {
+      const matches = getCommaSpacingMatches(rowText);
+      if (matches.length) {
+        entries.push({
+          reason: "Commas must be formatted",
+          matches: matches.map((match) => match.text).filter(Boolean),
+          ranges: matches,
+        });
+      }
+    }
+
+    return entries;
+  }
+
+  function findReasonTextNode(reason) {
+    if (typeof reason !== "string" || !reason) {
+      return null;
+    }
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (
+        isHighlightableTextNode(node) &&
+        (node.nodeValue || "").includes(reason)
+      ) {
+        return node;
+      }
+    }
+
+    return null;
+  }
+
+  function findNativeReasonTextNode(reasonPrefix) {
+    if (typeof reasonPrefix !== "string" || !reasonPrefix) {
+      return null;
+    }
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const value = node.nodeValue || "";
+      if (isHighlightableTextNode(node) && value.includes(reasonPrefix)) {
+        return node;
+      }
+    }
+
+    return null;
+  }
+
+  function appendPreviewLine(reasonElement, tokens, color) {
+    if (!(reasonElement instanceof HTMLElement) || !tokens.length) {
+      return null;
+    }
+
+    const container =
+      reasonElement.closest("li, [role='listitem'], tr, div") || reasonElement;
+    if (!(container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const preview = document.createElement("span");
+    preview.setAttribute(HIGHLIGHT_PREVIEW_ATTR, "true");
+    preview.textContent = tokens.join(" ... ");
+    preview.style.color = "inherit";
+    preview.style.opacity = "0.92";
+    container.appendChild(preview);
+    for (const token of tokens) {
+      highlightTextInElement(preview, token, color);
+    }
+
+    return preview;
+  }
+
+  function addReasonSwatch(reasonNode, color) {
+    if (!reasonNode || reasonNode.nodeType !== Node.TEXT_NODE) {
+      return false;
+    }
+
+    const parent = reasonNode.parentNode;
+    if (!parent) {
+      return false;
+    }
+
+    const swatch = document.createElement("span");
+    swatch.setAttribute(HIGHLIGHT_SWATCH_ATTR, "true");
+    swatch.style.backgroundColor = getOpaqueHighlightColor(color);
+    swatch.style.display = "inline-block";
+    swatch.style.marginRight = "6px";
+    swatch.style.position = "static";
+    swatch.style.verticalAlign = "-1px";
+    parent.insertBefore(swatch, reasonNode);
+    return true;
+  }
+
+  function appendTextRange(parent, text) {
+    if (!text) {
+      return;
+    }
+
+    parent.appendChild(document.createTextNode(text));
+  }
+
+  function getOpaqueHighlightColor(color) {
+    if (typeof color !== "string") {
+      return "hsl(0 82% 46% / 1)";
+    }
+
+    return color.replace(/\/\s*0?\.\d+\)/, "/ 1)");
+  }
+
+  function appendRowColorSwatch(textarea, color) {
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const row = textarea.closest("tr");
+    const parent =
+      row instanceof HTMLElement
+        ? row
+        : textarea.parentElement instanceof HTMLElement
+          ? textarea.parentElement
+          : null;
+    if (!(parent instanceof HTMLElement)) {
+      return false;
+    }
+
+    const parentStyle = window.getComputedStyle(parent);
+    if (parentStyle.position === "static") {
+      parent.style.position = "relative";
+    }
+
+    const textareaRect = textarea.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    const swatch = document.createElement("span");
+    swatch.setAttribute(HIGHLIGHT_SWATCH_ATTR, "true");
+    swatch.style.backgroundColor = getOpaqueHighlightColor(color);
+    swatch.style.left = `${textareaRect.right - parentRect.left - 16 + parent.scrollLeft}px`;
+    swatch.style.top = `${textareaRect.top - parentRect.top + 6 + parent.scrollTop}px`;
+    parent.appendChild(swatch);
+    return true;
+  }
+
+  function applyTextareaOverlayEntries(textarea, entries) {
+    if (!(textarea instanceof HTMLTextAreaElement) || !Array.isArray(entries)) {
+      return false;
+    }
+
+    const text = textarea.value || "";
+    const validRanges = entries
+      .flatMap((entry) =>
+        Array.isArray(entry.ranges)
+          ? entry.ranges.map((range) => ({
+              range,
+              color: entry.color,
+            }))
+          : [],
+      )
+      .filter(({ range }) => {
+        return (
+          range &&
+          Number.isFinite(range.start) &&
+          Number.isFinite(range.end) &&
+          range.end > range.start
+        );
+      })
+      .map(({ range, color }) => ({
+        start: Math.max(0, Math.min(text.length, range.start)),
+        end: Math.max(0, Math.min(text.length, range.end)),
+        color,
+      }))
+      .filter((range) => range.end > range.start)
+      .sort((left, right) => left.start - right.start || left.end - right.end);
+    if (!validRanges.length) {
+      return false;
+    }
+
+    const parent = textarea.parentElement;
+    if (!(parent instanceof HTMLElement)) {
+      return false;
+    }
+
+    const parentStyle = window.getComputedStyle(parent);
+    if (parentStyle.position === "static") {
+      parent.style.position = "relative";
+    }
+
+    const textareaRect = textarea.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    const textareaStyle = window.getComputedStyle(textarea);
+    const overlay = document.createElement("div");
+    overlay.setAttribute(HIGHLIGHT_OVERLAY_ATTR, "true");
+    overlay.style.left = `${textareaRect.left - parentRect.left + parent.scrollLeft}px`;
+    overlay.style.top = `${textareaRect.top - parentRect.top + parent.scrollTop}px`;
+    overlay.style.width = `${textareaRect.width}px`;
+    overlay.style.height = `${textareaRect.height}px`;
+    overlay.style.padding = textareaStyle.padding;
+    overlay.style.border = textareaStyle.border;
+    overlay.style.font = textareaStyle.font;
+    overlay.style.letterSpacing = textareaStyle.letterSpacing;
+    overlay.style.lineHeight = textareaStyle.lineHeight;
+    overlay.style.whiteSpace = "pre-wrap";
+    overlay.style.overflowWrap = "break-word";
+    overlay.style.overflow = "hidden";
+    overlay.style.boxSizing = textareaStyle.boxSizing;
+    overlay.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+
+    let pointer = 0;
+    for (const range of validRanges) {
+      if (range.end <= pointer) {
+        continue;
+      }
+
+      const start = Math.max(pointer, Math.min(text.length, range.start));
+      const end = Math.max(start, Math.min(text.length, range.end));
+      appendTextRange(overlay, text.slice(pointer, start));
+      const mark = document.createElement("mark");
+      mark.setAttribute(HIGHLIGHT_MARK_ATTR, "true");
+      mark.style.backgroundColor = range.color;
+      mark.textContent = text.slice(start, end);
+      overlay.appendChild(mark);
+      pointer = end;
+    }
+    appendTextRange(overlay, text.slice(pointer));
+
+    parent.appendChild(overlay);
+    return true;
+  }
+
+  function hideVisibleNativeLintTooltips() {
+    const tooltipTextParts = [
+      "Words after clear sentence endings",
+      "must start uppercase",
+      "Commas must be formatted",
+    ];
+    const candidates = document.querySelectorAll(
+      '[role="tooltip"], [data-radix-popper-content-wrapper], body > div',
+    );
+    for (const candidate of candidates) {
+      if (!(candidate instanceof HTMLElement)) {
+        continue;
+      }
+
+      const text = candidate.innerText || "";
+      if (!tooltipTextParts.some((part) => text.includes(part))) {
+        continue;
+      }
+
+      candidate.style.display = "none";
+    }
+  }
+
+  function applyLinterHighlightsNow() {
+    if (!document.body) {
+      return;
+    }
+
+    applyingHighlights = true;
+    try {
+      unwrapHighlightMarks(document);
+      const entries = mergeHighlightEntries(
+        getIssueHighlightEntries(currentHighlightIssues).concat(
+          getNativeTooltipHighlightEntries(),
+        ),
+      );
+      if (!entries.length) {
+        return;
+      }
+
+      ensureHighlightStyle();
+      const coloredEntries = entries.map((entry, index) => ({
+        ...entry,
+        color: getHighlightColor(index, entries.length),
+      }));
+      const textarea =
+        highlightedRow instanceof HTMLTableRowElement
+          ? highlightedRow.querySelector(ROW_TEXTAREA_SELECTOR)
+          : null;
+      applyTextareaOverlayEntries(textarea, coloredEntries);
+
+      const swatchedReasonNodes = new Set();
+      coloredEntries.forEach((entry) => {
+        const reasonNode = (Array.isArray(entry.aliases)
+          ? entry.aliases
+          : [entry.reason]
+        )
+          .map((reason) => findReasonTextNode(reason) || findNativeReasonTextNode(reason))
+          .find(Boolean);
+        if (!reasonNode || swatchedReasonNodes.has(reasonNode)) {
+          return;
+        }
+
+        swatchedReasonNodes.add(reasonNode);
+        addReasonSwatch(reasonNode, entry.color);
+      });
+    } finally {
+      applyingHighlights = false;
+    }
+  }
+
+  function scheduleLinterHighlights() {
+    if (highlightTimer) {
+      window.clearTimeout(highlightTimer);
+    }
+
+    highlightTimer = window.setTimeout(() => {
+      highlightTimer = 0;
+      applyLinterHighlightsNow();
+    }, HIGHLIGHT_OBSERVER_DELAY_MS);
+  }
+
+  function startHighlightObserver() {
+    if (highlightObserver || !document.body) {
+      return;
+    }
+
+    highlightObserver = new MutationObserver(() => {
+      if (!applyingHighlights) {
+        scheduleLinterHighlights();
+      }
+    });
+    highlightObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function handleHighlightPointerOver(event) {
+    const target = event && event.target;
+    const row =
+      target instanceof Element ? target.closest("tr") : null;
+    if (row instanceof HTMLTableRowElement) {
+      highlightedRow = row;
+      startHighlightObserver();
+      scheduleLinterHighlights();
+    }
+  }
+
+  function handleHighlightPointerOut(event) {
+    const relatedTarget = event && event.relatedTarget;
+    if (
+      highlightedRow &&
+      relatedTarget instanceof Node &&
+      highlightedRow.contains(relatedTarget)
+    ) {
+      return;
+    }
+
+    highlightedRow = null;
+    scheduleLinterHighlights();
+  }
+
+  function handleHighlightClick(event) {
+    const target = event && event.target;
+    const row = target instanceof Element ? target.closest("tr") : null;
+    if (row instanceof HTMLTableRowElement) {
+      highlightedRow = row;
+      hideVisibleNativeLintTooltips();
+      startHighlightObserver();
+      scheduleLinterHighlights();
+    }
+  }
+
+  function stopHighlightObserver() {
+    if (highlightTimer) {
+      window.clearTimeout(highlightTimer);
+      highlightTimer = 0;
+    }
+    if (highlightObserver) {
+      highlightObserver.disconnect();
+      highlightObserver = null;
+    }
+    currentHighlightIssues = [];
+    unwrapHighlightMarks(document);
+    removeHighlightStyle();
   }
 
   function isCompactJsonlFramePayload(payload) {
@@ -1783,6 +2858,8 @@ export function initLinterBridge() {
 
     const additionalIssues = buildCustomIssues(annotationEntries);
     if (!additionalIssues.length) {
+      currentHighlightIssues = [];
+      scheduleLinterHighlights();
       debugState.last = {
         changed: false,
         reason: "no-custom-issues",
@@ -1790,6 +2867,10 @@ export function initLinterBridge() {
       };
       return response;
     }
+
+    currentHighlightIssues = additionalIssues;
+    startHighlightObserver();
+    scheduleLinterHighlights();
 
     let responseText = "";
     try {
@@ -1886,6 +2967,7 @@ export function initLinterBridge() {
     }
     if (!enabled) {
       stopTextareaVisibilityObservers();
+      stopHighlightObserver();
     }
     if (enabled) {
       startTextareaVisibilityObserver("toggle-enable-textarea-visible");
@@ -1904,18 +2986,25 @@ export function initLinterBridge() {
       autoLintTimer = 0;
     }
     stopTextareaVisibilityObservers();
+    stopHighlightObserver();
     restoreHistoryMethod("pushState");
     restoreHistoryMethod("replaceState");
     if (window.fetch && window.fetch.__babelHelperLinterOriginal) {
       window.fetch = window.fetch.__babelHelperLinterOriginal;
     }
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
+    window.removeEventListener("pointerover", handleHighlightPointerOver, true);
+    window.removeEventListener("pointerout", handleHighlightPointerOut, true);
+    window.removeEventListener("click", handleHighlightClick, true);
     window.removeEventListener("popstate", handlePopState, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     delete window.__babelHelperLinterBridge;
   }
 
   window.addEventListener(TOGGLE_EVENT, handleToggle, true);
+  window.addEventListener("pointerover", handleHighlightPointerOver, true);
+  window.addEventListener("pointerout", handleHighlightPointerOut, true);
+  window.addEventListener("click", handleHighlightClick, true);
 
   patchHistoryMethod("pushState");
   patchHistoryMethod("replaceState");
