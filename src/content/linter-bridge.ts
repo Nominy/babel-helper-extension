@@ -664,6 +664,14 @@ export function initLinterBridge() {
     return index;
   }
 
+  function countPerf(name, detail) {
+    try {
+      window.__babelHelperPerf?.count?.(name, detail);
+    } catch (_error) {
+      // Perf counters must never break page-world bridge cleanup/restart paths.
+    }
+  }
+
   function startsWithNumericToken(text, startIndex = 0) {
     if (typeof text !== "string") {
       return false;
@@ -2276,7 +2284,7 @@ export function initLinterBridge() {
       childList: true,
       subtree: true,
     });
-    safe(() => window.__babelHelperPerf?.count?.("observer.start", { name: "linter-highlight" }), null);
+    countPerf("observer.start", { name: "linter-highlight" });
   }
 
   function handleHighlightPointerOver(event) {

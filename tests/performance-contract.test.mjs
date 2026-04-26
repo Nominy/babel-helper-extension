@@ -50,4 +50,6 @@ test('steady-state observers are scoped away from whole body where possible', ()
   assert.match(quickSource, /function bindMouseMove/);
   assert.match(quickSource, /function unbindMouseMove/);
   assert.match(linterSource, /disconnectHighlightObserver/);
+  assert.match(linterSource, /function countPerf/);
+  assert.doesNotMatch(linterSource, /safe\(\(\) => window\.__babelHelperPerf/);
 });
