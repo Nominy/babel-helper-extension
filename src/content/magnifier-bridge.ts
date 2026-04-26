@@ -6,6 +6,7 @@ export function initMagnifierBridge() {
 
   const REQUEST_EVENT = 'babel-helper-magnifier-request';
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const HOST_ATTR = 'data-babel-helper-magnifier-host';
   const MINIMAP_HOST_ATTR = 'data-babel-helper-minimap-host';
   const MOUNT_ATTR = 'data-babel-helper-magnifier-mount';
@@ -2734,7 +2735,7 @@ export function initMagnifierBridge() {
     };
   }
 
-  window.addEventListener(REQUEST_EVENT, (event) => {
+  function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
     const operation = detail.operation;
@@ -2836,12 +2837,29 @@ export function initMagnifierBridge() {
       respond(id, getMinimapData(payload.hostMarker, payload));
       return;
     }
-  });
+  }
+
+  function dispose() {
+    for (const id of Array.from(instances.keys())) {
+      destroyLens(id);
+    }
+    for (const hostMarker of Array.from(loops.keys())) {
+      stopLoop(hostMarker);
+    }
+    unbindWaveformScaleUnlock();
+    window.removeEventListener(REQUEST_EVENT, handleRequest, true);
+    window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    delete window.__babelHelperMagnifierBridge;
+  }
+
+  window.addEventListener(REQUEST_EVENT, handleRequest, true);
+  window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperMagnifierBridge = {
     instances,
     loops,
-    findTrimTargetsForSpeaker
+    findTrimTargetsForSpeaker,
+    dispose
   };
 }
 

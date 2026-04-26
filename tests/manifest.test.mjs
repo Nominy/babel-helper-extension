@@ -13,3 +13,19 @@ test('manifest targets bundled dist assets', () => {
   assert.equal(manifest.options_page, 'options.html');
   assert.equal(manifest.permissions.includes('storage'), true);
 });
+
+test('package build bumps the version before syncing unpacked assets', () => {
+  const raw = fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8').replace(/^\uFEFF/, '');
+  const packageJson = JSON.parse(raw);
+
+  assert.equal(packageJson.scripts.build, 'npm run version:patch && npm run build:core && npm run sync:unpacked');
+  assert.equal(packageJson.scripts['build:reload'], 'npm run build');
+});
+
+test('all extension features remain enabled by default', () => {
+  const raw = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
+  const match = /DEFAULT_FEATURE_SETTINGS[\s\S]*?=\s*{([\s\S]*?)};/.exec(raw);
+
+  assert.ok(match, 'DEFAULT_FEATURE_SETTINGS should be present');
+  assert.doesNotMatch(match[1], /:\s*false[,}]/);
+});

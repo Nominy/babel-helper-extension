@@ -190,15 +190,19 @@ export async function loadExtensionSettings(): Promise<ExtensionSettings> {
   }
 
   return new Promise((resolve) => {
-    storage.get(SETTINGS_STORAGE_KEY, (items: Record<string, unknown> | undefined) => {
-      const runtime = (globalThis as { chrome?: any }).chrome;
-      if (runtime?.runtime?.lastError) {
-        resolve(normalizeExtensionSettings(DEFAULT_EXTENSION_SETTINGS));
-        return;
-      }
+    try {
+      storage.get(SETTINGS_STORAGE_KEY, (items: Record<string, unknown> | undefined) => {
+        const runtime = (globalThis as { chrome?: any }).chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalizeExtensionSettings(DEFAULT_EXTENSION_SETTINGS));
+          return;
+        }
 
-      resolve(normalizeExtensionSettings(items?.[SETTINGS_STORAGE_KEY]));
-    });
+        resolve(normalizeExtensionSettings(items?.[SETTINGS_STORAGE_KEY]));
+      });
+    } catch (_error) {
+      resolve(normalizeExtensionSettings(DEFAULT_EXTENSION_SETTINGS));
+    }
   });
 }
 
@@ -210,8 +214,18 @@ export async function saveExtensionSettings(settings: ExtensionSettings): Promis
   }
 
   return new Promise((resolve) => {
-    storage.set({ [SETTINGS_STORAGE_KEY]: normalized }, () => {
+    try {
+      storage.set({ [SETTINGS_STORAGE_KEY]: normalized }, () => {
+        const runtime = (globalThis as { chrome?: any }).chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalized);
+          return;
+        }
+
+        resolve(normalized);
+      });
+    } catch (_error) {
       resolve(normalized);
-    });
+    }
   });
 }

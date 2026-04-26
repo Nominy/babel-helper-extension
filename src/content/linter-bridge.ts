@@ -5,6 +5,7 @@ export function initLinterBridge() {
   }
 
   const TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
+  const TEARDOWN_EVENT = "babel-helper-bridge-teardown";
   const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
   const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
@@ -41,7 +42,9 @@ export function initLinterBridge() {
   const POLITE_PRONOUN_PATTERN =
     /(^|[^\p{L}\p{N}\p{M}])(вы|вас|вам|вами|ваш(?:а|е|и|его|ему|им|ем|у|ей|ею|их|ими)?)(?=$|[^\p{L}\p{N}\p{M}])/giu;
 
-  const originalFetch = window.fetch.bind(window);
+  const originalFetch = (
+    window.fetch.__babelHelperLinterOriginal || window.fetch
+  ).bind(window);
   let enabled = true;
   let autoLintAttemptCount = 0;
   let autoLintTimer = 0;
@@ -866,7 +869,7 @@ export function initLinterBridge() {
       return "neutral";
     }
 
-    if (/[.?!]/.test(text[pointer])) {
+    if (/[.?!:]/.test(text[pointer])) {
       return "neutral";
     }
 
@@ -1738,14 +1741,28 @@ export function initLinterBridge() {
       return;
     }
 
+    const originalHistoryMethod =
+      historyMethod.__babelHelperLinterOriginal || historyMethod;
     const wrapped = function patchedHistoryMethod(...args) {
-      const result = historyMethod.apply(this, args);
+      const result = originalHistoryMethod.apply(this, args);
       window.setTimeout(() => notifyRouteChange(`history-${methodName}`), 0);
       return result;
     };
 
     wrapped.__babelHelperLinterPatched = true;
+    wrapped.__babelHelperLinterOriginal = originalHistoryMethod;
     window.history[methodName] = wrapped;
+  }
+
+  function restoreHistoryMethod(methodName) {
+    const historyMethod = window.history && window.history[methodName];
+    if (
+      historyMethod &&
+      historyMethod.__babelHelperLinterPatched &&
+      typeof historyMethod.__babelHelperLinterOriginal === "function"
+    ) {
+      window.history[methodName] = historyMethod.__babelHelperLinterOriginal;
+    }
   }
 
   async function maybeAugmentLintResponse(
@@ -1856,36 +1873,54 @@ export function initLinterBridge() {
     const response = await originalFetch(input, init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   };
+  window.fetch.__babelHelperLinterOriginal = originalFetch;
 
-  window.addEventListener(
-    TOGGLE_EVENT,
-    (event) => {
-      const nextEnabled = Boolean(
-        event && event.detail && event.detail.enabled,
-      );
-      enabled = nextEnabled;
-      if (!enabled && autoLintTimer) {
-        window.clearTimeout(autoLintTimer);
-        autoLintTimer = 0;
-      }
-      if (!enabled) {
-        stopTextareaVisibilityObservers();
-      }
-      if (enabled) {
-        startTextareaVisibilityObserver("toggle-enable-textarea-visible");
-        scheduleInitialNativeLintTrigger("toggle-enable");
-      }
-    },
-    true,
-  );
+  function handleToggle(event) {
+    const nextEnabled = Boolean(
+      event && event.detail && event.detail.enabled,
+    );
+    enabled = nextEnabled;
+    if (!enabled && autoLintTimer) {
+      window.clearTimeout(autoLintTimer);
+      autoLintTimer = 0;
+    }
+    if (!enabled) {
+      stopTextareaVisibilityObservers();
+    }
+    if (enabled) {
+      startTextareaVisibilityObserver("toggle-enable-textarea-visible");
+      scheduleInitialNativeLintTrigger("toggle-enable");
+    }
+  }
+
+  function handlePopState() {
+    notifyRouteChange("popstate");
+  }
+
+  function dispose() {
+    enabled = false;
+    if (autoLintTimer) {
+      window.clearTimeout(autoLintTimer);
+      autoLintTimer = 0;
+    }
+    stopTextareaVisibilityObservers();
+    restoreHistoryMethod("pushState");
+    restoreHistoryMethod("replaceState");
+    if (window.fetch && window.fetch.__babelHelperLinterOriginal) {
+      window.fetch = window.fetch.__babelHelperLinterOriginal;
+    }
+    window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
+    window.removeEventListener("popstate", handlePopState, true);
+    window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    delete window.__babelHelperLinterBridge;
+  }
+
+  window.addEventListener(TOGGLE_EVENT, handleToggle, true);
 
   patchHistoryMethod("pushState");
   patchHistoryMethod("replaceState");
-  window.addEventListener(
-    "popstate",
-    () => notifyRouteChange("popstate"),
-    true,
-  );
+  window.addEventListener("popstate", handlePopState, true);
+  window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   startTextareaVisibilityObserver("boot-textarea-visible");
   scheduleInitialNativeLintTrigger("boot");
@@ -2393,6 +2428,7 @@ export function initLinterBridge() {
     fixTerminalPunctuation,
     fixSentenceBoundaryCapitalization,
     fixSegmentStartCapitalization,
+    dispose,
   };
 }
 

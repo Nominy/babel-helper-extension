@@ -35,7 +35,13 @@ function injectBridge(): Promise<boolean> {
   return new Promise((resolve) => {
     const script = document.createElement('script');
     script.setAttribute(BRIDGE_SCRIPT_ATTR, 'true');
-    script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
+    try {
+      script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
+    } catch (_error) {
+      script.remove();
+      resolve(false);
+      return;
+    }
     script.async = false;
     script.onload = () => {
       resolve(true);

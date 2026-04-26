@@ -6,6 +6,7 @@ export function initPlaybackBridge() {
 
   const REQUEST_EVENT = 'babel-helper-playback-request';
   const RESPONSE_EVENT = 'babel-helper-playback-response';
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
 
   function safe(callback, fallbackValue) {
     try {
@@ -458,7 +459,7 @@ export function initPlaybackBridge() {
     };
   }
 
-  window.addEventListener(REQUEST_EVENT, (event) => {
+  function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
     const operation = detail.operation;
@@ -480,12 +481,22 @@ export function initPlaybackBridge() {
     if (operation === 'set-paused') {
       respond(id, setPlaybackPaused(payload.paused));
     }
-  });
+  }
+
+  function dispose() {
+    window.removeEventListener(REQUEST_EVENT, handleRequest, true);
+    window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    delete window.__babelHelperPlaybackBridge;
+  }
+
+  window.addEventListener(REQUEST_EVENT, handleRequest, true);
+  window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperPlaybackBridge = {
     seekPlaybackBySeconds,
     getPlaybackState,
-    setPlaybackPaused
+    setPlaybackPaused,
+    dispose
   };
 }
 

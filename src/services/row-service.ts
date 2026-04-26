@@ -542,7 +542,14 @@ export function registerRowService(helper: any) {
       }
 
       const script = document.createElement('script');
-      script.src = chrome.runtime.getURL(PLAYBACK_BRIDGE_SCRIPT_PATH);
+      try {
+        script.src = chrome.runtime.getURL(PLAYBACK_BRIDGE_SCRIPT_PATH);
+      } catch (_error) {
+        script.remove();
+        playbackBridgeLoadPromise = null;
+        resolve(false);
+        return;
+      }
       script.async = false;
       script.onload = () => {
         script.remove();

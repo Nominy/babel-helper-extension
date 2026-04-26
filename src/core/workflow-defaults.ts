@@ -76,15 +76,19 @@ export async function loadWorkflowDefaults(): Promise<WorkflowDefaults> {
   }
 
   return new Promise((resolve) => {
-    storage.get(WORKFLOW_DEFAULTS_STORAGE_KEY, (items: Record<string, unknown> | undefined) => {
-      const runtime = (globalThis as { chrome?: any }).chrome;
-      if (runtime?.runtime?.lastError) {
-        resolve(normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS));
-        return;
-      }
+    try {
+      storage.get(WORKFLOW_DEFAULTS_STORAGE_KEY, (items: Record<string, unknown> | undefined) => {
+        const runtime = (globalThis as { chrome?: any }).chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS));
+          return;
+        }
 
-      resolve(normalizeWorkflowDefaults(items?.[WORKFLOW_DEFAULTS_STORAGE_KEY]));
-    });
+        resolve(normalizeWorkflowDefaults(items?.[WORKFLOW_DEFAULTS_STORAGE_KEY]));
+      });
+    } catch (_error) {
+      resolve(normalizeWorkflowDefaults(DEFAULT_WORKFLOW_DEFAULTS));
+    }
   });
 }
 
@@ -96,9 +100,19 @@ export async function saveWorkflowDefaults(defaults: WorkflowDefaults): Promise<
   }
 
   return new Promise((resolve) => {
-    storage.set({ [WORKFLOW_DEFAULTS_STORAGE_KEY]: normalized }, () => {
+    try {
+      storage.set({ [WORKFLOW_DEFAULTS_STORAGE_KEY]: normalized }, () => {
+        const runtime = (globalThis as { chrome?: any }).chrome;
+        if (runtime?.runtime?.lastError) {
+          resolve(normalized);
+          return;
+        }
+
+        resolve(normalized);
+      });
+    } catch (_error) {
       resolve(normalized);
-    });
+    }
   });
 }
 

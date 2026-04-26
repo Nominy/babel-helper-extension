@@ -1,5 +1,10 @@
 (function quickRegionAutocompleteBridge() {
+  if ((window as any).__babelHelperQuickRegionAutocompleteBridge) {
+    return;
+  }
+
   const TOGGLE_EVENT = 'babel-helper-quick-region-autocomplete-toggle';
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const QUICK_TEXTAREA_SELECTOR = 'textarea[placeholder^="Enter text for this region"]';
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
   const LISTBOX_ATTR = 'data-babel-helper-quick-region-listbox';
@@ -610,6 +615,11 @@
     root.className =
       'fixed z-[9999] max-h-[140px] min-w-[180px] overflow-y-auto rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-lg';
     root.style.display = 'none';
+    root.style.position = 'fixed';
+    root.style.zIndex = '2147483647';
+    root.style.maxHeight = '140px';
+    root.style.minWidth = '180px';
+    root.style.overflowY = 'auto';
     document.body.appendChild(root);
     listboxRoot = root;
     return root;
@@ -922,7 +932,7 @@
     dismiss();
   }
 
-  window.addEventListener(TOGGLE_EVENT, (event: Event) => {
+  function handleToggle(event: Event) {
     const detail = (event as CustomEvent<{ enabled?: boolean }>).detail || {};
     enabled = Boolean(detail.enabled);
     if (enabled) {
@@ -930,5 +940,16 @@
     } else {
       unbind();
     }
-  });
+  }
+
+  function dispose() {
+    unbind();
+    window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
+    window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    delete (window as any).__babelHelperQuickRegionAutocompleteBridge;
+  }
+
+  window.addEventListener(TOGGLE_EVENT, handleToggle, true);
+  window.addEventListener(TEARDOWN_EVENT, dispose, true);
+  (window as any).__babelHelperQuickRegionAutocompleteBridge = { dispose };
 })();

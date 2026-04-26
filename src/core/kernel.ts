@@ -162,6 +162,9 @@ export function createHelperKernel() {
     async stop() {
       await runFeatures('stop');
       disposerStack.flush();
+      if (typeof helper.runtime.disposeLifecycle === 'function') {
+        helper.runtime.disposeLifecycle();
+      }
       if (typeof helper.unbindCutPreview === 'function') {
         helper.unbindCutPreview();
       }

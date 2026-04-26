@@ -1,4 +1,5 @@
 import {
+  DEFAULT_EXTENSION_SETTINGS,
   FEATURE_KEYS,
   FEATURE_META,
   type ExtensionSettings,
@@ -150,7 +151,7 @@ async function boot() {
 
   resetButton.addEventListener('click', () => {
     for (const key of FEATURE_KEYS) {
-      inputs[key].checked = true;
+      inputs[key].checked = DEFAULT_EXTENSION_SETTINGS.features[key];
     }
     void save();
   });

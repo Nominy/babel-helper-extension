@@ -8,11 +8,12 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
    - `npm install`
 2. Build extension bundles:
    - `npm run build`
-3. Load unpacked extension from this repo root in `chrome://extensions`.
+3. Load unpacked extension from `babel-helper-extension/` in `chrome://extensions`.
 
 Versioning:
-- `npm run build` is pure and does not change version files.
-- `npm run version:patch` bumps `package.json`, `manifest.json`, and `package-lock.json` for the next release.
+- `npm run build` bumps the patch version, rebuilds, and syncs `babel-helper-extension/` so Chrome's extension card shows a new version after you press Reload.
+- `npm run build:reload` is an alias for `npm run build`.
+- `npm run version:patch` bumps only `package.json`, `manifest.json`, and `package-lock.json`.
 
 Bundled outputs:
 - `dist/content/entry.js`
@@ -63,7 +64,7 @@ Custom linter notes:
 ## Deployment
 
 - `npm run build:zip` rebuilds the extension and writes `.artifacts/babel-helper-extension-<version>.zip`.
-- The deploy workflow runs `npm run version:patch` first, then validates, packages, publishes to Chrome Web Store, and commits the bumped version files.
+- The deploy workflow validates, runs `npm run build:zip` (which bumps through `npm run build`), publishes to Chrome Web Store, and commits the bumped version files.
 - `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, commits the bumped version files back to the selected branch, and then creates or updates the matching GitHub Release asset tagged as `v<version>`.
 - Required GitHub Actions secrets:
   - `CWS_CLIENT_ID`

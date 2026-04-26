@@ -356,7 +356,14 @@ export function registerMagnifierService(helper: any) {
       }
 
       const script = document.createElement("script");
-      script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
+      try {
+        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
+      } catch (_error) {
+        script.remove();
+        bridgeLoadPromise = null;
+        resolve(false);
+        return;
+      }
       script.async = false;
       script.onload = () => {
         script.remove();

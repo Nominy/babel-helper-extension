@@ -601,7 +601,7 @@ function getPolitePronounCaseExpectation(text, tokenIndex) {
     return 'neutral';
   }
 
-  if (/[.?!]/.test(text[pointer])) {
+  if (/[.?!:]/.test(text[pointer])) {
     return 'neutral';
   }
 
@@ -1053,6 +1053,10 @@ test('flags polite Russian pronouns only when sentence context requires a differ
     hasPolitePronounCaseViolation('\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.'),
     false
   );
+  assert.equal(
+    hasPolitePronounCaseViolation('\u041c\u043d\u0435 \u043d\u0443\u0436\u043d\u043e \u0441\u043a\u0430\u0437\u0430\u0442\u044c: "\u0412\u044b \u0437\u043d\u0430\u0435\u0442\u0435, \u0440\u0435\u0431\u044f\u0442".'),
+    false
+  );
 });
 
 test('segment capitalization rule uses sentence-start case for polite pronouns', () => {
@@ -1253,6 +1257,7 @@ test('fixes polite Russian pronouns according to sentence context', () => {
   assert.equal(fixPolitePronounCase('\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.'), '\u0421\u043f\u0430\u0441\u0438\u0431\u043e. \u0432\u0430\u0448 \u043e\u0442\u0432\u0435\u0442 \u043f\u0440\u0438\u043d\u044f\u0442.');
   assert.equal(fixPolitePronounCase('\u0414\u0430. --\u0412\u0430\u043c\u0438 \u044d\u0442\u043e \u0441\u0434\u0435\u043b\u0430\u043d\u043e.'), '\u0414\u0430. --\u0412\u0430\u043c\u0438 \u044d\u0442\u043e \u0441\u0434\u0435\u043b\u0430\u043d\u043e.');
   assert.equal(fixPolitePronounCase('\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.'), '\u0418 ...\u0412\u0430\u0448\u0435\u043c\u0443 \u043f\u0440\u0438\u043c\u0435\u0440\u0443 \u0441\u043b\u0435\u0434\u0443\u044e\u0442.');
+  assert.equal(fixPolitePronounCase('\u041c\u043d\u0435 \u043d\u0443\u0436\u043d\u043e \u0441\u043a\u0430\u0437\u0430\u0442\u044c: "\u0412\u044b \u0437\u043d\u0430\u0435\u0442\u0435".'), '\u041c\u043d\u0435 \u043d\u0443\u0436\u043d\u043e \u0441\u043a\u0430\u0437\u0430\u0442\u044c: "\u0412\u044b \u0437\u043d\u0430\u0435\u0442\u0435".');
 });
 
 test('applyAllFixes includes polite Russian pronoun normalization', () => {

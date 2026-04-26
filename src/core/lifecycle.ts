@@ -716,6 +716,20 @@ export function registerLifecycle(helper: any) {
     helper.state.nativeArrowSuppressBound = true;
   }
 
+  function unbindGlobalListeners() {
+    if (!helper.state.keydownBound) {
+      return;
+    }
+
+    window.removeEventListener('keydown', handleNativeArrowSuppress, true);
+    window.removeEventListener('keyup', handleGlobalKeyup, true);
+    window.removeEventListener('blur', handleWindowBlur, true);
+    document.removeEventListener('keydown', helper.handleKeydown, true);
+    helper.state.keydownBound = false;
+    helper.state.nativeArrowSuppressBound = false;
+    helper.state.rightShiftPressed = false;
+  }
+
   function patchHistoryMethod(name) {
     const current = window.history[name];
     if (typeof current !== 'function') {
@@ -738,6 +752,17 @@ export function registerLifecycle(helper: any) {
     patchedHistoryMethod.__babelHelperPatched = true;
     patchedHistoryMethod.__babelHelperOriginal = original;
     window.history[name] = patchedHistoryMethod;
+  }
+
+  function restoreHistoryMethod(name) {
+    const current = window.history[name];
+    if (
+      current &&
+      current.__babelHelperPatched &&
+      typeof current.__babelHelperOriginal === 'function'
+    ) {
+      window.history[name] = current.__babelHelperOriginal;
+    }
   }
 
   function ensureHistoryPatches() {
@@ -777,6 +802,15 @@ export function registerLifecycle(helper: any) {
     }, URL_POLL_INTERVAL_MS);
   }
 
+  function stopUrlPolling() {
+    if (!urlPollTimer) {
+      return;
+    }
+
+    window.clearInterval(urlPollTimer);
+    urlPollTimer = 0;
+  }
+
   function handleRouteEvent(reason) {
     lastPolledHref = window.location.href;
     resetRouteRefreshWindow();
@@ -809,6 +843,33 @@ export function registerLifecycle(helper: any) {
     startUrlPolling();
     helper.state.routeWatchBound = true;
   }
+
+  function unbindRouteWatchers() {
+    if (!helper.state.routeWatchBound) {
+      return;
+    }
+
+    window.removeEventListener('popstate', handlePopState, true);
+    window.removeEventListener('pageshow', handlePageShow, true);
+    stopUrlPolling();
+    restoreHistoryMethod('pushState');
+    restoreHistoryMethod('replaceState');
+    helper.state.routeWatchBound = false;
+  }
+
+  helper.runtime.disposeLifecycle = function disposeLifecycle() {
+    document.removeEventListener('DOMContentLoaded', helper.init, false);
+    helper.runtime.clearRuntimeTimer();
+    clearSessionFeatures();
+    stopRouteRecoveryObserver();
+    unbindRouteWatchers();
+    unbindGlobalListeners();
+    if (typeof helper.unbindRowTracking === 'function') {
+      helper.unbindRowTracking();
+    }
+    helper.state.runtimeBound = false;
+    helper.__mainInitialized = false;
+  };
 
   function clearSessionFeatures() {
     stopHotkeysObserver();

@@ -7,6 +7,7 @@ export function initTimestampBridge() {
 
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
 
   function safe(callback, fallbackValue) {
@@ -488,7 +489,7 @@ export function initTimestampBridge() {
     };
   }
 
-  window.addEventListener(REQUEST_EVENT, (event) => {
+  function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
     const operation = detail.operation;
@@ -509,10 +510,20 @@ export function initTimestampBridge() {
           })
         );
     }
-  });
+  }
+
+  function dispose() {
+    window.removeEventListener(REQUEST_EVENT, handleRequest, true);
+    window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    delete window.__babelHelperTimestampBridge;
+  }
+
+  window.addEventListener(REQUEST_EVENT, handleRequest, true);
+  window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperTimestampBridge = {
-    setBoundaryTime
+    setBoundaryTime,
+    dispose
   };
 }
 
