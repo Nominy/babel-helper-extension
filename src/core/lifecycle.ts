@@ -1,5 +1,4 @@
 ﻿// @ts-nocheck
-import { requestAutoFix } from '../features/custom-linter-feature';
 import {
   autoConvertSelectedNumberText,
   isTextControl,
@@ -17,6 +16,7 @@ export function registerLifecycle(helper: any) {
   const ROUTE_REFRESH_DELAY_MS = 80;
   const ROUTE_REFRESH_MAX_ATTEMPTS = 12;
   const ROUTE_REFRESH_MAX_WINDOW_MS = 1200;
+  const URL_POLL_INTERVAL_MS = 2000;
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -150,6 +150,7 @@ export function registerLifecycle(helper: any) {
       subtree: true
     });
 
+    helper.perf?.count?.('observer.start', { name: 'hotkeys' });
     helper.state.hotkeysObserver = observer;
   }
 
@@ -183,6 +184,7 @@ export function registerLifecycle(helper: any) {
       subtree: true
     });
 
+    helper.perf?.count?.('observer.start', { name: 'route-recovery' });
     helper.state.routeRecoveryObserver = observer;
   }
 
@@ -551,7 +553,14 @@ export function registerLifecycle(helper: any) {
     } else if (isFeatureEnabled('customLinter') && event.code === 'KeyF') {
       handled = true;
       const scope = event.shiftKey ? 'all' : 'current';
-      void requestAutoFix(scope).then((result) => {
+      const requestAutoFix =
+        typeof helper.requestAutoFix === 'function'
+          ? helper.requestAutoFix
+          : null;
+      void (requestAutoFix
+        ? requestAutoFix(scope)
+        : Promise.resolve({ ok: false, reason: 'linter-not-ready' })
+      ).then((result) => {
         if (helper.analytics) {
           helper.analytics.record('hotkey:lint-autofix', { scope, ...result });
         }
@@ -654,18 +663,54 @@ export function registerLifecycle(helper: any) {
     }
   }
 
-  function schedulePlaybackRowSync() {
+  function clearPlaybackRowSyncTimer() {
+    if (helper.state.playbackRowSyncTimer != null) {
+      window.clearTimeout(helper.state.playbackRowSyncTimer);
+      helper.state.playbackRowSyncTimer = null;
+    }
+  }
+
+  function getPlaybackSyncDelay(result) {
+    if (!helper.runtime.isSessionInteractive() || document.hidden) {
+      return 2000;
+    }
+    if (result && result.playback && result.playback.paused === false) {
+      return 250;
+    }
+    return 1250;
+  }
+
+  function schedulePlaybackRowSync(delay = 0) {
     if (
+      !helper.state.rowTrackingBound ||
       helper.state.playbackRowSyncInFlight ||
       typeof helper.syncCurrentRowToPlayback !== 'function'
     ) {
       return;
     }
 
-    helper.state.playbackRowSyncInFlight = true;
-    void helper.syncCurrentRowToPlayback().finally(() => {
-      helper.state.playbackRowSyncInFlight = false;
-    });
+    clearPlaybackRowSyncTimer();
+    helper.state.playbackRowSyncTimer = window.setTimeout(() => {
+      helper.state.playbackRowSyncTimer = null;
+      if (
+        helper.state.playbackRowSyncInFlight ||
+        typeof helper.syncCurrentRowToPlayback !== 'function'
+      ) {
+        return;
+      }
+
+      helper.state.playbackRowSyncInFlight = true;
+      helper.perf?.count?.('playback.sync.tick');
+      let nextDelay = 1250;
+      void helper.syncCurrentRowToPlayback()
+        .then((result) => {
+          nextDelay = getPlaybackSyncDelay(result);
+        })
+        .finally(() => {
+          helper.state.playbackRowSyncInFlight = false;
+          schedulePlaybackRowSync(nextDelay);
+        });
+    }, delay);
   }
 
   helper.bindRowTracking = function bindRowTracking() {
@@ -678,9 +723,9 @@ export function registerLifecycle(helper: any) {
     document.addEventListener('input', handleCursorBaselineUpdate, true);
     document.addEventListener('keyup', handleCursorBaselineUpdate, true);
     document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
-    schedulePlaybackRowSync();
-    helper.state.playbackRowSyncTimer = window.setInterval(schedulePlaybackRowSync, 250);
     helper.state.rowTrackingBound = true;
+    schedulePlaybackRowSync();
+    helper.perf?.count?.('row-tracking.bound');
   };
 
   helper.unbindRowTracking = function unbindRowTracking() {
@@ -693,10 +738,7 @@ export function registerLifecycle(helper: any) {
     document.removeEventListener('input', handleCursorBaselineUpdate, true);
     document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
     document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
-    if (helper.state.playbackRowSyncTimer != null) {
-      window.clearInterval(helper.state.playbackRowSyncTimer);
-      helper.state.playbackRowSyncTimer = null;
-    }
+    clearPlaybackRowSyncTimer();
     helper.state.playbackRowSyncInFlight = false;
     helper.state.lastPlaybackRow = null;
     helper.state.lastPlaybackRowIdentity = null;
@@ -781,7 +823,6 @@ export function registerLifecycle(helper: any) {
     }
   }
 
-  var URL_POLL_INTERVAL_MS = 500;
   var lastPolledHref = '';
   var urlPollTimer = 0;
 
@@ -792,6 +833,7 @@ export function registerLifecycle(helper: any) {
 
     lastPolledHref = window.location.href;
     urlPollTimer = window.setInterval(function pollUrl() {
+      helper.perf?.count?.('url.poll.tick');
       ensureHistoryPatches();
 
       var currentHref = window.location.href;
@@ -874,6 +916,10 @@ export function registerLifecycle(helper: any) {
   function clearSessionFeatures() {
     stopHotkeysObserver();
     stopHotkeysEnhanceFrame();
+    void helper.runtime.deactivateFeature?.('session', 'session-clear');
+    if (typeof helper.unbindRowTracking === 'function') {
+      helper.unbindRowTracking();
+    }
 
     if (typeof helper.resetCutState === 'function') {
       helper.resetCutState();
@@ -907,50 +953,77 @@ export function registerLifecycle(helper: any) {
     helper.state.sessionActive = false;
   }
 
-  function bindSessionFeatures() {
-    const wasSessionActive = Boolean(helper.state.sessionActive);
-    stopRouteRecoveryObserver();
+  async function bindSessionFeatures(reason) {
+    if (helper.state.sessionBindPromise) {
+      return helper.state.sessionBindPromise;
+    }
 
-    if (isFeatureEnabled('hotkeysHelp')) {
-      if (typeof helper.enhanceHotkeysDialog === 'function') {
-        helper.enhanceHotkeysDialog();
+    helper.state.sessionBindPromise = (async () => {
+      const wasSessionActive = Boolean(helper.state.sessionActive);
+      stopRouteRecoveryObserver();
+      await helper.runtime.ensureSessionRuntime?.(reason || 'session-ready');
+      if (typeof helper.invalidateRowTimeCache === 'function') {
+        helper.invalidateRowTimeCache();
       }
-      startHotkeysObserver();
-    } else {
-      stopHotkeysObserver();
-      stopHotkeysEnhanceFrame();
-    }
 
-    if (
-      isFeatureEnabled('waveformScaleUnlock') &&
-      typeof helper.bindWaveformScaleUnlock === 'function'
-    ) {
-      helper.bindWaveformScaleUnlock();
-    }
+      if (typeof helper.bindRowTracking === 'function') {
+        helper.bindRowTracking();
+      }
+      if (isFeatureEnabled('timelineSelection') && typeof helper.bindCutPreview === 'function') {
+        helper.bindCutPreview();
+      }
+      if (isFeatureEnabled('magnifier') && typeof helper.bindMagnifier === 'function') {
+        helper.bindMagnifier();
+      }
 
-    if (
-      isFeatureEnabled('timelineSelection') &&
-      isFeatureEnabled('timelineZoomDefaults') &&
-      typeof helper.bindZoomPersistence === 'function'
-    ) {
-      helper.bindZoomPersistence();
-    }
+      if (isFeatureEnabled('hotkeysHelp')) {
+        if (typeof helper.enhanceHotkeysDialog === 'function') {
+          helper.enhanceHotkeysDialog();
+        }
+        startHotkeysObserver();
+      } else {
+        stopHotkeysObserver();
+        stopHotkeysEnhanceFrame();
+      }
 
-    if (
-      !wasSessionActive &&
-      isFeatureEnabled('timelineSelection') &&
-      isFeatureEnabled('timelineZoomDefaults') &&
-      typeof helper.applySavedZoomDefault === 'function'
-    ) {
-      void helper.applySavedZoomDefault();
-    }
+      if (
+        isFeatureEnabled('waveformScaleUnlock') &&
+        typeof helper.bindWaveformScaleUnlock === 'function'
+      ) {
+        helper.bindWaveformScaleUnlock();
+      }
 
-    helper.state.sessionActive = true;
+      if (
+        isFeatureEnabled('timelineSelection') &&
+        isFeatureEnabled('timelineZoomDefaults') &&
+        typeof helper.bindZoomPersistence === 'function'
+      ) {
+        helper.bindZoomPersistence();
+      }
 
-    if (!wasSessionActive && helper.analytics) {
-      helper.analytics.record('session:start', {
-        url: window.location.href
-      });
+      if (
+        !wasSessionActive &&
+        isFeatureEnabled('timelineSelection') &&
+        isFeatureEnabled('timelineZoomDefaults') &&
+        typeof helper.applySavedZoomDefault === 'function'
+      ) {
+        void helper.applySavedZoomDefault();
+      }
+
+      helper.state.sessionActive = true;
+      helper.perf?.setPhase?.('session-ready', { reason });
+
+      if (!wasSessionActive && helper.analytics) {
+        helper.analytics.record('session:start', {
+          url: window.location.href
+        });
+      }
+    })();
+
+    try {
+      await helper.state.sessionBindPromise;
+    } finally {
+      helper.state.sessionBindPromise = null;
     }
   }
 
@@ -982,14 +1055,14 @@ export function registerLifecycle(helper: any) {
     }
 
     if (hasTranscriptSurface()) {
-      bindSessionFeatures();
-
-      if (!helper.state.onLoadedCalled) {
-        helper.state.onLoadedCalled = true;
-        if (typeof helper.runtime.onLoaded === 'function') {
-          void helper.runtime.onLoaded();
+      void bindSessionFeatures(reason || 'transcript-surface').then(() => {
+        if (!helper.state.onLoadedCalled) {
+          helper.state.onLoadedCalled = true;
+          if (typeof helper.runtime.onLoaded === 'function') {
+            void helper.runtime.onLoaded();
+          }
         }
-      }
+      });
 
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
@@ -1025,13 +1098,6 @@ export function registerLifecycle(helper: any) {
     helper.state.runtimeBound = true;
     bindRouteWatchers();
     bindGlobalListeners();
-    helper.bindRowTracking();
-    if (isFeatureEnabled('timelineSelection') && typeof helper.bindCutPreview === 'function') {
-      helper.bindCutPreview();
-    }
-    if (isFeatureEnabled('magnifier') && typeof helper.bindMagnifier === 'function') {
-      helper.bindMagnifier();
-    }
     resetRouteRefreshWindow();
     void helper.runtime.refreshRouteSession('init');
   };

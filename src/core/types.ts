@@ -18,6 +18,9 @@ export interface FeatureContext {
 export interface FeatureModule {
   id: string;
   dependsOn?: string[];
+  load?: (ctx: FeatureContext) => void | Promise<void>;
+  activate?: (ctx: FeatureContext, reason: string) => void | Promise<void>;
+  deactivate?: (ctx: FeatureContext, reason: string) => void | Promise<void>;
   register?: (ctx: FeatureContext) => void;
   start?: (ctx: FeatureContext) => void | Promise<void>;
   onLoaded?: (ctx: FeatureContext) => void | Promise<void>;

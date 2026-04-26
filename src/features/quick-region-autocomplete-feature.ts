@@ -57,7 +57,7 @@ export function createQuickRegionAutocompleteFeature(): FeatureModule {
 
   return {
     id: 'quick-region-autocomplete',
-    async start(ctx: FeatureContext) {
+    async onLoaded(ctx: FeatureContext) {
       if (!startPromise) {
         startPromise = injectBridge();
       }
@@ -70,6 +70,24 @@ export function createQuickRegionAutocompleteFeature(): FeatureModule {
       }
 
       setBridgeEnabled(true);
+    },
+    async activate(ctx: FeatureContext, reason: string) {
+      if (!startPromise) {
+        startPromise = injectBridge();
+      }
+
+      const ready = await startPromise;
+      if (!ready) {
+        startPromise = null;
+        ctx.logger.warn('Quick region autocomplete bridge did not load');
+        return;
+      }
+
+      ctx.helper.perf?.count?.('bridge.inject.enabled', { id: 'quick-region-autocomplete', reason });
+      setBridgeEnabled(true);
+    },
+    deactivate() {
+      setBridgeEnabled(false);
     },
     stop() {
       setBridgeEnabled(false);

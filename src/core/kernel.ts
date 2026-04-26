@@ -9,18 +9,11 @@ import {
   normalizeExtensionSettings
 } from './settings';
 import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, sleep, waitFor } from '../hooks/dom';
-import { registerRowService } from '../services/row-service';
-import { registerTimestampEditService } from '../services/timestamp-edit-service';
-import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
-import { registerTimelineSelectionService } from '../services/timeline-selection-service';
-import { registerWaveformScaleService } from '../services/waveform-scale-service';
-import { registerMagnifierService } from '../services/magnifier-service';
-import { registerMinimapService } from '../services/minimap-service';
 import { registerLifecycle } from './lifecycle';
 import { createDisposerStack } from './disposables';
-import type { FeatureContext, FeatureModule, ServiceRegistry } from './types';
-import { createFeatureModules } from '../features';
+import type { FeatureContext, ServiceRegistry } from './types';
 import { createAnalyticsStore } from './analytics-store';
+import { createPerfRuntime } from './perf';
 
 function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
   return normalizeExtensionSettings(settings);
@@ -31,12 +24,16 @@ export function createHelperKernel() {
   let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
   const config = createConfig(settings.features);
   const analytics = createAnalyticsStore();
+  const perf = createPerfRuntime();
+  let sessionRuntimeModule: any = null;
+  let sessionRuntimeLoadPromise: Promise<any> | null = null;
 
   const helper: any = {
     config,
     settings,
     state,
     analytics,
+    perf,
     isFeatureEnabled(featureKey: FeatureSettingKey) {
       return Boolean(helper.settings?.features?.[featureKey]);
     },
@@ -58,7 +55,16 @@ export function createHelperKernel() {
         return false;
       },
       onLoaded() {
-        return runFeatures('onLoaded');
+        return helper.runtime.activateFeature('session', 'on-loaded');
+      },
+      activateFeature(_id: string, reason?: string) {
+        return activateSessionRuntime(reason || 'activate');
+      },
+      deactivateFeature(_id: string, reason?: string) {
+        return deactivateSessionRuntime(reason || 'deactivate');
+      },
+      ensureSessionRuntime(reason?: string) {
+        return ensureSessionRuntime(reason || 'session-ready');
       }
     },
     isEditable,
@@ -76,31 +82,6 @@ export function createHelperKernel() {
 
     const nextConfig = createConfig(settings.features);
     Object.assign(helper.config, nextConfig);
-  }
-
-  function registerServices() {
-    registerRowService(helper);
-    registerTimestampEditService(helper);
-
-    if (helper.isFeatureEnabled('hotkeysHelp')) {
-      registerHotkeysHelpService(helper);
-    }
-
-    if (helper.isFeatureEnabled('timelineSelection')) {
-      registerTimelineSelectionService(helper);
-    }
-
-    if (helper.isFeatureEnabled('waveformScaleUnlock')) {
-      registerWaveformScaleService(helper);
-    }
-
-    if (helper.isFeatureEnabled('magnifier')) {
-      registerMagnifierService(helper);
-    }
-
-    if (helper.isFeatureEnabled('minimap')) {
-      registerMinimapService(helper);
-    }
   }
 
   const services: ServiceRegistry = {
@@ -132,16 +113,51 @@ export function createHelperKernel() {
     logger
   };
 
-  let features: FeatureModule[] = [];
-
-  const runFeatures = async (method: 'register' | 'start' | 'stop' | 'onLoaded') => {
-    for (const feature of features) {
-      const fn = feature[method];
-      if (typeof fn === 'function') {
-        await fn(featureContext);
-      }
+  async function loadSessionRuntimeModule() {
+    if (sessionRuntimeModule) {
+      return sessionRuntimeModule;
     }
-  };
+    if (!sessionRuntimeLoadPromise) {
+      perf.mark('session-runtime-import');
+      sessionRuntimeLoadPromise = (async () => {
+        const chromeApi = (globalThis as { chrome?: any }).chrome;
+        const url =
+          chromeApi?.runtime && typeof chromeApi.runtime.getURL === 'function'
+            ? chromeApi.runtime.getURL('dist/content/lazy-session.js')
+            : './lazy-session.js';
+        return import(url);
+      })();
+    }
+    sessionRuntimeModule = await sessionRuntimeLoadPromise;
+    perf.measure('session-runtime-import', 'session-runtime-import');
+    return sessionRuntimeModule;
+  }
+
+  async function ensureSessionRuntime(reason: string) {
+    const module = await loadSessionRuntimeModule();
+    if (typeof module.ensureSessionRuntime === 'function') {
+      await module.ensureSessionRuntime(featureContext, reason);
+    }
+  }
+
+  async function activateSessionRuntime(reason: string) {
+    perf.setPhase('session-ready', { reason });
+    const module = await loadSessionRuntimeModule();
+    if (typeof module.activateSessionFeatures === 'function') {
+      await module.activateSessionFeatures(featureContext, reason);
+    }
+    perf.setPhase('active', { reason });
+  }
+
+  async function deactivateSessionRuntime(reason: string) {
+    if (!sessionRuntimeModule) {
+      return;
+    }
+    if (typeof sessionRuntimeModule.deactivateSessionFeatures === 'function') {
+      await sessionRuntimeModule.deactivateSessionFeatures(featureContext, reason);
+    }
+    perf.setPhase('route-ready', { reason });
+  }
 
   return {
     helper,
@@ -149,18 +165,16 @@ export function createHelperKernel() {
       const loadedSettings = await loadExtensionSettings();
       applySettings(loadedSettings);
 
-      registerServices();
-      features = createFeatureModules(helper.settings.features);
-
-      await runFeatures('register');
-      await runFeatures('start');
+      perf.setPhase('route-ready', { reason: 'kernel-start' });
       registerLifecycle(helper);
     },
     async onLoaded() {
-      await runFeatures('onLoaded');
+      await activateSessionRuntime('kernel-on-loaded');
     },
     async stop() {
-      await runFeatures('stop');
+      if (sessionRuntimeModule && typeof sessionRuntimeModule.stopSessionRuntime === 'function') {
+        await sessionRuntimeModule.stopSessionRuntime(featureContext);
+      }
       disposerStack.flush();
       if (typeof helper.runtime.disposeLifecycle === 'function') {
         helper.runtime.disposeLifecycle();

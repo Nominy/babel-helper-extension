@@ -8,6 +8,7 @@ test('manifest targets bundled dist assets', () => {
 
   assert.equal(manifest.content_scripts[0].js[0], 'dist/content/entry.js');
   assert.equal(manifest.web_accessible_resources[0].resources[0], 'dist/content/magnifier-bridge.js');
+  assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/lazy-session.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/timestamp-bridge.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/linter-bridge.js'), true);
   assert.equal(manifest.options_page, 'options.html');

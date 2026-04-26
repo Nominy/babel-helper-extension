@@ -113,7 +113,10 @@ export function createCustomLinterFeature(): FeatureModule {
 
   return {
     id: 'custom-linter',
-    async start(ctx: FeatureContext) {
+    start(ctx: FeatureContext) {
+      ctx.helper.requestAutoFix = requestAutoFix;
+    },
+    async onLoaded(ctx: FeatureContext) {
       const ready = await ensureBridgeReady(ctx);
       if (!ready) {
         return;
@@ -121,7 +124,7 @@ export function createCustomLinterFeature(): FeatureModule {
 
       setBridgeEnabled(true);
     },
-    async onLoaded(ctx: FeatureContext) {
+    async activate(ctx: FeatureContext, reason: string) {
       if (!bridgeReady) {
         const ready = await ensureBridgeReady(ctx);
         if (!ready) {
@@ -129,11 +132,18 @@ export function createCustomLinterFeature(): FeatureModule {
         }
       }
 
+      ctx.helper.perf?.count?.('bridge.inject.enabled', { id: 'custom-linter', reason });
       setBridgeEnabled(true);
     },
-    stop() {
+    deactivate() {
+      setBridgeEnabled(false);
+    },
+    stop(ctx: FeatureContext) {
       bridgeReady = false;
       setBridgeEnabled(false);
+      if (ctx.helper.requestAutoFix === requestAutoFix) {
+        delete ctx.helper.requestAutoFix;
+      }
     }
   };
 }

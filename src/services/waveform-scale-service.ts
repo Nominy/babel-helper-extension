@@ -427,7 +427,7 @@ export function registerWaveformScaleService(helper: any) {
     document.addEventListener('change', handleDocumentChange, true);
     document.addEventListener('dblclick', handleDocumentDoubleClick, true);
 
-    if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+    if (typeof MutationObserver !== 'function') {
       return;
     }
 
@@ -435,12 +435,22 @@ export function registerWaveformScaleService(helper: any) {
       queuePersistCurrentScales();
     });
 
-    rowObserver.observe(document.body, {
+    const firstRow = getWaveformScaleRows()[0];
+    const observerRoot =
+      firstRow?.lane?.closest('main') ||
+      firstRow?.lane?.parentElement ||
+      document.querySelector('main');
+    if (!(observerRoot instanceof HTMLElement)) {
+      return;
+    }
+
+    rowObserver.observe(observerRoot, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ['aria-valuenow']
     });
+    helper.perf?.count?.('observer.start', { name: 'waveform-scale', root: observerRoot.tagName });
   }
 
   function unbindUiObservers() {

@@ -2276,6 +2276,7 @@ export function initLinterBridge() {
       childList: true,
       subtree: true,
     });
+    safe(() => window.__babelHelperPerf?.count?.("observer.start", { name: "linter-highlight" }), null);
   }
 
   function handleHighlightPointerOver(event) {
@@ -2300,7 +2301,15 @@ export function initLinterBridge() {
     }
 
     highlightedRow = null;
+    disconnectHighlightObserver();
     scheduleLinterHighlights();
+  }
+
+  function disconnectHighlightObserver() {
+    if (highlightObserver) {
+      highlightObserver.disconnect();
+      highlightObserver = null;
+    }
   }
 
   function handleHighlightClick(event) {
@@ -2320,8 +2329,7 @@ export function initLinterBridge() {
       highlightTimer = 0;
     }
     if (highlightObserver) {
-      highlightObserver.disconnect();
-      highlightObserver = null;
+      disconnectHighlightObserver();
     }
     currentHighlightIssues = [];
     unwrapHighlightMarks(document);

@@ -690,7 +690,11 @@ export function registerMinimapService(helper: any) {
       window.addEventListener('resize', state.onWindowResize, true);
     }
 
-    if (document.body instanceof HTMLElement && typeof MutationObserver === 'function') {
+    const observerRoot =
+      container.closest('main') ||
+      document.querySelector('main') ||
+      container.parentElement;
+    if (observerRoot instanceof HTMLElement && typeof MutationObserver === 'function') {
       const requestDebouncedFullSync = () => {
         if (state.mutationDebounceTimer) {
           window.clearTimeout(state.mutationDebounceTimer);
@@ -701,12 +705,13 @@ export function registerMinimapService(helper: any) {
         }, MUTATION_DEBOUNCE_MS);
       };
       state.mutationObserver = new MutationObserver(requestDebouncedFullSync);
-      state.mutationObserver.observe(document.body, {
+      state.mutationObserver.observe(observerRoot, {
         childList: true,
         subtree: true,
         attributes: true,
         attributeFilter: ['style', 'class', 'hidden']
       });
+      helper.perf?.count?.('observer.start', { name: 'minimap', root: observerRoot.tagName });
     }
 
     return state;

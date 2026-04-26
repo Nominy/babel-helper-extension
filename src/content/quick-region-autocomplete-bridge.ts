@@ -14,6 +14,7 @@
   let enabled = false;
   let bound = false;
   let dismissTimer = 0;
+  let mouseMoveBound = false;
 
   const state = {
     isOpen: false,
@@ -410,6 +411,22 @@
     renderListbox();
   }
 
+  function bindMouseMove() {
+    if (mouseMoveBound) {
+      return;
+    }
+    document.addEventListener('mousemove', onMouseMove, true);
+    mouseMoveBound = true;
+  }
+
+  function unbindMouseMove() {
+    if (!mouseMoveBound) {
+      return;
+    }
+    document.removeEventListener('mousemove', onMouseMove, true);
+    mouseMoveBound = false;
+  }
+
   function scheduleDismiss() {
     clearDismissTimer();
     dismissTimer = window.setTimeout(() => {
@@ -576,9 +593,11 @@
     if (!state.isOpen || !state.position || !state.suggestions.length) {
       listboxRoot.replaceChildren();
       listboxRoot.style.display = 'none';
+      unbindMouseMove();
       return;
     }
 
+    bindMouseMove();
     listboxRoot.style.display = 'block';
     listboxRoot.style.top = `${state.position.top}px`;
     listboxRoot.style.left = `${state.position.left}px`;
@@ -909,7 +928,6 @@
     document.addEventListener('input', onInput, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('mousedown', onMouseDown, true);
-    document.addEventListener('mousemove', onMouseMove, true);
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('focusout', onFocusOut, true);
     bound = true;
@@ -924,7 +942,7 @@
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('mousedown', onMouseDown, true);
-    document.removeEventListener('mousemove', onMouseMove, true);
+    unbindMouseMove();
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('focusout', onFocusOut, true);
     bound = false;

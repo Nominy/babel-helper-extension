@@ -1,6 +1,6 @@
 {
   "name": "babel-helper-extension",
-  "version": "1.0.106",
+  "version": "1.0.108",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

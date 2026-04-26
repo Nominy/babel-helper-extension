@@ -56,22 +56,81 @@ export function registerRowService(helper: any) {
     return { startSeconds, endSeconds };
   }
 
+  let rowTimeCache = {
+    signature: '',
+    entries: []
+  };
+
+  function getRowTimeSignature(rows) {
+    if (!rows.length) {
+      return 'empty';
+    }
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    const firstStart = first?.children?.[2] instanceof HTMLElement ? helper.normalizeText(first.children[2]) : '';
+    const lastEnd = last?.children?.[3] instanceof HTMLElement ? helper.normalizeText(last.children[3]) : '';
+    return `${rows.length}:${firstStart}:${lastEnd}`;
+  }
+
+  function getRowTimeEntries() {
+    const rows = helper.getTranscriptRows();
+    const signature = getRowTimeSignature(rows);
+    if (rowTimeCache.signature === signature) {
+      helper.perf?.count?.('row-cache.hit');
+      return rowTimeCache.entries;
+    }
+
+    helper.perf?.count?.('row-cache.rebuild');
+    const entries = [];
+    for (const row of rows) {
+      const range = getRowTimeRange(row);
+      if (range) {
+        entries.push({ row, ...range });
+      }
+    }
+    entries.sort((left, right) => left.startSeconds - right.startSeconds);
+    rowTimeCache = { signature, entries };
+    return entries;
+  }
+
+  function findRowEntryByPlaybackTime(playbackTime) {
+    if (typeof playbackTime !== 'number' || !Number.isFinite(playbackTime)) {
+      return null;
+    }
+
+    const lastRow = getLastPlaybackRow();
+    const lastRange = getRowTimeRange(lastRow);
+    if (lastRange && playbackTime >= lastRange.startSeconds && playbackTime < lastRange.endSeconds) {
+      helper.perf?.count?.('row-cache.previous-hit');
+      return { row: lastRow, ...lastRange };
+    }
+
+    const entries = getRowTimeEntries();
+    let low = 0;
+    let high = entries.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const entry = entries[mid];
+      if (playbackTime < entry.startSeconds) {
+        high = mid - 1;
+      } else if (playbackTime >= entry.endSeconds) {
+        low = mid + 1;
+      } else {
+        helper.perf?.count?.('row-cache.search-hit');
+        return entry;
+      }
+    }
+    helper.perf?.count?.('row-cache.miss');
+    return null;
+  }
+
   /**
    * Find the transcript row whose time range contains the given playback time.
    * Returns the first matching row, or null if none match.
    */
   function findRowByPlaybackTime(playbackTime) {
-    if (typeof playbackTime !== 'number' || !Number.isFinite(playbackTime)) {
-      return null;
-    }
-    const rows = helper.getTranscriptRows();
-    for (const row of rows) {
-      const range = getRowTimeRange(row);
-      if (range && playbackTime >= range.startSeconds && playbackTime < range.endSeconds) {
-        return row;
-      }
-    }
-    return null;
+    const entry = findRowEntryByPlaybackTime(playbackTime);
+    return entry ? entry.row : null;
   }
 
   function resolveConnectedRow(row, identity) {
@@ -475,9 +534,14 @@ export function registerRowService(helper: any) {
   }
 
   helper.getTranscriptRows = function getTranscriptRows() {
+    helper.perf?.count?.('row.scan');
     return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
       row.querySelector(helper.config.rowTextareaSelector)
     );
+  };
+
+  helper.invalidateRowTimeCache = function invalidateRowTimeCache() {
+    rowTimeCache = { signature: '', entries: [] };
   };
 
   helper.getRowTextarea = function getRowTextarea(row) {
@@ -2361,7 +2425,10 @@ export function registerRowService(helper: any) {
       helper.setCurrentRow(preferredRow);
     }
 
-    return preferredRow;
+    return {
+      row: preferredRow,
+      playback
+    };
   };
 
   function setWavePausedStateLocally(paused) {

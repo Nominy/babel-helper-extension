@@ -27,11 +27,22 @@ const shared = {
   plugins: [fsShimPlugin]
 };
 
+const sharedModule = {
+  ...shared,
+  format: 'esm',
+  banner: {}
+};
+
 const tasks = [
   {
     ...shared,
     entryPoints: ['src/content/entry.ts'],
     outfile: 'dist/content/entry.js'
+  },
+  {
+    ...sharedModule,
+    entryPoints: ['src/content/lazy-session.ts'],
+    outfile: 'dist/content/lazy-session.js'
   },
   {
     ...shared,
