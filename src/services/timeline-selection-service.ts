@@ -2499,8 +2499,12 @@ export function registerTimelineSelectionService(helper: any) {
     });
   }
 
+  function getCurrentMoveLabels(row, fallbackLabels) {
+    return getRowTimeLabels(row) || fallbackLabels;
+  }
+
   async function applyInwardTrimToRow(row, speakerKey, trimBridgeResult) {
-    const labels = getRowTimeLabels(row);
+    let labels = getRowTimeLabels(row);
     const rowRange = getRowTimeRange(row);
     if (!labels || !rowRange || !trimBridgeResult || !trimBridgeResult.ok || !trimBridgeResult.foundAudio) {
       return { ok: true, changed: false };
@@ -2521,6 +2525,7 @@ export function registerTimelineSelectionService(helper: any) {
         return { ok: false, reason: 'right-trim-failed' };
       }
       rightChanged = true;
+      labels = getCurrentMoveLabels(row, labels);
       await helper.sleep(32);
     }
 
@@ -2529,7 +2534,7 @@ export function registerTimelineSelectionService(helper: any) {
       nextStartSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS &&
       nextStartSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedLeft = await moveSegmentBoundary('left', labels, speakerKey, nextStartSeconds);
+      const movedLeft = await moveSegmentBoundary('left', getCurrentMoveLabels(row, labels), speakerKey, nextStartSeconds);
       if (!movedLeft || !movedLeft.ok) {
         return { ok: false, reason: 'left-trim-failed' };
       }
@@ -2582,7 +2587,7 @@ export function registerTimelineSelectionService(helper: any) {
       return { ok: false, reason: 'missing-row' };
     }
 
-    const labels = getRowTimeLabels(row);
+    let labels = getRowTimeLabels(row);
     const rowRange = getRowTimeRange(row);
     if (!labels || !rowRange) {
       return { ok: false, reason: 'missing-row-range' };
@@ -2650,6 +2655,7 @@ export function registerTimelineSelectionService(helper: any) {
         return { ok: false, reason: 'right-extend-failed', bridge: extendResult };
       }
       changed = true;
+      labels = getCurrentMoveLabels(row, labels);
       await helper.sleep(32);
     }
 
@@ -2658,7 +2664,7 @@ export function registerTimelineSelectionService(helper: any) {
       Number.isFinite(extendStartSeconds) &&
       extendStartSeconds < rowRange.startSeconds - AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedLeft = await moveSegmentBoundary('left', labels, speakerKey, extendStartSeconds);
+      const movedLeft = await moveSegmentBoundary('left', getCurrentMoveLabels(row, labels), speakerKey, extendStartSeconds);
       if (!movedLeft || !movedLeft.ok) {
         return { ok: false, reason: 'left-extend-failed', bridge: extendResult };
       }
