@@ -181,7 +181,7 @@ const INTERJECTION_CORRECTION_SPECS = [
   { canonical: 'о да', variants: ['о, да'] },
   { canonical: 'о нет', variants: ['о, нет'] },
   { canonical: 'ой', variants: ['оой', 'ойй'] },
-  { canonical: 'окей', variants: ["о'кей", 'ОК'] },
+  { canonical: 'окей', variants: ["о'кей"] },
   { canonical: 'ох', variants: ['охх'] },
   { canonical: 'у', variants: ['у-у'] },
   { canonical: 'угу', variants: ['у-г-у', 'угуу'] },
@@ -1319,12 +1319,12 @@ test('normalizes incorrect interjection forms conservatively', () => {
   assert.equal(normalizeIncorrectInterjectionForms('у-у, ясно.'), 'у, ясно.');
   assert.equal(normalizeIncorrectInterjectionForms('э-э, секунду.'), 'э, секунду.');
   assert.equal(normalizeIncorrectInterjectionForms('мм, да.'), 'м, да.');
-  assert.equal(normalizeIncorrectInterjectionForms('ОК, хмм.'), 'ОКЕЙ, хм.');
+  assert.equal(normalizeIncorrectInterjectionForms('ОК, хмм.'), 'ОК, хм.');
   assert.equal(normalizeIncorrectInterjectionForms('хахаха!'), 'ха-ха!');
 });
 
 test('preserves case shape when normalizing incorrect interjection forms', () => {
-  assert.equal(normalizeIncorrectInterjectionForms('ОК, ХММ.'), 'ОКЕЙ, ХМ.');
+  assert.equal(normalizeIncorrectInterjectionForms('ОК, ХММ.'), 'ОК, ХМ.');
   assert.equal(normalizeIncorrectInterjectionForms('Ей богу, это так.'), 'Ей-богу, это так.');
   assert.equal(normalizeIncorrectInterjectionForms('А-м, ну ладно.'), 'Ам, ну ладно.');
   assert.equal(normalizeIncorrectInterjectionForms('А-М, ну ладно.'), 'АМ, ну ладно.');
@@ -1332,7 +1332,7 @@ test('preserves case shape when normalizing incorrect interjection forms', () =>
 
 test('applyAllFixes includes incorrect interjection normalization', () => {
   assert.equal(applyAllFixes('ей богу'), 'ей-богу.');
-  assert.equal(applyAllFixes('ОК, хмм'), 'ОКЕЙ, хм.');
+  assert.equal(applyAllFixes('ОК, хмм'), 'ОК, хм.');
 });
 test('fixes polite Russian pronouns according to sentence context', () => {
   assert.equal(fixPolitePronounCase('\u0432\u044b \u043f\u0440\u0430\u0432\u044b.'), '\u0432\u044b \u043f\u0440\u0430\u0432\u044b.');

@@ -89,7 +89,7 @@ export function initLinterBridge() {
     { canonical: "о да", variants: ["о, да"] },
     { canonical: "о нет", variants: ["о, нет"] },
     { canonical: "ой", variants: ["оой", "ойй"] },
-    { canonical: "окей", variants: ["о'кей", "ОК"] },
+    { canonical: "окей", variants: ["о'кей"] },
     { canonical: "ох", variants: ["охх"] },
     { canonical: "у", variants: ["у-у"] },
     { canonical: "угу", variants: ["у-г-у", "угуу"] },
