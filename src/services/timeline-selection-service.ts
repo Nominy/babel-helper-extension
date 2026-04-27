@@ -26,7 +26,9 @@ export function registerTimelineSelectionService(helper: any) {
   const BRIDGE_SCRIPT_PATH = 'dist/content/magnifier-bridge.js';
   const BRIDGE_TIMEOUT_MS = 700;
   const ZOOM_PERSIST_DEBOUNCE_MS = 240;
-  const AUDIO_TRIM_THRESHOLD = Math.pow(10, -62 / 20);
+  const AUDIO_TRIM_INWARD_THRESHOLD = Math.pow(10, -62 / 20);
+  const AUDIO_TRIM_OUTWARD_THRESHOLD = Math.pow(10, -62 / 20);
+  const AUDIO_TRIM_OUTWARD_STEP_SECONDS = 0.05;
   const AUDIO_TRIM_PADDING_SECONDS = 0.005;
   const AUDIO_TRIM_EPSILON_SECONDS = 0.0015;
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
@@ -2377,7 +2379,7 @@ export function registerTimelineSelectionService(helper: any) {
       hostMarker,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_THRESHOLD,
+      amplitudeThreshold: AUDIO_TRIM_INWARD_THRESHOLD,
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
@@ -2397,7 +2399,7 @@ export function registerTimelineSelectionService(helper: any) {
       speakerKey,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_THRESHOLD,
+      amplitudeThreshold: AUDIO_TRIM_INWARD_THRESHOLD,
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
@@ -2419,6 +2421,136 @@ export function registerTimelineSelectionService(helper: any) {
           : null;
     const fallback = await requestTrimTargetsForSpeaker(speakerKey, fallbackEntry);
     return fallback || primary;
+  }
+
+  async function requestExtendTargetsForContainer(container, entry) {
+    if (!(container instanceof HTMLElement) || !entry) {
+      return null;
+    }
+
+    const hostMarker = ensureSelectionHostMarker(container);
+    if (!hostMarker) {
+      return null;
+    }
+
+    const startSeconds = parseTimeValue(entry.startText);
+    const endSeconds = parseTimeValue(entry.endText);
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return null;
+    }
+
+    return callSelectionBridge('extend-segment-audio-to-silence', {
+      hostMarker,
+      startSeconds,
+      endSeconds,
+      amplitudeThreshold: AUDIO_TRIM_OUTWARD_THRESHOLD,
+      stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
+    });
+  }
+
+  async function requestExtendTargetsForSpeaker(speakerKey, entry) {
+    if (!entry) {
+      return null;
+    }
+
+    const startSeconds = parseTimeValue(entry.startText);
+    const endSeconds = parseTimeValue(entry.endText);
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return null;
+    }
+
+    return callSelectionBridge('extend-segment-audio-to-silence-for-speaker', {
+      speakerKey,
+      startSeconds,
+      endSeconds,
+      amplitudeThreshold: AUDIO_TRIM_OUTWARD_THRESHOLD,
+      stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
+    });
+  }
+
+  async function requestExtendTargets(target, labels, speakerKey) {
+    const primary =
+      target && target.container instanceof HTMLElement && target.entry
+        ? await requestExtendTargetsForContainer(target.container, target.entry)
+        : null;
+    if (primary && primary.ok) {
+      return primary;
+    }
+
+    const fallbackEntry =
+      target && target.entry
+        ? target.entry
+        : labels && labels.startText && labels.endText
+          ? labels
+          : null;
+    const fallback = await requestExtendTargetsForSpeaker(speakerKey, fallbackEntry);
+    return fallback || primary;
+  }
+
+  async function moveSegmentBoundary(side, labels, speakerKey, targetSeconds) {
+    return helper.setSegmentBoundaryTime({
+      side,
+      startText: labels.startText,
+      endText: labels.endText,
+      speakerKey,
+      targetSeconds,
+      attempts: 2,
+      retryDelayMs: 70
+    });
+  }
+
+  async function applyInwardTrimToRow(row, speakerKey, trimBridgeResult) {
+    const labels = getRowTimeLabels(row);
+    const rowRange = getRowTimeRange(row);
+    if (!labels || !rowRange || !trimBridgeResult || !trimBridgeResult.ok || !trimBridgeResult.foundAudio) {
+      return { ok: true, changed: false };
+    }
+
+    let leftChanged = false;
+    let rightChanged = false;
+    const nextEndSeconds = Number(trimBridgeResult.targetEndSeconds);
+    const nextStartSeconds = Number(trimBridgeResult.targetStartSeconds);
+
+    if (
+      Number.isFinite(nextEndSeconds) &&
+      nextEndSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS &&
+      nextEndSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS
+    ) {
+      const movedRight = await moveSegmentBoundary('right', labels, speakerKey, nextEndSeconds);
+      if (!movedRight || !movedRight.ok) {
+        return { ok: false, reason: 'right-trim-failed' };
+      }
+      rightChanged = true;
+      await helper.sleep(32);
+    }
+
+    if (
+      Number.isFinite(nextStartSeconds) &&
+      nextStartSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS &&
+      nextStartSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS
+    ) {
+      const movedLeft = await moveSegmentBoundary('left', labels, speakerKey, nextStartSeconds);
+      if (!movedLeft || !movedLeft.ok) {
+        return { ok: false, reason: 'left-trim-failed' };
+      }
+      leftChanged = true;
+    }
+
+    return {
+      ok: true,
+      changed: leftChanged || rightChanged,
+      leftChanged,
+      rightChanged
+    };
+  }
+
+  async function requestTrimTargetsForRow(row, speakerKey) {
+    const labels = getRowTimeLabels(row);
+    if (!labels) {
+      return null;
+    }
+
+    return requestTrimTargetsForSpeaker(speakerKey, labels);
   }
 
   async function trimSegmentTarget(target) {
@@ -2466,54 +2598,95 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     let changed = false;
-    const nextEndSeconds = Number(trimResult.targetEndSeconds);
-    const nextStartSeconds = Number(trimResult.targetStartSeconds);
+    const inwardMove = await applyInwardTrimToRow(row, speakerKey, trimResult);
+    if (!inwardMove || !inwardMove.ok) {
+      return {
+        ok: false,
+        reason: inwardMove && inwardMove.reason ? inwardMove.reason : 'trim-failed',
+        bridge: trimResult
+      };
+    }
+    changed = Boolean(inwardMove.changed);
+    const shouldExtendLeft = !inwardMove.leftChanged;
+    const shouldExtendRight = !inwardMove.rightChanged;
+
+    if (!shouldExtendLeft && !shouldExtendRight) {
+      return {
+        ok: true,
+        changed,
+        trim: trimResult
+      };
+    }
+
+    if (!isFeatureEnabled('audioTrimOutwardPass')) {
+      return {
+        ok: true,
+        changed,
+        trim: trimResult,
+        extend: { ok: false, reason: 'outward-pass-disabled' }
+      };
+    }
+
+    const extendResult = await requestExtendTargets(target, labels, speakerKey);
+    if (!extendResult || !extendResult.ok) {
+      return {
+        ok: true,
+        changed: false,
+        trim: trimResult,
+        extend: extendResult || null
+      };
+    }
+
+    const extendStartSeconds = Number(extendResult.targetStartSeconds);
+    const extendEndSeconds = Number(extendResult.targetEndSeconds);
 
     if (
-      Number.isFinite(nextEndSeconds) &&
-      nextEndSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS &&
-      nextEndSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS
+      shouldExtendRight &&
+      Number.isFinite(extendEndSeconds) &&
+      extendEndSeconds > rowRange.endSeconds + AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedRight = await helper.setSegmentBoundaryTime({
-        side: 'right',
-        startText: labels.startText,
-        endText: labels.endText,
-        speakerKey,
-        targetSeconds: nextEndSeconds,
-        attempts: 2,
-        retryDelayMs: 70
-      });
+      const movedRight = await moveSegmentBoundary('right', labels, speakerKey, extendEndSeconds);
       if (!movedRight || !movedRight.ok) {
-        return { ok: false, reason: 'right-trim-failed', bridge: trimResult };
+        return { ok: false, reason: 'right-extend-failed', bridge: extendResult };
       }
       changed = true;
       await helper.sleep(32);
     }
 
     if (
-      Number.isFinite(nextStartSeconds) &&
-      nextStartSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS &&
-      nextStartSeconds < rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS
+      shouldExtendLeft &&
+      Number.isFinite(extendStartSeconds) &&
+      extendStartSeconds < rowRange.startSeconds - AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedLeft = await helper.setSegmentBoundaryTime({
-        side: 'left',
-        startText: labels.startText,
-        endText: labels.endText,
-        speakerKey,
-        targetSeconds: nextStartSeconds,
-        attempts: 2,
-        retryDelayMs: 70
-      });
+      const movedLeft = await moveSegmentBoundary('left', labels, speakerKey, extendStartSeconds);
       if (!movedLeft || !movedLeft.ok) {
-        return { ok: false, reason: 'left-trim-failed', bridge: trimResult };
+        return { ok: false, reason: 'left-extend-failed', bridge: extendResult };
       }
       changed = true;
+    }
+
+    let finalTrimResult = null;
+    if (changed) {
+      await helper.sleep(32);
+      finalTrimResult = await requestTrimTargetsForRow(row, speakerKey);
+      if (finalTrimResult && finalTrimResult.ok && finalTrimResult.foundAudio) {
+        const finalInwardMove = await applyInwardTrimToRow(row, speakerKey, finalTrimResult);
+        if (!finalInwardMove || !finalInwardMove.ok) {
+          return {
+            ok: false,
+            reason: finalInwardMove && finalInwardMove.reason ? finalInwardMove.reason : 'final-trim-failed',
+            bridge: finalTrimResult
+          };
+        }
+      }
     }
 
     return {
       ok: true,
       changed,
-      trim: trimResult
+      trim: trimResult,
+      extend: extendResult,
+      finalTrim: finalTrimResult
     };
   }
 

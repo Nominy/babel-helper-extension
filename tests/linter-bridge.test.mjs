@@ -388,6 +388,10 @@ function skipLeadingCapitalizationTokens(text, startIndex = 0) {
   return index;
 }
 
+function getCapitalizationContentStart(text, startIndex = 0) {
+  return skipLeadingCapitalizationTokens(text, startIndex);
+}
+
 function startsWithNumericToken(text, startIndex = 0) {
   if (typeof text !== 'string') {
     return false;
@@ -720,14 +724,15 @@ function hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)
     return false;
   }
 
-  if (trimmed.startsWith('...')) {
-    if (startsWithNumericToken(trimmed, 3)) {
+  const contentStartIndex = getCapitalizationContentStart(trimmed);
+  if (trimmed.startsWith('...', contentStartIndex)) {
+    if (startsWithNumericToken(trimmed, contentStartIndex + 3)) {
       return false;
     }
 
     const ellipsisLetterIndex = findFirstLetterIndex(
       trimmed,
-      skipLeadingCapitalizationTokens(trimmed, 3)
+      getCapitalizationContentStart(trimmed, contentStartIndex + 3)
     );
     if (ellipsisLetterIndex === -1) {
       return false;
@@ -736,7 +741,7 @@ function hasSegmentStartCapitalizationViolation(entry, annotationEntries, index)
     return isUppercaseLetter(trimmed[ellipsisLetterIndex]);
   }
 
-  const firstLetterIndex = findFirstLetterIndex(trimmed, skipLeadingCapitalizationTokens(trimmed));
+  const firstLetterIndex = findFirstLetterIndex(trimmed, contentStartIndex);
   if (firstLetterIndex === -1) {
     return false;
   }
@@ -929,17 +934,17 @@ function fixSegmentStartCapitalization(text, previousSameSpeakerText) {
     return text;
   }
 
-  if (trimmed.startsWith('...')) {
-    const sourceIndex = text.indexOf('...');
-    const contentStartIndex = skipLeadingCapitalizationTokens(
+  const contentStartIndex = getCapitalizationContentStart(text);
+  if (text.startsWith('...', contentStartIndex)) {
+    const ellipsisContentStartIndex = getCapitalizationContentStart(
       text,
-      sourceIndex === -1 ? 0 : sourceIndex + 3
+      contentStartIndex + 3
     );
-    if (startsWithNumericToken(text, contentStartIndex)) {
+    if (startsWithNumericToken(text, ellipsisContentStartIndex)) {
       return text;
     }
 
-    const letterIndex = findFirstLetterIndex(text, contentStartIndex);
+    const letterIndex = findFirstLetterIndex(text, ellipsisContentStartIndex);
     if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
       return text;
     }
@@ -947,7 +952,7 @@ function fixSegmentStartCapitalization(text, previousSameSpeakerText) {
     return replaceCharAt(text, letterIndex, text[letterIndex].toLocaleLowerCase());
   }
 
-  const letterIndex = findFirstLetterIndex(text, skipLeadingCapitalizationTokens(text));
+  const letterIndex = findFirstLetterIndex(text, contentStartIndex);
   if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
     return text;
   }
@@ -1095,7 +1100,9 @@ test('capitalization rule ignores leading tags before the real text start', () =
     { annotationId: 'b', speakerKey: 'speaker-1', text: '{TAG: X} Lowercase start.' },
     { annotationId: 'c', speakerKey: 'speaker-1', text: '<i>lowercase start.</i>' },
     { annotationId: 'd', speakerKey: 'speaker-1', text: '...[laughs] Upper after ellipsis.' },
-    { annotationId: 'e', speakerKey: 'speaker-1', text: '...<i>lower after ellipsis.</i>' }
+    { annotationId: 'e', speakerKey: 'speaker-1', text: '...<i>lower after ellipsis.</i>' },
+    { annotationId: 'f', speakerKey: 'speaker-1', text: '[laughs] ...Upper after tagged ellipsis.' },
+    { annotationId: 'g', speakerKey: 'speaker-1', text: '{TAG: X} ...lower after tagged ellipsis.' }
   ];
 
   assert.equal(hasSegmentStartCapitalizationViolation(entries[0], entries, 0), true);
@@ -1103,6 +1110,8 @@ test('capitalization rule ignores leading tags before the real text start', () =
   assert.equal(hasSegmentStartCapitalizationViolation(entries[2], entries, 2), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[3], entries, 3), true);
   assert.equal(hasSegmentStartCapitalizationViolation(entries[4], entries, 4), false);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[5], entries, 5), true);
+  assert.equal(hasSegmentStartCapitalizationViolation(entries[6], entries, 6), false);
 });
 
 test('flags polite Russian pronouns only when sentence context requires a different case', () => {
@@ -1218,6 +1227,7 @@ test('fixSegmentStartCapitalization respects same-speaker continuations and elli
   assert.equal(fixSegmentStartCapitalization('[laughs] lowercase start.', 'Previous sentence.'), '[laughs] Lowercase start.');
   assert.equal(fixSegmentStartCapitalization('<i>lowercase start.</i>', 'Previous sentence.'), '<i>Lowercase start.</i>');
   assert.equal(fixSegmentStartCapitalization('...[laughs] Upper after ellipsis.', 'Previous sentence.'), '...[laughs] upper after ellipsis.');
+  assert.equal(fixSegmentStartCapitalization('[laughs] ...Upper after ellipsis.', 'Previous sentence.'), '[laughs] ...upper after ellipsis.');
 });
 
 

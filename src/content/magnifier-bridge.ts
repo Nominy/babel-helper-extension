@@ -1337,6 +1337,137 @@ export function initMagnifierBridge() {
     return -1;
   }
 
+  function isSilentInChannels(channels, index, threshold) {
+    for (const channel of channels) {
+      if (Math.abs(Number(channel[index]) || 0) >= threshold) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function isSilentBlockInChannels(channels, startIndex, endIndexExclusive, threshold) {
+    if (!Array.isArray(channels) || !channels.length) {
+      return false;
+    }
+
+    const maxLen = Math.max(...channels.map((channel) => (channel && channel.length ? channel.length : 0)));
+    if (!(maxLen > 0)) {
+      return false;
+    }
+
+    const from = clamp(Math.floor(startIndex), 0, maxLen);
+    const to = clamp(Math.ceil(endIndexExclusive), 0, maxLen);
+    if (to <= from) {
+      return false;
+    }
+
+    for (let index = from; index < to; index += 1) {
+      if (!isSilentInChannels(channels, index, threshold)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function findPreviousSilenceInChannels(channels, startIndex, threshold, stepSamples = 1) {
+    if (!Array.isArray(channels) || !channels.length) {
+      return -1;
+    }
+
+    const maxLen = Math.max(...channels.map((channel) => (channel && channel.length ? channel.length : 0)));
+    if (!(maxLen > 0)) {
+      return -1;
+    }
+
+    const step = Math.max(1, Math.floor(Number(stepSamples) || 1));
+    for (let index = clamp(Math.floor(startIndex), 0, maxLen - 1); index >= 0; index -= step) {
+      const blockStart = Math.max(0, index - step + 1);
+      const blockEndExclusive = index + 1;
+      if (isSilentBlockInChannels(channels, blockStart, blockEndExclusive, threshold)) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  function findNextSilenceInChannels(channels, startIndex, threshold, stepSamples = 1) {
+    if (!Array.isArray(channels) || !channels.length) {
+      return -1;
+    }
+
+    const maxLen = Math.max(...channels.map((channel) => (channel && channel.length ? channel.length : 0)));
+    if (!(maxLen > 0)) {
+      return -1;
+    }
+
+    const step = Math.max(1, Math.floor(Number(stepSamples) || 1));
+    for (let index = clamp(Math.ceil(startIndex), 0, maxLen - 1); index < maxLen; index += step) {
+      const blockEndExclusive = Math.min(maxLen, index + step);
+      if (isSilentBlockInChannels(channels, index, blockEndExclusive, threshold)) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  function isSilentBlockInArray(values, startIndex, endIndexExclusive, threshold) {
+    if (!values || !values.length) {
+      return false;
+    }
+
+    const from = clamp(Math.floor(startIndex), 0, values.length);
+    const to = clamp(Math.ceil(endIndexExclusive), 0, values.length);
+    if (to <= from) {
+      return false;
+    }
+
+    for (let index = from; index < to; index += 1) {
+      if (Math.abs(Number(values[index]) || 0) >= threshold) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function findPreviousSilenceInArray(values, startIndex, threshold, stepSamples = 1) {
+    if (!values || !values.length) {
+      return -1;
+    }
+
+    const step = Math.max(1, Math.floor(Number(stepSamples) || 1));
+    for (let index = clamp(Math.floor(startIndex), 0, values.length - 1); index >= 0; index -= step) {
+      const blockStart = Math.max(0, index - step + 1);
+      const blockEndExclusive = index + 1;
+      if (isSilentBlockInArray(values, blockStart, blockEndExclusive, threshold)) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
+  function findNextSilenceInArray(values, startIndex, threshold, stepSamples = 1) {
+    if (!values || !values.length) {
+      return -1;
+    }
+
+    const step = Math.max(1, Math.floor(Number(stepSamples) || 1));
+    for (let index = clamp(Math.ceil(startIndex), 0, values.length - 1); index < values.length; index += step) {
+      const blockEndExclusive = Math.min(values.length, index + step);
+      if (isSilentBlockInArray(values, index, blockEndExclusive, threshold)) {
+        return index;
+      }
+    }
+
+    return -1;
+  }
+
   function findTrimTargetsForResolvedWave(host, wave, startSeconds, endSeconds, amplitudeThreshold, paddingSeconds) {
     if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
       return {
@@ -1434,6 +1565,72 @@ export function initMagnifierBridge() {
     };
   }
 
+  function findExtendTargetsForResolvedWave(host, wave, startSeconds, endSeconds, amplitudeThreshold, stepSeconds) {
+    if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
+      return {
+        ok: false,
+        reason: 'missing-wave'
+      };
+    }
+
+    const duration = getDuration(wave);
+    const segmentStart = clamp(Number(startSeconds) || 0, 0, duration > 0 ? duration : Number(startSeconds) || 0);
+    const segmentEnd = clamp(Number(endSeconds) || 0, 0, duration > 0 ? duration : Number(endSeconds) || 0);
+    if (!(segmentEnd > segmentStart)) {
+      return {
+        ok: false,
+        reason: 'invalid-range'
+      };
+    }
+
+    const threshold = Math.max(0, Number(amplitudeThreshold) || 0);
+    const outwardStepSeconds = Math.max(0, Number(stepSeconds) || 0);
+    const decoded = getDecodedAudioChannelsForTrim(wave);
+    if (decoded && decoded.audio.length > 1 && decoded.audio.duration > 0) {
+      const sampleLength = decoded.audio.length;
+      const startIndex = (segmentStart / decoded.audio.duration) * sampleLength;
+      const endIndex = (segmentEnd / decoded.audio.duration) * sampleLength;
+      const sampleRate = Number(decoded.audio.sampleRate) || 1;
+      const stepSamples = Math.max(1, Math.floor(outwardStepSeconds * sampleRate));
+      const leftIndex = findPreviousSilenceInChannels(decoded.channels, startIndex - 1, threshold, stepSamples);
+      const rightIndex = findNextSilenceInChannels(decoded.channels, endIndex, threshold, stepSamples);
+
+      return {
+        ok: true,
+        foundLeftSilence: leftIndex >= 0,
+        foundRightSilence: rightIndex >= 0,
+        duration,
+        source: 'decoded-audio',
+        targetStartSeconds: leftIndex >= 0 ? clamp(leftIndex / sampleRate, 0, segmentStart) : segmentStart,
+        targetEndSeconds: rightIndex >= 0 ? clamp(rightIndex / sampleRate, segmentEnd, duration) : segmentEnd
+      };
+    }
+
+    const rawPeaks = getRawExportPeaks(wave);
+    if (rawPeaks && rawPeaks.length > 1 && duration > 0) {
+      const startIndex = (segmentStart / duration) * (rawPeaks.length - 1);
+      const endIndex = (segmentEnd / duration) * (rawPeaks.length - 1);
+      const stepSamples = Math.max(1, Math.floor((outwardStepSeconds / duration) * (rawPeaks.length - 1)));
+      const leftIndex = findPreviousSilenceInArray(rawPeaks, startIndex - 1, threshold, stepSamples);
+      const rightIndex = findNextSilenceInArray(rawPeaks, endIndex, threshold, stepSamples);
+
+      return {
+        ok: true,
+        foundLeftSilence: leftIndex >= 0,
+        foundRightSilence: rightIndex >= 0,
+        duration,
+        source: 'export-peaks',
+        targetStartSeconds: leftIndex >= 0 ? clamp(indexToSeconds(leftIndex, rawPeaks.length, duration), 0, segmentStart) : segmentStart,
+        targetEndSeconds: rightIndex >= 0 ? clamp(indexToSeconds(rightIndex, rawPeaks.length, duration), segmentEnd, duration) : segmentEnd
+      };
+    }
+
+    return {
+      ok: false,
+      reason: 'missing-audio-data'
+    };
+  }
+
   function normalizeSpeakerKey(value) {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
   }
@@ -1521,6 +1718,30 @@ export function initMagnifierBridge() {
       endSeconds,
       amplitudeThreshold,
       paddingSeconds
+    );
+  }
+
+  function findExtendTargets(hostMarker, startSeconds, endSeconds, amplitudeThreshold, stepSeconds) {
+    const resolved = resolveWaveForHost(hostMarker);
+    return findExtendTargetsForResolvedWave(
+      resolved.host,
+      resolved.wave,
+      startSeconds,
+      endSeconds,
+      amplitudeThreshold,
+      stepSeconds
+    );
+  }
+
+  function findExtendTargetsForSpeaker(speakerKey, startSeconds, endSeconds, amplitudeThreshold, stepSeconds) {
+    const resolved = resolveWaveForVisibleSpeaker(speakerKey);
+    return findExtendTargetsForResolvedWave(
+      resolved.host,
+      resolved.wave,
+      startSeconds,
+      endSeconds,
+      amplitudeThreshold,
+      stepSeconds
     );
   }
 
@@ -2793,6 +3014,34 @@ export function initMagnifierBridge() {
           payload.endSeconds,
           payload.amplitudeThreshold,
           payload.paddingSeconds
+        )
+      );
+      return;
+    }
+
+    if (operation === 'extend-segment-audio-to-silence') {
+      respond(
+        id,
+        findExtendTargets(
+          payload.hostMarker,
+          payload.startSeconds,
+          payload.endSeconds,
+          payload.amplitudeThreshold,
+          payload.stepSeconds
+        )
+      );
+      return;
+    }
+
+    if (operation === 'extend-segment-audio-to-silence-for-speaker') {
+      respond(
+        id,
+        findExtendTargetsForSpeaker(
+          payload.speakerKey,
+          payload.startSeconds,
+          payload.endSeconds,
+          payload.amplitudeThreshold,
+          payload.stepSeconds
         )
       );
       return;

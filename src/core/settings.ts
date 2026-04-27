@@ -8,6 +8,7 @@ export type FeatureSettingKey =
   | 'disableNativeArrowSeek'
   | 'focusToggle'
   | 'timelineSelection'
+  | 'audioTrimOutwardPass'
   | 'timelineZoomDefaults'
   | 'waveformScaleUnlock'
   | 'magnifier'
@@ -26,6 +27,7 @@ export interface FeatureSettings {
   disableNativeArrowSeek: boolean;
   focusToggle: boolean;
   timelineSelection: boolean;
+  audioTrimOutwardPass: boolean;
   timelineZoomDefaults: boolean;
   waveformScaleUnlock: boolean;
   magnifier: boolean;
@@ -56,6 +58,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   disableNativeArrowSeek: true,
   focusToggle: true,
   timelineSelection: true,
+  audioTrimOutwardPass: true,
   timelineZoomDefaults: true,
   waveformScaleUnlock: true,
   magnifier: true,
@@ -79,6 +82,7 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'disableNativeArrowSeek',
   'focusToggle',
   'timelineSelection',
+  'audioTrimOutwardPass',
   'timelineZoomDefaults',
   'waveformScaleUnlock',
   'magnifier',
@@ -124,6 +128,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   timelineSelection: {
     label: 'Timeline Selection',
     description: 'Enable Alt + Drag cut preview and S/Shift + S/L timeline actions.'
+  },
+  audioTrimOutwardPass: {
+    label: 'Audio Trim Outward Pass',
+    description: 'When Alt + R cannot trim silence inward on a boundary, allow it to extend outward to the next quiet block and then refine inward.'
   },
   timelineZoomDefaults: {
     label: 'Timeline Zoom Defaults',

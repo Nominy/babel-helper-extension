@@ -664,6 +664,10 @@ export function initLinterBridge() {
     return index;
   }
 
+  function getCapitalizationContentStart(text, startIndex = 0) {
+    return skipLeadingCapitalizationTokens(text, startIndex);
+  }
+
   function countPerf(name, detail) {
     try {
       window.__babelHelperPerf?.count?.(name, detail);
@@ -1017,14 +1021,15 @@ export function initLinterBridge() {
       return false;
     }
 
-    if (trimmed.startsWith("...")) {
-      if (startsWithNumericToken(trimmed, 3)) {
+    const contentStartIndex = getCapitalizationContentStart(trimmed);
+    if (trimmed.startsWith("...", contentStartIndex)) {
+      if (startsWithNumericToken(trimmed, contentStartIndex + 3)) {
         return false;
       }
 
       const ellipsisLetterIndex = findFirstLetterIndex(
         trimmed,
-        skipLeadingCapitalizationTokens(trimmed, 3),
+        getCapitalizationContentStart(trimmed, contentStartIndex + 3),
       );
       if (ellipsisLetterIndex === -1) {
         return false;
@@ -1035,7 +1040,7 @@ export function initLinterBridge() {
 
     const firstLetterIndex = findFirstLetterIndex(
       trimmed,
-      skipLeadingCapitalizationTokens(trimmed),
+      contentStartIndex,
     );
     if (firstLetterIndex === -1) {
       return false;
@@ -1319,10 +1324,11 @@ export function initLinterBridge() {
       return [];
     }
 
-    if (trimmed.startsWith("...")) {
+    const contentStartIndex = getCapitalizationContentStart(trimmed);
+    if (trimmed.startsWith("...", contentStartIndex)) {
       const localIndex = findFirstLetterIndex(
         trimmed,
-        skipLeadingCapitalizationTokens(trimmed, 3),
+        getCapitalizationContentStart(trimmed, contentStartIndex + 3),
       );
       return compactMatches(
         [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
@@ -1331,7 +1337,7 @@ export function initLinterBridge() {
 
     const localIndex = findFirstLetterIndex(
       trimmed,
-      skipLeadingCapitalizationTokens(trimmed),
+      contentStartIndex,
     );
     return compactMatches(
       [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
@@ -3244,19 +3250,19 @@ export function initLinterBridge() {
       return text;
     }
 
-    if (trimmed.startsWith("...")) {
-      const sourceIndex = text.indexOf("...");
-      const contentStartIndex = skipLeadingCapitalizationTokens(
+    const contentStartIndex = getCapitalizationContentStart(text);
+    if (text.startsWith("...", contentStartIndex)) {
+      const ellipsisContentStartIndex = getCapitalizationContentStart(
         text,
-        sourceIndex === -1 ? 0 : sourceIndex + 3,
+        contentStartIndex + 3,
       );
-      if (startsWithNumericToken(text, contentStartIndex)) {
+      if (startsWithNumericToken(text, ellipsisContentStartIndex)) {
         return text;
       }
 
       const letterIndex = findFirstLetterIndex(
         text,
-        contentStartIndex,
+        ellipsisContentStartIndex,
       );
       if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
         return text;
@@ -3271,7 +3277,7 @@ export function initLinterBridge() {
 
     const letterIndex = findFirstLetterIndex(
       text,
-      skipLeadingCapitalizationTokens(text),
+      contentStartIndex,
     );
     if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
       return text;
