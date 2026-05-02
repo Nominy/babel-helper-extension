@@ -14,6 +14,7 @@ import { createDisposerStack } from './disposables';
 import type { FeatureContext, ServiceRegistry } from './types';
 import { createAnalyticsStore } from './analytics-store';
 import { createPerfRuntime } from './perf';
+import { registerExtendedDiffViewService } from '../services/extended-diff-view-service';
 
 function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
   return normalizeExtensionSettings(settings);
@@ -167,6 +168,9 @@ export function createHelperKernel() {
 
       perf.setPhase('route-ready', { reason: 'kernel-start' });
       registerLifecycle(helper);
+      if (helper.isFeatureEnabled('extendedDiffView')) {
+        registerExtendedDiffViewService(helper);
+      }
     },
     async onLoaded() {
       await activateSessionRuntime('kernel-on-loaded');
@@ -193,6 +197,9 @@ export function createHelperKernel() {
       }
       if (typeof helper.unbindRowTracking === 'function') {
         helper.unbindRowTracking();
+      }
+      if (typeof helper.unbindExtendedDiffView === 'function') {
+        helper.unbindExtendedDiffView();
       }
     }
   };

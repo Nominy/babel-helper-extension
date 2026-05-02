@@ -15,7 +15,8 @@ export type FeatureSettingKey =
   | 'minimap'
   | 'customLinter'
   | 'proportionalCursorRestore'
-  | 'wavesurferTooltipEllipsis';
+  | 'wavesurferTooltipEllipsis'
+  | 'extendedDiffView';
 
 export interface FeatureSettings {
   hotkeysHelp: boolean;
@@ -35,6 +36,7 @@ export interface FeatureSettings {
   customLinter: boolean;
   proportionalCursorRestore: boolean;
   wavesurferTooltipEllipsis: boolean;
+  extendedDiffView: boolean;
 }
 
 export interface ExtensionSettings {
@@ -65,7 +67,8 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   minimap: true,
   customLinter: true,
   proportionalCursorRestore: true,
-  wavesurferTooltipEllipsis: true
+  wavesurferTooltipEllipsis: true,
+  extendedDiffView: true
 };
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
@@ -89,7 +92,8 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'minimap',
   'customLinter',
   'proportionalCursorRestore',
-  'wavesurferTooltipEllipsis'
+  'wavesurferTooltipEllipsis',
+  'extendedDiffView'
 ];
 
 export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
@@ -160,6 +164,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   wavesurferTooltipEllipsis: {
     label: 'Wavesurfer Tooltip Ellipsis',
     description: 'Truncate long Wavesurfer region tooltip labels with an ellipsis. Edit the template in src/features/wavesurfer-tooltip-ellipsis-feature.ts.'
+  },
+  extendedDiffView: {
+    label: 'Extended Diff View',
+    description: 'Extend read-only feedback diff tables in place with extra text, punctuation, tag, segmentation, and timestamp details from Babel diff payloads.'
   }
 };
 
