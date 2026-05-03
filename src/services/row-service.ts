@@ -72,10 +72,10 @@ export function registerRowService(helper: any) {
     return `${rows.length}:${firstStart}:${lastEnd}`;
   }
 
-  function getRowTimeEntries() {
+  function getRowTimeEntries(forceRebuild = false) {
     const rows = helper.getTranscriptRows();
     const signature = getRowTimeSignature(rows);
-    if (rowTimeCache.signature === signature) {
+    if (!forceRebuild && rowTimeCache.signature === signature) {
       helper.perf?.count?.('row-cache.hit');
       return rowTimeCache.entries;
     }
@@ -85,12 +85,32 @@ export function registerRowService(helper: any) {
     for (const row of rows) {
       const range = getRowTimeRange(row);
       if (range) {
-        entries.push({ row, ...range });
+        entries.push({
+          row,
+          identity: helper.getRowIdentity(row),
+          ...range
+        });
       }
     }
     entries.sort((left, right) => left.startSeconds - right.startSeconds);
     rowTimeCache = { signature, entries };
     return entries;
+  }
+
+  function resolveRowTimeEntry(entry) {
+    if (!entry) {
+      return null;
+    }
+
+    const row = resolveConnectedRow(entry.row, entry.identity);
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    return {
+      ...entry,
+      row
+    };
   }
 
   function findRowEntryByPlaybackTime(playbackTime) {
@@ -105,19 +125,26 @@ export function registerRowService(helper: any) {
       return { row: lastRow, ...lastRange };
     }
 
-    const entries = getRowTimeEntries();
-    let low = 0;
-    let high = entries.length - 1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      const entry = entries[mid];
-      if (playbackTime < entry.startSeconds) {
-        high = mid - 1;
-      } else if (playbackTime >= entry.endSeconds) {
-        low = mid + 1;
-      } else {
-        helper.perf?.count?.('row-cache.search-hit');
-        return entry;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const entries = getRowTimeEntries(attempt > 0);
+      let low = 0;
+      let high = entries.length - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        const entry = entries[mid];
+        if (playbackTime < entry.startSeconds) {
+          high = mid - 1;
+        } else if (playbackTime >= entry.endSeconds) {
+          low = mid + 1;
+        } else {
+          const resolved = resolveRowTimeEntry(entry);
+          if (resolved) {
+            helper.perf?.count?.('row-cache.search-hit');
+            return resolved;
+          }
+          helper.perf?.count?.('row-cache.stale-hit');
+          break;
+        }
       }
     }
     helper.perf?.count?.('row-cache.miss');

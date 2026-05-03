@@ -547,6 +547,11 @@ function findSentenceBoundaryLowercaseIndices(text) {
       continue;
     }
 
+    const directSpeechAuthorIndex = getRussianDirectSpeechAuthorContinuationLetterIndex(text, index);
+    if (directSpeechAuthorIndex !== -1 && isLowercaseLetter(text[directSpeechAuthorIndex])) {
+      continue;
+    }
+
     const letterIndex = findFirstLetterIndex(
       text,
       skipSentenceBoundaryTokens(text, index + 1)
@@ -561,6 +566,69 @@ function findSentenceBoundaryLowercaseIndices(text) {
   }
 
   return indices;
+}
+
+function getRussianDirectSpeechAuthorContinuationLetterIndex(text, boundaryIndex) {
+  if (typeof text !== 'string' || boundaryIndex < 0) {
+    return -1;
+  }
+
+  if (!/[?!]/.test(text[boundaryIndex])) {
+    return -1;
+  }
+
+  let index = boundaryIndex + 1;
+  while (index < text.length && /[?!]/.test(text[index])) {
+    index += 1;
+  }
+
+  const insideOpenQuote = isInsideOpenQuoteAt(text, boundaryIndex);
+  while (index < text.length) {
+    const char = text[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (/["\u00BB\u201D]/u.test(char)) {
+      index += 1;
+      break;
+    }
+
+    if (insideOpenQuote && char === '-') {
+      break;
+    }
+
+    return -1;
+  }
+
+  while (index < text.length && /\s/.test(text[index])) {
+    index += 1;
+  }
+
+  if (text[index] !== '-') {
+    return -1;
+  }
+
+  const authorStartIndex = skipLeadingCapitalizationTokens(text, index + 1);
+
+  return findFirstLetterIndex(text, authorStartIndex);
+}
+
+function isInsideOpenQuoteAt(text, index) {
+  if (typeof text !== 'string' || index < 0) {
+    return false;
+  }
+
+  const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
+  let quoteCount = 0;
+  for (let pointer = 0; pointer < index; pointer += 1) {
+    if (normalizedText[pointer] === '"') {
+      quoteCount += 1;
+    }
+  }
+
+  return quoteCount % 2 === 1;
 }
 
 function hasSentenceBoundaryCapitalizationViolation(text) {
@@ -1062,6 +1130,34 @@ test('flags lowercase words after clear sentence boundaries inside a segment', (
   assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello - world'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello. "world"'), true);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello. [laughs] world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?" - world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?"- world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello!"- world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?!" - world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('\u00abHello?\u00bb - world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?" - [tag] world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello? - asked he. - What next?"'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello! - shouted he. - Go."'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?! - asked he. - Really?"'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello."- world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('Hello? - world'), true);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello? - asked he. - what next?"'), true);
+  assert.equal(
+    hasSentenceBoundaryCapitalizationViolation('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u0441 \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u043c?"- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'),
+    false
+  );
+  assert.equal(
+    hasSentenceBoundaryCapitalizationViolation('"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0427\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'),
+    false
+  );
+  assert.equal(
+    hasSentenceBoundaryCapitalizationViolation('"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0447\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'),
+    true
+  );
+  assert.equal(
+    hasSentenceBoundaryCapitalizationViolation('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c."- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'),
+    true
+  );
 });
 
 test('flags lowercase starts unless same-speaker continuation allows them', () => {
@@ -1194,6 +1290,10 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   assert.equal(
     applyAllFixes('hello. world'),
     'hello. World.'
+  );
+  assert.equal(
+    applyAllFixes('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u0441 \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u043c?"- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430'),
+    '"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u0441 \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u043c?"- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'
   );
 });
 
@@ -1357,4 +1457,32 @@ test('fixes lowercase words after clear sentence boundaries inside a segment', (
   assert.equal(fixSentenceBoundaryCapitalization('Hello - world'), 'Hello - world');
   assert.equal(fixSentenceBoundaryCapitalization('Hello. "world"'), 'Hello. "World"');
   assert.equal(fixSentenceBoundaryCapitalization('Hello. [laughs] world'), 'Hello. [laughs] World');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello?" - world'), '"Hello?" - world');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello?"- world'), '"Hello?"- world');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello!"- world'), '"Hello!"- world');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello?!" - world'), '"Hello?!" - world');
+  assert.equal(fixSentenceBoundaryCapitalization('\u00abHello?\u00bb - world'), '\u00abHello?\u00bb - world');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello?" - [tag] world'), '"Hello?" - [tag] world');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello? - asked he. - What next?"'), '"Hello? - asked he. - What next?"');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello! - shouted he. - Go."'), '"Hello! - shouted he. - Go."');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello?! - asked he. - Really?"'), '"Hello?! - asked he. - Really?"');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello."- world'), '"Hello."- World');
+  assert.equal(fixSentenceBoundaryCapitalization('Hello? - world'), 'Hello? - World');
+  assert.equal(fixSentenceBoundaryCapitalization('"Hello? - asked he. - what next?"'), '"Hello? - asked he. - What next?"');
+  assert.equal(
+    fixSentenceBoundaryCapitalization('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u0441 \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u043c?"- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'),
+    '"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u0441 \u0432\u043e\u043f\u0440\u043e\u0441\u043e\u043c?"- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'
+  );
+  assert.equal(
+    fixSentenceBoundaryCapitalization('"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0427\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'),
+    '"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0427\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'
+  );
+  assert.equal(
+    fixSentenceBoundaryCapitalization('"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0447\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'),
+    '"\u0427\u0442\u043e? - \u0441\u043f\u0440\u043e\u0441\u0438\u043b \u043e\u043d. - \u0427\u0442\u043e \u0434\u0430\u043b\u044c\u0448\u0435?"'
+  );
+  assert.equal(
+    fixSentenceBoundaryCapitalization('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c."- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'),
+    '"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c."- \u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'
+  );
 });

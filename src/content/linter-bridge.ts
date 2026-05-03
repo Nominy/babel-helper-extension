@@ -831,6 +831,15 @@ export function initLinterBridge() {
         continue;
       }
 
+      const directSpeechAuthorIndex =
+        getRussianDirectSpeechAuthorContinuationLetterIndex(text, index);
+      if (
+        directSpeechAuthorIndex !== -1 &&
+        isLowercaseLetter(text[directSpeechAuthorIndex])
+      ) {
+        continue;
+      }
+
       const letterIndex = findFirstLetterIndex(
         text,
         skipSentenceBoundaryTokens(text, index + 1),
@@ -845,6 +854,69 @@ export function initLinterBridge() {
     }
 
     return indices;
+  }
+
+  function getRussianDirectSpeechAuthorContinuationLetterIndex(text, boundaryIndex) {
+    if (typeof text !== "string" || boundaryIndex < 0) {
+      return -1;
+    }
+
+    if (!/[?!]/.test(text[boundaryIndex])) {
+      return -1;
+    }
+
+    let index = boundaryIndex + 1;
+    while (index < text.length && /[?!]/.test(text[index])) {
+      index += 1;
+    }
+
+    const insideOpenQuote = isInsideOpenQuoteAt(text, boundaryIndex);
+    while (index < text.length) {
+      const char = text[index];
+      if (/\s/.test(char)) {
+        index += 1;
+        continue;
+      }
+
+      if (/["\u00BB\u201D]/u.test(char)) {
+        index += 1;
+        break;
+      }
+
+      if (insideOpenQuote && char === "-") {
+        break;
+      }
+
+      return -1;
+    }
+
+    while (index < text.length && /\s/.test(text[index])) {
+      index += 1;
+    }
+
+    if (text[index] !== "-") {
+      return -1;
+    }
+
+    const authorStartIndex = skipLeadingCapitalizationTokens(text, index + 1);
+
+    return findFirstLetterIndex(text, authorStartIndex);
+  }
+
+  function isInsideOpenQuoteAt(text, index) {
+    if (typeof text !== "string" || index < 0) {
+      return false;
+    }
+
+    const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
+    let quoteCount = 0;
+    for (let pointer = 0; pointer < index; pointer += 1) {
+      if (normalizedText[pointer] === '"') {
+        quoteCount += 1;
+      }
+    }
+
+    return quoteCount % 2 === 1;
   }
 
   function hasSentenceBoundaryCapitalizationViolation(text) {
