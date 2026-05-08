@@ -107,6 +107,18 @@ type TranscriptRow = {
   textCell: HTMLElement;
 };
 
+type RectBounds = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
+
+type ClippedCellRect = {
+  rect: DOMRect;
+  clip: RectBounds;
+};
+
 type WaveformLane = {
   speakerLabel: string;
   speakerKeys: string[];
@@ -142,6 +154,7 @@ type ExtendedDiffState = {
 const NORMAL_POLL_INTERVAL_MS = 2500;
 const DIFF_TOGGLE_RETRY_DELAYS_MS = [120, 450, 1100];
 const OBSERVER_TICK_DEBOUNCE_MS = 180;
+const TEXT_OVERLAY_CLIP_INSET_PX = 1;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -846,7 +859,8 @@ function injectStyles() {
     .bh-native-diff-same { color: hsl(var(--foreground)); }
     .bh-native-diff-added { color: #15803d; background: #dcfce7; border-radius: 3px; padding: 0 2px; }
     .bh-native-diff-removed { color: #b91c1c; background: #fee2e2; text-decoration: line-through; border-radius: 3px; padding: 0 2px; }
-    .bh-native-diff-overlay-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; }
+    .bh-native-diff-overlay-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; overflow: hidden; }
+    .bh-native-diff-overlay-mask { position: absolute; overflow: hidden; box-sizing: border-box; pointer-events: none; }
     .bh-native-diff-overlay-item { position: absolute; display: flex; align-items: flex-start; gap: 8px; box-sizing: border-box; overflow: hidden; padding: 2px 4px; background: rgba(255, 255, 255, 0.96); border-radius: 4px; }
     .bh-segmentation-mode-controls { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; padding: 2px; border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 6px; background: rgba(255, 255, 255, 0.88); }
     .bh-segmentation-mode-controls button { border: 0; border-radius: 4px; padding: 2px 7px; background: transparent; color: #334155; font-size: 11px; font-weight: 700; cursor: pointer; }
@@ -988,22 +1002,104 @@ function getNativeDiffOverlayRoot(): HTMLElement {
   return root;
 }
 
-function getVisibleCellRect(cell: HTMLElement): DOMRect | null {
+function toRectBounds(rect: DOMRect): RectBounds {
+  return {
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    left: rect.left
+  };
+}
+
+function intersectRects(leftRect: RectBounds, rightRect: RectBounds): RectBounds | null {
+  const rect = {
+    top: Math.max(leftRect.top, rightRect.top),
+    right: Math.min(leftRect.right, rightRect.right),
+    bottom: Math.min(leftRect.bottom, rightRect.bottom),
+    left: Math.max(leftRect.left, rightRect.left)
+  };
+  return rect.right > rect.left && rect.bottom > rect.top ? rect : null;
+}
+
+function isOverflowClippingElement(element: HTMLElement): boolean {
+  const style = getComputedStyle(element);
+  return [style.overflow, style.overflowX, style.overflowY].some((value) => ['auto', 'scroll', 'hidden', 'clip'].includes(value));
+}
+
+function isScrollableViewportElement(element: HTMLElement): boolean {
+  return (
+    element.clientWidth > 0 &&
+    element.clientHeight > 0 &&
+    (element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1)
+  );
+}
+
+function isKnownScrollViewportElement(element: HTMLElement): boolean {
+  const className = typeof element.className === 'string' ? element.className : '';
+  return (
+    element.hasAttribute('data-radix-scroll-area-viewport') ||
+    element.hasAttribute('data-scroll-area-viewport') ||
+    /\b(?:overflow|scroll|viewport)\b/i.test(className)
+  );
+}
+
+function isTextOverlayClippingElement(element: HTMLElement): boolean {
+  return isOverflowClippingElement(element) || isScrollableViewportElement(element) || isKnownScrollViewportElement(element);
+}
+
+function insetRect(rect: RectBounds, insetPx: number): RectBounds | null {
+  const inset = {
+    top: rect.top + insetPx,
+    right: rect.right - insetPx,
+    bottom: rect.bottom - insetPx,
+    left: rect.left + insetPx
+  };
+  return inset.right > inset.left && inset.bottom > inset.top ? inset : null;
+}
+
+function getClippedCellRect(cell: HTMLElement): ClippedCellRect | null {
   const rect = cell.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
-  if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return null;
-  return rect;
+
+  let clip = intersectRects(toRectBounds(rect), {
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+    left: 0
+  });
+  if (!clip) return null;
+
+  let ancestor = cell.parentElement;
+  while (ancestor && ancestor !== document.documentElement) {
+    if (isTextOverlayClippingElement(ancestor)) {
+      clip = intersectRects(clip, toRectBounds(ancestor.getBoundingClientRect()));
+      if (!clip) return null;
+    }
+    ancestor = ancestor.parentElement;
+  }
+
+  clip = insetRect(clip, TEXT_OVERLAY_CLIP_INSET_PX);
+  if (!clip) return null;
+
+  return { rect, clip };
 }
 
 function renderPatchIntoOverlay(root: HTMLElement, cell: HTMLElement, patch: TextPatch) {
-  const rect = getVisibleCellRect(cell);
-  if (!rect) return;
+  const clipped = getClippedCellRect(cell);
+  if (!clipped) return;
+  const { rect, clip } = clipped;
+
+  const mask = createElement('div', 'bh-native-diff-overlay-mask');
+  mask.style.left = `${clip.left}px`;
+  mask.style.top = `${clip.top}px`;
+  mask.style.width = `${clip.right - clip.left}px`;
+  mask.style.height = `${clip.bottom - clip.top}px`;
 
   const item = createElement('div', 'bh-native-diff-overlay-item');
   item.dataset.patchId = patch.id;
-  item.style.left = `${Math.max(0, rect.left)}px`;
-  item.style.top = `${Math.max(0, rect.top)}px`;
-  item.style.width = `${Math.min(window.innerWidth - Math.max(0, rect.left), rect.width)}px`;
+  item.style.left = `${rect.left - clip.left}px`;
+  item.style.top = `${rect.top - clip.top}px`;
+  item.style.width = `${rect.width}px`;
   item.style.height = `${rect.height}px`;
   item.title = patch.relationship;
 
@@ -1023,7 +1119,8 @@ function renderPatchIntoOverlay(root: HTMLElement, cell: HTMLElement, patch: Tex
     text.appendChild(span);
   }
   item.appendChild(text);
-  root.appendChild(item);
+  mask.appendChild(item);
+  root.appendChild(mask);
 }
 
 function renderTextDiffOverlay(state: ExtendedDiffState) {
