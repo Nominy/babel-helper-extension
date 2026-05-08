@@ -20,9 +20,13 @@ test('extended diff has teardown, observers, and stale-load protection', () => {
   assert.match(source, /state\.performanceObserver\?\.disconnect\(\)/);
   assert.match(source, /clearDiffToggleRetries\(state\)/);
   assert.match(source, /state\.observerDebounceTimer/);
+  assert.match(source, /state\.textOverlayRaf/);
   assert.match(source, /function bindViewportListeners/);
-  assert.match(source, /window\.addEventListener\('scroll', state\.viewportEventHandler, true\)/);
+  assert.match(source, /window\.addEventListener\('scroll', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
+  assert.match(source, /document\.addEventListener\('scroll', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
+  assert.match(source, /window\.addEventListener\('wheel', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
   assert.match(source, /function unbindViewportListeners/);
+  assert.match(source, /window\.cancelAnimationFrame\(state\.textOverlayRaf\)/);
 });
 
 test('extended diff toggle recovery uses bounded retries, not interval bursts', () => {
@@ -63,6 +67,8 @@ test('extended diff renders text patches without rewriting React-owned transcrip
   const source = read('../src/services/extended-diff-view-service.ts');
 
   assert.match(source, /function renderTextDiffOverlay/);
+  assert.match(source, /function scheduleTextDiffOverlayRender/);
+  assert.match(source, /window\.requestAnimationFrame/);
   assert.match(source, /getNativeDiffOverlayRoot\(\)/);
   assert.match(source, /root\.replaceChildren\(\)/);
   assert.match(source, /renderPatchIntoOverlay\(root, row\.textCell, patch\)/);

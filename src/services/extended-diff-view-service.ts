@@ -119,6 +119,7 @@ type ExtendedDiffState = {
   timer: number;
   retryTimers: number[];
   observerDebounceTimer: number;
+  textOverlayRaf: number;
   viewportEventHandler: (() => void) | null;
   mutationObserver: MutationObserver | null;
   performanceObserver: PerformanceObserver | null;
@@ -1045,6 +1046,18 @@ function renderTextDiffOverlay(state: ExtendedDiffState) {
   }
 }
 
+function scheduleTextDiffOverlayRender(state: ExtendedDiffState) {
+  if (state.disposed || state.textOverlayRaf) return;
+  state.textOverlayRaf = window.requestAnimationFrame(() => {
+    state.textOverlayRaf = 0;
+    if (state.disposed || !isFeedbackRoute() || !isDiffViewEnabled() || !state.diffs.length) {
+      removeNativeDiffOverlayRoot();
+      return;
+    }
+    renderTextDiffOverlay(state);
+  });
+}
+
 function applyTextDiffs(state: ExtendedDiffState) {
   if (!isFeedbackRoute() || !isDiffViewEnabled()) {
     removeNativeDiffOverlayRoot();
@@ -1539,15 +1552,23 @@ function bindPerformanceObserver(state: ExtendedDiffState) {
 
 function bindViewportListeners(state: ExtendedDiffState) {
   if (state.viewportEventHandler) return;
-  state.viewportEventHandler = () => scheduleObservedTick(state);
-  window.addEventListener('scroll', state.viewportEventHandler, true);
+  state.viewportEventHandler = () => scheduleTextDiffOverlayRender(state);
+  window.addEventListener('scroll', state.viewportEventHandler, { capture: true, passive: true });
+  document.addEventListener('scroll', state.viewportEventHandler, { capture: true, passive: true });
   window.addEventListener('resize', state.viewportEventHandler);
+  window.addEventListener('wheel', state.viewportEventHandler, { capture: true, passive: true });
+  window.addEventListener('touchmove', state.viewportEventHandler, { capture: true, passive: true });
+  window.addEventListener('keydown', state.viewportEventHandler, true);
 }
 
 function unbindViewportListeners(state: ExtendedDiffState) {
   if (!state.viewportEventHandler) return;
   window.removeEventListener('scroll', state.viewportEventHandler, true);
+  document.removeEventListener('scroll', state.viewportEventHandler, true);
   window.removeEventListener('resize', state.viewportEventHandler);
+  window.removeEventListener('wheel', state.viewportEventHandler, true);
+  window.removeEventListener('touchmove', state.viewportEventHandler, true);
+  window.removeEventListener('keydown', state.viewportEventHandler, true);
   state.viewportEventHandler = null;
 }
 
@@ -1558,6 +1579,7 @@ export function registerExtendedDiffViewService(helper: any) {
     timer: 0,
     retryTimers: [],
     observerDebounceTimer: 0,
+    textOverlayRaf: 0,
     viewportEventHandler: null,
     mutationObserver: null,
     performanceObserver: null,
@@ -1592,6 +1614,10 @@ export function registerExtendedDiffViewService(helper: any) {
     if (state.observerDebounceTimer) {
       window.clearTimeout(state.observerDebounceTimer);
       state.observerDebounceTimer = 0;
+    }
+    if (state.textOverlayRaf) {
+      window.cancelAnimationFrame(state.textOverlayRaf);
+      state.textOverlayRaf = 0;
     }
     state.mutationObserver?.disconnect();
     state.mutationObserver = null;
