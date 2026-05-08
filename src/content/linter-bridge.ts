@@ -354,6 +354,43 @@ export function initLinterBridge() {
     return typeof char === "string" && /[\p{L}\p{N}]/u.test(char);
   }
 
+  const GENERIC_TAG_DELIMITERS = [
+    ["<", ">"],
+    ["{", "}"],
+    ["[", "]"],
+  ];
+
+  function getEnclosingGenericTagRange(text, index) {
+    if (typeof text !== "string" || index < 0 || index >= text.length) {
+      return null;
+    }
+
+    for (const [openChar, closeChar] of GENERIC_TAG_DELIMITERS) {
+      const openIndex = text.lastIndexOf(openChar, index);
+      const closeBeforeIndex = text.lastIndexOf(closeChar, index);
+      if (openIndex === -1 || closeBeforeIndex > openIndex) {
+        continue;
+      }
+
+      const closeIndex = text.indexOf(closeChar, index);
+      if (closeIndex === -1) {
+        continue;
+      }
+
+      return {
+        start: openIndex,
+        end: closeIndex + 1,
+      };
+    }
+
+    return null;
+  }
+
+  function isRangeInsideGenericTag(text, start, end) {
+    const tagRange = getEnclosingGenericTagRange(text, start);
+    return Boolean(tagRange && end <= tagRange.end);
+  }
+
   function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -530,7 +567,15 @@ export function initLinterBridge() {
       return false;
     }
 
-    return /--[.,?!:;]/.test(text);
+    const pattern = /--[.,?!:;]/gu;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function hasUnicodeDashViolation(text) {
@@ -547,7 +592,15 @@ export function initLinterBridge() {
       return false;
     }
 
-    return /(?<!-)-[.,?!:;]/.test(text);
+    const pattern = /(?<!-)-[.,?!:;]/gu;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function normalizeIncorrectInterjectionForms(text) {
@@ -919,30 +972,32 @@ export function initLinterBridge() {
     return quoteCount % 2 === 1;
   }
 
+  function hasDoubleDashOutsideQuoteOrGenericTagViolation(text) {
+    if (typeof text !== "string" || text.indexOf("--") === -1) {
+      return false;
+    }
+
+    let index = text.indexOf("--");
+    while (index !== -1) {
+      if (
+        !isRangeInsideGenericTag(text, index, index + 2) &&
+        !isInsideOpenQuoteAt(text, index)
+      ) {
+        return true;
+      }
+
+      index = text.indexOf("--", index + 2);
+    }
+
+    return false;
+  }
+
   function hasSentenceBoundaryCapitalizationViolation(text) {
     return findSentenceBoundaryLowercaseIndices(text).length > 0;
   }
 
   function getEnclosingInlineTagRange(text, index) {
-    if (typeof text !== "string" || index < 0 || index >= text.length) {
-      return null;
-    }
-
-    const openIndex = text.lastIndexOf("<", index);
-    const closeBeforeIndex = text.lastIndexOf(">", index);
-    if (openIndex === -1 || closeBeforeIndex > openIndex) {
-      return null;
-    }
-
-    const closeIndex = text.indexOf(">", index);
-    if (closeIndex === -1) {
-      return null;
-    }
-
-    return {
-      start: openIndex,
-      end: closeIndex + 1,
-    };
+    return getEnclosingGenericTagRange(text, index);
   }
 
   function isInsideInlineTag(text, index) {
@@ -1205,6 +1260,12 @@ export function initLinterBridge() {
     return compactMatches(matches);
   }
 
+  function collectRegexMatchesOutsideGenericTags(text, pattern, groupIndex = 0) {
+    return collectRegexMatches(text, pattern, groupIndex).filter(
+      (match) => !isRangeInsideGenericTag(text, match.start, match.end),
+    );
+  }
+
   function getCommaSpacingMatches(text) {
     return collectRegexMatches(text, /\s+,|,(?![\d ]|$)|, {2,}/gu);
   }
@@ -1458,11 +1519,11 @@ export function initLinterBridge() {
       }
 
       if (hasDoubleDashPunctuationViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, DOUBLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatches(entry.text, /--[.,?!:;]+/gu)));
+        issues.push(makeCustomIssue(entry, DOUBLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatchesOutsideGenericTags(entry.text, /--[.,?!:;]+/gu)));
       }
 
       if (hasSingleDashPunctuationViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, SINGLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatches(entry.text, /(?<!-)-[.,?!:;]+/gu)));
+        issues.push(makeCustomIssue(entry, SINGLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatchesOutsideGenericTags(entry.text, /(?<!-)-[.,?!:;]+/gu)));
       }
 
       if (hasIncorrectInterjectionFormsViolation(entry.text)) {
@@ -1502,6 +1563,101 @@ export function initLinterBridge() {
       typeof value.reason === "string" &&
       typeof value.severity === "string",
     );
+  }
+
+  function isDoubleDashOutsideQuoteOrTagReason(reason) {
+    if (typeof reason !== "string") {
+      return false;
+    }
+
+    const normalized = reason.toLocaleLowerCase();
+    return (
+      normalized.includes("double-dash-outside-quote-or-tag") ||
+      (
+        normalized.includes("double") &&
+        normalized.includes("dash") &&
+        normalized.includes("quote") &&
+        normalized.includes("tag") &&
+        (normalized.includes("outside") || normalized.includes("only"))
+      )
+    );
+  }
+
+  function getDoubleDashOutsideQuoteOrTagSuppressionIds(annotationEntries) {
+    const ids = new Set();
+    if (!Array.isArray(annotationEntries)) {
+      return ids;
+    }
+
+    for (const entry of annotationEntries) {
+      if (
+        entry &&
+        typeof entry.annotationId === "string" &&
+        typeof entry.text === "string" &&
+        entry.text.indexOf("--") !== -1 &&
+        !hasDoubleDashOutsideQuoteOrGenericTagViolation(entry.text)
+      ) {
+        ids.add(entry.annotationId);
+      }
+    }
+
+    return ids;
+  }
+
+  function removeSuppressedIssuesFromArray(target, shouldSuppressIssue) {
+    if (!Array.isArray(target) || typeof shouldSuppressIssue !== "function") {
+      return false;
+    }
+
+    let changed = false;
+    for (let index = target.length - 1; index >= 0; index -= 1) {
+      const issue = target[index];
+      if (isLintIssueLike(issue) && shouldSuppressIssue(issue)) {
+        target.splice(index, 1);
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  function filterSuppressedIssuesInPayload(root, shouldSuppressIssue) {
+    if (!root || typeof root !== "object" || typeof shouldSuppressIssue !== "function") {
+      return false;
+    }
+
+    const queue = [root];
+    const seen = new Set();
+    let changed = false;
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || typeof current !== "object" || seen.has(current)) {
+        continue;
+      }
+
+      seen.add(current);
+
+      if (Array.isArray(current)) {
+        if (removeSuppressedIssuesFromArray(current, shouldSuppressIssue)) {
+          changed = true;
+        }
+
+        for (const item of current) {
+          if (item && typeof item === "object") {
+            queue.push(item);
+          }
+        }
+        continue;
+      }
+
+      for (const nested of Object.values(current)) {
+        if (nested && typeof nested === "object") {
+          queue.push(nested);
+        }
+      }
+    }
+
+    return changed;
   }
 
   function appendIssuesToArray(target, additionalIssues) {
@@ -1645,13 +1801,18 @@ export function initLinterBridge() {
     return appendIssuesByHeuristic(payload, additionalIssues);
   }
 
-  function appendIssuesToCompactJsonlFrame(payload, additionalIssues) {
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !Array.isArray(additionalIssues) ||
-      !additionalIssues.length
-    ) {
+  function rewriteJsonPayload(payload, additionalIssues, shouldSuppressIssue) {
+    const filtered = filterSuppressedIssuesInPayload(payload, shouldSuppressIssue);
+    const appended = augmentJsonPayload(payload, additionalIssues);
+    return filtered || appended;
+  }
+
+  function rewriteIssuesInCompactJsonlFrame(
+    payload,
+    additionalIssues,
+    shouldSuppressIssue,
+  ) {
+    if (!payload || typeof payload !== "object") {
       return false;
     }
 
@@ -1669,6 +1830,10 @@ export function initLinterBridge() {
       const candidate = entry[0];
       if (!Array.isArray(candidate)) {
         continue;
+      }
+
+      if (removeSuppressedIssuesFromArray(candidate, shouldSuppressIssue)) {
+        changed = true;
       }
 
       if (appendIssuesToArray(candidate, additionalIssues)) {
@@ -2481,20 +2646,20 @@ export function initLinterBridge() {
     });
   }
 
-  function tryAugmentJsonText(rawText, additionalIssues) {
+  function tryRewriteJsonText(rawText, additionalIssues, shouldSuppressIssue) {
     const parsed = safeJsonParse(rawText);
     if (parsed == null) {
       return null;
     }
 
-    if (!augmentJsonPayload(parsed, additionalIssues)) {
+    if (!rewriteJsonPayload(parsed, additionalIssues, shouldSuppressIssue)) {
       return null;
     }
 
     return JSON.stringify(parsed);
   }
 
-  function tryAugmentJsonLines(rawText, additionalIssues) {
+  function tryRewriteJsonLines(rawText, additionalIssues, shouldSuppressIssue) {
     const lines = rawText.split(/\r?\n/);
     if (lines.length < 2) {
       return null;
@@ -2513,8 +2678,12 @@ export function initLinterBridge() {
       }
 
       const lineChanged = hasCompactFrames
-        ? appendIssuesToCompactJsonlFrame(parsed.payload, additionalIssues)
-        : augmentJsonPayload(parsed.payload, additionalIssues);
+        ? rewriteIssuesInCompactJsonlFrame(
+          parsed.payload,
+          additionalIssues,
+          shouldSuppressIssue,
+        )
+        : rewriteJsonPayload(parsed.payload, additionalIssues, shouldSuppressIssue);
       if (!lineChanged) {
         return line;
       }
@@ -2951,7 +3120,12 @@ export function initLinterBridge() {
     }
 
     const additionalIssues = buildCustomIssues(annotationEntries);
-    if (!additionalIssues.length) {
+    const suppressionIds =
+      getDoubleDashOutsideQuoteOrTagSuppressionIds(annotationEntries);
+    const shouldSuppressIssue = (issue) =>
+      suppressionIds.has(issue.annotationId) &&
+      isDoubleDashOutsideQuoteOrTagReason(issue.reason);
+    if (!additionalIssues.length && suppressionIds.size === 0) {
       currentHighlightIssues = [];
       scheduleLinterHighlights();
       debugState.last = {
@@ -2963,7 +3137,9 @@ export function initLinterBridge() {
     }
 
     currentHighlightIssues = additionalIssues;
-    startHighlightObserver();
+    if (additionalIssues.length) {
+      startHighlightObserver();
+    }
     scheduleLinterHighlights();
 
     let responseText = "";
@@ -2974,6 +3150,7 @@ export function initLinterBridge() {
         changed: false,
         reason: "response-read-failed",
         issueCount: additionalIssues.length,
+        suppressedCandidateCount: suppressionIds.size,
       };
       return response;
     }
@@ -2983,26 +3160,37 @@ export function initLinterBridge() {
         changed: false,
         reason: "empty-response-text",
         issueCount: additionalIssues.length,
+        suppressedCandidateCount: suppressionIds.size,
       };
       return response;
     }
 
-    const asJsonText = tryAugmentJsonText(responseText, additionalIssues);
+    const asJsonText = tryRewriteJsonText(
+      responseText,
+      additionalIssues,
+      shouldSuppressIssue,
+    );
     if (typeof asJsonText === "string") {
       debugState.last = {
         changed: true,
         reason: "json",
         issueCount: additionalIssues.length,
+        suppressedCandidateCount: suppressionIds.size,
       };
       return cloneResponseWithBody(response, asJsonText);
     }
 
-    const asJsonLinesText = tryAugmentJsonLines(responseText, additionalIssues);
+    const asJsonLinesText = tryRewriteJsonLines(
+      responseText,
+      additionalIssues,
+      shouldSuppressIssue,
+    );
     if (typeof asJsonLinesText === "string") {
       debugState.last = {
         changed: true,
         reason: "jsonl",
         issueCount: additionalIssues.length,
+        suppressedCandidateCount: suppressionIds.size,
         responsePreview: asJsonLinesText.slice(0, 240),
       };
       return cloneResponseWithBody(response, asJsonLinesText);
@@ -3012,6 +3200,7 @@ export function initLinterBridge() {
       changed: false,
       reason: "no-target-found",
       issueCount: additionalIssues.length,
+      suppressedCandidateCount: suppressionIds.size,
       responsePreview: responseText.slice(0, 240),
     };
     return response;
@@ -3232,7 +3421,11 @@ export function initLinterBridge() {
     }
 
     // Remove punctuation immediately after double dash
-    return text.replace(/--[.,?!:;]+/g, "--");
+    return text.replace(/--[.,?!:;]+/g, (match, offset) =>
+      isRangeInsideGenericTag(text, offset, offset + match.length)
+        ? match
+        : "--",
+    );
   }
 
   function fixSingleDashPunctuation(text) {
@@ -3242,7 +3435,11 @@ export function initLinterBridge() {
 
     // Remove punctuation immediately after single dash
     // A single dash is a '-' not preceded by '-' and not followed by '-'
-    return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, "-");
+    return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, (match, offset) =>
+      isRangeInsideGenericTag(text, offset, offset + match.length)
+        ? match
+        : "-",
+    );
   }
 
   function fixTerminalPunctuation(text) {

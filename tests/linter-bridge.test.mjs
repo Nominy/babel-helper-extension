@@ -58,6 +58,43 @@ function isWordCharacter(char) {
   return typeof char === 'string' && /[\p{L}\p{N}]/u.test(char);
 }
 
+const GENERIC_TAG_DELIMITERS = [
+  ['<', '>'],
+  ['{', '}'],
+  ['[', ']']
+];
+
+function getEnclosingGenericTagRange(text, index) {
+  if (typeof text !== 'string' || index < 0 || index >= text.length) {
+    return null;
+  }
+
+  for (const [openChar, closeChar] of GENERIC_TAG_DELIMITERS) {
+    const openIndex = text.lastIndexOf(openChar, index);
+    const closeBeforeIndex = text.lastIndexOf(closeChar, index);
+    if (openIndex === -1 || closeBeforeIndex > openIndex) {
+      continue;
+    }
+
+    const closeIndex = text.indexOf(closeChar, index);
+    if (closeIndex === -1) {
+      continue;
+    }
+
+    return {
+      start: openIndex,
+      end: closeIndex + 1
+    };
+  }
+
+  return null;
+}
+
+function isRangeInsideGenericTag(text, start, end) {
+  const tagRange = getEnclosingGenericTagRange(text, start);
+  return Boolean(tagRange && end <= tagRange.end);
+}
+
 function hasQuotePlacementViolation(text) {
   const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
   const quoteIndices = getQuoteIndices(normalizedText);
@@ -139,7 +176,15 @@ function hasDoubleDashPunctuationViolation(text) {
     return false;
   }
 
-  return /--[.,?!:;]/.test(text);
+  const pattern = /--[.,?!:;]/gu;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 const UNICODE_DASH_PATTERN = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
@@ -160,7 +205,15 @@ function hasSingleDashPunctuationViolation(text) {
     return false;
   }
 
-  return /(?<!-)-[.,?!:;]/.test(text);
+  const pattern = /(?<!-)-[.,?!:;]/gu;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 const INTERJECTION_CORRECTION_SPECS = [
@@ -631,30 +684,29 @@ function isInsideOpenQuoteAt(text, index) {
   return quoteCount % 2 === 1;
 }
 
+function hasDoubleDashOutsideQuoteOrGenericTagViolation(text) {
+  if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    return false;
+  }
+
+  let index = text.indexOf('--');
+  while (index !== -1) {
+    if (!isRangeInsideGenericTag(text, index, index + 2) && !isInsideOpenQuoteAt(text, index)) {
+      return true;
+    }
+
+    index = text.indexOf('--', index + 2);
+  }
+
+  return false;
+}
+
 function hasSentenceBoundaryCapitalizationViolation(text) {
   return findSentenceBoundaryLowercaseIndices(text).length > 0;
 }
 
 function getEnclosingInlineTagRange(text, index) {
-  if (typeof text !== 'string' || index < 0 || index >= text.length) {
-    return null;
-  }
-
-  const openIndex = text.lastIndexOf('<', index);
-  const closeBeforeIndex = text.lastIndexOf('>', index);
-  if (openIndex === -1 || closeBeforeIndex > openIndex) {
-    return null;
-  }
-
-  const closeIndex = text.indexOf('>', index);
-  if (closeIndex === -1) {
-    return null;
-  }
-
-  return {
-    start: openIndex,
-    end: closeIndex + 1
-  };
+  return getEnclosingGenericTagRange(text, index);
 }
 
 function isInsideInlineTag(text, index) {
@@ -921,7 +973,9 @@ function fixDoubleDashPunctuation(text) {
   }
 
   // Remove punctuation immediately after double dash
-  return text.replace(/--[.,?!:;]+/g, '--');
+  return text.replace(/--[.,?!:;]+/g, (match, offset) =>
+    isRangeInsideGenericTag(text, offset, offset + match.length) ? match : '--'
+  );
 }
 
 function fixSingleDashPunctuation(text) {
@@ -931,7 +985,9 @@ function fixSingleDashPunctuation(text) {
 
   // Remove punctuation immediately after single dash
   // A single dash is a '-' not preceded by '-' and not followed by '-'
-  return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, '-');
+  return text.replace(/(?<!-)-(?!-)[.,?!:;]+/g, (match, offset) =>
+    isRangeInsideGenericTag(text, offset, offset + match.length) ? match : '-'
+  );
 }
 
 function fixTerminalPunctuation(text) {
@@ -1136,6 +1192,8 @@ test('flags lowercase words after clear sentence boundaries inside a segment', (
   assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?!" - world'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('\u00abHello?\u00bb - world'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?" - [tag] world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?" - {tag} world'), false);
+  assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?" - <tag> world'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello? - asked he. - What next?"'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello! - shouted he. - Go."'), false);
   assert.equal(hasSentenceBoundaryCapitalizationViolation('"Hello?! - asked he. - Really?"'), false);
@@ -1338,6 +1396,9 @@ test('flags double dash punctuation violation', () => {
   assert.equal(hasDoubleDashPunctuationViolation('wait--!'), true);
   assert.equal(hasDoubleDashPunctuationViolation('wait-- '), false);
   assert.equal(hasDoubleDashPunctuationViolation('wait.--'), false);
+  assert.equal(hasDoubleDashPunctuationViolation('<wait--.>'), false);
+  assert.equal(hasDoubleDashPunctuationViolation('{wait--.}'), false);
+  assert.equal(hasDoubleDashPunctuationViolation('[wait--.]'), false);
 });
 
 test('fixes double dash punctuation', () => {
@@ -1347,10 +1408,20 @@ test('fixes double dash punctuation', () => {
   assert.equal(fixDoubleDashPunctuation('wait--!'), 'wait--');
   assert.equal(fixDoubleDashPunctuation('wait--...'), 'wait--');
   assert.equal(fixDoubleDashPunctuation('wait--?!'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('<wait--.> {wait--?} [wait--!]'), '<wait--.> {wait--?} [wait--!]');
 });
 
 test('applyAllFixes includes double dash punctuation fix', () => {
   assert.equal(applyAllFixes('wait--.'), 'wait--');
+});
+
+test('treats generic bracket, curly, and angle tokens as tags for double dash placement', () => {
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('wait -- outside'), true);
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('"wait -- quoted"'), false);
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('<wait -- tagged>'), false);
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('{wait -- tagged}'), false);
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('[wait -- tagged]'), false);
+  assert.equal(hasDoubleDashOutsideQuoteOrGenericTagViolation('[wait -- tagged] then -- outside'), true);
 });
 
 test('flags unicode dash variants', () => {
@@ -1387,6 +1458,9 @@ test('flags single dash punctuation violation', () => {
   assert.equal(hasSingleDashPunctuationViolation('wait- '), false);
   assert.equal(hasSingleDashPunctuationViolation('wait.-'), false);
   assert.equal(hasSingleDashPunctuationViolation('wait--.'), false); // Handled by double dash rule
+  assert.equal(hasSingleDashPunctuationViolation('<wait-.>'), false);
+  assert.equal(hasSingleDashPunctuationViolation('{wait-.}'), false);
+  assert.equal(hasSingleDashPunctuationViolation('[wait-.]'), false);
 });
 
 test('fixes single dash punctuation', () => {
@@ -1395,6 +1469,7 @@ test('fixes single dash punctuation', () => {
   assert.equal(fixSingleDashPunctuation('wait-?'), 'wait-');
   assert.equal(fixSingleDashPunctuation('wait-!'), 'wait-');
   assert.equal(fixSingleDashPunctuation('wait--.'), 'wait--.'); // Should not touch double dash
+  assert.equal(fixSingleDashPunctuation('<wait-.> {wait-?} [wait-!]'), '<wait-.> {wait-?} [wait-!]');
 });
 
 test('applyAllFixes includes single dash punctuation fix', () => {
