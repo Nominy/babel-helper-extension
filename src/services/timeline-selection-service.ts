@@ -37,6 +37,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.cutPreview = null;
   helper.state.cutCommitPending = false;
   helper.state.cutLastContainer = null;
+  helper.state.currentTimelineTarget = null;
   helper.state.smartSplitClickDraft = null;
   helper.state.smartSplitClickContext = null;
   helper.state.selectionLoop = null;
@@ -2265,17 +2266,146 @@ export function registerTimelineSelectionService(helper: any) {
     return best;
   }
 
+  function rememberTimelineSegmentTarget(row, container, entry, speakerKey) {
+    if (!(row instanceof HTMLTableRowElement) || !entry) {
+      return null;
+    }
+
+    const target = {
+      row,
+      rowIdentity: typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null,
+      speakerKey: typeof speakerKey === 'string' ? speakerKey : helper.getRowSpeakerKey(row),
+      startText: entry.startText || '',
+      endText: entry.endText || '',
+      container: container instanceof HTMLElement ? container : null,
+      capturedAt: Date.now()
+    };
+    helper.state.currentTimelineTarget = target;
+    helper.setCurrentRow(row);
+    return target;
+  }
+
+  helper.resolveTimelineSegmentTargetRow = function resolveTimelineSegmentTargetRow() {
+    const target = helper.state.currentTimelineTarget;
+    if (!target || typeof target !== 'object') {
+      return null;
+    }
+
+    if (
+      target.row instanceof HTMLTableRowElement &&
+      target.row.isConnected &&
+      (!target.rowIdentity ||
+        typeof helper.rowMatchesIdentity !== 'function' ||
+        helper.rowMatchesIdentity(target.row, target.rowIdentity))
+    ) {
+      return target.row;
+    }
+
+    if (target.rowIdentity && typeof helper.findRowByIdentity === 'function') {
+      const byIdentity = helper.findRowByIdentity(target.rowIdentity);
+      if (byIdentity instanceof HTMLTableRowElement) {
+        target.row = byIdentity;
+        return byIdentity;
+      }
+    }
+
+    if (target.startText && target.endText) {
+      const byLabels = findRowByTimeLabels(target.startText, target.endText, {
+        speakerKey: target.speakerKey || ''
+      });
+      if (byLabels instanceof HTMLTableRowElement) {
+        target.row = byLabels;
+        target.rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(byLabels) : null;
+        return byLabels;
+      }
+    }
+
+    return null;
+  };
+
+  function captureTimelineSegmentTarget(event) {
+    if (!event || event.button !== 0) {
+      return null;
+    }
+
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    let sourceRegion = null;
+    let container = null;
+
+    for (const node of path) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (!sourceRegion && isRegionHandle(node)) {
+        sourceRegion = getOwningRegionBody(node);
+      }
+
+      if (!sourceRegion && isRegionBody(node)) {
+        sourceRegion = node;
+      }
+
+      if (!container && sourceRegion instanceof HTMLElement && sourceRegion.parentElement instanceof HTMLElement) {
+        container = sourceRegion.parentElement;
+      }
+
+      if (!container && getRegionElements(node).length) {
+        container = node;
+      }
+    }
+
+    if (!(sourceRegion instanceof HTMLElement) || !(container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const snapshot = collectRegionSnapshot(container);
+    if (!snapshot) {
+      return null;
+    }
+
+    const entry = snapshot.bounds.find((candidate) => candidate.region === sourceRegion) || null;
+    if (!entry || !entry.startText || !entry.endText) {
+      return null;
+    }
+
+    const speakerKey = getSpeakerKeyForContainer(container);
+    const row = findRowByTimeLabels(entry.startText, entry.endText, { speakerKey });
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    return rememberTimelineSegmentTarget(row, container, entry, speakerKey);
+  }
+
   function findCurrentSegmentTarget() {
+    const timelineRow =
+      typeof helper.resolveTimelineSegmentTargetRow === 'function'
+        ? helper.resolveTimelineSegmentTargetRow()
+        : null;
     const row =
-      helper.getCurrentRow({ allowFallback: false }) ||
-      helper.getCurrentRow({ allowFallback: true });
+      timelineRow ||
+      (typeof helper.getCurrentActionRow === 'function'
+        ? helper.getCurrentActionRow({ allowFallback: false })
+        : helper.getCurrentRow({ allowFallback: false }));
     if (!(row instanceof HTMLTableRowElement)) {
       return null;
     }
 
     const rowSpeakerKey = helper.getRowSpeakerKey(row);
     const rowLabels = getRowTimeLabels(row);
-    for (const container of discoverWaveformContainers()) {
+    const rememberedTarget = helper.state.currentTimelineTarget;
+    const containers = discoverWaveformContainers();
+    const orderedContainers = [
+      rememberedTarget &&
+      rememberedTarget.row === row &&
+      rememberedTarget.container instanceof HTMLElement &&
+      rememberedTarget.container.isConnected
+        ? rememberedTarget.container
+        : null,
+      ...containers
+    ].filter((container, index, all) => container instanceof HTMLElement && all.indexOf(container) === index);
+
+    for (const container of orderedContainers) {
       if (rowSpeakerKey && getSpeakerKeyForContainer(container) !== rowSpeakerKey) {
         continue;
       }
@@ -2593,7 +2723,21 @@ export function registerTimelineSelectionService(helper: any) {
       return { ok: false, reason: 'missing-row-range' };
     }
 
-    const trimResult = await requestTrimTargets(target, labels, speakerKey);
+    const liveEntry =
+      target.container instanceof HTMLElement && target.container.isConnected
+        ? findRegionEntryForRow(row, target.container)
+        : null;
+    const liveTarget = {
+      ...target,
+      row,
+      entry: liveEntry || labels
+    };
+    if (helper.state.currentTimelineTarget && helper.state.currentTimelineTarget.row === row) {
+      helper.state.currentTimelineTarget.startText = labels.startText;
+      helper.state.currentTimelineTarget.endText = labels.endText;
+    }
+
+    const trimResult = await requestTrimTargets(liveTarget, labels, speakerKey);
     if (!trimResult || !trimResult.ok) {
       return { ok: false, reason: 'bridge-failed', bridge: trimResult || null };
     }
@@ -2632,7 +2776,9 @@ export function registerTimelineSelectionService(helper: any) {
       };
     }
 
-    const extendResult = await requestExtendTargets(target, labels, speakerKey);
+    labels = getCurrentMoveLabels(row, labels);
+    liveTarget.entry = labels;
+    const extendResult = await requestExtendTargets(liveTarget, labels, speakerKey);
     if (!extendResult || !extendResult.ok) {
       return {
         ok: true,
@@ -3706,6 +3852,7 @@ export function registerTimelineSelectionService(helper: any) {
       return;
     }
 
+    captureTimelineSegmentTarget(event);
     captureSmartSplitClickDraft(event);
 
     if (beginPreviewDrag(event)) {

@@ -189,7 +189,10 @@ export function registerLifecycle(helper: any) {
   }
 
   function tryDeleteCurrentRow(event) {
-    const row = helper.getCurrentRow({ allowFallback: false });
+    const row =
+      typeof helper.getCurrentActionRow === 'function'
+        ? helper.getCurrentActionRow({ allowFallback: false })
+        : helper.getCurrentRow({ allowFallback: false });
     if (!row) {
       return false;
     }

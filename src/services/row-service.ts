@@ -113,38 +113,79 @@ export function registerRowService(helper: any) {
     };
   }
 
-  function findRowEntryByPlaybackTime(playbackTime) {
+  function getRowSpeakerKeySafe(row) {
+    if (!(row instanceof HTMLElement)) {
+      return '';
+    }
+
+    if (typeof helper.getRowSpeakerKey === 'function') {
+      return helper.getRowSpeakerKey(row) || '';
+    }
+
+    const identity = helper.getRowIdentity(row);
+    return identity && typeof identity.speakerKey === 'string' ? identity.speakerKey : '';
+  }
+
+  function entryMatchesPlaybackOptions(entry, options) {
+    const settings = options || {};
+    if (!settings.speakerKey) {
+      return true;
+    }
+
+    return getRowSpeakerKeySafe(entry.row) === settings.speakerKey;
+  }
+
+  function getActiveRowEntriesByPlaybackTime(playbackTime, options, forceRebuild = false) {
+    if (typeof playbackTime !== 'number' || !Number.isFinite(playbackTime)) {
+      return [];
+    }
+
+    const entries = getRowTimeEntries(forceRebuild);
+    const active = [];
+    for (const entry of entries) {
+      if (playbackTime < entry.startSeconds) {
+        break;
+      }
+      if (playbackTime >= entry.endSeconds) {
+        continue;
+      }
+
+      const resolved = resolveRowTimeEntry(entry);
+      if (!resolved) {
+        helper.perf?.count?.('row-cache.stale-hit');
+        continue;
+      }
+      if (entryMatchesPlaybackOptions(resolved, options)) {
+        active.push(resolved);
+      }
+    }
+
+    return active;
+  }
+
+  function findRowEntryByPlaybackTime(playbackTime, options) {
     if (typeof playbackTime !== 'number' || !Number.isFinite(playbackTime)) {
       return null;
     }
 
+    const settings = options || {};
     const lastRow = getLastPlaybackRow();
     const lastRange = getRowTimeRange(lastRow);
-    if (lastRange && playbackTime >= lastRange.startSeconds && playbackTime < lastRange.endSeconds) {
+    if (
+      lastRange &&
+      playbackTime >= lastRange.startSeconds &&
+      playbackTime < lastRange.endSeconds &&
+      (!settings.speakerKey || getRowSpeakerKeySafe(lastRow) === settings.speakerKey)
+    ) {
       helper.perf?.count?.('row-cache.previous-hit');
       return { row: lastRow, ...lastRange };
     }
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const entries = getRowTimeEntries(attempt > 0);
-      let low = 0;
-      let high = entries.length - 1;
-      while (low <= high) {
-        const mid = (low + high) >> 1;
-        const entry = entries[mid];
-        if (playbackTime < entry.startSeconds) {
-          high = mid - 1;
-        } else if (playbackTime >= entry.endSeconds) {
-          low = mid + 1;
-        } else {
-          const resolved = resolveRowTimeEntry(entry);
-          if (resolved) {
-            helper.perf?.count?.('row-cache.search-hit');
-            return resolved;
-          }
-          helper.perf?.count?.('row-cache.stale-hit');
-          break;
-        }
+      const active = getActiveRowEntriesByPlaybackTime(playbackTime, settings, attempt > 0);
+      if (active.length) {
+        helper.perf?.count?.(settings.speakerKey ? 'row-cache.lane-hit' : 'row-cache.search-hit');
+        return active[0];
       }
     }
     helper.perf?.count?.('row-cache.miss');
@@ -158,6 +199,40 @@ export function registerRowService(helper: any) {
   function findRowByPlaybackTime(playbackTime) {
     const entry = findRowEntryByPlaybackTime(playbackTime);
     return entry ? entry.row : null;
+  }
+
+  function findLatestRowEntryBeforePlaybackTime(playbackTime, options) {
+    if (typeof playbackTime !== 'number' || !Number.isFinite(playbackTime)) {
+      return null;
+    }
+
+    const entries = getRowTimeEntries();
+    let latest = null;
+    for (const entry of entries) {
+      if (entry.startSeconds > playbackTime) {
+        break;
+      }
+      const resolved = resolveRowTimeEntry(entry);
+      if (!resolved || !entryMatchesPlaybackOptions(resolved, options)) {
+        continue;
+      }
+      if (!latest || resolved.endSeconds >= latest.endSeconds) {
+        latest = resolved;
+      }
+    }
+
+    return latest;
+  }
+
+  function hasRowsForSpeakerKey(speakerKey) {
+    if (!speakerKey) {
+      return false;
+    }
+
+    return getRowTimeEntries().some((entry) => {
+      const resolved = resolveRowTimeEntry(entry);
+      return resolved && getRowSpeakerKeySafe(resolved.row) === speakerKey;
+    });
   }
 
   function resolveConnectedRow(row, identity) {
@@ -390,6 +465,92 @@ export function registerRowService(helper: any) {
     }
   }
 
+  function getGhostCursorLaneLock() {
+    const lock = helper.state.ghostCursorLaneLock;
+    return lock && typeof lock === 'object' && typeof lock.speakerKey === 'string' && lock.speakerKey
+      ? lock
+      : null;
+  }
+
+  function setGhostCursorLaneLock(row, source) {
+    const speakerKey = getRowSpeakerKeySafe(row);
+    if (!speakerKey) {
+      helper.state.ghostCursorLaneLock = null;
+      return null;
+    }
+
+    helper.state.ghostCursorLaneLock = {
+      speakerKey,
+      source: source || 'auto',
+      acquiredAt: Date.now(),
+      rowIdentity: helper.getRowIdentity(row)
+    };
+    return helper.state.ghostCursorLaneLock;
+  }
+
+  function setGhostCursorLaneLockForSpeaker(speakerLabel, source) {
+    const normalized = normalizeSpeakerLabel(speakerLabel);
+    if (!normalized) {
+      return null;
+    }
+
+    const row =
+      getRowTimeEntries()
+        .map((entry) => resolveRowTimeEntry(entry))
+        .find((entry) => entry && getRowSpeakerKeySafe(entry.row) === normalized)?.row || null;
+
+    helper.state.ghostCursorLaneLock = {
+      speakerKey: normalized,
+      source: source || 'manual',
+      acquiredAt: Date.now(),
+      rowIdentity: row instanceof HTMLElement ? helper.getRowIdentity(row) : null
+    };
+    return helper.state.ghostCursorLaneLock;
+  }
+
+  function setGhostCursorLaneLockAuto() {
+    const lock = getGhostCursorLaneLock();
+    if (lock) {
+      helper.state.ghostCursorLaneLock = {
+        ...lock,
+        source: 'auto',
+        acquiredAt: Date.now()
+      };
+    }
+  }
+
+  function findGhostCursorEntryByPlaybackTime(playbackTime) {
+    const lock = getGhostCursorLaneLock();
+    if (lock && !hasRowsForSpeakerKey(lock.speakerKey)) {
+      helper.state.ghostCursorLaneLock = null;
+    }
+
+    const activeLock = getGhostCursorLaneLock();
+    if (activeLock) {
+      const lockedEntry = findRowEntryByPlaybackTime(playbackTime, {
+        speakerKey: activeLock.speakerKey
+      });
+      if (lockedEntry) {
+        return lockedEntry;
+      }
+    }
+
+    const nextActiveEntry = findRowEntryByPlaybackTime(playbackTime);
+    if (nextActiveEntry) {
+      setGhostCursorLaneLock(nextActiveEntry.row, 'auto');
+      return nextActiveEntry;
+    }
+
+    const danglingEntry =
+      (activeLock &&
+        findLatestRowEntryBeforePlaybackTime(playbackTime, {
+          speakerKey: activeLock.speakerKey
+        })) ||
+      findLatestRowEntryBeforePlaybackTime(playbackTime);
+
+    return danglingEntry || null;
+  }
+
   function startGhostCursor(row) {
     stopGhostCursor(); // clean up any previous instance
 
@@ -403,6 +564,10 @@ export function registerRowService(helper: any) {
     if (!timeRange) { return; }
 
     const blurTime = helper.state.blurPlaybackTime;
+    const existingLock = getGhostCursorLaneLock();
+    if (!existingLock || existingLock.source !== 'manual' || !hasRowsForSpeakerKey(existingLock.speakerKey)) {
+      setGhostCursorLaneLock(row, existingLock?.source || 'auto');
+    }
 
     const el = createGhostCursorElement();
     document.body.appendChild(el);
@@ -448,11 +613,19 @@ export function registerRowService(helper: any) {
         const currentTime = playback.currentTime;
 
         // Dynamic row tracking: if playback time exits the tracked row's
-        // time range, find the new row by playback time.
-        if (currentTime < trackedTimeRange.startSeconds || currentTime >= trackedTimeRange.endSeconds) {
-          const newRow = findRowByPlaybackTime(currentTime);
+        // time range or a manual lane lock points elsewhere, resolve by
+        // lane-lock-aware playback time.
+        const laneLock = getGhostCursorLaneLock();
+        const trackedSpeakerKey = getRowSpeakerKeySafe(trackedRow);
+        if (
+          currentTime < trackedTimeRange.startSeconds ||
+          currentTime >= trackedTimeRange.endSeconds ||
+          (laneLock && laneLock.speakerKey && trackedSpeakerKey && laneLock.speakerKey !== trackedSpeakerKey)
+        ) {
+          const nextEntry = findGhostCursorEntryByPlaybackTime(currentTime);
+          const newRow = nextEntry ? nextEntry.row : null;
           if (newRow && newRow !== trackedRow) {
-            const newRange = getRowTimeRange(newRow);
+            const newRange = nextEntry || getRowTimeRange(newRow);
             if (newRange) {
               const prevRowId = helper.getRowIdentity(trackedRow)?.annotationId ?? null;
               trackedRow = newRow;
@@ -939,6 +1112,21 @@ export function registerRowService(helper: any) {
     }
   }
 
+  function recordSpeakerWorkflow(stage, details) {
+    const data = {
+      stage,
+      ...(details && typeof details === 'object' ? details : {})
+    };
+    try {
+      document.documentElement.dataset.babelHelperSpeakerWorkflow = JSON.stringify(data);
+    } catch (_error) {
+      document.documentElement.dataset.babelHelperSpeakerWorkflow = stage;
+    }
+    if (helper.analytics) {
+      helper.analytics.record('speaker-workflow:state', data);
+    }
+  }
+
   async function ensureLaneVisibility(label, shouldBeVisible) {
     const lane = getSpeakerLane(label);
     if (!lane) {
@@ -1170,6 +1358,10 @@ export function registerRowService(helper: any) {
         : null;
     }, 1000, 40);
 
+    if (applied instanceof HTMLElement) {
+      applied.blur();
+    }
+
     return Boolean(applied);
   }
 
@@ -1197,16 +1389,25 @@ export function registerRowService(helper: any) {
 
     const otherLabel = targetLabel === 'Speaker 1' ? 'Speaker 2' : 'Speaker 1';
     helper.state.speakerSwitchPending = true;
+    let failureReason = '';
 
     try {
       const targetVisible = await ensureLaneVisibility(targetLabel, true);
+      if (!targetVisible) failureReason = 'target-visibility-failed';
       const otherVisibleForMute = await ensureLaneVisibility(otherLabel, true);
+      if (targetVisible && !otherVisibleForMute) failureReason = 'other-visibility-failed';
       const targetMuted = await ensureLaneMuteState(targetLabel, true);
+      if (targetVisible && otherVisibleForMute && !targetMuted) failureReason = 'target-mute-failed';
       const otherUnmuted = await ensureLaneMuteState(otherLabel, false);
+      if (targetVisible && otherVisibleForMute && targetMuted && !otherUnmuted) failureReason = 'other-unmute-failed';
       const otherHidden = await ensureLaneVisibility(otherLabel, false);
+      if (targetVisible && otherVisibleForMute && targetMuted && otherUnmuted && !otherHidden) failureReason = 'other-hide-failed';
       const selectorUpdated = await selectSpeakerInToolbar(targetLabel);
+      if (targetVisible && otherVisibleForMute && targetMuted && otherUnmuted && otherHidden && !selectorUpdated) {
+        failureReason = 'selector-update-failed';
+      }
 
-      return Boolean(
+      const ok = Boolean(
         targetVisible &&
         otherVisibleForMute &&
         targetMuted &&
@@ -1214,6 +1415,13 @@ export function registerRowService(helper: any) {
         otherHidden &&
         selectorUpdated
       );
+      if (ok) {
+        setGhostCursorLaneLockForSpeaker(targetLabel, 'manual');
+        recordSpeakerWorkflow('switch-ok', { targetLabel });
+      } else {
+        recordSpeakerWorkflow('switch-failed', { targetLabel, reason: failureReason || 'unknown' });
+      }
+      return ok;
     } finally {
       helper.state.speakerSwitchPending = false;
     }
@@ -1237,14 +1445,28 @@ export function registerRowService(helper: any) {
     }
 
     helper.state.speakerSwitchPending = true;
+    let failureReason = '';
 
     try {
       const speakerOneVisible = await ensureLaneVisibility('Speaker 1', true);
+      if (!speakerOneVisible) failureReason = 'speaker-one-visibility-failed';
       const speakerTwoVisible = await ensureLaneVisibility('Speaker 2', true);
+      if (speakerOneVisible && !speakerTwoVisible) failureReason = 'speaker-two-visibility-failed';
       const allUnmuted = await clearAllLaneMutes();
+      if (speakerOneVisible && speakerTwoVisible && !allUnmuted) failureReason = 'unmute-failed';
       const selectorUpdated = await selectSpeakerInToolbar('All Tracks');
+      if (speakerOneVisible && speakerTwoVisible && allUnmuted && !selectorUpdated) {
+        failureReason = 'selector-update-failed';
+      }
 
-      return Boolean(speakerOneVisible && speakerTwoVisible && allUnmuted && selectorUpdated);
+      const ok = Boolean(speakerOneVisible && speakerTwoVisible && allUnmuted && selectorUpdated);
+      if (ok) {
+        setGhostCursorLaneLockAuto();
+        recordSpeakerWorkflow('reset-ok', {});
+      } else {
+        recordSpeakerWorkflow('reset-failed', { reason: failureReason || 'unknown' });
+      }
+      return ok;
     } finally {
       helper.state.speakerSwitchPending = false;
     }
@@ -1524,6 +1746,48 @@ export function registerRowService(helper: any) {
     return rows[0] || null;
   };
 
+  helper.getCurrentActionRow = function getCurrentActionRow(options) {
+    const settings = options || {};
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) {
+      const activeRow = active.closest('tr');
+      if (activeRow && activeRow.querySelector(helper.config.rowTextareaSelector)) {
+        helper.setCurrentRow(activeRow);
+        return activeRow;
+      }
+    }
+
+    if (typeof helper.resolveTimelineSegmentTargetRow === 'function') {
+      const timelineRow = helper.resolveTimelineSegmentTargetRow();
+      if (timelineRow instanceof HTMLElement) {
+        helper.setCurrentRow(timelineRow);
+        return timelineRow;
+      }
+    }
+
+    const playbackRow = getLastPlaybackRow();
+    if (playbackRow) {
+      helper.setCurrentRow(playbackRow);
+      return playbackRow;
+    }
+
+    const cachedRow = helper.state.currentRow;
+    const cachedIdentity =
+      helper.state.currentRowIdentity ||
+      (cachedRow instanceof HTMLElement ? helper.getRowIdentity(cachedRow) : null);
+    const resolvedCached = resolveConnectedRow(cachedRow, cachedIdentity);
+    if (resolvedCached) {
+      helper.setCurrentRow(resolvedCached);
+      return resolvedCached;
+    }
+
+    if (settings.allowFallback === true) {
+      return helper.getCurrentRow({ allowFallback: true });
+    }
+
+    return null;
+  };
+
   helper.getCurrentRowIndex = function getCurrentRowIndex() {
     const rows = helper.getTranscriptRows();
     const currentRow = helper.getCurrentRow();
@@ -1766,9 +2030,13 @@ export function registerRowService(helper: any) {
     const row =
       settings.row instanceof HTMLElement
         ? settings.row
-        : helper.getCurrentRow({
-            allowFallback: settings.allowFallback !== false
-          });
+        : typeof helper.getCurrentActionRow === 'function'
+          ? helper.getCurrentActionRow({
+              allowFallback: settings.allowFallback === true
+            })
+          : helper.getCurrentRow({
+              allowFallback: settings.allowFallback === true
+            });
     if (!row) {
       return false;
     }

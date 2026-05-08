@@ -117,7 +117,15 @@ type WaveformLane = {
 
 type ExtendedDiffState = {
   timer: number;
+  retryTimers: number[];
+  observerDebounceTimer: number;
+  mutationObserver: MutationObserver | null;
+  performanceObserver: PerformanceObserver | null;
   routeKey: string;
+  lifecycle: 'inactive' | 'waiting' | 'loading' | 'mounted';
+  loadGeneration: number;
+  lastDiffViewEnabled: boolean;
+  disposed: boolean;
   loading: boolean;
   lastLoadError: string;
   loadedUrls: Set<string>;
@@ -128,6 +136,10 @@ type ExtendedDiffState = {
   overlayMode: 'reference' | 'current' | 'fusion';
   diffs: LoadedDiff[];
 };
+
+const NORMAL_POLL_INTERVAL_MS = 2500;
+const DIFF_TOGGLE_RETRY_DELAYS_MS = [120, 450, 1100];
+const OBSERVER_TICK_DEBOUNCE_MS = 180;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -791,6 +803,10 @@ function removeSegmentationModeControls() {
   document.getElementById('bh-segmentation-mode-controls')?.remove();
 }
 
+function removeInjectedStyles() {
+  document.getElementById('babel-helper-extended-diff-style')?.remove();
+}
+
 function renderSegmentationModeControls(state: ExtendedDiffState) {
   if (!isFeedbackRoute() || !isDiffViewEnabled()) {
     removeSegmentationModeControls();
@@ -1253,7 +1269,9 @@ function renderDiffAugmentations(state: ExtendedDiffState) {
 
 async function loadAvailableDiffs(state: ExtendedDiffState) {
   if (state.loading) return;
+  const generation = state.loadGeneration;
   state.loading = true;
+  state.lifecycle = 'loading';
   try {
     const nativeEntries = discoverDiffUrlEntries();
     state.activeNativeUrl = nativeEntries.length ? nativeEntries[nativeEntries.length - 1].url : state.activeNativeUrl;
@@ -1267,6 +1285,9 @@ async function loadAvailableDiffs(state: ExtendedDiffState) {
       const { url } = entry;
       try {
         const payloads = await fetchDiffUrl(url);
+        if (state.disposed || generation !== state.loadGeneration || !isFeedbackRoute() || !isDiffViewEnabled()) {
+          return;
+        }
         state.loadedUrls.add(url);
         state.lastLoadError = '';
         for (const payload of payloads) {
@@ -1279,11 +1300,15 @@ async function loadAvailableDiffs(state: ExtendedDiffState) {
     }
   } finally {
     state.loading = false;
-    renderDiffAugmentations(state);
+    if (!state.disposed && generation === state.loadGeneration && isFeedbackRoute() && isDiffViewEnabled()) {
+      state.lifecycle = state.diffs.length ? 'mounted' : 'waiting';
+      renderDiffAugmentations(state);
+    }
   }
 }
 
 function resetForRoute(state: ExtendedDiffState) {
+  state.loadGeneration += 1;
   state.loadedUrls.clear();
   state.loadedReviewActionUrls.clear();
   state.generatedDiffUrls.clear();
@@ -1292,22 +1317,142 @@ function resetForRoute(state: ExtendedDiffState) {
   state.lastLoadError = '';
   state.diffs = [];
   state.loading = false;
+  state.lifecycle = 'inactive';
   restoreNativeDiffCells();
   clearWaveformOverlays();
   removeSegmentationModeControls();
+  removeInjectedStyles();
+  delete document.documentElement.dataset.bhExtendedDiffDebug;
 }
 
 function tick(state: ExtendedDiffState) {
-  if (!isFeedbackRoute()) {
-    resetForRoute(state);
+  if (state.disposed) {
     return;
   }
+
+  const feedbackRoute = isFeedbackRoute();
+  const diffViewEnabled = feedbackRoute && isDiffViewEnabled();
+  if (diffViewEnabled && !state.lastDiffViewEnabled) {
+    scheduleDiffToggleRetries(state);
+  }
+  state.lastDiffViewEnabled = diffViewEnabled;
+
+  if (!feedbackRoute || !diffViewEnabled) {
+    if (state.lifecycle !== 'inactive' || state.diffs.length || state.loadedUrls.size || state.lastRenderedDiffKey) {
+      resetForRoute(state);
+    }
+    state.lifecycle = feedbackRoute ? 'waiting' : 'inactive';
+    return;
+  }
+
   const routeKey = getRouteKey();
   if (state.routeKey !== routeKey) {
     state.routeKey = routeKey;
     resetForRoute(state);
+    state.lifecycle = 'waiting';
   }
   void loadAvailableDiffs(state);
+}
+
+function scheduleDiffToggleRetries(state: ExtendedDiffState) {
+  clearDiffToggleRetries(state);
+  state.retryTimers = DIFF_TOGGLE_RETRY_DELAYS_MS.map((delay) => {
+    const retryTimer = window.setTimeout(() => {
+      state.retryTimers = state.retryTimers.filter((timer) => timer !== retryTimer);
+      if (!state.disposed && isFeedbackRoute() && isDiffViewEnabled()) {
+        tick(state);
+      }
+    }, delay);
+    return retryTimer;
+  });
+}
+
+function clearDiffToggleRetries(state: ExtendedDiffState) {
+  for (const timer of state.retryTimers) {
+    window.clearTimeout(timer);
+  }
+  state.retryTimers = [];
+}
+
+function scheduleObservedTick(state: ExtendedDiffState) {
+  if (state.disposed || state.observerDebounceTimer) {
+    return;
+  }
+
+  state.observerDebounceTimer = window.setTimeout(() => {
+    state.observerDebounceTimer = 0;
+    tick(state);
+  }, OBSERVER_TICK_DEBOUNCE_MS);
+}
+
+function getDiffObserverRoot(): HTMLElement | null {
+  return (
+    document.querySelector('main') ||
+    document.querySelector('[role="main"]') ||
+    document.documentElement
+  );
+}
+
+function bindMutationObserver(state: ExtendedDiffState) {
+  if (state.mutationObserver || typeof MutationObserver !== 'function') {
+    return;
+  }
+
+  const root = getDiffObserverRoot();
+  if (!(root instanceof HTMLElement)) {
+    return;
+  }
+
+  state.mutationObserver = new MutationObserver((mutations) => {
+    const relevant = mutations.some((mutation) => {
+      const target = mutation.target;
+      if (target instanceof HTMLElement && target.getAttribute('role') === 'switch') {
+        return true;
+      }
+      for (const node of Array.from(mutation.addedNodes)) {
+        if (
+          node instanceof HTMLElement &&
+          (node.getAttribute('role') === 'switch' || node.querySelector('[role="switch"]'))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (relevant) {
+      scheduleObservedTick(state);
+    }
+  });
+  state.mutationObserver.observe(root, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-checked', 'data-state']
+  });
+}
+
+function bindPerformanceObserver(state: ExtendedDiffState) {
+  if (state.performanceObserver || typeof PerformanceObserver !== 'function') {
+    return;
+  }
+
+  try {
+    state.performanceObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const url = entry.name || '';
+        if (
+          url.includes('/api/trpc/transcriptions.getTranscriptionDiff') ||
+          (url.includes('/api/trpc/') && url.includes('getReviewActionsForChunk'))
+        ) {
+          scheduleObservedTick(state);
+          return;
+        }
+      }
+    });
+    state.performanceObserver.observe({ entryTypes: ['resource'] });
+  } catch (_error) {
+    state.performanceObserver = null;
+  }
 }
 
 export function registerExtendedDiffViewService(helper: any) {
@@ -1315,7 +1460,15 @@ export function registerExtendedDiffViewService(helper: any) {
   helper.__extendedDiffViewRegistered = true;
   const state: ExtendedDiffState = {
     timer: 0,
+    retryTimers: [],
+    observerDebounceTimer: 0,
+    mutationObserver: null,
+    performanceObserver: null,
     routeKey: '',
+    lifecycle: 'inactive',
+    loadGeneration: 0,
+    lastDiffViewEnabled: false,
+    disposed: false,
     loading: false,
     lastLoadError: '',
     loadedUrls: new Set<string>(),
@@ -1327,16 +1480,26 @@ export function registerExtendedDiffViewService(helper: any) {
     diffs: []
   };
 
+  bindMutationObserver(state);
+  bindPerformanceObserver(state);
   tick(state);
-  state.timer = window.setInterval(() => tick(state), 1500);
+  state.timer = window.setInterval(() => tick(state), NORMAL_POLL_INTERVAL_MS);
   helper.unbindExtendedDiffView = function unbindExtendedDiffView() {
+    state.disposed = true;
     if (state.timer) {
       window.clearInterval(state.timer);
       state.timer = 0;
     }
-    restoreNativeDiffCells();
-    clearWaveformOverlays();
-    removeSegmentationModeControls();
+    clearDiffToggleRetries(state);
+    if (state.observerDebounceTimer) {
+      window.clearTimeout(state.observerDebounceTimer);
+      state.observerDebounceTimer = 0;
+    }
+    state.mutationObserver?.disconnect();
+    state.mutationObserver = null;
+    state.performanceObserver?.disconnect();
+    state.performanceObserver = null;
+    resetForRoute(state);
     helper.__extendedDiffViewRegistered = false;
   };
 }
