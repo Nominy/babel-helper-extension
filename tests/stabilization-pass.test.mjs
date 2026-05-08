@@ -20,6 +20,9 @@ test('extended diff has teardown, observers, and stale-load protection', () => {
   assert.match(source, /state\.performanceObserver\?\.disconnect\(\)/);
   assert.match(source, /clearDiffToggleRetries\(state\)/);
   assert.match(source, /state\.observerDebounceTimer/);
+  assert.match(source, /function bindViewportListeners/);
+  assert.match(source, /window\.addEventListener\('scroll', state\.viewportEventHandler, true\)/);
+  assert.match(source, /function unbindViewportListeners/);
 });
 
 test('extended diff toggle recovery uses bounded retries, not interval bursts', () => {
@@ -32,6 +35,42 @@ test('extended diff toggle recovery uses bounded retries, not interval bursts', 
   assert.doesNotMatch(source, /AGGRESSIVE_DIFF_TOGGLE_POLL_INTERVAL_MS/);
   assert.doesNotMatch(source, /window\.setInterval\(\(\) => \{\s*if \(state\.disposed \|\| state\.aggressivePollsRemaining/);
   assert.match(source, /NORMAL_POLL_INTERVAL_MS/);
+});
+
+test('extended diff generated fallback supports lower and higher review levels', () => {
+  const source = read('../src/services/extended-diff-view-service.ts');
+
+  assert.match(source, /function getCurrentReviewActionIdFromDiffUrl/);
+  assert.match(source, /reviewActionId = asString\(record\.currentReviewActionId\);/);
+  assert.match(source, /const queryValue = new URLSearchParams\(window\.location\.search \|\| ''\)\.get\('reviewActionId'\) \|\| '';/);
+  assert.match(source, /Boolean\(getCurrentReviewActionId\(\)\)/);
+  assert.match(source, /Boolean\(document\.body\.innerText\.match\(\/\\bCompare:\\b\/\)\)/);
+  assert.match(source, /displayFeedback !== 'false'/);
+  assert.match(source, /function buildGeneratedDiffUrlForAction/);
+  assert.match(source, /action\.level < currentLevel[\s\S]*return buildDiffUrl\(action\.id, currentReviewActionId\);/);
+  assert.match(source, /return buildDiffUrl\(currentReviewActionId, action\.id\);/);
+  assert.doesNotMatch(source, /action\.level <= currentLevel\) continue/);
+  assert.match(source, /function dedupeDiffEntries/);
+  assert.match(source, /const generatedUrls = await discoverGeneratedDiffUrls\(state\);/);
+  assert.doesNotMatch(source, /nativeEntries\.length \? \[\] : await discoverGeneratedDiffUrls\(state\)/);
+  assert.doesNotMatch(source, /getReviewActionsForChunk'\) && diffUrlMentionsReviewAction/);
+  assert.match(source, /const entries = dedupeDiffEntries\(\[[\s\S]*\]\)\.filter\(\(entry\) => !state\.loadedUrls\.has\(entry\.url\)\);/);
+  assert.match(source, /const compareLevels = new Set\(generated\.map\(\(diff\) => diff\.compareLevel\)\.filter\(\(level\) => level != null\)\);/);
+  assert.match(source, /return compareLevels\.size === 1 \? generated : \[\];/);
+});
+
+test('extended diff renders text patches without rewriting React-owned transcript cells', () => {
+  const source = read('../src/services/extended-diff-view-service.ts');
+
+  assert.match(source, /function renderTextDiffOverlay/);
+  assert.match(source, /getNativeDiffOverlayRoot\(\)/);
+  assert.match(source, /root\.replaceChildren\(\)/);
+  assert.match(source, /renderPatchIntoOverlay\(root, row\.textCell, patch\)/);
+  assert.match(source, /removeNativeDiffOverlayRoot\(\)/);
+  assert.doesNotMatch(source, /data-bh-native-diff-original/);
+  assert.doesNotMatch(source, /bhNativeDiffOriginal/);
+  assert.doesNotMatch(source, /cell\.replaceChildren/);
+  assert.doesNotMatch(source, /cell\.innerHTML\s*=/);
 });
 
 test('speaker workflow uses robust control driving and always releases pending guard', () => {

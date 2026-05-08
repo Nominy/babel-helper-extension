@@ -119,6 +119,7 @@ type ExtendedDiffState = {
   timer: number;
   retryTimers: number[];
   observerDebounceTimer: number;
+  viewportEventHandler: (() => void) | null;
   mutationObserver: MutationObserver | null;
   performanceObserver: PerformanceObserver | null;
   routeKey: string;
@@ -465,17 +466,49 @@ function addSegmentOverlay(
   });
 }
 
+function getJsonInputFromUrl(url: string): unknown {
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const input = parsed.searchParams.get('input') || '';
+    return input ? JSON.parse(decodeURIComponent(input)) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getCurrentReviewActionIdFromDiffUrl(url: string): string {
+  let reviewActionId = '';
+  walkJson(getJsonInputFromUrl(url), (record) => {
+    if (!reviewActionId) {
+      reviewActionId = asString(record.currentReviewActionId);
+    }
+  });
+  return reviewActionId;
+}
+
 function getCurrentReviewActionId(): string {
-  return new URLSearchParams(window.location.search || '').get('reviewActionId') || '';
+  const queryValue = new URLSearchParams(window.location.search || '').get('reviewActionId') || '';
+  if (queryValue) return queryValue;
+
+  const diffEntries = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+    .filter((entry) => (entry.name || '').includes('/api/trpc/transcriptions.getTranscriptionDiff'))
+    .sort((left, right) => right.startTime - left.startTime);
+
+  for (const entry of diffEntries) {
+    const reviewActionId = getCurrentReviewActionIdFromDiffUrl(entry.name || '');
+    if (reviewActionId) return reviewActionId;
+  }
+  return '';
 }
 
 function isFeedbackRoute(): boolean {
   const params = new URLSearchParams(window.location.search || '');
-  return (
-    /^\/transcription(?:\/|$)/.test(window.location.pathname || '') &&
-    Boolean(params.get('reviewActionId')) &&
-    params.get('displayFeedback') === 'true'
-  );
+  const displayFeedback = params.get('displayFeedback');
+  const hasFeedbackContext =
+    Boolean(params.get('reviewActionId')) ||
+    Boolean(getCurrentReviewActionId()) ||
+    Boolean(document.body.innerText.match(/\bCompare:\b/));
+  return /^\/transcription(?:\/|$)/.test(window.location.pathname || '') && hasFeedbackContext && displayFeedback !== 'false';
 }
 
 function isDiffViewEnabled(): boolean {
@@ -519,11 +552,10 @@ function discoverDiffUrlEntries(): DiffUrlEntry[] {
 }
 
 function discoverReviewActionUrls(): string[] {
-  const reviewActionId = getCurrentReviewActionId();
   const urls = new Set<string>();
   for (const entry of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
     const url = entry.name || '';
-    if (url.includes('/api/trpc/') && url.includes('getReviewActionsForChunk') && diffUrlMentionsReviewAction(url, reviewActionId)) {
+    if (url.includes('/api/trpc/') && url.includes('getReviewActionsForChunk')) {
       urls.add(url);
     }
   }
@@ -581,6 +613,28 @@ function buildDiffUrl(referenceReviewActionId: string, currentReviewActionId: st
   return url.toString();
 }
 
+function buildGeneratedDiffUrlForAction(
+  currentReviewActionId: string,
+  currentLevel: number | null,
+  action: ReviewActionCandidate
+): string {
+  if (currentLevel != null && action.level != null && action.level < currentLevel) {
+    return buildDiffUrl(action.id, currentReviewActionId);
+  }
+  return buildDiffUrl(currentReviewActionId, action.id);
+}
+
+function dedupeDiffEntries(entries: DiffUrlEntry[]): DiffUrlEntry[] {
+  const byUrl = new Map<string, DiffUrlEntry>();
+  for (const entry of entries) {
+    const previous = byUrl.get(entry.url);
+    if (!previous || previous.source === 'generated') {
+      byUrl.set(entry.url, entry);
+    }
+  }
+  return Array.from(byUrl.values()).sort((left, right) => left.startTime - right.startTime);
+}
+
 async function discoverGeneratedDiffUrls(state: ExtendedDiffState): Promise<string[]> {
   const currentReviewActionId = getCurrentReviewActionId();
   if (!currentReviewActionId) return [];
@@ -594,8 +648,7 @@ async function discoverGeneratedDiffUrls(state: ExtendedDiffState): Promise<stri
     const actions = collectReviewActionsFromText(await response.text()).filter((action) => action.id !== currentReviewActionId);
     const currentLevel = inferCurrentLevel(actions);
     for (const action of actions) {
-      if (currentLevel != null && action.level != null && action.level <= currentLevel) continue;
-      const url = buildDiffUrl(currentReviewActionId, action.id);
+      const url = buildGeneratedDiffUrlForAction(currentReviewActionId, currentLevel, action);
       if (!state.generatedDiffUrls.has(url)) {
         state.generatedDiffUrls.add(url);
         urls.push(url);
@@ -792,6 +845,8 @@ function injectStyles() {
     .bh-native-diff-same { color: hsl(var(--foreground)); }
     .bh-native-diff-added { color: #15803d; background: #dcfce7; border-radius: 3px; padding: 0 2px; }
     .bh-native-diff-removed { color: #b91c1c; background: #fee2e2; text-decoration: line-through; border-radius: 3px; padding: 0 2px; }
+    .bh-native-diff-overlay-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; }
+    .bh-native-diff-overlay-item { position: absolute; display: flex; align-items: flex-start; gap: 8px; box-sizing: border-box; overflow: hidden; padding: 2px 4px; background: rgba(255, 255, 255, 0.96); border-radius: 4px; }
     .bh-segmentation-mode-controls { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; padding: 2px; border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 6px; background: rgba(255, 255, 255, 0.88); }
     .bh-segmentation-mode-controls button { border: 0; border-radius: 4px; padding: 2px 7px; background: transparent; color: #334155; font-size: 11px; font-weight: 700; cursor: pointer; }
     .bh-segmentation-mode-controls button[data-active="true"] { background: #0f172a; color: #f8fafc; }
@@ -801,6 +856,10 @@ function injectStyles() {
 
 function removeSegmentationModeControls() {
   document.getElementById('bh-segmentation-mode-controls')?.remove();
+}
+
+function removeNativeDiffOverlayRoot() {
+  document.getElementById('bh-native-diff-overlay-root')?.remove();
 }
 
 function removeInjectedStyles() {
@@ -874,7 +933,10 @@ function getRenderableDiffs(state: ExtendedDiffState): LoadedDiff[] {
   if (state.activeNativeUrl) {
     return state.diffs.filter((diff) => diff.url === state.activeNativeUrl);
   }
-  return state.diffs.filter((diff) => diff.source === 'generated');
+  const generated = state.diffs.filter((diff) => diff.source === 'generated');
+  if (generated.length <= 1) return generated;
+  const compareLevels = new Set(generated.map((diff) => diff.compareLevel).filter((level) => level != null));
+  return compareLevels.size === 1 ? generated : [];
 }
 
 function getRenderableDiffKey(state: ExtendedDiffState): string {
@@ -915,26 +977,38 @@ function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?
   return element;
 }
 
-function restoreNativeDiffCells() {
-  document.querySelectorAll<HTMLElement>('[data-bh-native-diff-original]').forEach((cell) => {
-    cell.innerHTML = cell.dataset.bhNativeDiffOriginal || '';
-    delete cell.dataset.bhNativeDiffOriginal;
-    delete cell.dataset.bhNativeDiffApplied;
-  });
+function getNativeDiffOverlayRoot(): HTMLElement {
+  let root = document.getElementById('bh-native-diff-overlay-root') as HTMLElement | null;
+  if (!root) {
+    root = createElement('div', 'bh-native-diff-overlay-root');
+    root.id = 'bh-native-diff-overlay-root';
+    (document.body || document.documentElement).appendChild(root);
+  }
+  return root;
 }
 
-function renderPatchIntoCell(cell: HTMLElement, patch: TextPatch) {
-  if (!cell.dataset.bhNativeDiffOriginal) {
-    cell.dataset.bhNativeDiffOriginal = cell.innerHTML;
-  }
-  if (cell.dataset.bhNativeDiffApplied === patch.id) return;
-  cell.dataset.bhNativeDiffApplied = patch.id;
+function getVisibleCellRect(cell: HTMLElement): DOMRect | null {
+  const rect = cell.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return null;
+  return rect;
+}
 
-  const wrapper = createElement('div', 'flex items-center gap-2 py-0.5');
+function renderPatchIntoOverlay(root: HTMLElement, cell: HTMLElement, patch: TextPatch) {
+  const rect = getVisibleCellRect(cell);
+  if (!rect) return;
+
+  const item = createElement('div', 'bh-native-diff-overlay-item');
+  item.dataset.patchId = patch.id;
+  item.style.left = `${Math.max(0, rect.left)}px`;
+  item.style.top = `${Math.max(0, rect.top)}px`;
+  item.style.width = `${Math.min(window.innerWidth - Math.max(0, rect.left), rect.width)}px`;
+  item.style.height = `${rect.height}px`;
+  item.title = patch.relationship;
+
   const changedCount = countChangedTokens(patch.tokens);
-  wrapper.appendChild(createElement('div', 'bh-native-diff-badge', changedCount === 1 ? '1 change' : `${changedCount} changes`));
+  item.appendChild(createElement('div', 'bh-native-diff-badge', changedCount === 1 ? '1 change' : `${changedCount} changes`));
   const text = createElement('span', 'bh-native-diff-text');
-  text.title = patch.relationship;
   for (const token of patch.tokens) {
     const span = createElement(
       'span',
@@ -947,22 +1021,14 @@ function renderPatchIntoCell(cell: HTMLElement, patch: TextPatch) {
     );
     text.appendChild(span);
   }
-  wrapper.appendChild(text);
-  cell.replaceChildren(wrapper);
+  item.appendChild(text);
+  root.appendChild(item);
 }
 
-function applyTextDiffs(state: ExtendedDiffState) {
-  if (!isFeedbackRoute() || !isDiffViewEnabled()) {
-    restoreNativeDiffCells();
-    state.lastRenderedDiffKey = '';
-    return;
-  }
-  injectStyles();
-  const diffKey = getRenderableDiffKey(state);
-  if (state.lastRenderedDiffKey !== diffKey) {
-    restoreNativeDiffCells();
-    state.lastRenderedDiffKey = diffKey;
-  }
+function renderTextDiffOverlay(state: ExtendedDiffState) {
+  const root = getNativeDiffOverlayRoot();
+  root.replaceChildren();
+
   const rows = getTranscriptRows();
   const patches = getRenderableDiffs(state).flatMap((diff) => diff.textPatches);
   const usedCells = new Set<HTMLElement>();
@@ -971,8 +1037,24 @@ function applyTextDiffs(state: ExtendedDiffState) {
     const row = rows.find((candidate) => patch.anchorSegments.some((segment) => rowMatchesSegment(candidate, patch, segment)));
     if (!row || usedCells.has(row.textCell)) continue;
     usedCells.add(row.textCell);
-    renderPatchIntoCell(row.textCell, patch);
+    renderPatchIntoOverlay(root, row.textCell, patch);
   }
+
+  if (!root.childElementCount) {
+    removeNativeDiffOverlayRoot();
+  }
+}
+
+function applyTextDiffs(state: ExtendedDiffState) {
+  if (!isFeedbackRoute() || !isDiffViewEnabled()) {
+    removeNativeDiffOverlayRoot();
+    state.lastRenderedDiffKey = '';
+    return;
+  }
+  injectStyles();
+  const diffKey = getRenderableDiffKey(state);
+  state.lastRenderedDiffKey = diffKey;
+  renderTextDiffOverlay(state);
 }
 
 function getWaveformOverlayContainer(root: ShadowRoot): HTMLElement | null {
@@ -1275,11 +1357,11 @@ async function loadAvailableDiffs(state: ExtendedDiffState) {
   try {
     const nativeEntries = discoverDiffUrlEntries();
     state.activeNativeUrl = nativeEntries.length ? nativeEntries[nativeEntries.length - 1].url : state.activeNativeUrl;
-    const generatedUrls = nativeEntries.length ? [] : await discoverGeneratedDiffUrls(state);
-    const entries: DiffUrlEntry[] = [
+    const generatedUrls = await discoverGeneratedDiffUrls(state);
+    const entries = dedupeDiffEntries([
       ...nativeEntries,
       ...generatedUrls.map((url): DiffUrlEntry => ({ url, startTime: Number.MAX_SAFE_INTEGER, source: 'generated' }))
-    ].filter((entry) => !state.loadedUrls.has(entry.url));
+    ]).filter((entry) => !state.loadedUrls.has(entry.url));
 
     for (const entry of entries) {
       const { url } = entry;
@@ -1318,7 +1400,7 @@ function resetForRoute(state: ExtendedDiffState) {
   state.diffs = [];
   state.loading = false;
   state.lifecycle = 'inactive';
-  restoreNativeDiffCells();
+  removeNativeDiffOverlayRoot();
   clearWaveformOverlays();
   removeSegmentationModeControls();
   removeInjectedStyles();
@@ -1455,6 +1537,20 @@ function bindPerformanceObserver(state: ExtendedDiffState) {
   }
 }
 
+function bindViewportListeners(state: ExtendedDiffState) {
+  if (state.viewportEventHandler) return;
+  state.viewportEventHandler = () => scheduleObservedTick(state);
+  window.addEventListener('scroll', state.viewportEventHandler, true);
+  window.addEventListener('resize', state.viewportEventHandler);
+}
+
+function unbindViewportListeners(state: ExtendedDiffState) {
+  if (!state.viewportEventHandler) return;
+  window.removeEventListener('scroll', state.viewportEventHandler, true);
+  window.removeEventListener('resize', state.viewportEventHandler);
+  state.viewportEventHandler = null;
+}
+
 export function registerExtendedDiffViewService(helper: any) {
   if (!helper || helper.__extendedDiffViewRegistered) return;
   helper.__extendedDiffViewRegistered = true;
@@ -1462,6 +1558,7 @@ export function registerExtendedDiffViewService(helper: any) {
     timer: 0,
     retryTimers: [],
     observerDebounceTimer: 0,
+    viewportEventHandler: null,
     mutationObserver: null,
     performanceObserver: null,
     routeKey: '',
@@ -1482,6 +1579,7 @@ export function registerExtendedDiffViewService(helper: any) {
 
   bindMutationObserver(state);
   bindPerformanceObserver(state);
+  bindViewportListeners(state);
   tick(state);
   state.timer = window.setInterval(() => tick(state), NORMAL_POLL_INTERVAL_MS);
   helper.unbindExtendedDiffView = function unbindExtendedDiffView() {
@@ -1499,6 +1597,7 @@ export function registerExtendedDiffViewService(helper: any) {
     state.mutationObserver = null;
     state.performanceObserver?.disconnect();
     state.performanceObserver = null;
+    unbindViewportListeners(state);
     resetForRoute(state);
     helper.__extendedDiffViewRegistered = false;
   };
