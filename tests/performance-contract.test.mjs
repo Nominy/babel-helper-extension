@@ -53,3 +53,37 @@ test('steady-state observers are scoped away from whole body where possible', ()
   assert.match(linterSource, /function countPerf/);
   assert.doesNotMatch(linterSource, /safe\(\(\) => window\.__babelHelperPerf/);
 });
+
+test('minimap full redraws self-heal stale hosts and region data', () => {
+  const minimapSource = read('../src/services/minimap-service.ts');
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+
+  assert.match(minimapSource, /const discovered = discoverWaveformHosts\(\)/);
+  assert.match(minimapSource, /return discovered\.slice\(0, MINIMAP_MAX_TRACKS\)/);
+  assert.match(minimapSource, /function primaryHostStillCurrent/);
+  assert.match(minimapSource, /contentSignature !== minimap\.primaryContentSignature/);
+  assert.match(minimapSource, /host\.shadowRoot instanceof ShadowRoot/);
+  assert.match(minimapSource, /new MutationObserver\(\(\) => requestDebouncedFullSync\(minimap\)\)/);
+  assert.match(minimapSource, /minimap\.hostSignature = '';\s*minimap\.primaryContentSignature = '';\s*minimap\.fullSyncOk = false;/);
+
+  assert.match(bridgeSource, /function getMinimapContentSignature/);
+  assert.match(bridgeSource, /contentSignature: getMinimapContentSignature\(wave\)/);
+  assert.match(bridgeSource, /const signature = getMinimapPeakSignature\(wave\)/);
+  assert.match(bridgeSource, /minimapPeakCache\.set\(wave, base\)/);
+});
+
+test('minimap navigation seeks every visible wave and then recenters', () => {
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+  const applyIndex = bridgeSource.indexOf('const applied = applySourceTimeToWaves(waves, targetTime, duration)');
+  const centerIndex = bridgeSource.indexOf('const scrollLeft = centerViewportOnTime', applyIndex);
+
+  assert.match(bridgeSource, /function centerViewportOnTime/);
+  assert.match(bridgeSource, /function applySourceTime/);
+  assert.match(bridgeSource, /function applySourceTimeToWaves/);
+  assert.match(bridgeSource, /function getNavigationWaveSet/);
+  assert.match(bridgeSource, /renderer\.renderProgress\(progress\)/);
+  assert.match(bridgeSource, /const minimapNavigationTokens = new WeakMap\(\)/);
+  assert.match(bridgeSource, /window\.requestAnimationFrame\(\(\) =>/);
+  assert.ok(applyIndex > 0, 'navigateSource should set all waveform instances');
+  assert.ok(centerIndex > applyIndex, 'navigateSource should recenter after setting time');
+});

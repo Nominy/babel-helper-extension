@@ -1069,6 +1069,7 @@ export function initMagnifierBridge() {
   }
 
   const minimapPeakCache = new WeakMap();
+  const minimapNavigationTokens = new WeakMap();
 
   function resamplePeaksLinear(source, binCount) {
     if (!source || !source.length || !(binCount > 0)) {
@@ -1189,6 +1190,67 @@ export function initMagnifierBridge() {
       safe(() => wave.decodedData, null) ||
       safe(() => wave.renderer && wave.renderer.audioData, null)
     );
+  }
+
+  function getAudioBufferSignature(audio) {
+    if (!audio || typeof audio.getChannelData !== 'function') {
+      return 'no-audio';
+    }
+
+    const channel = safe(() => audio.getChannelData(0), null);
+    const length = channel && channel.length ? channel.length : Number(audio.length) || 0;
+    const duration = Number(audio.duration) || 0;
+    const channelCount = Math.max(1, Number(audio.numberOfChannels) || 1);
+    const samples = [];
+    if (channel && channel.length) {
+      const last = channel.length - 1;
+      for (const index of [0, Math.floor(last / 3), Math.floor((last * 2) / 3), last]) {
+        samples.push((Number(channel[index]) || 0).toFixed(5));
+      }
+    }
+
+    return [
+      duration.toFixed(3),
+      String(channelCount),
+      String(length),
+      samples.join(',')
+    ].join(':');
+  }
+
+  function getRegionSignatureForMinimap(wave) {
+    const regions = getSourceRegionEntries(wave);
+    if (!regions.length) {
+      return 'regions:0';
+    }
+
+    return (
+      'regions:' +
+      regions
+        .map((region) =>
+          [
+            Number(region.start).toFixed(3),
+            Number(region.end).toFixed(3),
+            region.backgroundColor || '',
+            region.borderLeft || '',
+            region.borderRight || ''
+          ].join(',')
+        )
+        .join(';')
+    );
+  }
+
+  function getMinimapPeakSignature(wave) {
+    return [
+      'duration:' + (Number(getDuration(wave)) || 0).toFixed(3),
+      'audio:' + getAudioBufferSignature(getDecodedAudioForPeaks(wave))
+    ].join('|');
+  }
+
+  function getMinimapContentSignature(wave) {
+    return [
+      getMinimapPeakSignature(wave),
+      getRegionSignatureForMinimap(wave)
+    ].join('|');
   }
 
   function downsampleAbsPeaksBounded(channelData, binCount) {
@@ -1758,20 +1820,25 @@ export function initMagnifierBridge() {
   function collectMinimapPeaks(wave, requestedBins) {
     const bins = clamp(Math.floor(Number(requestedBins) || 512), 64, 2048);
     const cacheBins = Math.max(bins, 1024);
+    const signature = getMinimapPeakSignature(wave);
 
     let base = minimapPeakCache.get(wave);
-    if (!base || !base.length) {
-      base = computeMinimapPeaksRaw(wave, cacheBins);
-      if (base.length) {
+    if (!base || base.signature !== signature || !Array.isArray(base.peaks) || !base.peaks.length) {
+      const peaks = computeMinimapPeaksRaw(wave, cacheBins);
+      base = {
+        signature,
+        peaks
+      };
+      if (peaks.length) {
         minimapPeakCache.set(wave, base);
       }
     }
 
-    if (!base || !base.length) {
+    if (!base || !Array.isArray(base.peaks) || !base.peaks.length) {
       return [];
     }
 
-    return bins === base.length ? Array.from(base) : resamplePeaksLinear(base, bins);
+    return bins === base.peaks.length ? Array.from(base.peaks) : resamplePeaksLinear(base.peaks, bins);
   }
 
   function getSourceRegionEntries(sourceWave) {
@@ -1932,6 +1999,73 @@ export function initMagnifierBridge() {
     };
   }
 
+  function applySourceTime(wave, targetTime, duration) {
+    if (!wave || typeof wave.setTime !== 'function') {
+      return false;
+    }
+
+    const applied = safe(() => {
+      wave.setTime(targetTime);
+      return true;
+    }, false);
+
+    const progress = duration > 0 ? clamp(targetTime / duration, 0, 1) : null;
+    if (progress != null) {
+      safe(() => {
+        const renderer = wave.renderer;
+        if (renderer && typeof renderer.renderProgress === 'function') {
+          renderer.renderProgress(progress);
+        }
+      }, null);
+    }
+
+    return Boolean(applied);
+  }
+
+  function applySourceTimeToWaves(waves, targetTime, duration) {
+    let applied = 0;
+    const seen = new Set();
+    for (const wave of Array.isArray(waves) ? waves : []) {
+      if (!wave || seen.has(wave)) {
+        continue;
+      }
+      seen.add(wave);
+      if (applySourceTime(wave, targetTime, duration)) {
+        applied += 1;
+      }
+    }
+
+    return applied;
+  }
+
+  function centerViewportOnTime(viewport, targetTime, pixelsPerSecond) {
+    if (
+      !(
+        viewport &&
+        viewport.scroll instanceof HTMLElement &&
+        viewport.totalWidth > 0 &&
+        viewport.visibleWidth > 0 &&
+        pixelsPerSecond > 0
+      )
+    ) {
+      return viewport && Number.isFinite(viewport.scrollLeft) ? viewport.scrollLeft : 0;
+    }
+
+    const maxScroll = Math.max(0, viewport.totalWidth - viewport.visibleWidth);
+    const desiredLeft = clamp(
+      targetTime * pixelsPerSecond - viewport.visibleWidth / 2,
+      0,
+      maxScroll
+    );
+    viewport.scroll.scrollLeft = desiredLeft;
+    viewport.scrollLeft = desiredLeft;
+    safe(() => {
+      viewport.scroll.dispatchEvent(new Event('scroll'));
+    }, null);
+
+    return desiredLeft;
+  }
+
   function getMinimapData(hostMarker, payload) {
     const resolved = resolveWaveForHost(hostMarker);
     const host = resolved.host;
@@ -1969,6 +2103,7 @@ export function initMagnifierBridge() {
         ok: true,
         duration,
         currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
+        contentSignature: getMinimapContentSignature(wave),
         sourcePixelsPerSecond,
         totalWidth: viewport.totalWidth,
         visibleWidth: viewport.visibleWidth,
@@ -1982,6 +2117,7 @@ export function initMagnifierBridge() {
       ok: true,
       duration,
       currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
+      contentSignature: getMinimapContentSignature(wave),
       sourcePixelsPerSecond,
       totalWidth: viewport.totalWidth,
       visibleWidth: viewport.visibleWidth,
@@ -2141,29 +2277,38 @@ export function initMagnifierBridge() {
 
     const duration = getDuration(wave);
     const targetTime = clamp(Number(time) || 0, 0, duration > 0 ? duration : Number(time) || 0);
-    wave.setTime(targetTime);
-
     const viewport = getViewportMetrics(host, wave);
-    if (viewport.scroll instanceof HTMLElement && viewport.totalWidth > 0 && viewport.visibleWidth > 0) {
-      const pixelsPerSecond = getSourcePixelsPerSecond(wave);
-      if (pixelsPerSecond > 0) {
-        const maxScroll = Math.max(0, viewport.totalWidth - viewport.visibleWidth);
-        const desiredLeft = clamp(
-          targetTime * pixelsPerSecond - viewport.visibleWidth / 2,
-          0,
-          maxScroll
-        );
-        viewport.scroll.scrollLeft = desiredLeft;
-        viewport.scrollLeft = desiredLeft;
-      }
+    const pixelsPerSecond = getSourcePixelsPerSecond(wave);
+    const waves = getNavigationWaveSet(host, wave);
+    const applied = applySourceTimeToWaves(waves, targetTime, duration);
+    if (!applied) {
+      return {
+        ok: false,
+        reason: 'wave-set-failed'
+      };
     }
+    const scrollLeft = centerViewportOnTime(viewport, targetTime, pixelsPerSecond);
+
+    const nextToken = (minimapNavigationTokens.get(wave) || 0) + 1;
+    minimapNavigationTokens.set(wave, nextToken);
+    safe(() => {
+      window.requestAnimationFrame(() => {
+        if (minimapNavigationTokens.get(wave) !== nextToken) {
+          return;
+        }
+        const nextViewport = getViewportMetrics(host, wave);
+        applySourceTimeToWaves(waves, targetTime, duration);
+        centerViewportOnTime(nextViewport, targetTime, pixelsPerSecond);
+      });
+    }, null);
 
     return {
       ok: true,
       time: targetTime,
+      waveCount: applied,
       totalWidth: viewport.totalWidth,
       visibleWidth: viewport.visibleWidth,
-      scrollLeft: viewport.scrollLeft
+      scrollLeft
     };
   }
 
@@ -2245,6 +2390,33 @@ export function initMagnifierBridge() {
         element.shadowRoot.querySelector('[part="scroll"]')
       );
     });
+  }
+
+  function getNavigationWaveSet(host, primaryWave) {
+    const seen = new Set();
+    const orderedHosts = [
+      host,
+      ...getVisibleWaveHosts().filter((candidate) => candidate !== host)
+    ];
+    const waves = [];
+
+    if (primaryWave && typeof primaryWave === 'object') {
+      seen.add(primaryWave);
+      waves.push(primaryWave);
+    }
+
+    for (const candidateHost of orderedHosts) {
+      const record = findExactWaveCandidate(candidateHost);
+      const wave = record ? record.value : null;
+      if (!wave || typeof wave !== 'object' || seen.has(wave)) {
+        continue;
+      }
+
+      seen.add(wave);
+      waves.push(wave);
+    }
+
+    return waves;
   }
 
   function getLoopWaveSet(hostMarker) {
