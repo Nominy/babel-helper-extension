@@ -870,15 +870,21 @@ function injectStyles() {
 }
 
 function removeSegmentationModeControls() {
-  document.getElementById('bh-segmentation-mode-controls')?.remove();
+  document.querySelectorAll('#bh-segmentation-mode-controls, .bh-segmentation-mode-controls').forEach((node) => node.remove());
 }
 
 function removeNativeDiffOverlayRoot() {
-  document.getElementById('bh-native-diff-overlay-root')?.remove();
+  document.querySelectorAll('#bh-native-diff-overlay-root, .bh-native-diff-overlay-root').forEach((node) => node.remove());
 }
 
 function removeInjectedStyles() {
   document.getElementById('babel-helper-extended-diff-style')?.remove();
+}
+
+function cancelTextOverlayRender(state: ExtendedDiffState) {
+  if (!state.textOverlayRaf) return;
+  window.cancelAnimationFrame(state.textOverlayRaf);
+  state.textOverlayRaf = 0;
 }
 
 function renderSegmentationModeControls(state: ExtendedDiffState) {
@@ -1026,6 +1032,10 @@ function isOverflowClippingElement(element: HTMLElement): boolean {
   return [style.overflow, style.overflowX, style.overflowY].some((value) => ['auto', 'scroll', 'hidden', 'clip'].includes(value));
 }
 
+function isTableStructureElement(element: HTMLElement): boolean {
+  return ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'COLGROUP', 'COL'].includes(element.tagName);
+}
+
 function isScrollableViewportElement(element: HTMLElement): boolean {
   return (
     element.clientWidth > 0 &&
@@ -1044,6 +1054,7 @@ function isKnownScrollViewportElement(element: HTMLElement): boolean {
 }
 
 function isTextOverlayClippingElement(element: HTMLElement): boolean {
+  if (isTableStructureElement(element)) return false;
   return isOverflowClippingElement(element) || isScrollableViewportElement(element) || isKnownScrollViewportElement(element);
 }
 
@@ -1055,6 +1066,35 @@ function insetRect(rect: RectBounds, insetPx: number): RectBounds | null {
     left: rect.left + insetPx
   };
   return inset.right > inset.left && inset.bottom > inset.top ? inset : null;
+}
+
+function findTableHeaderRow(table: HTMLElement): HTMLTableRowElement | null {
+  const explicitHeader = table.querySelector('thead tr');
+  if (explicitHeader instanceof HTMLTableRowElement) return explicitHeader;
+  return (
+    Array.from(table.querySelectorAll('tr')).find(
+      (row): row is HTMLTableRowElement => row instanceof HTMLTableRowElement && Boolean(row.querySelector('th'))
+    ) || null
+  );
+}
+
+function getTableHeaderOcclusionClip(cell: HTMLElement, rect: DOMRect): RectBounds | null {
+  const table = cell.closest('table');
+  if (!(table instanceof HTMLElement)) return null;
+
+  const headerRow = findTableHeaderRow(table);
+  if (!headerRow || headerRow.contains(cell)) return null;
+
+  const headerRect = headerRow.getBoundingClientRect();
+  if (headerRect.width <= 0 || headerRect.height <= 0) return null;
+  if (headerRect.bottom <= 0 || headerRect.top >= window.innerHeight || headerRect.bottom <= rect.top) return null;
+
+  return {
+    top: Math.min(headerRect.bottom, window.innerHeight),
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+    left: 0
+  };
 }
 
 function getClippedCellRect(cell: HTMLElement): ClippedCellRect | null {
@@ -1076,6 +1116,12 @@ function getClippedCellRect(cell: HTMLElement): ClippedCellRect | null {
       if (!clip) return null;
     }
     ancestor = ancestor.parentElement;
+  }
+
+  const headerClip = getTableHeaderOcclusionClip(cell, rect);
+  if (headerClip) {
+    clip = intersectRects(clip, headerClip);
+    if (!clip) return null;
   }
 
   clip = insetRect(clip, TEXT_OVERLAY_CLIP_INSET_PX);
@@ -1500,6 +1546,7 @@ async function loadAvailableDiffs(state: ExtendedDiffState) {
 }
 
 function resetForRoute(state: ExtendedDiffState) {
+  cancelTextOverlayRender(state);
   state.loadGeneration += 1;
   state.loadedUrls.clear();
   state.loadedReviewActionUrls.clear();
@@ -1712,16 +1759,14 @@ export function registerExtendedDiffViewService(helper: any) {
       window.clearTimeout(state.observerDebounceTimer);
       state.observerDebounceTimer = 0;
     }
-    if (state.textOverlayRaf) {
-      window.cancelAnimationFrame(state.textOverlayRaf);
-      state.textOverlayRaf = 0;
-    }
+    cancelTextOverlayRender(state);
     state.mutationObserver?.disconnect();
     state.mutationObserver = null;
     state.performanceObserver?.disconnect();
     state.performanceObserver = null;
     unbindViewportListeners(state);
     resetForRoute(state);
+    delete helper.unbindExtendedDiffView;
     helper.__extendedDiffViewRegistered = false;
   };
 }

@@ -21,12 +21,16 @@ test('extended diff has teardown, observers, and stale-load protection', () => {
   assert.match(source, /clearDiffToggleRetries\(state\)/);
   assert.match(source, /state\.observerDebounceTimer/);
   assert.match(source, /state\.textOverlayRaf/);
+  assert.match(source, /function cancelTextOverlayRender/);
+  assert.match(source, /cancelTextOverlayRender\(state\);[\s\S]*state\.loadGeneration \+= 1/);
   assert.match(source, /function bindViewportListeners/);
   assert.match(source, /window\.addEventListener\('scroll', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
   assert.match(source, /document\.addEventListener\('scroll', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
   assert.match(source, /window\.addEventListener\('wheel', state\.viewportEventHandler, \{ capture: true, passive: true \}\)/);
   assert.match(source, /function unbindViewportListeners/);
   assert.match(source, /window\.cancelAnimationFrame\(state\.textOverlayRaf\)/);
+  assert.match(source, /document\.querySelectorAll\('#bh-native-diff-overlay-root, \.bh-native-diff-overlay-root'\)/);
+  assert.match(source, /delete helper\.unbindExtendedDiffView/);
 });
 
 test('extended diff toggle recovery uses bounded retries, not interval bursts', () => {
@@ -75,6 +79,13 @@ test('extended diff renders text patches without rewriting React-owned transcrip
   assert.match(source, /function isScrollableViewportElement/);
   assert.match(source, /function isKnownScrollViewportElement/);
   assert.match(source, /function isTextOverlayClippingElement/);
+  assert.match(source, /function isTableStructureElement/);
+  assert.match(source, /if \(isTableStructureElement\(element\)\) return false/);
+  assert.match(source, /function findTableHeaderRow/);
+  assert.match(source, /function getTableHeaderOcclusionClip/);
+  assert.match(source, /headerRow\.contains\(cell\)/);
+  assert.match(source, /const headerClip = getTableHeaderOcclusionClip\(cell, rect\)/);
+  assert.match(source, /clip = intersectRects\(clip, headerClip\)/);
   assert.match(source, /TEXT_OVERLAY_CLIP_INSET_PX/);
   assert.match(source, /if \(isTextOverlayClippingElement\(ancestor\)\)/);
   assert.match(source, /clip = insetRect\(clip, TEXT_OVERLAY_CLIP_INSET_PX\)/);
