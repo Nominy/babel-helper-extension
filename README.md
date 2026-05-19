@@ -53,6 +53,8 @@ Custom linter notes:
 - Built-in helper rules currently include:
   - comma formatting: enforce `, ` (comma + single space)
   - incorrect interjection forms: normalize listed malformed spellings to dictionary forms during autofix
+- highlighted words: add Babel-native warning rows for configured words or phrases
+- The highlighted words dictionary is editable in extension options and defaults to the built-in list in `src/core/highlighted-words.ts`. Highlighted-word warnings are injected into Babel's native warning list; Babel's own warning click handler controls the yellow/green state, while the helper strips the helper-only asserted warning from outgoing save/lint payloads and restores task-scoped clearance from local storage.
 - Rule injection bridge lives in `src/content/linter-bridge.ts`.
 
 ## Validation

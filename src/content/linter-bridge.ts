@@ -1,19 +1,22 @@
 // @ts-nocheck
+import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from "../core/highlighted-words";
+
 export function initLinterBridge() {
   if (window.__babelHelperLinterBridge) {
     return;
   }
 
   const TOGGLE_EVENT = "babel-helper-linter-bridge-toggle";
+  const CONFIG_EVENT = "babel-helper-linter-bridge-config";
   const TEARDOWN_EVENT = "babel-helper-bridge-teardown";
   const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
+  const SAVE_ANNOTATIONS_PATH =
+    "/api/trpc/transcriptions.saveAnnotationsByReviewActionId";
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
   const NATIVE_LEADING_TRAILING_SPACES_REASON =
     "Extra spaces at the end or beginning of segments are not allowed.";
   const NATIVE_DOUBLE_SPACES_REASON = "Double spaces are not allowed.";
   const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
-  const QUOTE_PLACEMENT_RULE_REASON =
-    "Double quotes must not have stray spaces inside or be glued to surrounding words.";
   const UNICODE_QUOTE_RULE_REASON =
     'Use ASCII double quote (") instead of typographic or Unicode quote variants.';
   const CURLY_SPACING_RULE_REASON =
@@ -34,13 +37,18 @@ export function initLinterBridge() {
     'Segments must end with one of: ?, ..., !, -, --, ", or .';
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
     "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
+  const HIGHLIGHTED_WORD_RULE_REASON =
+    "Highlighted word requires clearance before use.";
   const RULE_SEVERITY = "error";
+  const HIGHLIGHTED_WORD_RULE_SEVERITY = "warning";
   const HIGHLIGHT_STYLE_ID = "babel-helper-linter-highlight-style";
   const HIGHLIGHT_MARK_ATTR = "data-babel-helper-linter-highlight";
   const HIGHLIGHT_OVERLAY_ATTR = "data-babel-helper-linter-overlay";
   const HIGHLIGHT_SWATCH_ATTR = "data-babel-helper-linter-swatch";
   const HIGHLIGHT_PREVIEW_ATTR = "data-babel-helper-linter-preview";
   const HIGHLIGHT_OBSERVER_DELAY_MS = 50;
+  const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
+    "babel-helper-highlighted-word-clearances:v1";
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 100;
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
@@ -66,11 +74,16 @@ export function initLinterBridge() {
   let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
   const routeLintCallCounts = new Map();
+  const clearedHighlightedWordKeys = new Set();
+  let highlightedWordClearancesLoaded = false;
+  let highlightedWordClearanceTaskKey = "";
   const debugState = {
     totalLintCalls: 0,
     last: null,
     autoLint: null,
   };
+  let highlightedWordsEnabled = true;
+  let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
   const INTERJECTION_CORRECTION_SPECS = [
     { canonical: "а", variants: ["аа", "а-а", "а-а-а"] },
     { canonical: "ага", variants: ["ага-а", "агаа"] },
@@ -144,14 +157,30 @@ export function initLinterBridge() {
     return "GET";
   }
 
-  function isLintRequest(input, init) {
+  function isPostRequestPath(input, init, path) {
     const method = getRequestMethod(input, init);
     if (method !== "POST") {
       return false;
     }
 
     const rawUrl = getRequestUrl(input);
-    return typeof rawUrl === "string" && rawUrl.indexOf(LINT_PATH) !== -1;
+    return typeof rawUrl === "string" && rawUrl.indexOf(path) !== -1;
+  }
+
+  function isLintRequest(input, init) {
+    return isPostRequestPath(input, init, LINT_PATH);
+  }
+
+  function isSaveAnnotationsRequest(input, init) {
+    return isPostRequestPath(input, init, SAVE_ANNOTATIONS_PATH);
+  }
+
+  function isTranscriptionsRequest(input) {
+    const rawUrl = getRequestUrl(input);
+    return (
+      typeof rawUrl === "string" &&
+      rawUrl.indexOf("/api/trpc/transcriptions.") !== -1
+    );
   }
 
   async function readRequestBodyText(input, init) {
@@ -168,6 +197,31 @@ export function initLinterBridge() {
     }
 
     return "";
+  }
+
+  function withRequestBodyText(input, init, bodyText) {
+    if (typeof bodyText !== "string") {
+      return { input, init };
+    }
+
+    if (input instanceof Request && (!init || init.body === undefined)) {
+      try {
+        return {
+          input: new Request(input, { body: bodyText }),
+          init: undefined,
+        };
+      } catch (_error) {
+        return {
+          input,
+          init: { ...(init || {}), body: bodyText },
+        };
+      }
+    }
+
+    return {
+      input,
+      init: { ...(init || {}), body: bodyText },
+    };
   }
 
   function readQueryInputPayload(urlString) {
@@ -197,6 +251,73 @@ export function initLinterBridge() {
     }
 
     return null;
+  }
+
+  function readStringArrayProp(source, keys) {
+    for (const key of keys) {
+      const value = source && typeof source === "object" ? source[key] : null;
+      if (Array.isArray(value)) {
+        return value.filter((item) => typeof item === "string");
+      }
+    }
+
+    return [];
+  }
+
+  function readAnnotationMetadata(source) {
+    const direct =
+      source && typeof source.metadata === "object" && source.metadata
+        ? source.metadata
+        : null;
+    if (direct) {
+      return direct;
+    }
+
+    const annotation =
+      source && source.annotation && typeof source.annotation === "object"
+        ? source.annotation
+        : null;
+    return annotation &&
+      typeof annotation.metadata === "object" &&
+      annotation.metadata
+      ? annotation.metadata
+      : null;
+  }
+
+  function readAssertedWarnings(source) {
+    const metadata = readAnnotationMetadata(source);
+    return readStringArrayProp(metadata, ["assertedWarnings"]);
+  }
+
+  function isHelperWarningReason(reason) {
+    return reason === HIGHLIGHTED_WORD_RULE_REASON;
+  }
+
+  function getAnnotationEntryFromObject(source, inheritedReviewActionId = "") {
+    if (!source || typeof source !== "object") {
+      return null;
+    }
+
+    const annotationId = readStringProp(source, ["annotationId", "id"]);
+    const text = readStringProp(source, [
+      "text",
+      "content",
+      "value",
+      "segmentText",
+    ]);
+    if (!annotationId || typeof text !== "string") {
+      return null;
+    }
+
+    return {
+      annotationId,
+      reviewActionId:
+        readStringProp(source, ["reviewActionId", "actionId"]) ||
+        inheritedReviewActionId ||
+        "",
+      text,
+      assertedWarnings: readAssertedWarnings(source),
+    };
   }
 
   function extractAnnotationEntries(root) {
@@ -244,7 +365,7 @@ export function initLinterBridge() {
     const orderedEntries = [];
     const entryById = new Map();
 
-    function visit(current) {
+    function visit(current, inheritedReviewActionId = "") {
       if (!current || typeof current !== "object" || seen.has(current)) {
         return;
       }
@@ -253,40 +374,48 @@ export function initLinterBridge() {
 
       if (Array.isArray(current)) {
         for (const item of current) {
-          visit(item);
+          visit(item, inheritedReviewActionId);
         }
         return;
       }
 
-      const annotationId = readStringProp(current, ["annotationId", "id"]);
-      const text = readStringProp(current, [
-        "text",
-        "content",
-        "value",
-        "segmentText",
-      ]);
-      if (annotationId && typeof text === "string") {
+      const reviewActionId =
+        readStringProp(current, ["reviewActionId", "actionId"]) ||
+        inheritedReviewActionId;
+      const annotationEntry = getAnnotationEntryFromObject(
+        current,
+        reviewActionId,
+      );
+      if (annotationEntry) {
         const speakerKey = readSpeakerKey(current);
-        const existing = entryById.get(annotationId);
+        const existing = entryById.get(annotationEntry.annotationId);
         if (existing) {
-          existing.text = text;
+          existing.text = annotationEntry.text;
+          if (!existing.reviewActionId && annotationEntry.reviewActionId) {
+            existing.reviewActionId = annotationEntry.reviewActionId;
+          }
+          if (annotationEntry.assertedWarnings.length) {
+            existing.assertedWarnings = annotationEntry.assertedWarnings;
+          }
           if (!existing.speakerKey && speakerKey) {
             existing.speakerKey = speakerKey;
           }
         } else {
           const entry = {
-            annotationId,
-            text,
+            annotationId: annotationEntry.annotationId,
+            reviewActionId: annotationEntry.reviewActionId,
+            text: annotationEntry.text,
             speakerKey,
+            assertedWarnings: annotationEntry.assertedWarnings,
           };
-          entryById.set(annotationId, entry);
+          entryById.set(annotationEntry.annotationId, entry);
           orderedEntries.push(entry);
         }
       }
 
       for (const value of Object.values(current)) {
         if (value && typeof value === "object") {
-          visit(value);
+          visit(value, reviewActionId);
         }
       }
     }
@@ -478,40 +607,6 @@ export function initLinterBridge() {
       ),
     }));
 
-  function hasQuotePlacementViolation(text) {
-    const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
-    const quoteIndices = getQuoteIndices(normalizedText);
-    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
-      return false;
-    }
-
-    for (let index = 0; index < quoteIndices.length; index += 2) {
-      const openIndex = quoteIndices[index];
-      const closeIndex = quoteIndices[index + 1];
-      const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : "";
-      const nextCharAfterOpen =
-        openIndex + 1 < normalizedText.length
-          ? normalizedText[openIndex + 1]
-          : "";
-      const prevCharBeforeClose =
-        closeIndex > 0 ? normalizedText[closeIndex - 1] : "";
-      const nextChar =
-        closeIndex + 1 < normalizedText.length
-          ? normalizedText[closeIndex + 1]
-          : "";
-
-      if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
-        return true;
-      }
-
-      if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   function hasCurlySpacingViolation(text) {
     if (typeof text !== "string") {
       return false;
@@ -628,6 +723,10 @@ export function initLinterBridge() {
       typeof text === "string" &&
       normalizeIncorrectInterjectionForms(text) !== text
     );
+  }
+
+  function hasHighlightedWordViolation(text) {
+    return getHighlightedWordMatches(text).length > 0;
   }
 
   function hasTerminalPunctuationViolation(text) {
@@ -1266,6 +1365,229 @@ export function initLinterBridge() {
     );
   }
 
+  function getUnicodeQuoteMatches(text) {
+    return collectRegexMatches(text, UNICODE_DOUBLE_QUOTE_PATTERN);
+  }
+
+  function getUnicodeDashMatches(text) {
+    return collectRegexMatches(text, UNICODE_DASH_PATTERN);
+  }
+
+  function getDoubleDashPunctuationMatches(text) {
+    return collectRegexMatchesOutsideGenericTags(text, /--[.,?!:;]+/gu);
+  }
+
+  function getSingleDashPunctuationMatches(text) {
+    return collectRegexMatchesOutsideGenericTags(text, /(?<!-)-[.,?!:;]+/gu);
+  }
+
+  function getIncorrectInterjectionFormMatches(text) {
+    return compactMatches(
+      INTERJECTION_CORRECTIONS.flatMap((correction) =>
+        collectRegexMatches(text, correction.pattern, 2),
+      ),
+    );
+  }
+
+  function getHighlightedWordPattern(word) {
+    const escaped = escapeRegExp(word).replace(/\s+/g, "\\s+");
+    return new RegExp(
+      `(?<![\\p{L}\\p{N}\\p{M}_])${escaped}(?![\\p{L}\\p{N}\\p{M}_])`,
+      "giu",
+    );
+  }
+
+  function getHighlightedWordMatches(text) {
+    if (!highlightedWordsEnabled || !highlightedWords.length) {
+      return [];
+    }
+
+    return compactMatches(
+      highlightedWords.flatMap((word) =>
+        collectRegexMatchesOutsideGenericTags(
+          text,
+          getHighlightedWordPattern(word),
+        ),
+      ),
+    );
+  }
+
+  function getHighlightedWordClearanceKey(entry) {
+    if (!entry || typeof entry.text !== "string") {
+      return "";
+    }
+
+    const matchSignature = getHighlightedWordMatches(entry.text)
+      .map(
+        (match) =>
+          `${match.start}:${match.end}:${String(match.text || "").toLocaleLowerCase()}`,
+      )
+      .join("|");
+    if (!matchSignature) {
+      return "";
+    }
+
+    return [
+      getRouteKey(),
+      entry.reviewActionId || "",
+      entry.annotationId || "",
+      entry.text,
+      matchSignature,
+    ].join("\u0000");
+  }
+
+  function getHighlightedWordClearanceTaskKey(entry) {
+    return (entry && entry.reviewActionId) || getRouteKey() || "";
+  }
+
+  function loadHighlightedWordClearances(entry) {
+    const taskKey = getHighlightedWordClearanceTaskKey(entry);
+    if (
+      highlightedWordClearancesLoaded &&
+      highlightedWordClearanceTaskKey === taskKey
+    ) {
+      return;
+    }
+
+    highlightedWordClearancesLoaded = true;
+    highlightedWordClearanceTaskKey = taskKey;
+    clearedHighlightedWordKeys.clear();
+    try {
+      const raw = window.localStorage.getItem(
+        HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY,
+      );
+      const parsed = safeJsonParse(raw);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.taskKey === taskKey &&
+        Array.isArray(parsed.keys)
+      ) {
+        parsed.keys
+          .filter((key) => typeof key === "string" && key)
+          .slice(-1000)
+          .forEach((key) => clearedHighlightedWordKeys.add(key));
+      } else if (raw) {
+        persistHighlightedWordClearances();
+      }
+    } catch (_error) {
+      // localStorage can be blocked; in-memory clearance still works.
+    }
+  }
+
+  function persistHighlightedWordClearances() {
+    try {
+      const keys = Array.from(clearedHighlightedWordKeys).slice(-1000);
+      window.localStorage.setItem(
+        HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY,
+        JSON.stringify({
+          taskKey: highlightedWordClearanceTaskKey || getRouteKey() || "",
+          keys,
+        }),
+      );
+    } catch (_error) {
+      // Ignore storage quota/privacy failures.
+    }
+  }
+
+  function isHighlightedWordCleared(entry) {
+    loadHighlightedWordClearances(entry);
+    const key = getHighlightedWordClearanceKey(entry);
+    return Boolean(key && clearedHighlightedWordKeys.has(key));
+  }
+
+  function markHighlightedWordCleared(entry) {
+    loadHighlightedWordClearances(entry);
+    const key = getHighlightedWordClearanceKey(entry);
+    if (!key || clearedHighlightedWordKeys.has(key)) {
+      return false;
+    }
+
+    clearedHighlightedWordKeys.add(key);
+    persistHighlightedWordClearances();
+    return true;
+  }
+
+  function unmarkHighlightedWordCleared(entry) {
+    loadHighlightedWordClearances(entry);
+    const key = getHighlightedWordClearanceKey(entry);
+    if (!key || !clearedHighlightedWordKeys.has(key)) {
+      return false;
+    }
+
+    clearedHighlightedWordKeys.delete(key);
+    persistHighlightedWordClearances();
+    return true;
+  }
+
+  function ensureHelperAssertedWarning(entry, target) {
+    if (
+      !entry ||
+      !target ||
+      typeof target !== "object" ||
+      !hasHighlightedWordViolation(entry.text) ||
+      !isHighlightedWordCleared(entry)
+    ) {
+      return false;
+    }
+
+    const metadata =
+      target.metadata && typeof target.metadata === "object"
+        ? target.metadata
+        : {};
+    const assertedWarnings = Array.isArray(metadata.assertedWarnings)
+      ? metadata.assertedWarnings
+      : [];
+    if (assertedWarnings.includes(HIGHLIGHTED_WORD_RULE_REASON)) {
+      return false;
+    }
+
+    if (metadata !== target.metadata) {
+      target.metadata = metadata;
+    }
+    metadata.assertedWarnings = assertedWarnings.concat(
+      HIGHLIGHTED_WORD_RULE_REASON,
+    );
+    return true;
+  }
+
+  function applyHighlightedWordClearancesToPayload(root) {
+    if (!root || typeof root !== "object") {
+      return false;
+    }
+
+    const seen = new Set();
+    let changed = false;
+
+    function visit(value, inheritedReviewActionId = "") {
+      if (!value || typeof value !== "object" || seen.has(value)) {
+        return;
+      }
+
+      seen.add(value);
+
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, inheritedReviewActionId));
+        return;
+      }
+
+      const reviewActionId =
+        readStringProp(value, ["reviewActionId", "actionId"]) ||
+        inheritedReviewActionId;
+      const entry = getAnnotationEntryFromObject(value, reviewActionId);
+      if (entry && ensureHelperAssertedWarning(entry, value)) {
+        changed = true;
+      }
+
+      Object.values(value).forEach((nested) =>
+        visit(nested, reviewActionId),
+      );
+    }
+
+    visit(root);
+    return changed;
+  }
+
   function getCommaSpacingMatches(text) {
     return collectRegexMatches(text, /\s+,|,(?![\d ]|$)|, {2,}/gu);
   }
@@ -1306,49 +1628,6 @@ export function initLinterBridge() {
         .map((index) => clampTextRange(text, index, index + 1))
         .filter(Boolean),
     );
-  }
-
-  function getQuotePlacementMatches(text) {
-    const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
-    const quoteIndices = getQuoteIndices(normalizedText);
-    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
-      return [];
-    }
-
-    const matches = [];
-    for (let index = 0; index < quoteIndices.length; index += 2) {
-      const openIndex = quoteIndices[index];
-      const closeIndex = quoteIndices[index + 1];
-      const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : "";
-      const nextCharAfterOpen =
-        openIndex + 1 < normalizedText.length
-          ? normalizedText[openIndex + 1]
-          : "";
-      const prevCharBeforeClose =
-        closeIndex > 0 ? normalizedText[closeIndex - 1] : "";
-      const nextChar =
-        closeIndex + 1 < normalizedText.length
-          ? normalizedText[closeIndex + 1]
-          : "";
-
-      if (/\s/.test(nextCharAfterOpen)) {
-        matches.push(clampTextRange(text, openIndex, openIndex + 2));
-      }
-
-      if (/\s/.test(prevCharBeforeClose)) {
-        matches.push(clampTextRange(text, closeIndex - 1, closeIndex + 1));
-      }
-
-      if (isWordCharacter(prevChar)) {
-        matches.push(clampTextRange(text, openIndex - 1, openIndex + 1));
-      }
-
-      if (isWordCharacter(nextChar)) {
-        matches.push(clampTextRange(text, closeIndex, closeIndex + 2));
-      }
-    }
-
-    return compactMatches(matches.filter(Boolean));
   }
 
   function getCurlySpacingMatches(text) {
@@ -1477,13 +1756,15 @@ export function initLinterBridge() {
     );
   }
 
-  function makeCustomIssue(entry, reason, matches) {
+  function makeCustomIssue(entry, reason, matches, severity = RULE_SEVERITY) {
     return {
       annotationId: entry.annotationId,
+      reviewActionId: entry.reviewActionId || "",
       reason,
-      severity: RULE_SEVERITY,
+      severity,
       babelHelper: {
         matches: compactMatches(matches),
+        sourceText: typeof entry.text === "string" ? entry.text : "",
       },
     };
   }
@@ -1502,12 +1783,10 @@ export function initLinterBridge() {
 
       if (hasUnbalancedDoubleQuotes(entry.text)) {
         issues.push(makeCustomIssue(entry, QUOTE_BALANCE_RULE_REASON, getUnbalancedDoubleQuoteMatches(entry.text)));
-      } else if (hasQuotePlacementViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, QUOTE_PLACEMENT_RULE_REASON, getQuotePlacementMatches(entry.text)));
       }
 
       if (hasUnicodeQuoteViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, UNICODE_QUOTE_RULE_REASON, collectRegexMatches(entry.text, UNICODE_DOUBLE_QUOTE_PATTERN)));
+        issues.push(makeCustomIssue(entry, UNICODE_QUOTE_RULE_REASON, getUnicodeQuoteMatches(entry.text)));
       }
 
       if (hasCurlySpacingViolation(entry.text)) {
@@ -1515,22 +1794,23 @@ export function initLinterBridge() {
       }
 
       if (hasUnicodeDashViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, UNICODE_DASH_RULE_REASON, collectRegexMatches(entry.text, UNICODE_DASH_PATTERN)));
+        issues.push(makeCustomIssue(entry, UNICODE_DASH_RULE_REASON, getUnicodeDashMatches(entry.text)));
       }
 
       if (hasDoubleDashPunctuationViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, DOUBLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatchesOutsideGenericTags(entry.text, /--[.,?!:;]+/gu)));
+        issues.push(makeCustomIssue(entry, DOUBLE_DASH_PUNCTUATION_RULE_REASON, getDoubleDashPunctuationMatches(entry.text)));
       }
 
       if (hasSingleDashPunctuationViolation(entry.text)) {
-        issues.push(makeCustomIssue(entry, SINGLE_DASH_PUNCTUATION_RULE_REASON, collectRegexMatchesOutsideGenericTags(entry.text, /(?<!-)-[.,?!:;]+/gu)));
+        issues.push(makeCustomIssue(entry, SINGLE_DASH_PUNCTUATION_RULE_REASON, getSingleDashPunctuationMatches(entry.text)));
       }
 
       if (hasIncorrectInterjectionFormsViolation(entry.text)) {
-        const interjectionMatches = INTERJECTION_CORRECTIONS.flatMap((correction) =>
-          collectRegexMatches(entry.text, correction.pattern, 2),
-        );
-        issues.push(makeCustomIssue(entry, INCORRECT_INTERJECTION_FORMS_RULE_REASON, interjectionMatches));
+        issues.push(makeCustomIssue(entry, INCORRECT_INTERJECTION_FORMS_RULE_REASON, getIncorrectInterjectionFormMatches(entry.text)));
+      }
+
+      if (hasHighlightedWordViolation(entry.text)) {
+        issues.push(makeCustomIssue(entry, HIGHLIGHTED_WORD_RULE_REASON, getHighlightedWordMatches(entry.text), HIGHLIGHTED_WORD_RULE_SEVERITY));
       }
 
       if (hasSentenceBoundaryCapitalizationViolation(entry.text)) {
@@ -1997,29 +2277,110 @@ export function initLinterBridge() {
     return changed;
   }
 
-  function getIssueHighlightEntries(issues) {
+  function normalizeIssueHighlightRange(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const start = Number(value.start);
+    const end = Number(value.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return null;
+    }
+
+    const range = {
+      start,
+      end,
+    };
+    if (typeof value.text === "string" && value.text) {
+      range.text = value.text;
+    }
+
+    return range;
+  }
+
+  function compactHighlightRanges(ranges) {
+    if (!Array.isArray(ranges) || !ranges.length) {
+      return [];
+    }
+
+    const seen = new Set();
+    const compacted = [];
+    for (const range of ranges) {
+      const normalized = normalizeIssueHighlightRange(range);
+      if (!normalized) {
+        continue;
+      }
+
+      const key = `${normalized.start}\u0000${normalized.end}\u0000${normalized.text || ""}`;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      compacted.push(normalized);
+    }
+
+    return compacted.slice(0, 8);
+  }
+
+  function getIssueRangeCandidates(issue) {
+    if (!issue || typeof issue !== "object") {
+      return [];
+    }
+
+    const helper =
+      issue.babelHelper && typeof issue.babelHelper === "object"
+        ? issue.babelHelper
+        : {};
+    const candidates = [];
+    for (const source of [
+      helper.matches,
+      helper.ranges,
+      issue.matches,
+      issue.ranges,
+    ]) {
+      if (Array.isArray(source)) {
+        candidates.push(...source);
+      }
+    }
+
+    candidates.push(issue);
+    return candidates;
+  }
+
+  function getIssueSourceText(issue) {
+    const helper =
+      issue &&
+      issue.babelHelper &&
+      typeof issue.babelHelper === "object"
+        ? issue.babelHelper
+        : null;
+    return helper && typeof helper.sourceText === "string"
+      ? helper.sourceText
+      : "";
+  }
+
+  function getIssueHighlightEntries(issues, rowText = "") {
     if (!Array.isArray(issues)) {
       return [];
     }
 
     return issues
       .map((issue) => {
-        const matches =
-          issue &&
-          issue.babelHelper &&
-          Array.isArray(issue.babelHelper.matches)
-            ? issue.babelHelper.matches
-            : [];
+        const sourceText = getIssueSourceText(issue);
+        if (rowText && sourceText && sourceText !== rowText) {
+          return null;
+        }
+
+        const ranges = compactHighlightRanges(getIssueRangeCandidates(issue));
         return {
           reason: issue && typeof issue.reason === "string" ? issue.reason : "",
-          matches: matches
-            .map((match) =>
-              match && typeof match.text === "string" ? match.text : "",
-            )
-            .filter(Boolean),
+          matches: ranges.map((range) => range.text || "").filter(Boolean),
+          ranges,
         };
       })
-      .filter((entry) => entry.reason && entry.matches.length);
+      .filter((entry) => entry && entry.reason && (entry.matches.length || entry.ranges.length));
   }
 
   function getHoveredRowText() {
@@ -2136,12 +2497,11 @@ export function initLinterBridge() {
     );
   }
 
-  function getNativeTooltipHighlightEntries() {
+  function getNativeTooltipHighlightEntries(rowText = getHoveredRowText()) {
     if (!document.body) {
       return [];
     }
 
-    const rowText = getHoveredRowText();
     if (!rowText) {
       return [];
     }
@@ -2149,64 +2509,124 @@ export function initLinterBridge() {
     const entries = [];
     const bodyText = document.body.innerText || "";
 
-    if (bodyText.includes("Extra spaces at the end or beginning")) {
-      const matches = getLeadingTrailingSpaceMatches(rowText);
-      if (matches.length) {
-        entries.push({
-          reason: NATIVE_LEADING_TRAILING_SPACES_REASON,
-          matches: matches.map((match) => match.text).filter(Boolean),
-          ranges: matches,
-        });
-      }
-    }
+    const tooltipRules = [
+      {
+        reason: NATIVE_LEADING_TRAILING_SPACES_REASON,
+        markers: [
+          NATIVE_LEADING_TRAILING_SPACES_REASON,
+          "Extra spaces at the end or beginning",
+        ],
+        getMatches: getLeadingTrailingSpaceMatches,
+      },
+      {
+        reason: NATIVE_DOUBLE_SPACES_REASON,
+        markers: [NATIVE_DOUBLE_SPACES_REASON, "Double spaces", "double spaces"],
+        getMatches: getDoubleSpaceMatches,
+      },
+      {
+        reason: COMMA_RULE_REASON,
+        markers: [COMMA_RULE_REASON, "Commas must be formatted"],
+        getMatches: getCommaSpacingMatches,
+      },
+      {
+        reason: QUOTE_BALANCE_RULE_REASON,
+        markers: [QUOTE_BALANCE_RULE_REASON, "Double quotes must be balanced"],
+        getMatches: getUnbalancedDoubleQuoteMatches,
+      },
+      {
+        reason: UNICODE_QUOTE_RULE_REASON,
+        markers: [
+          UNICODE_QUOTE_RULE_REASON,
+          "typographic or Unicode quote",
+        ],
+        getMatches: getUnicodeQuoteMatches,
+      },
+      {
+        reason: CURLY_SPACING_RULE_REASON,
+        markers: [CURLY_SPACING_RULE_REASON, "Curly tags must be formatted"],
+        getMatches: getCurlySpacingMatches,
+      },
+      {
+        reason: UNICODE_DASH_RULE_REASON,
+        markers: [UNICODE_DASH_RULE_REASON, "typographic or Unicode dash"],
+        getMatches: getUnicodeDashMatches,
+      },
+      {
+        reason: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
+        markers: [
+          DOUBLE_DASH_PUNCTUATION_RULE_REASON,
+          "Punctuation immediately after double dash",
+        ],
+        getMatches: getDoubleDashPunctuationMatches,
+      },
+      {
+        reason: SINGLE_DASH_PUNCTUATION_RULE_REASON,
+        markers: [
+          SINGLE_DASH_PUNCTUATION_RULE_REASON,
+          "Punctuation immediately after single dash",
+        ],
+        getMatches: getSingleDashPunctuationMatches,
+      },
+      {
+        reason: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+        markers: [
+          INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+          "Incorrect interjection forms",
+          "dictionary spelling",
+        ],
+        getMatches: getIncorrectInterjectionFormMatches,
+      },
+      {
+        reason: HIGHLIGHTED_WORD_RULE_REASON,
+        markers: [
+          HIGHLIGHTED_WORD_RULE_REASON,
+          "Highlighted word requires clearance",
+        ],
+        getMatches: getHighlightedWordMatches,
+      },
+      {
+        reason: SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
+        markers: [
+          SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
+          "Words after clear sentence endings",
+          "must start uppercase",
+        ],
+        getMatches: getSentenceBoundaryCapitalizationMatches,
+      },
+      {
+        reason: POLITE_PRONOUN_CASE_RULE_REASON,
+        markers: [
+          POLITE_PRONOUN_CASE_RULE_REASON,
+          "Russian polite pronouns",
+          "must be lowercase mid-sentence",
+        ],
+        getMatches: getPolitePronounCaseMatches,
+      },
+      {
+        reason: TERMINAL_PUNCTUATION_RULE_REASON,
+        markers: [TERMINAL_PUNCTUATION_RULE_REASON, "Segments must end with one of"],
+        getMatches: getTerminalPunctuationMatches,
+      },
+      {
+        reason: SEGMENT_START_CAPITALIZATION_RULE_REASON,
+        markers: [
+          SEGMENT_START_CAPITALIZATION_RULE_REASON,
+          "Segments must start with uppercase",
+          "segments starting with ...",
+        ],
+        getMatches: (text) => getSegmentStartCapitalizationMatches({ text }),
+      },
+    ];
 
-    if (bodyText.includes("double spaces") || bodyText.includes("Double spaces")) {
-      const matches = getDoubleSpaceMatches(rowText);
-      if (matches.length) {
-        entries.push({
-          reason: NATIVE_DOUBLE_SPACES_REASON,
-          matches: matches.map((match) => match.text).filter(Boolean),
-          ranges: matches,
-        });
+    for (const rule of tooltipRules) {
+      if (!rule.markers.some((marker) => bodyText.includes(marker))) {
+        continue;
       }
-    }
 
-    if (
-      bodyText.includes("Words after clear sentence endings") ||
-      bodyText.includes("must start uppercase")
-    ) {
-      const matches = getSentenceBoundaryCapitalizationMatches(rowText);
+      const matches = rule.getMatches(rowText);
       if (matches.length) {
         entries.push({
-          reason: "Words after clear sentence endings",
-          matches: matches.map((match) => match.text).filter(Boolean),
-          ranges: matches,
-        });
-      }
-    }
-
-    if (
-      bodyText.includes("Russian polite pronouns") ||
-      bodyText.includes("must be lowercase mid-sentence")
-    ) {
-      const matches = getPolitePronounCaseMatches(rowText);
-      if (matches.length) {
-        entries.push({
-          reason: "Russian polite pronouns",
-          matches: matches.map((match) => match.text).filter(Boolean),
-          ranges: matches,
-        });
-      }
-    }
-
-    if (
-      bodyText.includes("must be formatted") &&
-      bodyText.includes('", "')
-    ) {
-      const matches = getCommaSpacingMatches(rowText);
-      if (matches.length) {
-        entries.push({
-          reason: "Commas must be formatted",
+          reason: rule.reason,
           matches: matches.map((match) => match.text).filter(Boolean),
           ranges: matches,
         });
@@ -2433,15 +2853,36 @@ export function initLinterBridge() {
 
   function hideVisibleNativeLintTooltips() {
     const tooltipTextParts = [
+      NATIVE_LEADING_TRAILING_SPACES_REASON,
+      NATIVE_DOUBLE_SPACES_REASON,
+      COMMA_RULE_REASON,
+      QUOTE_BALANCE_RULE_REASON,
+      UNICODE_QUOTE_RULE_REASON,
+      CURLY_SPACING_RULE_REASON,
+      UNICODE_DASH_RULE_REASON,
+      DOUBLE_DASH_PUNCTUATION_RULE_REASON,
+      SINGLE_DASH_PUNCTUATION_RULE_REASON,
+      INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+      HIGHLIGHTED_WORD_RULE_REASON,
+      SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
+      POLITE_PRONOUN_CASE_RULE_REASON,
+      TERMINAL_PUNCTUATION_RULE_REASON,
+      SEGMENT_START_CAPITALIZATION_RULE_REASON,
       "Words after clear sentence endings",
       "must start uppercase",
       "Commas must be formatted",
+      "Incorrect interjection forms",
+      "dictionary spelling",
+      "Highlighted word requires clearance",
     ];
     const candidates = document.querySelectorAll(
-      '[role="tooltip"], [data-radix-popper-content-wrapper], body > div',
+      '[role="tooltip"], [data-radix-popper-content-wrapper]',
     );
     for (const candidate of candidates) {
       if (!(candidate instanceof HTMLElement)) {
+        continue;
+      }
+      if (candidate.querySelector("main, table, textarea, input")) {
         continue;
       }
 
@@ -2462,9 +2903,10 @@ export function initLinterBridge() {
     applyingHighlights = true;
     try {
       unwrapHighlightMarks(document);
+      const rowText = getHoveredRowText();
       const entries = mergeHighlightEntries(
-        getIssueHighlightEntries(currentHighlightIssues).concat(
-          getNativeTooltipHighlightEntries(),
+        getIssueHighlightEntries(currentHighlightIssues, rowText).concat(
+          getNativeTooltipHighlightEntries(rowText),
         ),
       );
       if (!entries.length) {
@@ -2563,7 +3005,89 @@ export function initLinterBridge() {
     }
   }
 
+  function findActiveHighlightedWordIssueForRow(row) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    const rowText = getRowTextValue(row);
+    return (
+      currentHighlightIssues.find(
+        (issue) =>
+          issue &&
+          issue.reason === HIGHLIGHTED_WORD_RULE_REASON &&
+          getIssueSourceText(issue) === rowText,
+      ) || null
+    );
+  }
+
+  function isNativeLintStatusTrigger(element) {
+    return (
+      element instanceof HTMLElement &&
+      element.classList.contains("cursor-pointer") &&
+      Array.from(element.children).some(
+        (child) =>
+          child instanceof HTMLElement &&
+          String(child.className || "").includes("bg-yellow"),
+      )
+    );
+  }
+
+  function isNativeLintSuccessTrigger(element) {
+    return (
+      element instanceof HTMLElement &&
+      element.classList.contains("cursor-pointer") &&
+      Array.from(element.children).some(
+        (child) =>
+          child instanceof HTMLElement &&
+          String(child.className || "").includes("bg-green"),
+      )
+    );
+  }
+
+  function rememberNativeHighlightedWordWarningUndo(warningTrigger) {
+    if (!(warningTrigger instanceof HTMLElement)) {
+      return false;
+    }
+
+    const row = warningTrigger.closest("tr");
+    const issue = findActiveHighlightedWordIssueForRow(row);
+    if (!issue) {
+      return false;
+    }
+
+    return unmarkHighlightedWordCleared({
+      annotationId: issue.annotationId || "",
+      reviewActionId:
+        typeof issue.reviewActionId === "string" ? issue.reviewActionId : "",
+      text: getIssueSourceText(issue),
+    });
+  }
+
+  function observeNativeHighlightedWordWarningClick(event) {
+    const target = event && event.target;
+    const warningTrigger =
+      target instanceof Element ? target.closest(".cursor-pointer") : null;
+    if (!isNativeLintStatusTrigger(warningTrigger)) {
+      if (isNativeLintSuccessTrigger(warningTrigger)) {
+        rememberNativeHighlightedWordWarningUndo(warningTrigger);
+      }
+      return false;
+    }
+
+    const row = warningTrigger.closest("tr");
+    const issue = findActiveHighlightedWordIssueForRow(row);
+    if (!issue) {
+      return false;
+    }
+
+    scheduleLinterHighlights();
+    return true;
+  }
+
   function handleHighlightClick(event) {
+    observeNativeHighlightedWordWarningClick(event);
+
     const target = event && event.target;
     const row = target instanceof Element ? target.closest("tr") : null;
     if (row instanceof HTMLTableRowElement) {
@@ -2585,6 +3109,15 @@ export function initLinterBridge() {
     currentHighlightIssues = [];
     unwrapHighlightMarks(document);
     removeHighlightStyle();
+  }
+
+  function removeCurrentHighlightedWordIssues() {
+    const nextIssues = currentHighlightIssues.filter(
+      (issue) => !isHelperWarningReason(issue && issue.reason),
+    );
+    const changed = nextIssues.length !== currentHighlightIssues.length;
+    currentHighlightIssues = nextIssues;
+    return changed;
   }
 
   function isCompactJsonlFramePayload(payload) {
@@ -2685,6 +3218,47 @@ export function initLinterBridge() {
         )
         : rewriteJsonPayload(parsed.payload, additionalIssues, shouldSuppressIssue);
       if (!lineChanged) {
+        return line;
+      }
+
+      changed = true;
+      return parsed.prefix + JSON.stringify(parsed.payload);
+    });
+
+    if (!changed) {
+      return null;
+    }
+
+    return mapped.join("\n");
+  }
+
+  function tryApplyHighlightedWordClearancesJsonText(rawText) {
+    const parsed = safeJsonParse(rawText);
+    if (parsed == null) {
+      return null;
+    }
+
+    if (!applyHighlightedWordClearancesToPayload(parsed)) {
+      return null;
+    }
+
+    return JSON.stringify(parsed);
+  }
+
+  function tryApplyHighlightedWordClearancesJsonLines(rawText) {
+    const lines = rawText.split(/\r?\n/);
+    if (lines.length < 2) {
+      return null;
+    }
+
+    let changed = false;
+    const mapped = lines.map((line) => {
+      const parsed = parseJsonlLine(line);
+      if (!parsed) {
+        return line;
+      }
+
+      if (!applyHighlightedWordClearancesToPayload(parsed.payload)) {
         return line;
       }
 
@@ -3206,6 +3780,36 @@ export function initLinterBridge() {
     return response;
   }
 
+  async function maybeAugmentHighlightedWordClearanceResponse(response) {
+    if (!(response instanceof Response)) {
+      return response;
+    }
+
+    let responseText = "";
+    try {
+      responseText = await response.clone().text();
+    } catch (_error) {
+      return response;
+    }
+
+    if (!responseText) {
+      return response;
+    }
+
+    const asJsonText = tryApplyHighlightedWordClearancesJsonText(responseText);
+    if (typeof asJsonText === "string") {
+      return cloneResponseWithBody(response, asJsonText);
+    }
+
+    const asJsonLinesText =
+      tryApplyHighlightedWordClearancesJsonLines(responseText);
+    if (typeof asJsonLinesText === "string") {
+      return cloneResponseWithBody(response, asJsonLinesText);
+    }
+
+    return response;
+  }
+
   async function getAnnotationEntriesFromRequest(input, init) {
     const bodyText = await readRequestBodyText(input, init);
     const bodyPayload = safeJsonParse(bodyText);
@@ -3224,9 +3828,115 @@ export function initLinterBridge() {
     return [];
   }
 
+  function stripHelperAssertedWarningsFromPayload(payload, options = {}) {
+    let changed = false;
+    const strippedReviewActionIds = new Set();
+    const seen = new Set();
+
+    function visit(value, inheritedReviewActionId = "") {
+      if (!value || typeof value !== "object" || seen.has(value)) {
+        return;
+      }
+
+      seen.add(value);
+
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, inheritedReviewActionId));
+        return;
+      }
+
+      const reviewActionId =
+        readStringProp(value, ["reviewActionId", "actionId"]) ||
+        inheritedReviewActionId;
+      const metadata =
+        value.metadata && typeof value.metadata === "object"
+          ? value.metadata
+          : null;
+      const assertedWarnings =
+        metadata && Array.isArray(metadata.assertedWarnings)
+          ? metadata.assertedWarnings
+          : null;
+      if (assertedWarnings) {
+        const nextWarnings = assertedWarnings.filter(
+          (reason) => !isHelperWarningReason(reason),
+        );
+        if (nextWarnings.length !== assertedWarnings.length) {
+          changed = true;
+          const entry = getAnnotationEntryFromObject(value, reviewActionId);
+          const strippedReviewActionId =
+            (entry && entry.reviewActionId) ||
+            readStringProp(value, ["reviewActionId", "actionId"]);
+          if (strippedReviewActionId) {
+            strippedReviewActionIds.add(strippedReviewActionId);
+          }
+          if (options.recordClearance && entry) {
+            markHighlightedWordCleared(entry);
+          }
+          if (nextWarnings.length) {
+            metadata.assertedWarnings = nextWarnings;
+          } else {
+            delete metadata.assertedWarnings;
+          }
+        }
+      }
+
+      Object.values(value).forEach((nested) => visit(nested, reviewActionId));
+    }
+
+    visit(payload);
+
+    return {
+      changed,
+      strippedReviewActionIds,
+    };
+  }
+
+  async function sanitizeHelperAssertedWarningsRequest(input, init, options = {}) {
+    const bodyText = await readRequestBodyText(input, init);
+    const bodyPayload = safeJsonParse(bodyText);
+    if (!bodyPayload || typeof bodyPayload !== "object") {
+      return { input, init, changed: false, payload: null };
+    }
+
+    const result = stripHelperAssertedWarningsFromPayload(
+      bodyPayload,
+      options,
+    );
+    if (!result.changed) {
+      return { input, init, changed: false, payload: bodyPayload };
+    }
+
+    return {
+      ...withRequestBodyText(input, init, JSON.stringify(bodyPayload)),
+      changed: true,
+      payload: bodyPayload,
+    };
+  }
+
   window.fetch = async function babelHelperLinterPatchedFetch(input, init) {
-    if (!enabled || !isLintRequest(input, init)) {
+    if (!enabled) {
       return originalFetch(input, init);
+    }
+
+    if (isSaveAnnotationsRequest(input, init)) {
+      const sanitized = await sanitizeHelperAssertedWarningsRequest(
+        input,
+        init,
+        {
+          recordClearance: true,
+        },
+      );
+      const response = await originalFetch(sanitized.input, sanitized.init);
+      return maybeAugmentHighlightedWordClearanceResponse(response);
+    }
+
+    if (!isLintRequest(input, init)) {
+      const response = await originalFetch(input, init);
+      if (isTranscriptionsRequest(input)) {
+        return maybeAugmentHighlightedWordClearanceResponse(response);
+      }
+
+      return response;
     }
 
     const routeKey = getRouteKey();
@@ -3234,7 +3944,14 @@ export function initLinterBridge() {
       input,
       init,
     );
-    const response = await originalFetch(input, init);
+    const sanitized = await sanitizeHelperAssertedWarningsRequest(
+      input,
+      init,
+      {
+        recordClearance: true,
+      },
+    );
+    const response = await originalFetch(sanitized.input, sanitized.init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   };
   window.fetch.__babelHelperLinterOriginal = originalFetch;
@@ -3258,6 +3975,18 @@ export function initLinterBridge() {
     }
   }
 
+  function handleConfig(event) {
+    const detail = event && event.detail ? event.detail : {};
+    highlightedWordsEnabled = detail.highlightedWordsEnabled !== false;
+    highlightedWords = normalizeHighlightedWords(detail.highlightedWords);
+    if (!highlightedWordsEnabled) {
+      removeCurrentHighlightedWordIssues();
+    }
+    if (enabled) {
+      scheduleLinterHighlights();
+    }
+  }
+
   function handlePopState() {
     notifyRouteChange("popstate");
   }
@@ -3276,6 +4005,7 @@ export function initLinterBridge() {
       window.fetch = window.fetch.__babelHelperLinterOriginal;
     }
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
+    window.removeEventListener(CONFIG_EVENT, handleConfig, true);
     window.removeEventListener("pointerover", handleHighlightPointerOver, true);
     window.removeEventListener("pointerout", handleHighlightPointerOut, true);
     window.removeEventListener("click", handleHighlightClick, true);
@@ -3285,6 +4015,7 @@ export function initLinterBridge() {
   }
 
   window.addEventListener(TOGGLE_EVENT, handleToggle, true);
+  window.addEventListener(CONFIG_EVENT, handleConfig, true);
   window.addEventListener("pointerover", handleHighlightPointerOver, true);
   window.addEventListener("pointerout", handleHighlightPointerOut, true);
   window.addEventListener("click", handleHighlightClick, true);
@@ -3335,42 +4066,6 @@ export function initLinterBridge() {
     result = result.replace(/,(?![\d ]|$)/g, ", ");
     // Collapse multiple spaces after comma to single space: ",  x" -> ", x"
     result = result.replace(/, {2,}/g, ", ");
-
-    return result;
-  }
-
-  function fixQuotePlacement(text) {
-    const quoteIndices = getQuoteIndices(text);
-    if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
-      return text;
-    }
-
-    // Process quote pairs from right to left so indices stay stable.
-    let result = text;
-    for (let index = quoteIndices.length - 2; index >= 0; index -= 2) {
-      const openIndex = quoteIndices[index];
-      const closeIndex = quoteIndices[index + 1];
-      const inner = result.substring(openIndex + 1, closeIndex);
-      const trimmedInner = inner.replace(/^\s+/, "").replace(/\s+$/, "");
-
-      // Rebuild segment: before open + quote pair + after close
-      const before = result.substring(0, openIndex);
-      const after = result.substring(closeIndex + 1);
-
-      // Ensure space before opening quote if preceded by a word character
-      let prefix = before;
-      if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
-        prefix = prefix + " ";
-      }
-
-      // Ensure space after closing quote if followed by a word character
-      let suffix = after;
-      if (suffix.length > 0 && isWordCharacter(suffix[0])) {
-        suffix = " " + suffix;
-      }
-
-      result = prefix + '"' + trimmedInner + '"' + suffix;
-    }
 
     return result;
   }
@@ -3573,7 +4268,6 @@ export function initLinterBridge() {
     result = fixDoubleSpaces(result);
     result = fixCommaSpacing(result);
     result = fixUnicodeQuotes(result);
-    result = fixQuotePlacement(result);
     result = fixCurlySpacing(result);
     result = fixUnicodeDashes(result);
     result = fixDoubleDashPunctuation(result);

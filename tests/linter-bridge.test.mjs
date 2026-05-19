@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const bridgePath = path.resolve('src/content/linter-bridge.ts');
-fs.readFileSync(bridgePath, 'utf8');
+const bridgeSource = fs.readFileSync(bridgePath, 'utf8');
+const DEFAULT_HIGHLIGHTED_WORDS = ['все', 'всё', 'всем', 'всём', 'нем', 'нём', 'берет', 'берёт', 'угу', 'м-м'];
+const HIGHLIGHTED_WORD_RULE_REASON = 'Highlighted word requires clearance before use.';
 
 function hasCommaSpacingViolation(text) {
   if (typeof text !== 'string' || text.indexOf(',') === -1) {
@@ -95,31 +97,128 @@ function isRangeInsideGenericTag(text, start, end) {
   return Boolean(tagRange && end <= tagRange.end);
 }
 
-function hasQuotePlacementViolation(text) {
-  const normalizedText = normalizeUnicodeDoubleQuoteVariants(text);
-  const quoteIndices = getQuoteIndices(normalizedText);
-  if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
-    return false;
-  }
-
-  for (let index = 0; index < quoteIndices.length; index += 2) {
-    const openIndex = quoteIndices[index];
-    const closeIndex = quoteIndices[index + 1];
-    const prevChar = openIndex > 0 ? normalizedText[openIndex - 1] : '';
-    const nextCharAfterOpen = openIndex + 1 < normalizedText.length ? normalizedText[openIndex + 1] : '';
-    const prevCharBeforeClose = closeIndex > 0 ? normalizedText[closeIndex - 1] : '';
-    const nextChar = closeIndex + 1 < normalizedText.length ? normalizedText[closeIndex + 1] : '';
-
-    if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
-      return true;
+function normalizeHighlightedWords(value) {
+  const rawItems = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/[\n,;]+/g)
+      : DEFAULT_HIGHLIGHTED_WORDS;
+  const seen = new Set();
+  const words = [];
+  for (const item of rawItems) {
+    const normalized = String(item || '').trim().replace(/\s+/g, ' ');
+    const key = normalized.toLocaleLowerCase();
+    if (!normalized || seen.has(key)) {
+      continue;
     }
 
-    if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
-      return true;
+    seen.add(key);
+    words.push(normalized);
+  }
+
+  return words;
+}
+
+function getHighlightedWordPattern(word) {
+  const escaped = escapeRegExp(word).replace(/\s+/g, '\\s+');
+  return new RegExp(`(?<![\\p{L}\\p{N}\\p{M}_])${escaped}(?![\\p{L}\\p{N}\\p{M}_])`, 'giu');
+}
+
+function getHighlightedWordMatches(text, words = DEFAULT_HIGHLIGHTED_WORDS) {
+  if (typeof text !== 'string') {
+    return [];
+  }
+
+  const matches = [];
+  for (const word of normalizeHighlightedWords(words)) {
+    const pattern = getHighlightedWordPattern(word);
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (!isRangeInsideGenericTag(text, start, end)) {
+        matches.push({ start, end, text: match[0] });
+      }
+
+      if (match[0] === '') {
+        pattern.lastIndex += 1;
+      }
     }
   }
 
-  return false;
+  const seen = new Set();
+  return matches.filter((match) => {
+    const key = `${match.start}\u0000${match.end}\u0000${match.text}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  }).slice(0, 8);
+}
+
+function hasHighlightedWordViolation(text, words = DEFAULT_HIGHLIGHTED_WORDS) {
+  return getHighlightedWordMatches(text, words).length > 0;
+}
+
+function getHighlightedWordClearanceKey({
+  routeKey = '/transcription/RU-tx-gold',
+  reviewActionId = '',
+  annotationId = '',
+  text = '',
+  words = DEFAULT_HIGHLIGHTED_WORDS
+} = {}) {
+  const matchSignature = getHighlightedWordMatches(text, words)
+    .map((match) => `${match.start}:${match.end}:${match.text.toLocaleLowerCase()}`)
+    .join('|');
+
+  return [
+    routeKey,
+    reviewActionId,
+    annotationId,
+    text,
+    matchSignature
+  ].join('\u0000');
+}
+
+function stripHelperAssertedWarningsFromPayload(payload) {
+  let changed = false;
+  const strippedReviewActionIds = new Set();
+
+  function visit(value) {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    const metadata = value.metadata;
+    if (metadata && typeof metadata === 'object' && Array.isArray(metadata.assertedWarnings)) {
+      const nextWarnings = metadata.assertedWarnings.filter(
+        (warning) => warning !== HIGHLIGHTED_WORD_RULE_REASON
+      );
+      if (nextWarnings.length !== metadata.assertedWarnings.length) {
+        changed = true;
+        if (typeof value.reviewActionId === 'string') {
+          strippedReviewActionIds.add(value.reviewActionId);
+        }
+        if (nextWarnings.length) {
+          metadata.assertedWarnings = nextWarnings;
+        } else {
+          delete metadata.assertedWarnings;
+        }
+      }
+    }
+
+    Object.values(value).forEach(visit);
+  }
+
+  visit(payload);
+  return { changed, strippedReviewActionIds: Array.from(strippedReviewActionIds) };
 }
 
 function hasCurlySpacingViolation(text) {
@@ -901,37 +1000,6 @@ function fixCommaSpacing(text) {
   return result;
 }
 
-function fixQuotePlacement(text) {
-  const quoteIndices = getQuoteIndices(text);
-  if (!quoteIndices.length || quoteIndices.length % 2 === 1) {
-    return text;
-  }
-
-  let result = text;
-  for (let index = quoteIndices.length - 2; index >= 0; index -= 2) {
-    const openIndex = quoteIndices[index];
-    const closeIndex = quoteIndices[index + 1];
-    const inner = result.substring(openIndex + 1, closeIndex);
-    const trimmedInner = inner.replace(/^\s+/, '').replace(/\s+$/, '');
-    const before = result.substring(0, openIndex);
-    const after = result.substring(closeIndex + 1);
-
-    let prefix = before;
-    if (prefix.length > 0 && isWordCharacter(prefix[prefix.length - 1])) {
-      prefix = prefix + ' ';
-    }
-
-    let suffix = after;
-    if (suffix.length > 0 && isWordCharacter(suffix[0])) {
-      suffix = ' ' + suffix;
-    }
-
-    result = prefix + '"' + trimmedInner + '"' + suffix;
-  }
-
-  return result;
-}
-
 function fixUnicodeQuotes(text) {
   return normalizeUnicodeDoubleQuoteVariants(text);
 }
@@ -1098,7 +1166,6 @@ function applyAllFixes(text) {
   result = fixDoubleSpaces(result);
   result = fixCommaSpacing(result);
   result = fixUnicodeQuotes(result);
-  result = fixQuotePlacement(result);
   result = fixCurlySpacing(result);
   result = fixUnicodeDashes(result);
   result = fixDoubleDashPunctuation(result);
@@ -1108,6 +1175,265 @@ function applyAllFixes(text) {
   result = fixSentenceBoundaryCapitalization(result);
   return result;
 }
+
+function normalizeIssueHighlightRange(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const start = Number(value.start);
+  const end = Number(value.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return null;
+  }
+
+  const range = {
+    start,
+    end
+  };
+  if (typeof value.text === 'string' && value.text) {
+    range.text = value.text;
+  }
+
+  return range;
+}
+
+function compactHighlightRanges(ranges) {
+  if (!Array.isArray(ranges) || !ranges.length) {
+    return [];
+  }
+
+  const seen = new Set();
+  const compacted = [];
+  for (const range of ranges) {
+    const normalized = normalizeIssueHighlightRange(range);
+    if (!normalized) {
+      continue;
+    }
+
+    const key = `${normalized.start}\u0000${normalized.end}\u0000${normalized.text || ''}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    compacted.push(normalized);
+  }
+
+  return compacted.slice(0, 8);
+}
+
+function getIssueRangeCandidates(issue) {
+  if (!issue || typeof issue !== 'object') {
+    return [];
+  }
+
+  const helper = issue.babelHelper && typeof issue.babelHelper === 'object' ? issue.babelHelper : {};
+  const candidates = [];
+  for (const source of [
+    helper.matches,
+    helper.ranges,
+    issue.matches,
+    issue.ranges
+  ]) {
+    if (Array.isArray(source)) {
+      candidates.push(...source);
+    }
+  }
+
+  candidates.push(issue);
+  return candidates;
+}
+
+function getIssueSourceText(issue) {
+  const helper =
+    issue && issue.babelHelper && typeof issue.babelHelper === 'object'
+      ? issue.babelHelper
+      : null;
+  return helper && typeof helper.sourceText === 'string' ? helper.sourceText : '';
+}
+
+function getIssueHighlightEntries(issues, rowText = '') {
+  if (!Array.isArray(issues)) {
+    return [];
+  }
+
+  return issues
+    .map((issue) => {
+      const sourceText = getIssueSourceText(issue);
+      if (rowText && sourceText && sourceText !== rowText) {
+        return null;
+      }
+
+      const ranges = compactHighlightRanges(getIssueRangeCandidates(issue));
+      return {
+        reason: issue && typeof issue.reason === 'string' ? issue.reason : '',
+        matches: ranges.map((range) => range.text || '').filter(Boolean),
+        ranges
+      };
+    })
+    .filter((entry) => entry && entry.reason && (entry.matches.length || entry.ranges.length));
+}
+
+test('custom lint highlight entries preserve exact ranges for the hovered row', () => {
+  const issues = [
+    {
+      annotationId: 'a',
+      reason: 'Incorrect interjection forms must use dictionary spelling.',
+      severity: 'error',
+      babelHelper: {
+        sourceText: '\u043c\u043c, \u0434\u0430.',
+        matches: [{ start: 0, end: 2, text: '\u043c\u043c' }]
+      }
+    },
+    {
+      annotationId: 'b',
+      reason: 'Use ASCII hyphen "-" instead of typographic or Unicode dash variants.',
+      severity: 'error',
+      babelHelper: {
+        sourceText: 'wait--',
+        matches: [{ start: 4, end: 5, text: '\u2014' }]
+      }
+    }
+  ];
+
+  assert.deepEqual(getIssueHighlightEntries(issues, '\u043c\u043c, \u0434\u0430.'), [
+    {
+      reason: 'Incorrect interjection forms must use dictionary spelling.',
+      matches: ['\u043c\u043c'],
+      ranges: [{ start: 0, end: 2, text: '\u043c\u043c' }]
+    }
+  ]);
+});
+
+test('linter bridge carries source text and range extraction into highlight overlay', () => {
+  assert.match(bridgeSource, /sourceText: typeof entry\.text === "string" \? entry\.text : ""/);
+  assert.match(bridgeSource, /getIssueHighlightEntries\(currentHighlightIssues, rowText\)/);
+  assert.match(bridgeSource, /getNativeTooltipHighlightEntries\(rowText\)/);
+});
+
+test('highlighted words flag exact built-in and custom dictionary terms only', () => {
+  assert.equal(hasHighlightedWordViolation('Каждый раз всё новое, да?'), true);
+  assert.equal(hasHighlightedWordViolation('Он берет новый билет.'), true);
+  assert.equal(hasHighlightedWordViolation('Угу, понятно.'), true);
+  assert.equal(hasHighlightedWordViolation('Совсем другой случай.'), false);
+  assert.equal(hasHighlightedWordViolation('The skill check should not match partials.', ['kill']), false);
+  assert.equal(hasHighlightedWordViolation('A red   flag appears here.', ['red flag']), true);
+  assert.equal(hasHighlightedWordViolation('{всё} is a tag, not transcript wording.'), false);
+});
+
+test('highlighted word matches keep exact ranges for overlay coloring', () => {
+  assert.deepEqual(
+    getHighlightedWordMatches('Всё, угу.', ['всё', 'угу']),
+    [
+      { start: 0, end: 3, text: 'Всё' },
+      { start: 5, end: 8, text: 'угу' }
+    ]
+  );
+});
+
+test('highlighted word clearance keys are annotation-local and reset when text changes', () => {
+  const base = {
+    reviewActionId: 'review-1',
+    annotationId: 'annotation-7',
+    text: 'Каждый раз всё новое.',
+    words: ['всё']
+  };
+
+  assert.equal(
+    getHighlightedWordClearanceKey(base),
+    getHighlightedWordClearanceKey({ ...base })
+  );
+  assert.notEqual(
+    getHighlightedWordClearanceKey(base),
+    getHighlightedWordClearanceKey({
+      ...base,
+      text: 'Каждый раз всё новое. Edited.'
+    })
+  );
+});
+
+test('helper warning scrubber strips only highlighted-word asserted warnings', () => {
+  const payload = {
+    0: {
+      json: {
+        annotations: [
+          {
+            id: 'annotation-1',
+            reviewActionId: 'review-1',
+            content: 'Каждый раз всё новое.',
+            metadata: {
+              assertedWarnings: [
+                HIGHLIGHTED_WORD_RULE_REASON,
+                'Native warning must remain.'
+              ],
+              lowConfidenceResolved: true
+            }
+          },
+          {
+            id: 'annotation-2',
+            reviewActionId: 'review-1',
+            content: 'Clean text.',
+            metadata: {
+              assertedWarnings: ['Native warning must remain.']
+            }
+          }
+        ]
+      }
+    }
+  };
+
+  const result = stripHelperAssertedWarningsFromPayload(payload);
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.strippedReviewActionIds, ['review-1']);
+  assert.deepEqual(payload[0].json.annotations[0].metadata.assertedWarnings, [
+    'Native warning must remain.'
+  ]);
+  assert.deepEqual(payload[0].json.annotations[1].metadata.assertedWarnings, [
+    'Native warning must remain.'
+  ]);
+});
+
+test('linter bridge routes highlighted word clearance through Babel warning state', () => {
+  assert.match(bridgeSource, /HIGHLIGHTED_WORD_RULE_REASON/);
+  assert.match(bridgeSource, /getHighlightedWordMatches/);
+  assert.match(bridgeSource, /hasHighlightedWordViolation/);
+  assert.match(bridgeSource, /highlightedWordsEnabled\s*=\s*true/);
+  assert.match(bridgeSource, /detail\.highlightedWordsEnabled\s*!==\s*false/);
+  assert.match(bridgeSource, /if \(!highlightedWordsEnabled \|\| !highlightedWords\.length\)/);
+  assert.match(bridgeSource, /highlightedWords/);
+  assert.match(bridgeSource, /handleConfig/);
+  assert.match(bridgeSource, /HIGHLIGHTED_WORD_RULE_SEVERITY = "warning"/);
+  assert.match(bridgeSource, /getHighlightedWordClearanceKey/);
+  assert.match(bridgeSource, /getHighlightedWordClearanceTaskKey/);
+  assert.match(bridgeSource, /highlightedWordClearanceTaskKey/);
+  assert.match(bridgeSource, /SAVE_ANNOTATIONS_PATH/);
+  assert.match(bridgeSource, /stripHelperAssertedWarningsFromPayload/);
+  assert.match(bridgeSource, /applyHighlightedWordClearancesToPayload/);
+  assert.match(bridgeSource, /ensureHelperAssertedWarning/);
+  assert.match(bridgeSource, /maybeAugmentHighlightedWordClearanceResponse/);
+  assert.match(bridgeSource, /isNativeLintStatusTrigger/);
+  assert.match(bridgeSource, /isNativeLintSuccessTrigger/);
+  assert.match(bridgeSource, /observeNativeHighlightedWordWarningClick/);
+  assert.match(bridgeSource, /markHighlightedWordCleared/);
+  assert.match(bridgeSource, /unmarkHighlightedWordCleared/);
+  assert.match(bridgeSource, /taskKey:\s*highlightedWordClearanceTaskKey/);
+  assert.match(bridgeSource, /sanitizeHelperAssertedWarningsRequest\(\s*input,\s*init,\s*\{\s*recordClearance: true,\s*\}/);
+  assert.match(bridgeSource, new RegExp(escapeRegExp(HIGHLIGHTED_WORD_RULE_REASON)));
+  assert.match(bridgeSource, /makeCustomIssue\(entry,\s*HIGHLIGHTED_WORD_RULE_REASON/);
+  assert.doesNotMatch(bridgeSource, /HIGHLIGHTED_WORD_MARKER_ATTR/);
+  assert.doesNotMatch(bridgeSource, /body > div/);
+  assert.doesNotMatch(bridgeSource, /stopNativeHighlightedWordWarningEvent/);
+  assert.doesNotMatch(bridgeSource, /stopImmediatePropagation/);
+  assert.doesNotMatch(bridgeSource, /applyNativeClearedWarningState/);
+  assert.doesNotMatch(bridgeSource, /removeNativeLintTooltipNodes/);
+  assert.doesNotMatch(bridgeSource, /decrementVisibleWarningCount/);
+  assert.doesNotMatch(bridgeSource, /triggerNativeLintRefresh/);
+  assert.doesNotMatch(bridgeSource, /makeSuppressedMutationResponse/);
+  assert.doesNotMatch(bridgeSource, /scheduleInitialNativeLintTrigger\("config-highlighted-words"\)/);
+  assert.doesNotMatch(bridgeSource, /fixHighlightedWords/);
+});
 
 test('does not flag decimal comma numbers', () => {
   assert.equal(hasCommaSpacingViolation('Это стоит 1,5 евро.'), false);
@@ -1129,17 +1455,15 @@ test('flags unbalanced double quotes', () => {
   assert.equal(hasUnbalancedDoubleQuotes('Он сказал "привет".'), false);
 });
 
-test('flags bad quote placement', () => {
-  assert.equal(hasQuotePlacementViolation('foo"bar"'), true);
-  assert.equal(hasQuotePlacementViolation('" bar"'), true);
-  assert.equal(hasQuotePlacementViolation('"bar "'), true);
-  assert.equal(hasQuotePlacementViolation('foo "bar" baz'), false);
-  assert.equal(hasQuotePlacementViolation('foo "bar", baz'), false);
+test('linter bridge no longer carries quote placement spacing rule', () => {
+  assert.doesNotMatch(bridgeSource, /QUOTE_PLACEMENT_RULE_REASON/);
+  assert.doesNotMatch(bridgeSource, /hasQuotePlacementViolation/);
+  assert.doesNotMatch(bridgeSource, /getQuotePlacementMatches/);
+  assert.doesNotMatch(bridgeSource, /fixQuotePlacement/);
 });
 
 test('treats unicode quote variants as quote characters in analysis', () => {
   assert.equal(hasUnbalancedDoubleQuotes('\u00abhello.'), true);
-  assert.equal(hasQuotePlacementViolation('foo\u00abbar\u00bbbaz'), true);
 });
 
 test('flags non-ascii quote variants', () => {
@@ -1323,7 +1647,7 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   );
   assert.equal(
     applyAllFixes('foo" bar "baz'),
-    'foo "bar" baz.'
+    'foo" bar "baz.'
   );
   assert.equal(
     applyAllFixes('He said, "Hello"'),
@@ -1355,10 +1679,10 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   );
 });
 
-test('applyAllFixes normalizes unicode quote variants before quote spacing', () => {
+test('applyAllFixes normalizes unicode quote variants without changing quote spacing', () => {
   assert.equal(
     applyAllFixes('foo\u00ab bar \u00bbbaz'),
-    'foo "bar" baz.'
+    'foo" bar "baz.'
   );
   assert.equal(
     applyAllFixes('\u300chello\u300d'),

@@ -1,4 +1,5 @@
 import { createHelperKernel } from '../core/kernel';
+import { bootstrapCustomLinterBridge } from '../features/custom-linter-feature';
 
 declare global {
   interface Window {
@@ -31,10 +32,10 @@ async function boot() {
     }
     throw error;
   });
+
+  if (kernel.helper?.isFeatureEnabled?.('customLinter')) {
+    void bootstrapCustomLinterBridge({ helper: kernel.helper });
+  }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => void boot(), { once: true });
-} else {
-  void boot();
-}
+void boot();

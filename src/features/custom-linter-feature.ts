@@ -1,7 +1,10 @@
 import type { FeatureContext, FeatureModule } from '../core/types';
 
+import { normalizeHighlightedWords } from '../core/highlighted-words';
+
 const BRIDGE_SCRIPT_PATH = 'dist/content/linter-bridge.js';
 const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
+const CONFIG_EVENT = 'babel-helper-linter-bridge-config';
 const BRIDGE_SCRIPT_ATTR = 'data-babel-helper-linter-bridge';
 const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
 const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
@@ -12,6 +15,17 @@ function setBridgeEnabled(enabled: boolean): void {
     new CustomEvent(TOGGLE_EVENT, {
       detail: {
         enabled
+      }
+    })
+  );
+}
+
+function setBridgeConfig(ctx: Pick<FeatureContext, 'helper'>): void {
+  window.dispatchEvent(
+    new CustomEvent(CONFIG_EVENT, {
+      detail: {
+        highlightedWordsEnabled: ctx.helper?.settings?.highlightedWordsEnabled !== false,
+        highlightedWords: normalizeHighlightedWords(ctx.helper?.settings?.highlightedWords)
       }
     })
   );
@@ -53,6 +67,19 @@ function injectBridge(): Promise<boolean> {
 
     root.appendChild(script);
   });
+}
+
+export async function bootstrapCustomLinterBridge(
+  ctx: Pick<FeatureContext, 'helper'>
+): Promise<boolean> {
+  const ready = await injectBridge();
+  if (!ready) {
+    return false;
+  }
+
+  setBridgeConfig(ctx);
+  setBridgeEnabled(true);
+  return true;
 }
 
 export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean; [key: string]: unknown }> {
@@ -117,11 +144,12 @@ export function createCustomLinterFeature(): FeatureModule {
       ctx.helper.requestAutoFix = requestAutoFix;
     },
     async onLoaded(ctx: FeatureContext) {
-      const ready = await ensureBridgeReady(ctx);
+      const ready = bridgeReady || (await ensureBridgeReady(ctx));
       if (!ready) {
         return;
       }
 
+      setBridgeConfig(ctx);
       setBridgeEnabled(true);
     },
     async activate(ctx: FeatureContext, reason: string) {
@@ -133,6 +161,7 @@ export function createCustomLinterFeature(): FeatureModule {
       }
 
       ctx.helper.perf?.count?.('bridge.inject.enabled', { id: 'custom-linter', reason });
+      setBridgeConfig(ctx);
       setBridgeEnabled(true);
     },
     deactivate() {

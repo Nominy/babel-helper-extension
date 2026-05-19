@@ -1,3 +1,5 @@
+import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from './highlighted-words';
+
 export type FeatureSettingKey =
   | 'hotkeysHelp'
   | 'rowActions'
@@ -41,6 +43,8 @@ export interface FeatureSettings {
 
 export interface ExtensionSettings {
   features: FeatureSettings;
+  highlightedWordsEnabled: boolean;
+  highlightedWords: string[];
 }
 
 export interface FeatureSettingMeta {
@@ -72,7 +76,9 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
 };
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
-  features: DEFAULT_FEATURE_SETTINGS
+  features: DEFAULT_FEATURE_SETTINGS,
+  highlightedWordsEnabled: true,
+  highlightedWords: normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS)
 };
 
 export const FEATURE_KEYS: FeatureSettingKey[] = [
@@ -195,7 +201,12 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
   }
 
   return {
-    features
+    features,
+    highlightedWordsEnabled:
+      typeof incoming.highlightedWordsEnabled === 'boolean'
+        ? incoming.highlightedWordsEnabled
+        : DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled,
+    highlightedWords: normalizeHighlightedWords(incoming.highlightedWords)
   };
 }
 

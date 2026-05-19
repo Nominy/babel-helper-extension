@@ -104,6 +104,70 @@
         line-height: 1.45;
       }
 
+      .dictionary-settings {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #e5ebf3;
+      }
+
+      .dictionary-title {
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .dictionary-toggle {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        align-items: start;
+        margin: 0 0 12px;
+        cursor: pointer;
+      }
+
+      .dictionary-toggle input {
+        width: 18px;
+        height: 18px;
+        margin-top: 2px;
+        accent-color: var(--accent);
+      }
+
+      .dictionary-toggle-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .dictionary-toggle-description {
+        margin-top: 3px;
+        font-size: 13px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+
+      .dictionary-description {
+        margin: 4px 0 10px;
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .dictionary-textarea {
+        display: block;
+        width: 100%;
+        min-height: 150px;
+        resize: vertical;
+        border: 1px solid #cfd8e6;
+        border-radius: 12px;
+        padding: 10px 12px;
+        color: var(--ink);
+        background: #fff;
+        font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+      }
+
+      .dictionary-textarea:focus {
+        outline: 2px solid rgba(15, 122, 103, 0.22);
+        border-color: var(--accent);
+      }
+
       .footer {
         margin-top: 14px;
         display: flex;
@@ -169,6 +233,18 @@
 
       <section class="panel">
         <div class="feature-list" data-role="feature-list"></div>
+        <div class="dictionary-settings">
+          <label for="highlighted-words" class="dictionary-title">Highlighted Words</label>
+          <label class="dictionary-toggle">
+            <input type="checkbox" data-role="highlighted-words-enabled" />
+            <span>
+              <span class="dictionary-toggle-title">Enable highlighted-word warnings</span>
+              <span class="dictionary-toggle-description">When disabled, the custom linter leaves this dictionary out of Babel warnings.</span>
+            </span>
+          </label>
+          <p class="dictionary-description">Rows containing these words are raised by the custom linter for clearance review. Use one word or phrase per line.</p>
+          <textarea id="highlighted-words" class="dictionary-textarea" data-role="highlighted-words" spellcheck="false"></textarea>
+        </div>
         <div class="footer">
           <button class="reset-btn" type="button" data-role="reset">Reset to Defaults</button>
           <button class="download-btn" type="button" data-role="download-logs">Download Logs</button>

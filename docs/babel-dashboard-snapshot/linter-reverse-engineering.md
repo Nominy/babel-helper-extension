@@ -71,8 +71,8 @@ These are extension-owned and should not be confused with Babel-native rules:
 
 - `Commas must be formatted as ", "`
 - `Double quotes must be balanced.`
-- `Double quotes must not have stray spaces inside or be glued to surrounding words.`
 - `Curly tags must be formatted as "TEXT {TAG: OTHER}".`
+- `Highlighted word requires clearance before use.`
 
 Source of helper-added issues:
 
@@ -119,13 +119,15 @@ Reason:
   - `src/content/linter-bridge.ts`
 - New setting:
   - `customLinter` in `src/core/settings.ts`
+  - highlighted words dictionary in `src/core/highlighted-words.ts`, editable from extension options
 - Feature wiring:
   - `src/features/index.ts`
 
 Current helper-side rules:
 - comma formatting: enforce `, ` (comma + single space)
+- highlighted words: add Babel-native warning rows for configured dictionary entries
 
 Rule injection path:
 - patch page `fetch` for `transcriptions.lintAnnotations`
 - append helper issues to native payload entries with shape `{ annotationId, reason, severity }`
-
+- for highlighted-word clearance, the helper injects into Babel's native warning list and lets Babel's own warning click handler toggle `metadata.assertedWarnings`; the bridge strips the helper reason from outgoing save/lint payloads and restores task-scoped clearance into annotation payloads from local storage.

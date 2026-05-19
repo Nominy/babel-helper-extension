@@ -7,6 +7,7 @@ import {
   loadExtensionSettings,
   saveExtensionSettings
 } from '../core/settings';
+import { formatHighlightedWordsForTextarea, normalizeHighlightedWords } from '../core/highlighted-words';
 
 type InputMap = Record<FeatureSettingKey, HTMLInputElement>;
 
@@ -67,20 +68,39 @@ function renderFeatureCards(list: HTMLElement) {
   list.replaceChildren(fragment);
 }
 
-function applySettingsToInputs(settings: ExtensionSettings, inputs: InputMap) {
+function applySettingsToInputs(
+  settings: ExtensionSettings,
+  inputs: InputMap,
+  highlightedWordsInput?: HTMLTextAreaElement,
+  highlightedWordsEnabledInput?: HTMLInputElement
+) {
   for (const key of FEATURE_KEYS) {
     inputs[key].checked = Boolean(settings.features[key]);
   }
+
+  if (highlightedWordsEnabledInput) {
+    highlightedWordsEnabledInput.checked = settings.highlightedWordsEnabled !== false;
+  }
+
+  if (highlightedWordsInput) {
+    highlightedWordsInput.value = formatHighlightedWordsForTextarea(settings.highlightedWords);
+  }
 }
 
-function readSettingsFromInputs(inputs: InputMap): ExtensionSettings {
+function readSettingsFromInputs(
+  inputs: InputMap,
+  highlightedWordsInput: HTMLTextAreaElement,
+  highlightedWordsEnabledInput: HTMLInputElement
+): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
     features[key] = inputs[key].checked;
   }
 
   return {
-    features
+    features,
+    highlightedWordsEnabled: highlightedWordsEnabledInput.checked,
+    highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value)
   };
 }
 
@@ -119,13 +139,15 @@ async function boot() {
   const statusElement = requireElement<HTMLElement>('[data-role="status"]');
   const resetButton = requireElement<HTMLButtonElement>('[data-role="reset"]');
   const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
+  const highlightedWordsEnabledInput = requireElement<HTMLInputElement>('[data-role="highlighted-words-enabled"]');
+  const highlightedWordsInput = requireElement<HTMLTextAreaElement>('[data-role="highlighted-words"]');
 
   renderFeatureCards(featureList);
   const inputs = getFeatureInputs();
 
   try {
     const settings = await loadExtensionSettings();
-    applySettingsToInputs(settings, inputs);
+    applySettingsToInputs(settings, inputs, highlightedWordsInput, highlightedWordsEnabledInput);
     setStatus(statusElement, 'Loaded');
   } catch (_error) {
     setStatus(statusElement, 'Could not load settings.');
@@ -134,9 +156,9 @@ async function boot() {
   const save = async () => {
     setStatus(statusElement, 'Saving...');
     try {
-      const next = readSettingsFromInputs(inputs);
+      const next = readSettingsFromInputs(inputs, highlightedWordsInput, highlightedWordsEnabledInput);
       const persisted = await saveExtensionSettings(next);
-      applySettingsToInputs(persisted, inputs);
+      applySettingsToInputs(persisted, inputs, highlightedWordsInput, highlightedWordsEnabledInput);
       setStatus(statusElement, 'Saved. Reload dashboard tabs to apply changes.');
     } catch (_error) {
       setStatus(statusElement, 'Could not save settings.');
@@ -149,10 +171,20 @@ async function boot() {
     });
   }
 
+  highlightedWordsInput.addEventListener('change', () => {
+    void save();
+  });
+
+  highlightedWordsEnabledInput.addEventListener('change', () => {
+    void save();
+  });
+
   resetButton.addEventListener('click', () => {
     for (const key of FEATURE_KEYS) {
       inputs[key].checked = DEFAULT_EXTENSION_SETTINGS.features[key];
     }
+    highlightedWordsEnabledInput.checked = DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled;
+    highlightedWordsInput.value = formatHighlightedWordsForTextarea(DEFAULT_EXTENSION_SETTINGS.highlightedWords);
     void save();
   });
 
