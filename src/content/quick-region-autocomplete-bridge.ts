@@ -1,3 +1,8 @@
+import {
+  getAngleTagPartBackspaceEdit,
+  shouldHandleAngleTagPartBackspaceEvent
+} from './tag-part-backspace';
+
 (function quickRegionAutocompleteBridge() {
   if ((window as any).__babelHelperQuickRegionAutocompleteBridge) {
     return;
@@ -209,20 +214,103 @@
     }
   }
 
-  function dispatchInputEvent(textarea: HTMLTextAreaElement) {
+  function dispatchInputEvent(textarea: HTMLTextAreaElement, inputType = 'insertText') {
     textarea.dispatchEvent(
       typeof InputEvent === 'function'
         ? new InputEvent('input', {
             bubbles: true,
             cancelable: false,
             data: null,
-            inputType: 'insertText'
+            inputType
           })
         : new Event('input', {
             bubbles: true,
             cancelable: false
           })
     );
+  }
+
+  function copyTextWithTemporaryTextarea(
+    text: string,
+    restoreTarget: HTMLTextAreaElement,
+    selectionStart: number,
+    selectionEnd: number
+  ) {
+    const activeElement = document.activeElement;
+    const scratch = document.createElement('textarea');
+    scratch.value = text;
+    scratch.tabIndex = -1;
+    scratch.setAttribute('aria-hidden', 'true');
+    scratch.style.position = 'fixed';
+    scratch.style.left = '-9999px';
+    scratch.style.top = '0';
+    scratch.style.opacity = '0';
+
+    document.body.appendChild(scratch);
+    try {
+      scratch.focus({ preventScroll: true });
+      scratch.select();
+      document.execCommand('copy');
+    } catch (_error) {
+      // Clipboard writes are best-effort in page-world script contexts.
+    } finally {
+      scratch.remove();
+      if (restoreTarget.isConnected) {
+        restoreTarget.focus({ preventScroll: true });
+        setTextareaSelection(restoreTarget, selectionStart, selectionEnd);
+      } else if (activeElement instanceof HTMLElement) {
+        activeElement.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  function writeRemovedTagPartToClipboard(
+    text: string,
+    textarea: HTMLTextAreaElement,
+    selectionStart: number,
+    selectionEnd: number
+  ) {
+    const clipboard = navigator.clipboard;
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      void clipboard
+        .writeText(text)
+        .catch(() => copyTextWithTemporaryTextarea(text, textarea, selectionStart, selectionEnd));
+      return;
+    }
+
+    copyTextWithTemporaryTextarea(text, textarea, selectionStart, selectionEnd);
+  }
+
+  function removeAngleTagPartOnBackspace(textarea: HTMLTextAreaElement, event: KeyboardEvent) {
+    if (
+      !shouldHandleAngleTagPartBackspaceEvent(event) ||
+      textarea.disabled ||
+      textarea.readOnly
+    ) {
+      return false;
+    }
+
+    const selectionStart =
+      typeof textarea.selectionStart === 'number' ? textarea.selectionStart : textarea.value.length;
+    const selectionEnd =
+      typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : selectionStart;
+    const edit = getAngleTagPartBackspaceEdit(textarea.value, selectionStart, selectionEnd, {
+      skipAdjacentSuffix: event.ctrlKey
+    });
+    if (!edit) {
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    setNativeTextareaValue(textarea, edit.nextValue);
+    textarea.focus({ preventScroll: true });
+    setTextareaSelection(textarea, edit.selectionStart, edit.selectionEnd);
+    dispatchInputEvent(textarea, 'deleteContentBackward');
+    restoreSelectionStably(textarea, edit.selectionStart, edit.selectionEnd);
+    writeRemovedTagPartToClipboard(edit.removedText, textarea, edit.selectionStart, edit.selectionEnd);
+    dismiss();
+    return true;
   }
 
   function setTextareaSelection(
@@ -865,6 +953,10 @@
   function onKeyDown(event: KeyboardEvent) {
     const textarea = isSupportedTextarea(event.target) ? event.target : null;
     if (!textarea || event.isComposing) {
+      return;
+    }
+
+    if (removeAngleTagPartOnBackspace(textarea, event)) {
       return;
     }
 
