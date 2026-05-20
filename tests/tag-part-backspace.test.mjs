@@ -73,24 +73,24 @@ test('handles Ctrl+Backspace for angle tag part removal', () => {
   assert.equal(shouldHandleAngleTagPartBackspaceEvent({ key: 'Backspace', metaKey: true }), false);
 });
 
-test('Ctrl+Backspace removes a tag part before directly adjacent text or spaces', () => {
+test('Ctrl+Backspace removes directly concatenated tag and text as one unit', () => {
   assert.deepEqual(getAngleTagPartBackspaceEdit('<laugh>hello', 12, 12, { skipAdjacentSuffix: true }), {
-    nextValue: 'hello',
-    removedText: '<laugh>',
+    nextValue: '',
+    removedText: '<laugh>hello',
     selectionStart: 0,
     selectionEnd: 0,
   });
 
   assert.deepEqual(getAngleTagPartBackspaceEdit('<laugh>   ', 10, 10, { skipAdjacentSuffix: true }), {
-    nextValue: '   ',
-    removedText: '<laugh>',
+    nextValue: '',
+    removedText: '<laugh>   ',
     selectionStart: 0,
     selectionEnd: 0,
   });
 
   assert.deepEqual(getAngleTagPartBackspaceEdit('</laugh>hello', 13, 13, { skipAdjacentSuffix: true }), {
-    nextValue: 'hello',
-    removedText: '</laugh>',
+    nextValue: '',
+    removedText: '</laugh>hello',
     selectionStart: 0,
     selectionEnd: 0,
   });

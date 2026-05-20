@@ -106,6 +106,12 @@ export function getAngleTagPartBackspaceEdit(
     const backspacePoint = getBackspacePointBeforeAdjacentSuffix(value, selectionStart);
     if (backspacePoint !== null) {
       range = getAngleTagPartRangeAtBackspacePoint(value, backspacePoint);
+      if (range) {
+        range = {
+          start: range.start,
+          end: selectionStart,
+        };
+      }
     }
   }
 
