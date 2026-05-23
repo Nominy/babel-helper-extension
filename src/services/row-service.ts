@@ -296,6 +296,7 @@ export function registerRowService(helper: any) {
 
   const GHOST_CURSOR_INTERVAL_MS = 66; // ~15 fps
   const GHOST_CURSOR_ATTR = 'data-babel-helper-ghost-cursor';
+  const GHOST_CURSOR_TOGGLE_LANES = ['Speaker 1', 'Speaker 2'];
 
   /** Copied style properties for the mirror-div caret measurement. */
   const MIRROR_STYLE_PROPS = [
@@ -519,6 +520,445 @@ export function registerRowService(helper: any) {
     }
   }
 
+  function getGhostCursorLanePositions() {
+    const positions = helper.state.ghostCursorLanePositions;
+    if (!positions || typeof positions !== 'object' || Array.isArray(positions)) {
+      helper.state.ghostCursorLanePositions = {};
+      return helper.state.ghostCursorLanePositions;
+    }
+    return positions;
+  }
+
+  function getRememberedGhostCursorLanePosition(speakerKey) {
+    if (typeof speakerKey !== 'string' || !speakerKey) {
+      return null;
+    }
+
+    const positions = getGhostCursorLanePositions();
+    const position = positions[speakerKey];
+    if (!position || typeof position !== 'object') {
+      return null;
+    }
+
+    const row = resolveConnectedRow(position.row, position.rowIdentity);
+    const offset = Number(position.offset);
+    if (!(row instanceof HTMLElement) || !Number.isFinite(offset) || offset < 0) {
+      delete positions[speakerKey];
+      return null;
+    }
+
+    return {
+      ...position,
+      row,
+      offset
+    };
+  }
+
+  function getSpeakerKeyForGhostToggleLabel(label) {
+    const normalized = normalizeSpeakerLabel(label);
+    if (!normalized) {
+      return '';
+    }
+
+    for (const cachedEntry of getRowTimeEntries()) {
+      const entry = resolveRowTimeEntry(cachedEntry);
+      if (!entry) {
+        continue;
+      }
+
+      const identity = helper.getRowIdentity(entry.row) || {};
+      const speakerKey = getRowSpeakerKeySafe(entry.row);
+      const speakerCell = entry.row.children[1] instanceof HTMLElement
+        ? helper.normalizeText(entry.row.children[1])
+        : '';
+      const candidates = [speakerKey, identity.trackLabel, speakerCell].filter(Boolean);
+      if (
+        candidates.some((candidate) =>
+          candidate === normalized || normalizeSpeakerLabel(candidate) === normalized
+        )
+      ) {
+        return speakerKey || normalized;
+      }
+    }
+
+    return normalized;
+  }
+
+  function getGhostCursorToggleSpeakerKeys() {
+    const keys = [];
+    const seen = new Set();
+    for (const label of GHOST_CURSOR_TOGGLE_LANES) {
+      const key = getSpeakerKeyForGhostToggleLabel(label);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }
+
+  function getActiveGhostCursorSpeakerKey() {
+    const activeKey = helper.state.activeGhostCursorSpeakerKey;
+    if (
+      typeof activeKey === 'string' &&
+      activeKey &&
+      (hasRowsForSpeakerKey(activeKey) || getRememberedGhostCursorLanePosition(activeKey))
+    ) {
+      return activeKey;
+    }
+
+    const lock = getGhostCursorLaneLock();
+    if (lock && (hasRowsForSpeakerKey(lock.speakerKey) || getRememberedGhostCursorLanePosition(lock.speakerKey))) {
+      helper.state.activeGhostCursorSpeakerKey = lock.speakerKey;
+      return lock.speakerKey;
+    }
+
+    const rowKey = getRowSpeakerKeySafe(helper.state.ghostCursorRow);
+    if (rowKey) {
+      helper.state.activeGhostCursorSpeakerKey = rowKey;
+      return rowKey;
+    }
+
+    return '';
+  }
+
+  function rememberGhostCursorLanePosition(row, offset, options) {
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const speakerKey = getRowSpeakerKeySafe(row);
+    if (!speakerKey) {
+      return null;
+    }
+
+    const numericOffset = Math.max(0, Math.round(Number(offset) || 0));
+    const settings = options || {};
+    const position = {
+      row,
+      rowIdentity: helper.getRowIdentity(row),
+      offset: numericOffset,
+      cursorBaseline:
+        typeof settings.cursorBaseline === 'number' && Number.isFinite(settings.cursorBaseline)
+          ? Math.max(0, Math.round(settings.cursorBaseline))
+          : numericOffset,
+      playbackTime:
+        typeof settings.playbackTime === 'number' && Number.isFinite(settings.playbackTime)
+          ? settings.playbackTime
+          : null,
+      timeRange: settings.timeRange || getRowTimeRange(row),
+      clamped: Boolean(settings.clamped),
+      updatedAt: Date.now()
+    };
+
+    getGhostCursorLanePositions()[speakerKey] = position;
+    if (!helper.state.activeGhostCursorSpeakerKey) {
+      helper.state.activeGhostCursorSpeakerKey = speakerKey;
+    }
+
+    return position;
+  }
+
+  function rememberFocusedGhostCursorLanePosition() {
+    const textarea = helper.getActiveRowTextarea();
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+
+    const row = textarea.closest('tr');
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const offset =
+      typeof textarea.selectionStart === 'number' && Number.isFinite(textarea.selectionStart)
+        ? textarea.selectionStart
+        : 0;
+    return rememberGhostCursorLanePosition(row, offset, {
+      cursorBaseline: offset,
+      playbackTime: helper.state.ghostCursorPlaybackTime,
+      timeRange: getRowTimeRange(row)
+    });
+  }
+
+  function getGhostCursorLaneBaseline(speakerKey) {
+    const remembered = getRememberedGhostCursorLanePosition(speakerKey);
+    if (remembered && typeof remembered.cursorBaseline === 'number') {
+      return remembered.cursorBaseline;
+    }
+
+    if (
+      getActiveGhostCursorSpeakerKey() === speakerKey &&
+      typeof helper.state.cursorBaseline === 'number'
+    ) {
+      return helper.state.cursorBaseline;
+    }
+
+    return remembered && typeof remembered.offset === 'number' ? remembered.offset : 0;
+  }
+
+  function computeGhostCursorLanePositionForEntry(entry, currentTime, blurTime) {
+    if (!entry || !(entry.row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const textarea = helper.getRowTextarea(entry.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+
+    const speakerKey = getRowSpeakerKeySafe(entry.row);
+    const text = textarea.value || '';
+    const baseline = getGhostCursorLaneBaseline(speakerKey);
+    const result = computeRestoreOffset(text, entry, currentTime, blurTime, baseline);
+    if (!result) {
+      return null;
+    }
+
+    return rememberGhostCursorLanePosition(entry.row, result.offset, {
+      cursorBaseline: result.offset,
+      playbackTime: currentTime,
+      timeRange: {
+        startSeconds: entry.startSeconds,
+        endSeconds: entry.endSeconds
+      },
+      clamped: result.clamped
+    });
+  }
+
+  function rememberGhostCursorPlaybackState(playback) {
+    helper.state.ghostCursorPlaybackTime =
+      playback && typeof playback.currentTime === 'number' && Number.isFinite(playback.currentTime)
+        ? playback.currentTime
+        : null;
+    helper.state.ghostCursorPlaybackPaused =
+      playback && typeof playback.paused === 'boolean'
+        ? playback.paused
+        : null;
+  }
+
+  function getCurrentGhostCursorPlaybackSnapshot() {
+    const localPlayback = getPlaybackStateLocally();
+    if (
+      localPlayback &&
+      localPlayback.ok &&
+      typeof localPlayback.currentTime === 'number' &&
+      Number.isFinite(localPlayback.currentTime)
+    ) {
+      rememberGhostCursorPlaybackState(localPlayback);
+      return {
+        ok: true,
+        currentTime: localPlayback.currentTime,
+        paused:
+          typeof localPlayback.paused === 'boolean'
+            ? localPlayback.paused
+            : helper.state.ghostCursorPlaybackPaused !== false
+      };
+    }
+
+    const currentTime = helper.state.ghostCursorPlaybackTime;
+    const paused = helper.state.ghostCursorPlaybackPaused;
+    if (typeof currentTime !== 'number' || !Number.isFinite(currentTime) || typeof paused !== 'boolean') {
+      return {
+        ok: false,
+        currentTime: null,
+        paused: true
+      };
+    }
+
+    return {
+      ok: true,
+      currentTime,
+      paused
+    };
+  }
+
+  function getPausedGhostCursorLanePosition(speakerKey, playbackTimeOverride, forcePaused) {
+    const remembered = getRememberedGhostCursorLanePosition(speakerKey);
+    if (remembered) {
+      return remembered;
+    }
+
+    const playbackSnapshot = getCurrentGhostCursorPlaybackSnapshot();
+    const visuallyPaused = getPlaybackPausedStateFromControls() === true;
+    const playbackTime =
+      typeof playbackTimeOverride === 'number' && Number.isFinite(playbackTimeOverride)
+        ? playbackTimeOverride
+        : playbackSnapshot.currentTime;
+    if (
+      (!playbackSnapshot.paused && !visuallyPaused && forcePaused !== true) ||
+      typeof playbackTime !== 'number' ||
+      !Number.isFinite(playbackTime)
+    ) {
+      return null;
+    }
+
+    const entry = findLatestRowEntryBeforePlaybackTime(playbackTime, { speakerKey });
+    return computeGhostCursorLanePositionForEntry(
+      entry,
+      playbackTime,
+      helper.state.blurPlaybackTime
+    );
+  }
+
+  function getTrackableGhostCursorSpeakerKeys() {
+    const keys = new Set(getGhostCursorToggleSpeakerKeys());
+    const activeKey = helper.state.activeGhostCursorSpeakerKey;
+    if (typeof activeKey === 'string' && activeKey) {
+      keys.add(activeKey);
+    }
+
+    const lock = getGhostCursorLaneLock();
+    if (lock) {
+      keys.add(lock.speakerKey);
+    }
+
+    const rowKey = getRowSpeakerKeySafe(helper.state.ghostCursorRow);
+    if (rowKey) {
+      keys.add(rowKey);
+    }
+
+    for (const key of Object.keys(getGhostCursorLanePositions())) {
+      if (key) {
+        keys.add(key);
+      }
+    }
+
+    return Array.from(keys).filter((key) => hasRowsForSpeakerKey(key) || getRememberedGhostCursorLanePosition(key));
+  }
+
+  function updateGhostCursorLanePositionsForPlayback(currentTime, blurTime) {
+    const activeKey = getActiveGhostCursorSpeakerKey();
+    let activePosition = null;
+    let firstAudiblePosition = null;
+
+    for (const speakerKey of getTrackableGhostCursorSpeakerKeys()) {
+      const entry = findRowEntryByPlaybackTime(currentTime, { speakerKey });
+      const position = computeGhostCursorLanePositionForEntry(entry, currentTime, blurTime);
+      if (position && !firstAudiblePosition) {
+        firstAudiblePosition = position;
+      }
+      if (position && speakerKey === activeKey) {
+        activePosition = position;
+      }
+    }
+
+    if (activePosition) {
+      return activePosition;
+    }
+
+    if (firstAudiblePosition) {
+      const speakerKey = getRowSpeakerKeySafe(firstAudiblePosition.row);
+      setActiveGhostCursorSpeakerKey(speakerKey, 'auto');
+      return firstAudiblePosition;
+    }
+
+    return null;
+  }
+
+  function renderGhostCursorLanePosition(position) {
+    if (!position || !(position.row instanceof HTMLElement) || !position.row.isConnected) {
+      return false;
+    }
+
+    const textarea = helper.getRowTextarea(position.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const textLength = (textarea.value || '').length;
+    const offset = Math.max(0, Math.min(textLength, Math.round(Number(position.offset) || 0)));
+    let el = helper.state.ghostCursorElement;
+    if (!(el instanceof HTMLElement) || !el.isConnected) {
+      el = createGhostCursorElement();
+      document.body.appendChild(el);
+      helper.state.ghostCursorElement = el;
+    }
+
+    const pos = getCaretPixelPosition(textarea, offset);
+    el.style.background = position.clamped
+      ? 'rgba(156, 163, 175, 0.6)'
+      : 'rgba(245, 158, 11, 0.75)';
+    el.style.display = '';
+    el.style.top = `${pos.top}px`;
+    el.style.left = `${pos.left}px`;
+    el.style.height = `${pos.height}px`;
+
+    helper.state.ghostCursorRow = position.row;
+    helper.state.ghostCursorRowIdentity = helper.getRowIdentity(position.row);
+    helper.state.ghostCursorOffset = offset;
+    helper.state.activeGhostCursorSpeakerKey = getRowSpeakerKeySafe(position.row);
+    return true;
+  }
+
+  function renderActiveGhostCursorLanePosition() {
+    const activeKey = getActiveGhostCursorSpeakerKey();
+    const position = getRememberedGhostCursorLanePosition(activeKey);
+    if (!position) {
+      if (helper.state.ghostCursorElement) {
+        helper.state.ghostCursorElement.style.display = 'none';
+      }
+      return false;
+    }
+
+    return renderGhostCursorLanePosition(position);
+  }
+
+  function focusGhostCursorLanePosition(position) {
+    if (!position || !(position.row instanceof HTMLElement) || !position.row.isConnected) {
+      return false;
+    }
+
+    const textarea = helper.getRowTextarea(position.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const textLength = (textarea.value || '').length;
+    const offset = Math.max(0, Math.min(textLength, Math.round(Number(position.offset) || 0)));
+    helper.state.cursorBaseline = offset;
+    helper.state.blurRestorePending = false;
+
+    return helper.focusRow(position.row, {
+      activateRow: false,
+      scroll: false,
+      selectionStart: offset,
+      selectionEnd: offset,
+      direction: 'none'
+    });
+  }
+
+  function setActiveGhostCursorSpeakerKey(speakerKey, source) {
+    if (typeof speakerKey !== 'string' || !speakerKey) {
+      return false;
+    }
+
+    const remembered = getRememberedGhostCursorLanePosition(speakerKey);
+    if (!remembered && !hasRowsForSpeakerKey(speakerKey)) {
+      return false;
+    }
+
+    helper.state.activeGhostCursorSpeakerKey = speakerKey;
+    helper.state.ghostCursorLaneLock = {
+      speakerKey,
+      source: source || 'manual',
+      acquiredAt: Date.now(),
+      rowIdentity: remembered ? helper.getRowIdentity(remembered.row) : null
+    };
+    if (remembered && typeof remembered.offset === 'number') {
+      helper.state.cursorBaseline = remembered.offset;
+    }
+    return true;
+  }
+
+  function getToggleableGhostCursorSpeakerKeys() {
+    return getGhostCursorToggleSpeakerKeys().filter(
+      (speakerKey) => hasRowsForSpeakerKey(speakerKey) || getRememberedGhostCursorLanePosition(speakerKey)
+    );
+  }
+
   function findGhostCursorEntryByPlaybackTime(playbackTime) {
     const lock = getGhostCursorLaneLock();
     if (lock && !hasRowsForSpeakerKey(lock.speakerKey)) {
@@ -533,6 +973,9 @@ export function registerRowService(helper: any) {
       if (lockedEntry) {
         return lockedEntry;
       }
+      if (activeLock.source === 'manual') {
+        return null;
+      }
     }
 
     const nextActiveEntry = findRowEntryByPlaybackTime(playbackTime);
@@ -541,14 +984,7 @@ export function registerRowService(helper: any) {
       return nextActiveEntry;
     }
 
-    const danglingEntry =
-      (activeLock &&
-        findLatestRowEntryBeforePlaybackTime(playbackTime, {
-          speakerKey: activeLock.speakerKey
-        })) ||
-      findLatestRowEntryBeforePlaybackTime(playbackTime);
-
-    return danglingEntry || null;
+    return null;
   }
 
   function startGhostCursor(row) {
@@ -567,6 +1003,18 @@ export function registerRowService(helper: any) {
     const existingLock = getGhostCursorLaneLock();
     if (!existingLock || existingLock.source !== 'manual' || !hasRowsForSpeakerKey(existingLock.speakerKey)) {
       setGhostCursorLaneLock(row, existingLock?.source || 'auto');
+    }
+    const startLock = getGhostCursorLaneLock();
+    const rememberedActiveKey = helper.state.activeGhostCursorSpeakerKey;
+    if (
+      !rememberedActiveKey ||
+      (typeof rememberedActiveKey === 'string' && !hasRowsForSpeakerKey(rememberedActiveKey))
+    ) {
+      const rowSpeakerKey = getRowSpeakerKeySafe(row);
+      const startLockKey = startLock && hasRowsForSpeakerKey(startLock.speakerKey)
+        ? startLock.speakerKey
+        : '';
+      helper.state.activeGhostCursorSpeakerKey = startLockKey || rowSpeakerKey || null;
     }
 
     const el = createGhostCursorElement();
@@ -599,6 +1047,7 @@ export function registerRowService(helper: any) {
           typeof helper.getPlaybackState === 'function'
             ? await helper.getPlaybackState()
             : getPlaybackStateLocally();
+        rememberGhostCursorPlaybackState(playback);
         if (!playback || !playback.ok || typeof playback.currentTime !== 'number') {
           el.style.display = 'none';
           return;
@@ -607,6 +1056,7 @@ export function registerRowService(helper: any) {
         // If playback stopped (user clicked pause outside our workflow, etc.), remove ghost
         if (playback.paused === true) {
           stopGhostCursor();
+          renderActiveGhostCursorLanePosition();
           return;
         }
 
@@ -666,34 +1116,32 @@ export function registerRowService(helper: any) {
           return;
         }
 
-        // Re-query textarea in case Babel re-rendered the row
-        const ta = helper.getRowTextarea(trackedRow);
-        if (!(ta instanceof HTMLTextAreaElement)) {
-          stopGhostCursor();
-          return;
-        }
-
-        const text = ta.value || '';
-        const baseline = typeof helper.state.cursorBaseline === 'number'
-          ? helper.state.cursorBaseline : 0;
-        const result = computeRestoreOffset(text, trackedTimeRange, currentTime, blurTime, baseline);
-        if (result === null) {
+        const activeLanePosition = updateGhostCursorLanePositionsForPlayback(currentTime, blurTime);
+        if (!activeLanePosition) {
+          helper.state.ghostCursorOffset = null;
           el.style.display = 'none';
           return;
         }
 
-        // Change color based on whether the baseline floor is clamping:
-        // amber when advancing, dim gray when stuck at baseline.
-        el.style.background = result.clamped
-          ? 'rgba(156, 163, 175, 0.6)'   // gray-400 — stuck at baseline
-          : 'rgba(245, 158, 11, 0.75)';   // amber-500 — advancing
-        helper.state.ghostCursorOffset = result.offset;
+        if (activeLanePosition.row !== trackedRow) {
+          const nextRange = activeLanePosition.timeRange || getRowTimeRange(activeLanePosition.row);
+          if (nextRange) {
+            trackedRow = activeLanePosition.row;
+            trackedTimeRange = nextRange;
+          }
 
-        const pos = getCaretPixelPosition(ta, result.offset);
-        el.style.display = '';
-        el.style.top = `${pos.top}px`;
-        el.style.left = `${pos.left}px`;
-        el.style.height = `${pos.height}px`;
+          const remembered = helper.state.lastBlur;
+          if (remembered) {
+            remembered.row = activeLanePosition.row;
+            remembered.selectionStart = activeLanePosition.offset;
+            remembered.selectionEnd = activeLanePosition.offset;
+            helper.setCurrentRow(activeLanePosition.row);
+          }
+        }
+
+        if (!renderGhostCursorLanePosition(activeLanePosition)) {
+          el.style.display = 'none';
+        }
       } catch (_e) {
         el.style.display = 'none';
       } finally {
@@ -732,6 +1180,93 @@ export function registerRowService(helper: any) {
       offset
     };
   }
+
+  helper.toggleGhostCursorLane = function toggleGhostCursorLane() {
+    if (!helper.config.features.proportionalCursorRestore) {
+      return false;
+    }
+
+    const lanes = getToggleableGhostCursorSpeakerKeys();
+    if (!lanes.length) {
+      return false;
+    }
+
+    const playbackSnapshot = getCurrentGhostCursorPlaybackSnapshot();
+    const focusedLanePosition = rememberFocusedGhostCursorLanePosition();
+    const pausedLaneToggle = playbackSnapshot.paused || Boolean(focusedLanePosition);
+    const focusedKey = focusedLanePosition ? getRowSpeakerKeySafe(focusedLanePosition.row) : '';
+    const currentKey = pausedLaneToggle
+      ? focusedKey || getActiveGhostCursorSpeakerKey()
+      : getActiveGhostCursorSpeakerKey();
+    const currentIndex = lanes.indexOf(currentKey);
+    const targetKey = lanes[(currentIndex >= 0 ? currentIndex + 1 : 0) % lanes.length];
+    if (!targetKey || (targetKey === currentKey && lanes.length < 2)) {
+      return false;
+    }
+
+    let rendered = false;
+    if (!pausedLaneToggle) {
+      const entry = findRowEntryByPlaybackTime(playbackSnapshot.currentTime, { speakerKey: targetKey });
+      const position = computeGhostCursorLanePositionForEntry(
+        entry,
+        playbackSnapshot.currentTime,
+        helper.state.blurPlaybackTime
+      );
+      if (!position) {
+        const pausedPosition = getPausedGhostCursorLanePosition(targetKey, playbackSnapshot.currentTime);
+        if (pausedPosition) {
+          if (!setActiveGhostCursorSpeakerKey(targetKey, 'manual')) {
+            return false;
+          }
+          const focused = focusGhostCursorLanePosition(pausedPosition);
+          if (!focused) {
+            return false;
+          }
+          stopGhostCursor();
+          if (helper.analytics) {
+            helper.analytics.record('hotkey:ghost-lane-toggle', {
+              speakerKey: targetKey,
+              rendered: false
+            });
+          }
+          return true;
+        } else {
+          if (helper.analytics) {
+            helper.analytics.record('hotkey:ghost-lane-toggle', {
+              speakerKey: targetKey,
+              rendered: false,
+              blocked: 'no-active-audio'
+            });
+          }
+          return true;
+        }
+      }
+      if (!setActiveGhostCursorSpeakerKey(targetKey, 'manual')) {
+        return false;
+      }
+      rendered = renderGhostCursorLanePosition(position);
+    } else {
+      const position = getPausedGhostCursorLanePosition(targetKey, playbackSnapshot.currentTime, true);
+      if (!position) {
+        return false;
+      }
+      if (!setActiveGhostCursorSpeakerKey(targetKey, 'manual')) {
+        return false;
+      }
+      const focused = focusGhostCursorLanePosition(position);
+      if (!focused) {
+        return false;
+      }
+      stopGhostCursor();
+    }
+    if (helper.analytics) {
+      helper.analytics.record('hotkey:ghost-lane-toggle', {
+        speakerKey: targetKey,
+        rendered
+      });
+    }
+    return true;
+  };
 
   helper.getTranscriptRows = function getTranscriptRows() {
     helper.perf?.count?.('row.scan');
@@ -2647,13 +3182,44 @@ export function registerRowService(helper: any) {
     return null;
   }
 
+  function isVisiblePlaybackControl(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function getPlaybackPausedStateFromControls() {
+    const playControl = Array.from(document.querySelectorAll('button[aria-label="Play all tracks"]'))
+      .find(isVisiblePlaybackControl);
+    if (playControl) {
+      return true;
+    }
+
+    const pauseControl = Array.from(document.querySelectorAll('button[aria-label="Pause all tracks"]'))
+      .find(isVisiblePlaybackControl);
+    if (pauseControl) {
+      return false;
+    }
+
+    return null;
+  }
+
   function getPlaybackStateLocally() {
     const waves = getPlaybackWaveInstances();
     if (waves.length) {
       const currentTime = Number(waves[0].getCurrentTime());
       const duration =
         typeof waves[0].getDuration === 'function' ? Number(waves[0].getDuration()) : NaN;
-      const paused = getWavePausedState(waves[0]);
+      const controlPaused = getPlaybackPausedStateFromControls();
+      const paused = typeof controlPaused === 'boolean' ? controlPaused : getWavePausedState(waves[0]);
       return {
         ok: Number.isFinite(currentTime) || typeof paused === 'boolean',
         source: 'wavesurfer',

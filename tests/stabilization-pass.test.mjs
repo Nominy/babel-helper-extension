@@ -151,3 +151,60 @@ test('ghost cursor uses lane lock and overlap-aware playback lookup', () => {
   assert.match(source, /setGhostCursorLaneLockForSpeaker\(targetLabel, 'manual'\)/);
   assert.match(source, /setGhostCursorLaneLockAuto\(\)/);
 });
+
+test('ghost cursor tracks both speaker lanes and Tab toggles the active ghost lane only', () => {
+  const source = read('../src/services/row-service.ts');
+  const stateSource = read('../src/core/state-store.ts');
+  const lifecycleSource = read('../src/core/lifecycle.ts');
+  const configSource = read('../src/core/config.ts');
+
+  assert.match(stateSource, /activeGhostCursorSpeakerKey: null/);
+  assert.match(stateSource, /ghostCursorLanePositions: \{\}/);
+  assert.match(stateSource, /ghostCursorPlaybackTime: null/);
+  assert.match(stateSource, /ghostCursorPlaybackPaused: null/);
+  assert.match(source, /const GHOST_CURSOR_TOGGLE_LANES = \['Speaker 1', 'Speaker 2'\]/);
+  assert.match(source, /function rememberGhostCursorLanePosition/);
+  assert.match(source, /function rememberFocusedGhostCursorLanePosition/);
+  assert.match(source, /const textarea = helper\.getActiveRowTextarea\(\)/);
+  assert.match(source, /rememberGhostCursorLanePosition\(row, offset/);
+  assert.match(source, /function updateGhostCursorLanePositionsForPlayback/);
+  assert.match(source, /findRowEntryByPlaybackTime\(currentTime, \{ speakerKey \}\)/);
+  assert.doesNotMatch(source, /findLatestRowEntryBeforePlaybackTime\(currentTime, \{ speakerKey \}\)/);
+  assert.match(source, /function getCurrentGhostCursorPlaybackSnapshot/);
+  assert.match(source, /function getPlaybackPausedStateFromControls/);
+  assert.match(source, /const localPlayback = getPlaybackStateLocally\(\)/);
+  assert.match(source, /rememberGhostCursorPlaybackState\(localPlayback\)/);
+  assert.match(source, /const controlPaused = getPlaybackPausedStateFromControls\(\)/);
+  assert.match(source, /const playbackSnapshot = getCurrentGhostCursorPlaybackSnapshot\(\)/);
+  assert.match(source, /const focusedLanePosition = rememberFocusedGhostCursorLanePosition\(\)/);
+  assert.match(source, /const pausedLaneToggle = playbackSnapshot\.paused \|\| Boolean\(focusedLanePosition\)/);
+  assert.match(source, /const focusedKey = focusedLanePosition \? getRowSpeakerKeySafe\(focusedLanePosition\.row\) : ''/);
+  assert.match(source, /const currentKey = pausedLaneToggle[\s\S]*focusedKey \|\| getActiveGhostCursorSpeakerKey\(\)[\s\S]*getActiveGhostCursorSpeakerKey\(\)/);
+  assert.match(source, /if \(!pausedLaneToggle\)[\s\S]*findRowEntryByPlaybackTime\(playbackSnapshot\.currentTime, \{ speakerKey: targetKey \}\)/);
+  assert.match(source, /function getPausedGhostCursorLanePosition/);
+  assert.match(source, /getPausedGhostCursorLanePosition\(targetKey, playbackSnapshot\.currentTime, true\)/);
+  assert.match(source, /const visuallyPaused = getPlaybackPausedStateFromControls\(\) === true/);
+  assert.match(source, /forcePaused !== true/);
+  assert.match(source, /findLatestRowEntryBeforePlaybackTime\(playbackTime, \{ speakerKey \}\)/);
+  assert.match(source, /function focusGhostCursorLanePosition/);
+  assert.match(source, /helper\.focusRow\(position\.row, \{[\s\S]*selectionStart: offset,[\s\S]*selectionEnd: offset/);
+  assert.match(source, /helper\.focusRow\(position\.row, \{[\s\S]*scroll: false/);
+  const pausedToggleBranchStart = source.indexOf(
+    '    } else {\n      const position = getPausedGhostCursorLanePosition(targetKey, playbackSnapshot.currentTime, true);'
+  );
+  assert.notEqual(pausedToggleBranchStart, -1);
+  const pausedToggleBranchEnd = source.indexOf('    if (helper.analytics)', pausedToggleBranchStart);
+  assert.notEqual(pausedToggleBranchEnd, -1);
+  const pausedToggleBranch = source.slice(pausedToggleBranchStart, pausedToggleBranchEnd);
+  assert.match(pausedToggleBranch, /const focused = focusGhostCursorLanePosition\(position\)/);
+  assert.match(pausedToggleBranch, /stopGhostCursor\(\)/);
+  assert.doesNotMatch(pausedToggleBranch, /render(?:Active)?GhostCursorLanePosition\(/);
+  assert.match(source, /helper\.toggleGhostCursorLane = function toggleGhostCursorLane/);
+  assert.match(source, /renderActiveGhostCursorLanePosition\(\)/);
+  assert.match(lifecycleSource, /handleNativeArrowSuppress[\s\S]*event\.code === 'Tab'[\s\S]*helper\.toggleGhostCursorLane\(\)/);
+  assert.match(lifecycleSource, /event\.stopImmediatePropagation\(\);[\s\S]*hotkey:ghost-lane-toggle/);
+  assert.match(lifecycleSource, /event\.code === 'Tab'/);
+  assert.match(lifecycleSource, /helper\.toggleGhostCursorLane\(\)/);
+  assert.match(configSource, /rows\.push\(\['Tab', 'Toggle active ghost cursor lane'\]\)/);
+  assert.doesNotMatch(source, /switchSpeakerWorkflow\('Speaker 1'\)[\s\S]*toggleGhostCursorLane/);
+});
