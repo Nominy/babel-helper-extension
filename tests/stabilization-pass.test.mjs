@@ -167,6 +167,7 @@ test('ghost cursor tracks both speaker lanes and Tab toggles the active ghost la
   assert.match(source, /function rememberFocusedGhostCursorLanePosition/);
   assert.match(source, /const textarea = helper\.getActiveRowTextarea\(\)/);
   assert.match(source, /rememberGhostCursorLanePosition\(row, offset/);
+  assert.match(source, /function ghostCursorLanePositionMatchesEntry/);
   assert.match(source, /function updateGhostCursorLanePositionsForPlayback/);
   assert.match(source, /findRowEntryByPlaybackTime\(currentTime, \{ speakerKey \}\)/);
   assert.doesNotMatch(source, /findLatestRowEntryBeforePlaybackTime\(currentTime, \{ speakerKey \}\)/);
@@ -175,6 +176,9 @@ test('ghost cursor tracks both speaker lanes and Tab toggles the active ghost la
   assert.match(source, /const localPlayback = getPlaybackStateLocally\(\)/);
   assert.match(source, /rememberGhostCursorPlaybackState\(localPlayback\)/);
   assert.match(source, /const controlPaused = getPlaybackPausedStateFromControls\(\)/);
+  assert.match(source, /function getGhostCursorLaneBaseline\(speakerKey, entry\)/);
+  assert.match(source, /ghostCursorLanePositionMatchesEntry\(remembered, entry\)/);
+  assert.match(source, /const baseline = getGhostCursorLaneBaseline\(speakerKey, entry\)/);
   assert.match(source, /const playbackSnapshot = getCurrentGhostCursorPlaybackSnapshot\(\)/);
   assert.match(source, /const focusedLanePosition = rememberFocusedGhostCursorLanePosition\(\)/);
   assert.match(source, /const pausedLaneToggle = playbackSnapshot\.paused \|\| Boolean\(focusedLanePosition\)/);

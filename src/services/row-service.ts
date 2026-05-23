@@ -683,9 +683,34 @@ export function registerRowService(helper: any) {
     });
   }
 
-  function getGhostCursorLaneBaseline(speakerKey) {
+  function ghostCursorLanePositionMatchesEntry(position, entry) {
+    if (!position || !entry || !(entry.row instanceof HTMLElement)) {
+      return false;
+    }
+
+    const row = resolveConnectedRow(position.row, position.rowIdentity);
+    if (!(row instanceof HTMLElement) || row !== entry.row) {
+      return false;
+    }
+
+    const range = position.timeRange;
+    if (!range) {
+      return true;
+    }
+
+    return (
+      range.startSeconds === entry.startSeconds &&
+      range.endSeconds === entry.endSeconds
+    );
+  }
+
+  function getGhostCursorLaneBaseline(speakerKey, entry) {
     const remembered = getRememberedGhostCursorLanePosition(speakerKey);
-    if (remembered && typeof remembered.cursorBaseline === 'number') {
+    if (
+      remembered &&
+      ghostCursorLanePositionMatchesEntry(remembered, entry) &&
+      typeof remembered.cursorBaseline === 'number'
+    ) {
       return remembered.cursorBaseline;
     }
 
@@ -696,7 +721,13 @@ export function registerRowService(helper: any) {
       return helper.state.cursorBaseline;
     }
 
-    return remembered && typeof remembered.offset === 'number' ? remembered.offset : 0;
+    return (
+      remembered &&
+      ghostCursorLanePositionMatchesEntry(remembered, entry) &&
+      typeof remembered.offset === 'number'
+    )
+      ? remembered.offset
+      : 0;
   }
 
   function computeGhostCursorLanePositionForEntry(entry, currentTime, blurTime) {
@@ -711,7 +742,7 @@ export function registerRowService(helper: any) {
 
     const speakerKey = getRowSpeakerKeySafe(entry.row);
     const text = textarea.value || '';
-    const baseline = getGhostCursorLaneBaseline(speakerKey);
+    const baseline = getGhostCursorLaneBaseline(speakerKey, entry);
     const result = computeRestoreOffset(text, entry, currentTime, blurTime, baseline);
     if (!result) {
       return null;
