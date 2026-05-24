@@ -63,6 +63,7 @@ export type AnalyticsEventType =
   | 'hotkey:trim'                      // Alt+R / Alt+Shift+R trim
   | 'hotkey:cut-preview'               // Cut preview keydown (S/Shift+S/L)
   | 'hotkey:arrow-suppressed'          // Native arrow seek suppressed
+  | 'hotkey:ghost-lane-toggle'         // Tab ghost cursor lane switch
   | 'hotkey:lint-autofix'              // Alt+F / Alt+Shift+F lint auto-fix
 
   // Row tracking
