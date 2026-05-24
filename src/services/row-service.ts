@@ -296,6 +296,7 @@ export function registerRowService(helper: any) {
 
   const GHOST_CURSOR_INTERVAL_MS = 66; // ~15 fps
   const GHOST_CURSOR_ATTR = 'data-babel-helper-ghost-cursor';
+  const GHOST_CURSOR_TOGGLE_LANES = ['Speaker 1', 'Speaker 2'];
 
   /** Copied style properties for the mirror-div caret measurement. */
   const MIRROR_STYLE_PROPS = [
@@ -519,6 +520,362 @@ export function registerRowService(helper: any) {
     }
   }
 
+  function getGhostCursorLaneProjections() {
+    const projections = helper.state.ghostCursorLaneProjections;
+    if (!projections || typeof projections !== 'object' || Array.isArray(projections)) {
+      helper.state.ghostCursorLaneProjections = {};
+      return helper.state.ghostCursorLaneProjections;
+    }
+    return projections;
+  }
+
+  function rememberGhostCursorPlaybackState(playback) {
+    helper.state.ghostCursorPlaybackTime =
+      playback && typeof playback.currentTime === 'number' && Number.isFinite(playback.currentTime)
+        ? playback.currentTime
+        : null;
+    helper.state.ghostCursorPlaybackPaused =
+      playback && typeof playback.paused === 'boolean'
+        ? playback.paused
+        : null;
+  }
+
+  function getCurrentGhostCursorPlaybackSnapshot() {
+    const rememberedTime = helper.state.ghostCursorPlaybackTime;
+    if (typeof rememberedTime === 'number' && Number.isFinite(rememberedTime)) {
+      return {
+        ok: true,
+        currentTime: rememberedTime,
+        paused: helper.state.ghostCursorPlaybackPaused === true
+      };
+    }
+
+    const localPlayback = getPlaybackStateLocally();
+    if (
+      localPlayback &&
+      localPlayback.ok &&
+      typeof localPlayback.currentTime === 'number' &&
+      Number.isFinite(localPlayback.currentTime)
+    ) {
+      rememberGhostCursorPlaybackState(localPlayback);
+      return {
+        ok: true,
+        currentTime: localPlayback.currentTime,
+        paused: typeof localPlayback.paused === 'boolean' ? localPlayback.paused : false
+      };
+    }
+
+    return {
+      ok: false,
+      currentTime: null,
+      paused: true
+    };
+  }
+
+  function getRememberedGhostCursorProjection(speakerKey) {
+    if (typeof speakerKey !== 'string' || !speakerKey) {
+      return null;
+    }
+
+    const projections = getGhostCursorLaneProjections();
+    const projection = projections[speakerKey];
+    if (!projection || typeof projection !== 'object') {
+      return null;
+    }
+
+    const row = resolveConnectedRow(projection.row, projection.rowIdentity);
+    const offset = Number(projection.offset);
+    if (!(row instanceof HTMLElement) || !Number.isFinite(offset) || offset < 0) {
+      delete projections[speakerKey];
+      return null;
+    }
+
+    return {
+      ...projection,
+      row,
+      offset
+    };
+  }
+
+  function getSpeakerKeyForGhostToggleLabel(label) {
+    const normalized = normalizeSpeakerLabel(label);
+    if (!normalized) {
+      return '';
+    }
+
+    for (const cachedEntry of getRowTimeEntries()) {
+      const entry = resolveRowTimeEntry(cachedEntry);
+      if (!entry) {
+        continue;
+      }
+
+      const identity = helper.getRowIdentity(entry.row) || {};
+      const speakerKey = getRowSpeakerKeySafe(entry.row);
+      const speakerCell = entry.row.children[1] instanceof HTMLElement
+        ? helper.normalizeText(entry.row.children[1])
+        : '';
+      const candidates = [speakerKey, identity.trackLabel, speakerCell].filter(Boolean);
+      if (
+        candidates.some((candidate) =>
+          candidate === normalized || normalizeSpeakerLabel(candidate) === normalized
+        )
+      ) {
+        return speakerKey || normalized;
+      }
+    }
+
+    return normalized;
+  }
+
+  function getGhostCursorToggleSpeakerKeys() {
+    const keys = [];
+    const seen = new Set();
+    for (const label of GHOST_CURSOR_TOGGLE_LANES) {
+      const key = getSpeakerKeyForGhostToggleLabel(label);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }
+
+  function getToggleableGhostCursorSpeakerKeys() {
+    return getGhostCursorToggleSpeakerKeys().filter(
+      (speakerKey) => hasRowsForSpeakerKey(speakerKey) || getRememberedGhostCursorProjection(speakerKey)
+    );
+  }
+
+  function ghostCursorProjectionMatchesEntry(projection, entry) {
+    if (!projection || !entry || !(entry.row instanceof HTMLElement)) {
+      return false;
+    }
+
+    const row = resolveConnectedRow(projection.row, projection.rowIdentity);
+    if (!(row instanceof HTMLElement) || row !== entry.row) {
+      return false;
+    }
+
+    const range = projection.timeRange;
+    if (!range) {
+      return true;
+    }
+
+    return (
+      range.startSeconds === entry.startSeconds &&
+      range.endSeconds === entry.endSeconds
+    );
+  }
+
+  function getGhostCursorProjectionBaseline(speakerKey, entry) {
+    const remembered = getRememberedGhostCursorProjection(speakerKey);
+    if (
+      remembered &&
+      ghostCursorProjectionMatchesEntry(remembered, entry) &&
+      typeof remembered.cursorBaseline === 'number'
+    ) {
+      return remembered.cursorBaseline;
+    }
+
+    return (
+      remembered &&
+      ghostCursorProjectionMatchesEntry(remembered, entry) &&
+      typeof remembered.offset === 'number'
+    )
+      ? remembered.offset
+      : 0;
+  }
+
+  function rememberGhostCursorProjection(row, offset, options) {
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const speakerKey = getRowSpeakerKeySafe(row);
+    if (!speakerKey) {
+      return null;
+    }
+
+    const numericOffset = Math.max(0, Math.round(Number(offset) || 0));
+    const settings = options || {};
+    const projection = {
+      row,
+      rowIdentity: helper.getRowIdentity(row),
+      offset: numericOffset,
+      cursorBaseline:
+        typeof settings.cursorBaseline === 'number' && Number.isFinite(settings.cursorBaseline)
+          ? Math.max(0, Math.round(settings.cursorBaseline))
+          : numericOffset,
+      playbackTime:
+        typeof settings.playbackTime === 'number' && Number.isFinite(settings.playbackTime)
+          ? settings.playbackTime
+          : null,
+      timeRange: settings.timeRange || getRowTimeRange(row),
+      clamped: Boolean(settings.clamped),
+      updatedAt: Date.now()
+    };
+
+    getGhostCursorLaneProjections()[speakerKey] = projection;
+    if (settings.source === 'active') {
+      helper.state.ghostCursorDefaultProjectionSpeakerKey = speakerKey;
+      if (helper.state.ghostCursorProjectionSource !== 'manual') {
+        helper.state.ghostCursorProjectionSpeakerKey = speakerKey;
+        helper.state.ghostCursorProjectionSource = 'auto';
+      }
+    }
+
+    return projection;
+  }
+
+  function rememberFocusedGhostCursorProjection() {
+    const textarea = helper.getActiveRowTextarea();
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+
+    const row = textarea.closest('tr');
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const offset =
+      typeof textarea.selectionStart === 'number' && Number.isFinite(textarea.selectionStart)
+        ? textarea.selectionStart
+        : 0;
+    return rememberGhostCursorProjection(row, offset, {
+      cursorBaseline: offset,
+      playbackTime: helper.state.ghostCursorPlaybackTime,
+      timeRange: getRowTimeRange(row)
+    });
+  }
+
+  function findGhostCursorProjectionEntryByPlaybackTime(currentTime, speakerKey) {
+    let entry = findRowEntryByPlaybackTime(currentTime, { speakerKey });
+    if (!entry) {
+      entry = findLatestRowEntryBeforePlaybackTime(currentTime, { speakerKey });
+    }
+    return entry;
+  }
+
+  function computeGhostCursorProjectionForEntry(entry, currentTime, blurTime) {
+    if (!entry || !(entry.row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const textarea = helper.getRowTextarea(entry.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+
+    const speakerKey = getRowSpeakerKeySafe(entry.row);
+    const text = textarea.value || '';
+    const baseline = getGhostCursorProjectionBaseline(speakerKey, entry);
+    const result = computeRestoreOffset(text, entry, currentTime, blurTime, baseline);
+    if (!result) {
+      return null;
+    }
+
+    return rememberGhostCursorProjection(entry.row, result.offset, {
+      cursorBaseline: result.offset,
+      playbackTime: currentTime,
+      timeRange: {
+        startSeconds: entry.startSeconds,
+        endSeconds: entry.endSeconds
+      },
+      clamped: result.clamped
+    });
+  }
+
+  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime) {
+    for (const speakerKey of getGhostCursorToggleSpeakerKeys()) {
+      const entry = findGhostCursorProjectionEntryByPlaybackTime(currentTime, speakerKey);
+      computeGhostCursorProjectionForEntry(entry, currentTime, blurTime);
+    }
+  }
+
+  function getRenderedGhostCursorProjection() {
+    const selectedKey =
+      helper.state.ghostCursorProjectionSource === 'manual'
+        ? helper.state.ghostCursorProjectionSpeakerKey
+        : helper.state.ghostCursorDefaultProjectionSpeakerKey;
+    const projection = getRememberedGhostCursorProjection(selectedKey);
+    if (projection) {
+      return projection;
+    }
+
+    const defaultKey = helper.state.ghostCursorDefaultProjectionSpeakerKey;
+    if (defaultKey && defaultKey !== selectedKey) {
+      helper.state.ghostCursorProjectionSpeakerKey = defaultKey;
+      helper.state.ghostCursorProjectionSource = 'auto';
+      return getRememberedGhostCursorProjection(defaultKey);
+    }
+
+    return null;
+  }
+
+  function renderGhostCursorProjection(projection) {
+    if (!projection || !(projection.row instanceof HTMLElement) || !projection.row.isConnected) {
+      return false;
+    }
+
+    const textarea = helper.getRowTextarea(projection.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const textLength = (textarea.value || '').length;
+    const offset = Math.max(0, Math.min(textLength, Math.round(Number(projection.offset) || 0)));
+    let el = helper.state.ghostCursorElement;
+    if (!(el instanceof HTMLElement) || !el.isConnected) {
+      el = createGhostCursorElement();
+      document.body.appendChild(el);
+      helper.state.ghostCursorElement = el;
+    }
+
+    el.style.background = projection.clamped
+      ? 'rgba(156, 163, 175, 0.6)'
+      : 'rgba(245, 158, 11, 0.75)';
+    const pos = getCaretPixelPosition(textarea, offset);
+    el.style.display = '';
+    el.style.top = `${pos.top}px`;
+    el.style.left = `${pos.left}px`;
+    el.style.height = `${pos.height}px`;
+
+    helper.state.ghostCursorRow = projection.row;
+    helper.state.ghostCursorRowIdentity = helper.getRowIdentity(projection.row);
+    helper.state.ghostCursorOffset = offset;
+    return true;
+  }
+
+  function focusGhostCursorProjection(projection) {
+    if (!projection || !(projection.row instanceof HTMLElement) || !projection.row.isConnected) {
+      return false;
+    }
+
+    const textarea = helper.getRowTextarea(projection.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+
+    const textLength = (textarea.value || '').length;
+    const offset = Math.max(0, Math.min(textLength, Math.round(Number(projection.offset) || 0)));
+    helper.state.cursorBaseline = offset;
+    helper.state.blurRestorePending = false;
+    helper.state.ghostCursorRow = projection.row;
+    helper.state.ghostCursorRowIdentity = helper.getRowIdentity(projection.row);
+    helper.state.ghostCursorOffset = offset;
+
+    return helper.focusRow(projection.row, {
+      activateRow: false,
+      scroll: false,
+      selectionStart: offset,
+      selectionEnd: offset,
+      direction: 'none'
+    });
+  }
+
   function findGhostCursorEntryByPlaybackTime(playbackTime) {
     const lock = getGhostCursorLaneLock();
     if (lock && !hasRowsForSpeakerKey(lock.speakerKey)) {
@@ -575,6 +932,10 @@ export function registerRowService(helper: any) {
     helper.state.ghostCursorRow = row;
     helper.state.ghostCursorRowIdentity = helper.getRowIdentity(row);
     helper.state.ghostCursorOffset = null;
+    helper.state.ghostCursorProjectionSpeakerKey = getRowSpeakerKeySafe(row) || null;
+    helper.state.ghostCursorDefaultProjectionSpeakerKey = getRowSpeakerKeySafe(row) || null;
+    helper.state.ghostCursorProjectionSource = 'auto';
+    helper.state.ghostCursorLaneProjections = {};
 
     // Mutable tracking state for dynamic row switching
     let trackedRow = row;
@@ -599,6 +960,7 @@ export function registerRowService(helper: any) {
           typeof helper.getPlaybackState === 'function'
             ? await helper.getPlaybackState()
             : getPlaybackStateLocally();
+        rememberGhostCursorPlaybackState(playback);
         if (!playback || !playback.ok || typeof playback.currentTime !== 'number') {
           el.style.display = 'none';
           return;
@@ -682,18 +1044,19 @@ export function registerRowService(helper: any) {
           return;
         }
 
-        // Change color based on whether the baseline floor is clamping:
-        // amber when advancing, dim gray when stuck at baseline.
-        el.style.background = result.clamped
-          ? 'rgba(156, 163, 175, 0.6)'   // gray-400 — stuck at baseline
-          : 'rgba(245, 158, 11, 0.75)';   // amber-500 — advancing
-        helper.state.ghostCursorOffset = result.offset;
-
-        const pos = getCaretPixelPosition(ta, result.offset);
-        el.style.display = '';
-        el.style.top = `${pos.top}px`;
-        el.style.left = `${pos.left}px`;
-        el.style.height = `${pos.height}px`;
+        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime);
+        const activeProjection = rememberGhostCursorProjection(trackedRow, result.offset, {
+          source: 'active',
+          cursorBaseline: result.offset,
+          playbackTime: currentTime,
+          timeRange: trackedTimeRange,
+          clamped: result.clamped
+        });
+        const renderedProjection = getRenderedGhostCursorProjection() || activeProjection;
+        if (!renderGhostCursorProjection(renderedProjection)) {
+          helper.state.ghostCursorOffset = null;
+          el.style.display = 'none';
+        }
       } catch (_e) {
         el.style.display = 'none';
       } finally {
@@ -732,6 +1095,58 @@ export function registerRowService(helper: any) {
       offset
     };
   }
+
+  helper.toggleGhostCursorLane = function toggleGhostCursorLane() {
+    if (!helper.config.features.proportionalCursorRestore) {
+      return false;
+    }
+
+    const lanes = getToggleableGhostCursorSpeakerKeys();
+    if (lanes.length < 2) {
+      return false;
+    }
+
+    const focusedProjection = rememberFocusedGhostCursorProjection();
+    const focusedKey = focusedProjection ? getRowSpeakerKeySafe(focusedProjection.row) : '';
+    const currentKey =
+      focusedKey ||
+      helper.state.ghostCursorProjectionSpeakerKey ||
+      helper.state.ghostCursorDefaultProjectionSpeakerKey ||
+      getRowSpeakerKeySafe(helper.state.ghostCursorRow);
+    const currentIndex = lanes.indexOf(currentKey);
+    const targetKey = lanes[(currentIndex >= 0 ? currentIndex + 1 : 0) % lanes.length];
+    if (!targetKey || targetKey === currentKey) {
+      return false;
+    }
+
+    const playbackSnapshot = getCurrentGhostCursorPlaybackSnapshot();
+    if (playbackSnapshot.ok && typeof playbackSnapshot.currentTime === 'number') {
+      const entry = findGhostCursorProjectionEntryByPlaybackTime(playbackSnapshot.currentTime, targetKey);
+      computeGhostCursorProjectionForEntry(
+        entry,
+        playbackSnapshot.currentTime,
+        helper.state.blurPlaybackTime
+      );
+    }
+
+    const projection = getRememberedGhostCursorProjection(targetKey);
+    if (!projection) {
+      return false;
+    }
+
+    helper.state.ghostCursorProjectionSpeakerKey = targetKey;
+    helper.state.ghostCursorProjectionSource = 'manual';
+    const rendered = helper.state.ghostCursorElement instanceof HTMLElement
+      ? renderGhostCursorProjection(projection)
+      : focusGhostCursorProjection(projection);
+    if (helper.analytics) {
+      helper.analytics.record('hotkey:ghost-lane-toggle', {
+        speakerKey: targetKey,
+        rendered
+      });
+    }
+    return rendered;
+  };
 
   helper.getTranscriptRows = function getTranscriptRows() {
     helper.perf?.count?.('row.scan');

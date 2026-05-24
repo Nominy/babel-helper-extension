@@ -265,6 +265,17 @@ export function registerLifecycle(helper: any) {
     );
   }
 
+  function isGhostCursorLaneToggleShortcut(event) {
+    return Boolean(
+      isFeatureEnabled('rowActions') &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      event.code === 'Tab'
+    );
+  }
+
   function shouldSuppressNativeArrowHotkey(event) {
     if (!isFeatureEnabled('disableNativeArrowSeek')) {
       return false;
@@ -295,6 +306,21 @@ export function registerLifecycle(helper: any) {
 
   function handleNativeArrowSuppress(event) {
     updateRightShiftState(event);
+
+    if (isGhostCursorLaneToggleShortcut(event) && typeof helper.toggleGhostCursorLane === 'function') {
+      const handled = helper.toggleGhostCursorLane();
+      if (handled) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:ghost-lane-toggle', {
+            via: 'window-capture',
+            defaultPrevented: event.defaultPrevented
+          });
+        }
+      }
+      return;
+    }
 
     if (
       helper.runtime.isSessionInteractive() &&
@@ -404,6 +430,15 @@ export function registerLifecycle(helper: any) {
     }
 
     if (event.defaultPrevented) {
+      return;
+    }
+
+    if (isGhostCursorLaneToggleShortcut(event) && typeof helper.toggleGhostCursorLane === 'function') {
+      const handled = helper.toggleGhostCursorLane();
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       return;
     }
 

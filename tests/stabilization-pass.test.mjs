@@ -151,3 +151,41 @@ test('ghost cursor uses lane lock and overlap-aware playback lookup', () => {
   assert.match(source, /setGhostCursorLaneLockForSpeaker\(targetLabel, 'manual'\)/);
   assert.match(source, /setGhostCursorLaneLockAuto\(\)/);
 });
+
+test('ghost cursor lane toggle uses isolated per-lane projections over the old active cursor', () => {
+  const source = read('../src/services/row-service.ts');
+  const stateSource = read('../src/core/state-store.ts');
+  const lifecycleSource = read('../src/core/lifecycle.ts');
+  const configSource = read('../src/core/config.ts');
+
+  assert.match(stateSource, /ghostCursorProjectionSpeakerKey: null/);
+  assert.match(stateSource, /ghostCursorProjectionSource: 'auto'/);
+  assert.match(stateSource, /ghostCursorLaneProjections: \{\}/);
+  assert.match(stateSource, /ghostCursorPlaybackTime: null/);
+
+  assert.match(source, /const GHOST_CURSOR_TOGGLE_LANES = \['Speaker 1', 'Speaker 2'\]/);
+  assert.match(source, /function rememberGhostCursorProjection/);
+  assert.match(source, /function computeGhostCursorProjectionForEntry/);
+  assert.match(source, /function updateGhostCursorLaneProjectionsForPlayback/);
+  assert.match(source, /function getRenderedGhostCursorProjection/);
+  assert.match(source, /function renderGhostCursorProjection/);
+  assert.match(source, /function rememberFocusedGhostCursorProjection/);
+  assert.match(source, /function focusGhostCursorProjection/);
+  assert.match(source, /helper\.toggleGhostCursorLane = function toggleGhostCursorLane/);
+  assert.match(source, /findRowEntryByPlaybackTime\(currentTime, \{ speakerKey \}\)/);
+  assert.match(source, /findLatestRowEntryBeforePlaybackTime\(currentTime, \{ speakerKey \}\)/);
+  assert.match(source, /rememberGhostCursorProjection\(trackedRow, result\.offset/);
+  assert.match(source, /renderGhostCursorProjection\(renderedProjection\)/);
+  assert.match(source, /const focusedProjection = rememberFocusedGhostCursorProjection\(\)/);
+  assert.match(source, /const focusedKey = focusedProjection \? getRowSpeakerKeySafe\(focusedProjection\.row\) : ''/);
+  assert.match(source, /helper\.state\.ghostCursorElement instanceof HTMLElement[\s\S]*renderGhostCursorProjection\(projection\)[\s\S]*focusGhostCursorProjection\(projection\)/);
+
+  assert.doesNotMatch(source, /function setActiveGhostCursorSpeakerKey/);
+  assert.doesNotMatch(source, /activeGhostCursorSpeakerKey/);
+  assert.doesNotMatch(source, /setActiveGhostCursorSpeakerKey\(speakerKey, 'auto'\)/);
+  assert.doesNotMatch(source, /if \(!\(helper\.state\.ghostCursorElement instanceof HTMLElement\)\) \{\s*return false;\s*\}/);
+
+  assert.match(lifecycleSource, /function isGhostCursorLaneToggleShortcut/);
+  assert.match(lifecycleSource, /helper\.toggleGhostCursorLane\(\)/);
+  assert.match(configSource, /rows\.push\(\['Tab', 'Toggle active ghost cursor lane'\]\)/);
+});
