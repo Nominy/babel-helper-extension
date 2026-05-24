@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'babel-helper-tag-part-'));
 const bundledModulePath = path.join(tempDir, 'tag-part-backspace.bundle.mjs');
+const FOREIGN_SPEECH_TAG = 'иностранная-речь';
 
 await build({
   entryPoints: [path.resolve('src/content/tag-part-backspace.ts')],
@@ -98,4 +99,18 @@ test('Ctrl+Backspace removes directly concatenated tag and text as one unit', ()
 
 test('Ctrl+Backspace does not jump across separated transcript text', () => {
   assert.equal(getAngleTagPartBackspaceEdit('<laugh> hello', 13, 13, { skipAdjacentSuffix: true }), null);
+});
+
+test('leaves foreign speech angle tags to native editing', () => {
+  assert.equal(getAngleTagPartBackspaceEdit(`<${FOREIGN_SPEECH_TAG}> hello`, FOREIGN_SPEECH_TAG.length + 2, FOREIGN_SPEECH_TAG.length + 2), null);
+  assert.equal(
+    getAngleTagPartBackspaceEdit(`<${FOREIGN_SPEECH_TAG}> hello </${FOREIGN_SPEECH_TAG}>`, FOREIGN_SPEECH_TAG.length + 12, FOREIGN_SPEECH_TAG.length + 12),
+    null
+  );
+  assert.equal(
+    getAngleTagPartBackspaceEdit(`<style-${FOREIGN_SPEECH_TAG}>hello`, FOREIGN_SPEECH_TAG.length + 13, FOREIGN_SPEECH_TAG.length + 13, {
+      skipAdjacentSuffix: true,
+    }),
+    null
+  );
 });

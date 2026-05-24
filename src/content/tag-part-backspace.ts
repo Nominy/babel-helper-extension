@@ -21,6 +21,8 @@ type AngleTagPartRange = {
   end: number;
 };
 
+const FOREIGN_SPEECH_TAG_FRAGMENT = 'иностранная-речь';
+
 export function shouldHandleAngleTagPartBackspaceEvent(event: AngleTagPartBackspaceEvent) {
   return event.key === 'Backspace' && !event.altKey && !event.metaKey;
 }
@@ -31,8 +33,13 @@ function isValidAngleTagPart(text: string) {
   }
 
   const body = text.slice(1, -1);
-  const name = body.startsWith("/") ? body.slice(1) : body;
-  return name.trim().length > 0 && !/[<>\r\n]/u.test(name);
+  const name = body.startsWith('/') ? body.slice(1) : body;
+  const normalizedName = name.trim().toLocaleLowerCase();
+  return (
+    normalizedName.length > 0 &&
+    !/[<>\r\n]/u.test(name) &&
+    !normalizedName.includes(FOREIGN_SPEECH_TAG_FRAGMENT)
+  );
 }
 
 function getAngleTagPartRangeAtBackspacePoint(value: string, cursorPosition: number): AngleTagPartRange | null {
