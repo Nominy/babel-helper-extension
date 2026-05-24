@@ -25,6 +25,9 @@ export function registerTimelineSelectionService(helper: any) {
   const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
   const BRIDGE_SCRIPT_PATH = 'dist/content/magnifier-bridge.js';
   const BRIDGE_TIMEOUT_MS = 700;
+  const CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS = 180;
+  const CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS = 1200;
+  const CUT_PREVIEW_DUPLICATE_ROW_POLL_MS = 40;
   const ZOOM_PERSIST_DEBOUNCE_MS = 240;
   const AUDIO_TRIM_INWARD_THRESHOLD = Math.pow(10, -62 / 20);
   const AUDIO_TRIM_OUTWARD_THRESHOLD = Math.pow(10, -62 / 20);
@@ -1081,6 +1084,10 @@ export function registerTimelineSelectionService(helper: any) {
     const cached = getPreviewTimeRange(preview, { allowAsync: false });
     if (cached) {
       return cached;
+    }
+
+    if (preview.timeRangeRequest) {
+      return (await preview.timeRangeRequest) || null;
     }
 
     return (await refreshPreviewTimeRange(preview, { force: true })) || null;
@@ -3232,21 +3239,31 @@ export function registerTimelineSelectionService(helper: any) {
     return null;
   }
 
+  async function waitForDuplicateSplitRows(previousRows, speakerKey, timeoutMs) {
+    if (!Array.isArray(previousRows) || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return null;
+    }
+
+    return helper.waitFor(
+      () =>
+        findNewDuplicateSplitRows(previousRows, {
+          speakerKey
+        }),
+      timeoutMs,
+      CUT_PREVIEW_DUPLICATE_ROW_POLL_MS
+    );
+  }
+
   async function applySmartSplitFromDuplicateRows(context) {
     if (!context || !Number.isFinite(context.rowCount)) {
       return false;
     }
 
-    const detected = await helper.waitFor(() => {
-      const rows = helper.getTranscriptRows();
-      if (rows.length < context.rowCount + 1) {
-        return null;
-      }
-
-      return findNewDuplicateSplitRows(context.rows, {
-        speakerKey: context.speakerKey
-      });
-    }, 1200, 40);
+    const detected = await waitForDuplicateSplitRows(
+      context.rows,
+      context.speakerKey,
+      CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS
+    );
 
     if (!detected) {
       return false;
@@ -3637,13 +3654,10 @@ export function registerTimelineSelectionService(helper: any) {
 
       const duplicateSplitRows =
         initialOverlapPlan.splitRequired && splitRowSnapshot
-          ? await helper.waitFor(
-            () =>
-              findNewDuplicateSplitRows(splitRowSnapshot, {
-                speakerKey
-              }),
-            1200,
-            40
+          ? await waitForDuplicateSplitRows(
+            splitRowSnapshot,
+            speakerKey,
+            CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS
           )
           : null;
 

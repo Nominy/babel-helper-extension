@@ -87,3 +87,41 @@ test('minimap navigation seeks every visible wave and then recenters', () => {
   assert.ok(applyIndex > 0, 'navigateSource should set all waveform instances');
   assert.ok(centerIndex > applyIndex, 'navigateSource should recenter after setting time');
 });
+
+test('cut preview commit reuses the final in-flight time range request', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const ensureStart = source.indexOf('async function ensurePreviewTimeRange(preview)');
+  const forceRefreshIndex = source.indexOf('refreshPreviewTimeRange(preview, { force: true })', ensureStart);
+  const reuseRequestIndex = source.indexOf('if (preview.timeRangeRequest) {', ensureStart);
+
+  assert.ok(ensureStart > 0, 'timeline selection should expose ensurePreviewTimeRange');
+  assert.ok(reuseRequestIndex > ensureStart, 'ensurePreviewTimeRange should check for an in-flight request');
+  assert.ok(
+    reuseRequestIndex < forceRefreshIndex,
+    'ensurePreviewTimeRange should await the existing request before forcing a duplicate request'
+  );
+  assert.match(
+    source.slice(reuseRequestIndex, forceRefreshIndex),
+    /return \(await preview\.timeRangeRequest\) \|\| null;/
+  );
+});
+
+test('split-required cut commit uses a short duplicate-row wait before trimming', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const commitStart = source.indexOf('helper.commitCutPreview = async function commitCutPreview');
+  const commitEnd = source.indexOf('helper.handleCutPreviewKeydown', commitStart);
+  const commitBody = source.slice(commitStart, commitEnd);
+
+  assert.match(source, /CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS = 180/);
+  assert.match(source, /CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS = 1200/);
+  assert.match(source, /async function waitForDuplicateSplitRows\(previousRows, speakerKey, timeoutMs\)/);
+  assert.match(
+    commitBody,
+    /waitForDuplicateSplitRows\(\s*splitRowSnapshot,\s*speakerKey,\s*CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS\s*\)/
+  );
+  assert.doesNotMatch(
+    commitBody,
+    /findNewDuplicateSplitRows\(splitRowSnapshot[\s\S]*1200,\s*40/,
+    'commit should not block for the full smart-split duplicate-row window before moving boundaries'
+  );
+});
