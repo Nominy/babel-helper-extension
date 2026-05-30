@@ -186,6 +186,9 @@ export function createHelperKernel() {
       if (typeof helper.unbindCutPreview === 'function') {
         helper.unbindCutPreview();
       }
+      if (typeof helper.unbindNativeTimelineDoubleClickBlocker === 'function') {
+        helper.unbindNativeTimelineDoubleClickBlocker();
+      }
       if (typeof helper.unbindMagnifier === 'function') {
         helper.unbindMagnifier();
       }

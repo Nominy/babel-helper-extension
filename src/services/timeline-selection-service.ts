@@ -45,13 +45,15 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.smartSplitClickContext = null;
   helper.state.selectionLoop = null;
   helper.state.longTaskProgress = null;
-  helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
-  helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
-  helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
-  helper.config.hotkeysHelpRows.unshift(['L', 'Loop the selected range until playback caret moves']);
-  helper.config.hotkeysHelpRows.unshift(['Shift + S', 'Split the selected range']);
-  helper.config.hotkeysHelpRows.unshift(['S', 'Smart-split the selected range']);
-  helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a timeline selection']);
+  if (isFeatureEnabled('timelineSelection')) {
+    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
+    helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
+    helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
+    helper.config.hotkeysHelpRows.unshift(['L', 'Loop the selected range until playback caret moves']);
+    helper.config.hotkeysHelpRows.unshift(['Shift + S', 'Split the selected range']);
+    helper.config.hotkeysHelpRows.unshift(['S', 'Smart-split the selected range']);
+    helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a timeline selection']);
+  }
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
@@ -358,6 +360,43 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     return null;
+  }
+
+  function isNativeTimelineDoubleClickTarget(event) {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    for (const node of path) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (node.hasAttribute(CUT_PREVIEW_ATTR)) {
+        return false;
+      }
+
+      if (isRegionHandle(node) || isRegionBody(node)) {
+        return true;
+      }
+    }
+
+    const target = event.target;
+    return Boolean(
+      target instanceof HTMLElement &&
+      (getRegionHandleElement(target) || getOwningRegionBody(target))
+    );
+  }
+
+  function handleTimelineDoubleClick(event) {
+    if (!isFeatureEnabled('disableNativeTimelineDoubleClick')) {
+      return;
+    }
+
+    if (!isNativeTimelineDoubleClickTarget(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
   }
 
   function isSmartSplitClickEvent(event) {
@@ -4120,6 +4159,24 @@ export function registerTimelineSelectionService(helper: any) {
     document.removeEventListener('pointercancel', handlePointerEnd, true);
     document.removeEventListener('click', handleSmartSplitClick, true);
     helper.state.cutListenersBound = false;
+  };
+
+  helper.bindNativeTimelineDoubleClickBlocker = function bindNativeTimelineDoubleClickBlocker() {
+    if (helper.state.nativeTimelineDoubleClickBlockerBound) {
+      return;
+    }
+
+    document.addEventListener('dblclick', handleTimelineDoubleClick, true);
+    helper.state.nativeTimelineDoubleClickBlockerBound = true;
+  };
+
+  helper.unbindNativeTimelineDoubleClickBlocker = function unbindNativeTimelineDoubleClickBlocker() {
+    if (!helper.state.nativeTimelineDoubleClickBlockerBound) {
+      return;
+    }
+
+    document.removeEventListener('dblclick', handleTimelineDoubleClick, true);
+    helper.state.nativeTimelineDoubleClickBlockerBound = false;
   };
 }
 

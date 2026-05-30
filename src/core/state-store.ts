@@ -20,6 +20,7 @@
     sessionActive: false,
     rowTrackingBound: false,
     cutListenersBound: false,
+    nativeTimelineDoubleClickBlockerBound: false,
     magnifierListenersBound: false,
     cutDraft: null,
     cutPreview: null,

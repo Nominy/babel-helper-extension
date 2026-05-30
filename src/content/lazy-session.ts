@@ -52,7 +52,7 @@ function registerSessionServices(ctx: FeatureContext) {
   if (isFeatureEnabled(ctx, 'hotkeysHelp')) {
     registerHotkeysHelpService(helper);
   }
-  if (isFeatureEnabled(ctx, 'timelineSelection')) {
+  if (isFeatureEnabled(ctx, 'timelineSelection') || isFeatureEnabled(ctx, 'disableNativeTimelineDoubleClick')) {
     registerTimelineSelectionService(helper);
   }
   if (isFeatureEnabled(ctx, 'waveformScaleUnlock')) {

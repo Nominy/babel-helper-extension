@@ -8,6 +8,7 @@ export type FeatureSettingKey =
   | 'textMove'
   | 'quickRegionAutocomplete'
   | 'disableNativeArrowSeek'
+  | 'disableNativeTimelineDoubleClick'
   | 'focusToggle'
   | 'timelineSelection'
   | 'audioTrimOutwardPass'
@@ -28,6 +29,7 @@ export interface FeatureSettings {
   textMove: boolean;
   quickRegionAutocomplete: boolean;
   disableNativeArrowSeek: boolean;
+  disableNativeTimelineDoubleClick: boolean;
   focusToggle: boolean;
   timelineSelection: boolean;
   audioTrimOutwardPass: boolean;
@@ -62,6 +64,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   textMove: true,
   quickRegionAutocomplete: true,
   disableNativeArrowSeek: true,
+  disableNativeTimelineDoubleClick: true,
   focusToggle: true,
   timelineSelection: true,
   audioTrimOutwardPass: true,
@@ -89,6 +92,7 @@ export const FEATURE_KEYS: FeatureSettingKey[] = [
   'textMove',
   'quickRegionAutocomplete',
   'disableNativeArrowSeek',
+  'disableNativeTimelineDoubleClick',
   'focusToggle',
   'timelineSelection',
   'audioTrimOutwardPass',
@@ -130,6 +134,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   disableNativeArrowSeek: {
     label: 'Disable Native Arrow Seek',
     description: 'Block Babel’s bare Left/Right Arrow segment-jump hotkeys while keeping normal caret movement.'
+  },
+  disableNativeTimelineDoubleClick: {
+    label: 'Disable Native Timeline Double Click',
+    description: 'Block Babel’s native timeline double-click jump to the beginning of a segment.'
   },
   focusToggle: {
     label: 'Focus Toggle',

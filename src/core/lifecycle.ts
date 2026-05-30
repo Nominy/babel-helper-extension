@@ -1010,6 +1010,12 @@ export function registerLifecycle(helper: any) {
       if (isFeatureEnabled('timelineSelection') && typeof helper.bindCutPreview === 'function') {
         helper.bindCutPreview();
       }
+      if (
+        isFeatureEnabled('disableNativeTimelineDoubleClick') &&
+        typeof helper.bindNativeTimelineDoubleClickBlocker === 'function'
+      ) {
+        helper.bindNativeTimelineDoubleClickBlocker();
+      }
       if (isFeatureEnabled('magnifier') && typeof helper.bindMagnifier === 'function') {
         helper.bindMagnifier();
       }

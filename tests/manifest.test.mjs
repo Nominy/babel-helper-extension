@@ -30,3 +30,13 @@ test('all extension features remain enabled by default', () => {
   assert.ok(match, 'DEFAULT_FEATURE_SETTINGS should be present');
   assert.doesNotMatch(match[1], /:\s*false[,}]/);
 });
+
+test('native timeline double-click blocker is a default-on feature toggle', () => {
+  const raw = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
+
+  assert.match(raw, /\|\s*'disableNativeTimelineDoubleClick'/);
+  assert.match(raw, /disableNativeTimelineDoubleClick:\s*boolean/);
+  assert.match(raw, /disableNativeTimelineDoubleClick:\s*true/);
+  assert.match(raw, /'disableNativeTimelineDoubleClick'/);
+  assert.match(raw, /disableNativeTimelineDoubleClick:\s*{\s*label:\s*'Disable Native Timeline Double Click'/);
+});

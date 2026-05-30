@@ -140,6 +140,17 @@ test('timeline clicks become authoritative current segment targets', () => {
   assert.match(source, /liveTarget\.entry = labels/);
 });
 
+test('native timeline double-clicks are blocked before Babel seeks to segment start', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+
+  assert.match(source, /function isNativeTimelineDoubleClickTarget/);
+  assert.match(source, /function handleTimelineDoubleClick/);
+  assert.match(source, /isFeatureEnabled\('disableNativeTimelineDoubleClick'\)/);
+  assert.match(source, /event\.preventDefault\(\);[\s\S]*event\.stopImmediatePropagation\(\);[\s\S]*event\.stopPropagation\(\);/);
+  assert.match(source, /document\.addEventListener\('dblclick', handleTimelineDoubleClick, true\);/);
+  assert.match(source, /document\.removeEventListener\('dblclick', handleTimelineDoubleClick, true\);/);
+});
+
 test('ghost cursor uses lane lock and overlap-aware playback lookup', () => {
   const source = read('../src/services/row-service.ts');
   const stateSource = read('../src/core/state-store.ts');
