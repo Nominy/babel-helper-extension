@@ -10,6 +10,7 @@ export function registerRowService(helper: any) {
   const PLAYBACK_BRIDGE_RESPONSE_EVENT = 'babel-helper-playback-response';
   const PLAYBACK_BRIDGE_SCRIPT_PATH = 'dist/content/playback-bridge.js';
   const PLAYBACK_BRIDGE_TIMEOUT_MS = 500;
+  const PLAYBACK_SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
   let playbackBridgeInjected = false;
   let playbackBridgeLoadPromise = null;
@@ -3062,6 +3063,48 @@ export function registerRowService(helper: any) {
     return null;
   }
 
+  function normalizePlaybackSpeed(value) {
+    const speed = Number(String(value ?? '').replace(',', '.').replace(/x$/i, ''));
+    return Number.isFinite(speed) && speed > 0 && speed <= 4 ? speed : null;
+  }
+
+  function getWavePlaybackSpeed(wave) {
+    if (!wave || typeof wave !== 'object') {
+      return null;
+    }
+
+    if (typeof wave.getPlaybackRate === 'function') {
+      try {
+        const speed = normalizePlaybackSpeed(wave.getPlaybackRate());
+        if (speed != null) {
+          return speed;
+        }
+      } catch (_error) {
+        // Fall through to media-backed rate.
+      }
+    }
+
+    if (wave.media && 'playbackRate' in wave.media) {
+      return normalizePlaybackSpeed(wave.media.playbackRate);
+    }
+
+    return null;
+  }
+
+  function getPlaybackSpeedLocally() {
+    const waves = getPlaybackWaveInstances();
+    if (waves.length) {
+      return getWavePlaybackSpeed(waves[0]);
+    }
+
+    const audio = document.querySelector('audio');
+    if (audio instanceof HTMLMediaElement) {
+      return normalizePlaybackSpeed(audio.playbackRate);
+    }
+
+    return null;
+  }
+
   function getPlaybackStateLocally() {
     const waves = getPlaybackWaveInstances();
     if (waves.length) {
@@ -3074,6 +3117,7 @@ export function registerRowService(helper: any) {
         source: 'wavesurfer',
         currentTime: Number.isFinite(currentTime) ? currentTime : null,
         duration: Number.isFinite(duration) ? duration : null,
+        playbackRate: getWavePlaybackSpeed(waves[0]),
         paused: typeof paused === 'boolean' ? paused : null,
         waveCount: waves.length
       };
@@ -3094,6 +3138,7 @@ export function registerRowService(helper: any) {
       source: 'audio',
       currentTime: Number.isFinite(Number(audio.currentTime)) ? Number(audio.currentTime) : null,
       duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : null,
+      playbackRate: normalizePlaybackSpeed(audio.playbackRate),
       paused: Boolean(audio.paused),
       waveCount: 0
     };
@@ -3263,6 +3308,128 @@ export function registerRowService(helper: any) {
     };
   }
 
+  function getAdjacentPlaybackSpeed(currentSpeed, direction) {
+    const normalizedDirection = direction > 0 ? 1 : -1;
+    const current = normalizePlaybackSpeed(currentSpeed) ?? 1;
+    const steps = PLAYBACK_SPEED_STEPS.slice().sort((a, b) => a - b);
+    if (normalizedDirection > 0) {
+      return steps.find((speed) => speed > current + 0.001) || steps[steps.length - 1];
+    }
+
+    return steps.slice().reverse().find((speed) => speed < current - 0.001) || steps[0];
+  }
+
+  function restorePlaybackPositionLocallyAfterSpeedChange(previousState) {
+    const targetTime =
+      previousState && typeof previousState.currentTime === 'number'
+        ? previousState.currentTime
+        : null;
+    if (targetTime == null || !Number.isFinite(targetTime)) {
+      return { restored: false, reason: 'previous-time-unavailable' };
+    }
+
+    const waves = getPlaybackWaveInstances();
+    let applied = 0;
+    for (const wave of waves) {
+      try {
+        wave.setTime(targetTime);
+        applied += 1;
+      } catch (_error) {
+        // Ignore one-off instance failures; other synced waveforms may still restore.
+      }
+    }
+
+    if (!applied) {
+      const audio = document.querySelector('audio');
+      if (audio instanceof HTMLMediaElement) {
+        try {
+          audio.currentTime = targetTime;
+          applied += 1;
+        } catch (_error) {
+          // Fall through to the unavailable response below.
+        }
+      }
+    }
+
+    if (!applied) {
+      return { restored: false, reason: 'playback-unavailable', previousTime: targetTime };
+    }
+
+    const after = getPlaybackStateLocally();
+    const restoredTime = typeof after?.currentTime === 'number' ? after.currentTime : null;
+    return {
+      restored: true,
+      previousTime: targetTime,
+      restoredTime,
+      delta:
+        restoredTime == null || !Number.isFinite(restoredTime)
+          ? null
+          : restoredTime - targetTime,
+      waveCount: applied
+    };
+  }
+
+  function setPlaybackSpeedLocally(speed) {
+    const targetSpeed = normalizePlaybackSpeed(speed);
+    if (targetSpeed == null) {
+      return { ok: false, reason: 'invalid-speed' };
+    }
+
+    const previousState = getPlaybackStateLocally();
+    const previousSpeed = previousState?.playbackRate ?? getPlaybackSpeedLocally();
+    const waves = getPlaybackWaveInstances();
+    let applied = 0;
+    for (const wave of waves) {
+      try {
+        if (typeof wave.setPlaybackRate === 'function') {
+          wave.setPlaybackRate(targetSpeed);
+          applied += 1;
+          continue;
+        }
+        if (wave.media && 'playbackRate' in wave.media) {
+          wave.media.playbackRate = targetSpeed;
+          applied += 1;
+        }
+      } catch (_error) {
+        // Ignore one-off instance failures; other synced waveforms may still update.
+      }
+    }
+
+    if (!applied) {
+      const audio = document.querySelector('audio');
+      if (audio instanceof HTMLMediaElement) {
+        try {
+          audio.playbackRate = targetSpeed;
+          applied += 1;
+        } catch (_error) {
+          // Fall through to the unavailable response below.
+        }
+      }
+    }
+
+    if (!applied) {
+      return { ok: false, reason: 'playback-unavailable' };
+    }
+
+    const positionRestore = restorePlaybackPositionLocallyAfterSpeedChange(previousState);
+
+    return {
+      ok: true,
+      source: waves.length ? 'wavesurfer-local' : 'audio-local',
+      previousSpeed,
+      nextSpeed: targetSpeed,
+      changed: previousSpeed == null || Math.abs(previousSpeed - targetSpeed) >= 0.001,
+      waveCount: applied,
+      positionRestore
+    };
+  }
+
+  function adjustPlaybackSpeedLocally(direction) {
+    const previousSpeed = getPlaybackSpeedLocally();
+    const nextSpeed = getAdjacentPlaybackSpeed(previousSpeed, direction);
+    return setPlaybackSpeedLocally(nextSpeed);
+  }
+
   helper.setPlaybackPaused = function setPlaybackPaused(paused) {
     const desired = Boolean(paused);
     return callPlaybackBridge('set-paused', { paused: desired }).then((result) => {
@@ -3271,6 +3438,20 @@ export function registerRowService(helper: any) {
       }
 
       return setPlaybackPausedLocally(desired);
+    });
+  };
+
+  helper.adjustPlaybackSpeed = function adjustPlaybackSpeed(direction) {
+    const normalizedDirection = Number(direction) > 0 ? 1 : -1;
+    return callPlaybackBridge('adjust-speed', {
+      direction: normalizedDirection,
+      steps: PLAYBACK_SPEED_STEPS
+    }).then((result) => {
+      if (result && result.ok) {
+        return result;
+      }
+
+      return adjustPlaybackSpeedLocally(normalizedDirection);
     });
   };
 

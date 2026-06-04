@@ -242,6 +242,19 @@ export function registerLifecycle(helper: any) {
     );
   }
 
+  function recordPlaybackSpeedHotkey(event, direction, result) {
+    if (!helper.analytics) {
+      return;
+    }
+
+    helper.analytics.record('hotkey:playback-speed', {
+      key: event.key,
+      code: event.code,
+      direction,
+      ...(result && typeof result === 'object' ? result : {})
+    });
+  }
+
   function updateRightShiftState(event) {
     if (event.code === 'ShiftRight') {
       helper.state.rightShiftPressed = event.type === 'keydown';
@@ -430,6 +443,40 @@ export function registerLifecycle(helper: any) {
     }
 
     if (event.defaultPrevented) {
+      return;
+    }
+
+    if (
+      isFeatureEnabled('rowActions') &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      event.code === 'Digit1' &&
+      typeof helper.adjustPlaybackSpeed === 'function'
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.adjustPlaybackSpeed(1).then((result) =>
+        recordPlaybackSpeedHotkey(event, 1, result)
+      );
+      return;
+    }
+
+    if (
+      isFeatureEnabled('rowActions') &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      event.code === 'Digit2' &&
+      typeof helper.adjustPlaybackSpeed === 'function'
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.adjustPlaybackSpeed(-1).then((result) =>
+        recordPlaybackSpeedHotkey(event, -1, result)
+      );
       return;
     }
 

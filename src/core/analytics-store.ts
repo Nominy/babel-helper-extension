@@ -62,6 +62,7 @@ export type AnalyticsEventType =
   | 'hotkey:rewind'                    // Alt+X rewind
   | 'hotkey:trim'                      // Alt+R / Alt+Shift+R trim
   | 'hotkey:cut-preview'               // Cut preview keydown (S/Shift+S/L)
+  | 'hotkey:playback-speed'            // Shift+1/2 playback speed step
   | 'hotkey:arrow-suppressed'          // Native arrow seek suppressed
   | 'hotkey:ghost-lane-toggle'         // Tab ghost cursor lane switch
   | 'hotkey:lint-autofix'              // Alt+F / Alt+Shift+F lint auto-fix

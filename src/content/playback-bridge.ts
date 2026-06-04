@@ -7,6 +7,7 @@ export function initPlaybackBridge() {
   const REQUEST_EVENT = 'babel-helper-playback-request';
   const RESPONSE_EVENT = 'babel-helper-playback-response';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+  const DEFAULT_PLAYBACK_SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
   function safe(callback, fallbackValue) {
     try {
@@ -44,6 +45,147 @@ export function initPlaybackBridge() {
 
   function getReactFiber(element) {
     return getReactInternalValue(element, '__reactFiber$');
+  }
+
+  function getReactProps(element) {
+    return getReactInternalValue(element, '__reactProps$');
+  }
+
+  function getElementText(element) {
+    if (!element) {
+      return '';
+    }
+
+    return [
+      element.getAttribute?.('aria-label'),
+      element.getAttribute?.('title'),
+      element.innerText,
+      element.textContent
+    ]
+      .filter((value) => typeof value === 'string' && value.trim())
+      .join(' ')
+      .trim();
+  }
+
+  function normalizePlaybackSpeed(value) {
+    const speed = Number(String(value ?? '').replace(',', '.').replace(/x$/i, ''));
+    return Number.isFinite(speed) && speed > 0 && speed <= 4 ? speed : null;
+  }
+
+  function getPlaybackSpeedValueFromText(text) {
+    const normalized = String(text || '').replace(',', '.');
+    const match = normalized.match(/(^|[^\d])(\d+(?:\.\d+)?)\s*x\b/i);
+    if (!match) {
+      return null;
+    }
+
+    return normalizePlaybackSpeed(match[2]);
+  }
+
+  function getPlaybackSpeedValueFromElement(element) {
+    if (!element) {
+      return null;
+    }
+
+    const textValue = getPlaybackSpeedValueFromText(getElementText(element));
+    if (textValue != null) {
+      return textValue;
+    }
+
+    const props = getReactProps(element);
+    const propValue = props && typeof props === 'object'
+      ? props.value ?? props.defaultValue ?? props['aria-valuenow']
+      : null;
+    const normalizedPropValue = normalizePlaybackSpeed(propValue);
+    if (normalizedPropValue != null) {
+      return normalizedPropValue;
+    }
+
+    const rawValue =
+      element.getAttribute?.('data-value') ||
+      element.getAttribute?.('value') ||
+      (typeof element.value === 'string' ? element.value : '');
+    return normalizePlaybackSpeed(rawValue);
+  }
+
+  function formatPlaybackSpeed(speed) {
+    return String(Number(speed.toFixed(3))).replace(/\.0+$/, '');
+  }
+
+  function formatReactSpeedValue(referenceValue, speed) {
+    if (typeof referenceValue === 'number') {
+      return speed;
+    }
+
+    if (typeof referenceValue === 'string') {
+      return /x/i.test(referenceValue)
+        ? `${formatPlaybackSpeed(speed)}x`
+        : formatPlaybackSpeed(speed);
+    }
+
+    return formatPlaybackSpeed(speed);
+  }
+
+  function isUsableSpeedControl(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    if (element.getAttribute('aria-disabled') === 'true') {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function getPlaybackSpeedControls() {
+    return Array.from(
+      document.querySelectorAll(
+        'button, [role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="menu"], select'
+      )
+    ).filter((element) => (
+      isUsableSpeedControl(element) &&
+      getPlaybackSpeedValueFromElement(element) != null
+    ));
+  }
+
+  function getReactSpeedControlHandler() {
+    for (const control of getPlaybackSpeedControls()) {
+      let owner = getReactFiber(control);
+      let ownerDepth = 0;
+      while (owner && typeof owner === 'object' && ownerDepth < 16) {
+        const propSources = [owner.memoizedProps, owner.pendingProps].filter(
+          (props) => props && typeof props === 'object'
+        );
+
+        for (const props of propSources) {
+          if (typeof props.onValueChange !== 'function') {
+            continue;
+          }
+
+          const referenceValue = props.value ?? props.defaultValue ?? getPlaybackSpeedValueFromElement(control);
+          if (normalizePlaybackSpeed(referenceValue) == null) {
+            continue;
+          }
+
+          return {
+            onValueChange: props.onValueChange,
+            referenceValue
+          };
+        }
+
+        owner = owner.return;
+        ownerDepth += 1;
+      }
+    }
+
+    return null;
   }
 
   function getWaveRegistryFromValue(value) {
@@ -190,6 +332,214 @@ export function initPlaybackBridge() {
     return null;
   }
 
+  function getWavePlaybackSpeed(wave) {
+    if (!wave || typeof wave !== 'object') {
+      return null;
+    }
+
+    if (typeof wave.getPlaybackRate === 'function') {
+      const speed = normalizePlaybackSpeed(safe(() => wave.getPlaybackRate(), null));
+      if (speed != null) {
+        return speed;
+      }
+    }
+
+    if (wave.media && 'playbackRate' in wave.media) {
+      return normalizePlaybackSpeed(wave.media.playbackRate);
+    }
+
+    return null;
+  }
+
+  function getPlaybackSpeed() {
+    const waves = getPlaybackWaveInstances();
+    if (waves.length) {
+      const waveSpeed = getWavePlaybackSpeed(waves[0]);
+      if (waveSpeed != null) {
+        return waveSpeed;
+      }
+    }
+
+    const audio = document.querySelector('audio');
+    if (audio instanceof HTMLMediaElement) {
+      const audioSpeed = normalizePlaybackSpeed(audio.playbackRate);
+      if (audioSpeed != null) {
+        return audioSpeed;
+      }
+    }
+
+    for (const control of getPlaybackSpeedControls()) {
+      const controlSpeed = getPlaybackSpeedValueFromElement(control);
+      if (controlSpeed != null) {
+        return controlSpeed;
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeSpeedSteps(steps) {
+    const normalized = Array.isArray(steps)
+      ? steps.map(normalizePlaybackSpeed).filter((speed) => speed != null)
+      : [];
+    const values = normalized.length ? normalized : DEFAULT_PLAYBACK_SPEED_STEPS;
+    return Array.from(new Set(values)).sort((a, b) => a - b);
+  }
+
+  function getAdjacentPlaybackSpeed(currentSpeed, direction, steps) {
+    const normalizedDirection = direction > 0 ? 1 : -1;
+    const current = normalizePlaybackSpeed(currentSpeed) ?? 1;
+    const values = normalizeSpeedSteps(steps);
+    if (normalizedDirection > 0) {
+      return values.find((speed) => speed > current + 0.001) || values[values.length - 1];
+    }
+
+    return values.slice().reverse().find((speed) => speed < current - 0.001) || values[0];
+  }
+
+  function applyReactPlaybackSpeed(speed) {
+    const handler = getReactSpeedControlHandler();
+    if (!handler) {
+      return false;
+    }
+
+    try {
+      handler.onValueChange(formatReactSpeedValue(handler.referenceValue, speed));
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function setWavePlaybackSpeed(speed) {
+    const waves = getPlaybackWaveInstances();
+    if (!waves.length) {
+      return null;
+    }
+
+    let applied = 0;
+    for (const wave of waves) {
+      try {
+        if (typeof wave.setPlaybackRate === 'function') {
+          wave.setPlaybackRate(speed);
+          applied += 1;
+          continue;
+        }
+        if (wave.media && 'playbackRate' in wave.media) {
+          wave.media.playbackRate = speed;
+          applied += 1;
+        }
+      } catch (_error) {
+        // Ignore one-off instance failures; sibling waveforms can still update.
+      }
+    }
+
+    return applied ? { source: 'wavesurfer', waveCount: applied } : null;
+  }
+
+  function setAudioPlaybackSpeed(speed) {
+    const audio = document.querySelector('audio');
+    if (!(audio instanceof HTMLMediaElement)) {
+      return null;
+    }
+
+    try {
+      audio.playbackRate = speed;
+      return { source: 'audio', waveCount: 0 };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function restorePlaybackPositionAfterSpeedChange(previousState) {
+    const targetTime =
+      previousState && typeof previousState.currentTime === 'number'
+        ? previousState.currentTime
+        : null;
+    if (targetTime == null || !Number.isFinite(targetTime)) {
+      return { restored: false, reason: 'previous-time-unavailable' };
+    }
+
+    const waves = getPlaybackWaveInstances();
+    let applied = 0;
+    for (const wave of waves) {
+      try {
+        wave.setTime(targetTime);
+        applied += 1;
+      } catch (_error) {
+        // Ignore one-off instance failures; sibling waveforms can still restore.
+      }
+    }
+
+    if (!applied) {
+      const audio = document.querySelector('audio');
+      if (audio instanceof HTMLMediaElement) {
+        try {
+          audio.currentTime = targetTime;
+          applied += 1;
+        } catch (_error) {
+          // Fall through to the unavailable response below.
+        }
+      }
+    }
+
+    if (!applied) {
+      return { restored: false, reason: 'playback-unavailable', previousTime: targetTime };
+    }
+
+    const after = getPlaybackState();
+    const restoredTime = typeof after?.currentTime === 'number' ? after.currentTime : null;
+    return {
+      restored: true,
+      previousTime: targetTime,
+      restoredTime,
+      delta:
+        restoredTime == null || !Number.isFinite(restoredTime)
+          ? null
+          : restoredTime - targetTime,
+      waveCount: applied
+    };
+  }
+
+  function setPlaybackSpeed(speed) {
+    const targetSpeed = normalizePlaybackSpeed(speed);
+    if (targetSpeed == null) {
+      return { ok: false, reason: 'invalid-speed' };
+    }
+
+    const previousState = getPlaybackState();
+    const previousSpeed = previousState?.playbackRate ?? getPlaybackSpeed();
+    const reactUpdated = applyReactPlaybackSpeed(targetSpeed);
+    const direct = setWavePlaybackSpeed(targetSpeed) || setAudioPlaybackSpeed(targetSpeed);
+
+    if (!direct && !reactUpdated) {
+      return { ok: false, reason: 'playback-unavailable', previousSpeed };
+    }
+
+    const positionRestore = restorePlaybackPositionAfterSpeedChange(previousState);
+
+    return {
+      ok: true,
+      source: direct?.source || 'react-control',
+      previousSpeed,
+      nextSpeed: targetSpeed,
+      playbackRate: targetSpeed,
+      changed: previousSpeed == null || Math.abs(previousSpeed - targetSpeed) >= 0.001,
+      reactUpdated,
+      waveCount: direct?.waveCount ?? 0,
+      positionRestore
+    };
+  }
+
+  function adjustPlaybackSpeed(direction, steps) {
+    const previousSpeed = getPlaybackSpeed();
+    const nextSpeed = getAdjacentPlaybackSpeed(previousSpeed, Number(direction), steps);
+    return {
+      ...setPlaybackSpeed(nextSpeed),
+      direction: Number(direction) > 0 ? 1 : -1
+    };
+  }
+
   function clickControl(element) {
     if (!(element instanceof HTMLElement)) {
       return false;
@@ -306,6 +656,7 @@ export function initPlaybackBridge() {
         source: 'wavesurfer',
         currentTime: Number.isFinite(currentTime) ? currentTime : null,
         duration: Number.isFinite(duration) ? duration : null,
+        playbackRate: getWavePlaybackSpeed(waves[0]),
         paused: typeof paused === 'boolean' ? paused : null,
         indicator: getPlaybackIndicator(),
         waveCount: waves.length
@@ -322,6 +673,7 @@ export function initPlaybackBridge() {
       source: 'audio',
       currentTime: Number.isFinite(Number(audio.currentTime)) ? Number(audio.currentTime) : null,
       duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : null,
+      playbackRate: normalizePlaybackSpeed(audio.playbackRate),
       paused: Boolean(audio.paused),
       indicator: getPlaybackIndicator(),
       waveCount: 0
@@ -480,6 +832,11 @@ export function initPlaybackBridge() {
 
     if (operation === 'set-paused') {
       respond(id, setPlaybackPaused(payload.paused));
+      return;
+    }
+
+    if (operation === 'adjust-speed') {
+      respond(id, adjustPlaybackSpeed(payload.direction, payload.steps));
     }
   }
 
@@ -496,6 +853,8 @@ export function initPlaybackBridge() {
     seekPlaybackBySeconds,
     getPlaybackState,
     setPlaybackPaused,
+    adjustPlaybackSpeed,
+    setPlaybackSpeed,
     dispose
   };
 }
