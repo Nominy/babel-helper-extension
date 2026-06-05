@@ -10,6 +10,10 @@ const configSource = fs.readFileSync(
   new URL('../src/core/config.ts', import.meta.url),
   'utf8'
 );
+const settingsSource = fs.readFileSync(
+  new URL('../src/core/settings.ts', import.meta.url),
+  'utf8'
+);
 const rowServiceSource = fs.readFileSync(
   new URL('../src/services/row-service.ts', import.meta.url),
   'utf8'
@@ -20,6 +24,7 @@ const playbackBridgeSource = fs.readFileSync(
 );
 
 test('Shift+1 and Shift+2 adjust playback speed through the playback bridge', () => {
+  assert.match(lifecycleSource, /isFeatureEnabled\('playbackSpeedHotkeys'\)/);
   assert.match(lifecycleSource, /event\.shiftKey[\s\S]*event\.code === 'Digit1'[\s\S]*helper\.adjustPlaybackSpeed\(1\)/);
   assert.match(lifecycleSource, /event\.shiftKey[\s\S]*event\.code === 'Digit2'[\s\S]*helper\.adjustPlaybackSpeed\(-1\)/);
   assert.match(rowServiceSource, /helper\.adjustPlaybackSpeed = function adjustPlaybackSpeed\(direction\)/);
@@ -49,6 +54,16 @@ test('playback speed changes preserve the current playback timestamp', () => {
   assert.match(playbackBridgeSource, /wave\.setTime\(targetTime\)/);
   assert.match(rowServiceSource, /const previousState = getPlaybackStateLocally\(\)/);
   assert.match(rowServiceSource, /restorePlaybackPositionLocallyAfterSpeedChange\(previousState\)/);
+});
+
+test('playback speed hotkeys can be disabled from extension settings', () => {
+  assert.match(settingsSource, /\|\s*'playbackSpeedHotkeys'/);
+  assert.match(settingsSource, /playbackSpeedHotkeys:\s*boolean/);
+  assert.match(settingsSource, /playbackSpeedHotkeys:\s*true/);
+  assert.match(settingsSource, /'playbackSpeedHotkeys'/);
+  assert.match(settingsSource, /label:\s*'Playback Speed Hotkeys'/);
+  assert.match(settingsSource, /description:\s*'Enable Shift \+ 1 \/ Shift \+ 2 playback speed shortcuts\.'/);
+  assert.match(configSource, /featureSettings\.playbackSpeedHotkeys[\s\S]*\['Shift \+ 1 \/ Shift \+ 2', 'Increase \/ decrease playback speed'\]/);
 });
 
 test('hotkeys help advertises playback speed shortcuts', () => {

@@ -448,6 +448,7 @@ export function registerLifecycle(helper: any) {
 
     if (
       isFeatureEnabled('rowActions') &&
+      isFeatureEnabled('playbackSpeedHotkeys') &&
       event.shiftKey &&
       !event.ctrlKey &&
       !event.altKey &&
@@ -465,6 +466,7 @@ export function registerLifecycle(helper: any) {
 
     if (
       isFeatureEnabled('rowActions') &&
+      isFeatureEnabled('playbackSpeedHotkeys') &&
       event.shiftKey &&
       !event.ctrlKey &&
       !event.altKey &&

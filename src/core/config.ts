@@ -36,7 +36,9 @@ function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, 
       const milliseconds = Math.round(shortcut.seconds * 1000);
       rows.push([shortcut.label, 'Rewind playback ' + milliseconds + 'ms']);
     }
-    rows.push(['Shift + 1 / Shift + 2', 'Increase / decrease playback speed']);
+    if (featureSettings.playbackSpeedHotkeys) {
+      rows.push(['Shift + 1 / Shift + 2', 'Increase / decrease playback speed']);
+    }
     rows.push(['Right Shift + Left / Right', 'Focus previous / next segment from start']);
     rows.push(['Tab', 'Toggle active ghost cursor lane']);
     rows.push(['Alt + Shift + Up', 'Merge with previous segment']);

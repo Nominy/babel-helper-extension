@@ -3,6 +3,7 @@ import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from './highligh
 export type FeatureSettingKey =
   | 'hotkeysHelp'
   | 'rowActions'
+  | 'playbackSpeedHotkeys'
   | 'speakerWorkflowHotkeys'
   | 'selectedNumberToSkaz'
   | 'textMove'
@@ -24,6 +25,7 @@ export type FeatureSettingKey =
 export interface FeatureSettings {
   hotkeysHelp: boolean;
   rowActions: boolean;
+  playbackSpeedHotkeys: boolean;
   speakerWorkflowHotkeys: boolean;
   selectedNumberToSkaz: boolean;
   textMove: boolean;
@@ -59,6 +61,7 @@ export const SETTINGS_STORAGE_KEY = 'settings';
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   hotkeysHelp: true,
   rowActions: true,
+  playbackSpeedHotkeys: true,
   speakerWorkflowHotkeys: true,
   selectedNumberToSkaz: true,
   textMove: true,
@@ -87,6 +90,7 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
 export const FEATURE_KEYS: FeatureSettingKey[] = [
   'hotkeysHelp',
   'rowActions',
+  'playbackSpeedHotkeys',
   'speakerWorkflowHotkeys',
   'selectedNumberToSkaz',
   'textMove',
@@ -114,6 +118,10 @@ export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
   rowActions: {
     label: 'Row Actions',
     description: 'Enable D and Alt + Shift + Arrow merge shortcuts.'
+  },
+  playbackSpeedHotkeys: {
+    label: 'Playback Speed Hotkeys',
+    description: 'Enable Shift + 1 / Shift + 2 playback speed shortcuts.'
   },
   speakerWorkflowHotkeys: {
     label: 'Speaker Workflow Hotkeys',
