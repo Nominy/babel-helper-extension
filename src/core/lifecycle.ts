@@ -255,6 +255,22 @@ export function registerLifecycle(helper: any) {
     });
   }
 
+  function isEditableTextTarget(element) {
+    return Boolean(
+      isTextControl(element) ||
+      (typeof helper.isEditable === 'function' && helper.isEditable(element))
+    );
+  }
+
+  function isTypingInTextControl(event) {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (isEditableTextTarget(target)) {
+      return true;
+    }
+
+    return isEditableTextTarget(document.activeElement);
+  }
+
   function updateRightShiftState(event) {
     if (event.code === 'ShiftRight') {
       helper.state.rightShiftPressed = event.type === 'keydown';
@@ -453,6 +469,7 @@ export function registerLifecycle(helper: any) {
       !event.ctrlKey &&
       !event.altKey &&
       !event.metaKey &&
+      !isTypingInTextControl(event) &&
       event.code === 'Digit1' &&
       typeof helper.adjustPlaybackSpeed === 'function'
     ) {
@@ -471,6 +488,7 @@ export function registerLifecycle(helper: any) {
       !event.ctrlKey &&
       !event.altKey &&
       !event.metaKey &&
+      !isTypingInTextControl(event) &&
       event.code === 'Digit2' &&
       typeof helper.adjustPlaybackSpeed === 'function'
     ) {

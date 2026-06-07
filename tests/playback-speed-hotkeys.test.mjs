@@ -33,6 +33,16 @@ test('Shift+1 and Shift+2 adjust playback speed through the playback bridge', ()
   assert.match(playbackBridgeSource, /function adjustPlaybackSpeed\(direction, steps\)/);
 });
 
+test('speed hotkeys do not steal shifted punctuation while an editor is focused', () => {
+  assert.match(lifecycleSource, /function isEditableTextTarget\(element\)/);
+  assert.match(lifecycleSource, /isTextControl\(element\)/);
+  assert.match(lifecycleSource, /helper\.isEditable\(element\)/);
+  assert.match(lifecycleSource, /function isTypingInTextControl\(event\)/);
+  assert.match(lifecycleSource, /isEditableTextTarget\(target\)[\s\S]*isEditableTextTarget\(document\.activeElement\)/);
+  assert.match(lifecycleSource, /!isTypingInTextControl\(event\)[\s\S]*event\.code === 'Digit1'[\s\S]*helper\.adjustPlaybackSpeed\(1\)/);
+  assert.match(lifecycleSource, /!isTypingInTextControl\(event\)[\s\S]*event\.code === 'Digit2'[\s\S]*helper\.adjustPlaybackSpeed\(-1\)/);
+});
+
 test('playback speed steps match the live Babel selector values', () => {
   const expectedSteps = /\[0\.25, 0\.5, 0\.75, 1, 1\.5, 2\]/;
   assert.match(rowServiceSource, expectedSteps);
