@@ -356,8 +356,6 @@ export function registerLifecycle(helper: any) {
       isFeatureEnabled('timelineSelection') &&
       typeof helper.handleCutPreviewKeydown === 'function' &&
       event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
       event.code === 'KeyR'
     ) {
       const timelineHotkeyResult = helper.handleCutPreviewKeydown(event);

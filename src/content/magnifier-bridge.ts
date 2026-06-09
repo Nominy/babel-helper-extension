@@ -1530,6 +1530,118 @@ export function initMagnifierBridge() {
     return -1;
   }
 
+  function buildSilenceRunsFromPredicate(startIndex, endIndexExclusive, indexToSecondsValue, isSilentAtIndex, minimumSilenceSeconds) {
+    const runs = [];
+    const from = Math.max(0, Math.floor(Number(startIndex) || 0));
+    const to = Math.max(from, Math.ceil(Number(endIndexExclusive) || 0));
+    const minimumDuration = Math.max(0, Number(minimumSilenceSeconds) || 0);
+    let runStartIndex = -1;
+
+    const finishRun = (endIndex) => {
+      if (runStartIndex < 0) {
+        return;
+      }
+
+      const startSeconds = indexToSecondsValue(runStartIndex);
+      const endSeconds = indexToSecondsValue(endIndex);
+      const durationSeconds = endSeconds - startSeconds;
+      if (
+        Number.isFinite(startSeconds) &&
+        Number.isFinite(endSeconds) &&
+        durationSeconds >= minimumDuration
+      ) {
+        runs.push({
+          startSeconds,
+          endSeconds,
+          durationSeconds,
+          splitSeconds: (startSeconds + endSeconds) / 2
+        });
+      }
+
+      runStartIndex = -1;
+    };
+
+    for (let index = from; index < to; index += 1) {
+      if (isSilentAtIndex(index)) {
+        if (runStartIndex < 0) {
+          runStartIndex = index;
+        }
+      } else {
+        finishRun(index);
+      }
+    }
+
+    finishRun(to);
+    return runs;
+  }
+
+  function findSegmentSilenceRunsForResolvedWave(host, wave, startSeconds, endSeconds, amplitudeThreshold, minimumSilenceSeconds) {
+    if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
+      return {
+        ok: false,
+        reason: 'missing-wave'
+      };
+    }
+
+    const duration = getDuration(wave);
+    const segmentStart = clamp(Number(startSeconds) || 0, 0, duration > 0 ? duration : Number(startSeconds) || 0);
+    const segmentEnd = clamp(Number(endSeconds) || 0, 0, duration > 0 ? duration : Number(endSeconds) || 0);
+    if (!(segmentEnd > segmentStart)) {
+      return {
+        ok: false,
+        reason: 'invalid-range'
+      };
+    }
+
+    const threshold = Math.max(0, Number(amplitudeThreshold) || 0);
+    const rawPeaks = getRawExportPeaks(wave);
+    if (rawPeaks && rawPeaks.length > 1 && duration > 0) {
+      const startIndex = (segmentStart / duration) * (rawPeaks.length - 1);
+      const endIndexExclusive = (segmentEnd / duration) * (rawPeaks.length - 1) + 1;
+      const runs = buildSilenceRunsFromPredicate(
+        startIndex,
+        endIndexExclusive,
+        (index) => clamp(indexToSeconds(index, rawPeaks.length, duration), segmentStart, segmentEnd),
+        (index) => Math.abs(Number(rawPeaks[index]) || 0) < threshold,
+        minimumSilenceSeconds
+      );
+
+      return {
+        ok: true,
+        duration,
+        source: 'export-peaks',
+        runs
+      };
+    }
+
+    const decoded = getDecodedAudioChannelsForTrim(wave);
+    if (decoded && decoded.audio.length > 1 && decoded.audio.duration > 0) {
+      const sampleLength = decoded.audio.length;
+      const sampleRate = Number(decoded.audio.sampleRate) || 1;
+      const startIndex = (segmentStart / decoded.audio.duration) * sampleLength;
+      const endIndexExclusive = (segmentEnd / decoded.audio.duration) * sampleLength;
+      const runs = buildSilenceRunsFromPredicate(
+        startIndex,
+        endIndexExclusive,
+        (index) => clamp(index / sampleRate, segmentStart, segmentEnd),
+        (index) => isSilentInChannels(decoded.channels, index, threshold),
+        minimumSilenceSeconds
+      );
+
+      return {
+        ok: true,
+        duration,
+        source: 'decoded-audio',
+        runs
+      };
+    }
+
+    return {
+      ok: false,
+      reason: 'missing-audio-data'
+    };
+  }
+
   function findTrimTargetsForResolvedWave(host, wave, startSeconds, endSeconds, amplitudeThreshold, paddingSeconds) {
     if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
       return {
@@ -1723,6 +1835,15 @@ export function initMagnifierBridge() {
     return Array.from(new Set(keys.map(normalizeSpeakerKey).filter(Boolean)));
   }
 
+  function hostMatchesSpeaker(host, speakerKey) {
+    const normalizedSpeakerKey = normalizeSpeakerKey(speakerKey);
+    if (!normalizedSpeakerKey) {
+      return true;
+    }
+
+    return getSpeakerKeysForHost(host).includes(normalizedSpeakerKey);
+  }
+
   function resolveWaveForVisibleSpeaker(speakerKey) {
     const hosts = getVisibleWaveHosts();
     if (!hosts.length) {
@@ -1768,6 +1889,25 @@ export function initMagnifierBridge() {
       endSeconds,
       amplitudeThreshold,
       paddingSeconds
+    );
+  }
+
+  function findSegmentSilenceRuns(hostMarker, speakerKey, startSeconds, endSeconds, amplitudeThreshold, minimumSilenceSeconds) {
+    let resolved = resolveWaveForHost(hostMarker);
+    if (
+      !resolved.wave ||
+      !isUsableWaveCandidate(resolved.wave, resolved.host) ||
+      !hostMatchesSpeaker(resolved.host, speakerKey)
+    ) {
+      resolved = resolveWaveForVisibleSpeaker(speakerKey);
+    }
+    return findSegmentSilenceRunsForResolvedWave(
+      resolved.host,
+      resolved.wave,
+      startSeconds,
+      endSeconds,
+      amplitudeThreshold,
+      minimumSilenceSeconds
     );
   }
 
@@ -3172,6 +3312,21 @@ export function initMagnifierBridge() {
           payload.endSeconds,
           payload.amplitudeThreshold,
           payload.paddingSeconds
+        )
+      );
+      return;
+    }
+
+    if (operation === 'find-segment-silence-runs') {
+      respond(
+        id,
+        findSegmentSilenceRuns(
+          payload.hostMarker,
+          payload.speakerKey,
+          payload.startSeconds,
+          payload.endSeconds,
+          payload.amplitudeThreshold,
+          payload.minimumSilenceSeconds
         )
       );
       return;

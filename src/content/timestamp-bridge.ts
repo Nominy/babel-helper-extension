@@ -355,6 +355,117 @@ export function initTimestampBridge() {
     return null;
   }
 
+  function findSplitAnnotationCallback(startElement) {
+    let fiber = getReactFiber(startElement);
+    if (!fiber && startElement instanceof HTMLTableRowElement) {
+      fiber = getReactFiber(startElement.querySelector(ROW_TEXTAREA_SELECTOR));
+    }
+
+    let current = fiber;
+    let depth = 0;
+    while (current && typeof current === 'object' && depth < 40) {
+      let hook = current.memoizedState;
+      let hookIndex = 0;
+      while (hook && typeof hook === 'object' && hookIndex < 180) {
+        const memoizedState = hook.memoizedState;
+        const candidate =
+          Array.isArray(memoizedState) && typeof memoizedState[0] === 'function'
+            ? memoizedState[0]
+            : typeof memoizedState === 'function'
+              ? memoizedState
+              : null;
+        if (candidate) {
+          const source = Function.prototype.toString.call(candidate);
+          if (
+            candidate.length === 2 &&
+            source.includes('crypto.randomUUID') &&
+            source.includes('startTimeInSeconds') &&
+            source.includes('endTimeInSeconds') &&
+            source.includes('lowConfidenceResolved') &&
+            source.includes('.05') &&
+            source.includes('undo')
+          ) {
+            return candidate;
+          }
+        }
+
+        hook = hook.next;
+        hookIndex += 1;
+      }
+
+      current = current.return;
+      depth += 1;
+    }
+
+    return null;
+  }
+
+  function resolveRowSplitBinding(row) {
+    const timeBinding = resolveRowTimeChangeBinding(row);
+    const splitAnnotation = findSplitAnnotationCallback(row);
+    if (!timeBinding || typeof timeBinding.annotationId !== 'string' || !timeBinding.annotationId) {
+      return null;
+    }
+
+    if (typeof splitAnnotation !== 'function') {
+      return null;
+    }
+
+    return {
+      annotationId: timeBinding.annotationId,
+      splitAnnotation,
+      startSeconds: timeBinding.startSeconds,
+      endSeconds: timeBinding.endSeconds
+    };
+  }
+
+  function findRowsAroundSplit(annotationId, splitSeconds, options) {
+    const settings = options || {};
+    const speakerKey =
+      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
+    const originalStart = Number(settings.startSeconds);
+    const originalEnd = Number(settings.endSeconds);
+    const leftTargetEnd = splitSeconds - 0.05;
+    const rightTargetStart = splitSeconds + 0.05;
+    const tolerance = 0.09;
+    let leftRow = null;
+    let rightRow = null;
+
+    for (const row of getTranscriptRows()) {
+      if (speakerKey && getRowSpeakerKey(row) !== speakerKey) {
+        continue;
+      }
+
+      const binding = resolveRowTimeChangeBinding(row);
+      if (binding && binding.annotationId === annotationId) {
+        continue;
+      }
+
+      const range = getRowTimeRange(row);
+      if (!range) {
+        continue;
+      }
+
+      if (
+        Number.isFinite(originalStart) &&
+        Math.abs(range.startSeconds - originalStart) <= tolerance &&
+        Math.abs(range.endSeconds - leftTargetEnd) <= tolerance
+      ) {
+        leftRow = row;
+      }
+
+      if (
+        Number.isFinite(originalEnd) &&
+        Math.abs(range.startSeconds - rightTargetStart) <= tolerance &&
+        Math.abs(range.endSeconds - originalEnd) <= tolerance
+      ) {
+        rightRow = row;
+      }
+    }
+
+    return leftRow && rightRow ? { leftRow, rightRow } : null;
+  }
+
   async function setBoundaryTime(payload) {
     const side = payload && payload.side === 'left' ? 'left' : 'right';
     const targetSeconds = Number(payload?.targetSeconds);
@@ -489,6 +600,130 @@ export function initTimestampBridge() {
     };
   }
 
+  async function splitSegmentAtTime(payload) {
+    const splitSeconds = Number(payload?.splitSeconds);
+    if (!Number.isFinite(splitSeconds)) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'invalid-split'
+      };
+    }
+
+    let row =
+      (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) ||
+      findRowByTimeLabels(payload?.startText, payload?.endText, {
+        speakerKey: payload?.speakerKey
+      }) ||
+      findRowByTimeRange(Number(payload?.startSeconds), Number(payload?.endSeconds), {
+        speakerKey: payload?.speakerKey
+      });
+    if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === 'object') {
+      row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
+    }
+    if (!(row instanceof HTMLTableRowElement)) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'row-not-found'
+      };
+    }
+
+    const binding = resolveRowSplitBinding(row);
+    if (
+      !binding ||
+      typeof binding.splitAnnotation !== 'function' ||
+      typeof binding.annotationId !== 'string' ||
+      !binding.annotationId
+    ) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'binding-not-found'
+      };
+    }
+
+    const rowRange = getRowTimeRange(row);
+    const currentStart = Number.isFinite(binding.startSeconds)
+      ? binding.startSeconds
+      : rowRange
+        ? rowRange.startSeconds
+        : null;
+    const currentEnd = Number.isFinite(binding.endSeconds)
+      ? binding.endSeconds
+      : rowRange
+        ? rowRange.endSeconds
+        : null;
+    if (!Number.isFinite(currentStart) || !Number.isFinite(currentEnd)) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'current-range-invalid'
+      };
+    }
+
+    if (splitSeconds <= currentStart || splitSeconds >= currentEnd - 0.1) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'split-out-of-range'
+      };
+    }
+
+    try {
+      binding.splitAnnotation(binding.annotationId, splitSeconds);
+    } catch (error) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'apply-threw',
+        message: error instanceof Error ? error.message : String(error || '')
+      };
+    }
+
+    const splitRows = await waitFor(
+      () =>
+        findRowsAroundSplit(binding.annotationId, splitSeconds, {
+          speakerKey: payload?.speakerKey,
+          startSeconds: currentStart,
+          endSeconds: currentEnd
+        }),
+      1200,
+      40
+    );
+
+    if (!splitRows) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'verify-timeout'
+      };
+    }
+
+    const leftLabels = getRowTimeLabels(splitRows.leftRow);
+    const rightLabels = getRowTimeLabels(splitRows.rightRow);
+    const leftRange = getRowTimeRange(splitRows.leftRow);
+    const rightRange = getRowTimeRange(splitRows.rightRow);
+    const leftBinding = resolveRowTimeChangeBinding(splitRows.leftRow);
+    const rightBinding = resolveRowTimeChangeBinding(splitRows.rightRow);
+    return {
+      ok: true,
+      backend: 'page-react-split-annotation',
+      annotationId: binding.annotationId,
+      leftAnnotationId: leftBinding?.annotationId || '',
+      rightAnnotationId: rightBinding?.annotationId || '',
+      splitSeconds,
+      leftStartText: leftLabels?.startText || '',
+      leftEndText: leftLabels?.endText || '',
+      rightStartText: rightLabels?.startText || '',
+      rightEndText: rightLabels?.endText || '',
+      leftStartSeconds: leftRange?.startSeconds ?? null,
+      leftEndSeconds: leftRange?.endSeconds ?? null,
+      rightStartSeconds: rightRange?.startSeconds ?? null,
+      rightEndSeconds: rightRange?.endSeconds ?? null
+    };
+  }
+
   function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
@@ -509,6 +744,17 @@ export function initTimestampBridge() {
             message: error instanceof Error ? error.message : String(error || '')
           })
         );
+    } else if (operation === 'split-segment-at-time') {
+      Promise.resolve(splitSegmentAtTime(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            backend: 'page-react-split-annotation',
+            reason: 'bridge-error',
+            message: error instanceof Error ? error.message : String(error || '')
+          })
+        );
     }
   }
 
@@ -523,6 +769,7 @@ export function initTimestampBridge() {
 
   window.__babelHelperTimestampBridge = {
     setBoundaryTime,
+    splitSegmentAtTime,
     dispose
   };
 }

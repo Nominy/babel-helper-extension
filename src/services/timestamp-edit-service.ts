@@ -400,4 +400,68 @@ export function registerTimestampEditService(helper: any) {
       verification: null
     };
   };
+
+  helper.splitSegmentAtTime = async function splitSegmentAtTime(options) {
+    const settings = options || {};
+    const splitSeconds = Number(settings.splitSeconds);
+    if (!Number.isFinite(splitSeconds)) {
+      return {
+        ok: false,
+        backend: 'page-react-split-annotation',
+        reason: 'invalid-split'
+      };
+    }
+
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const row =
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
+        findRowByTimeLabels(settings.startText, settings.endText, {
+          speakerKey: settings.speakerKey
+        }) ||
+        findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
+          speakerKey: settings.speakerKey
+        });
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
+      const bridgeResult = await callTimestampBridge('split-segment-at-time', {
+        startText: settings.startText,
+        endText: settings.endText,
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.endSeconds,
+        speakerKey: settings.speakerKey,
+        splitSeconds,
+        annotationId:
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
+        rowIdentity
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-split-annotation',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-split-annotation',
+      verification: null
+    };
+  };
 }

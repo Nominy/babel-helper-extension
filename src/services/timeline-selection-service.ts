@@ -34,6 +34,11 @@ export function registerTimelineSelectionService(helper: any) {
   const AUDIO_TRIM_OUTWARD_STEP_SECONDS = 0.05;
   const AUDIO_TRIM_PADDING_SECONDS = 0.005;
   const AUDIO_TRIM_EPSILON_SECONDS = 0.0015;
+  const AUDIO_TRIM_NEIGHBOR_GUARD_SECONDS = 0.01;
+  const AUTO_SEGMENT_SILENCE_THRESHOLD = Math.pow(10, -24 / 20);
+  const AUTO_SEGMENT_SILENCE_MIN_SECONDS = 1;
+  const AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS = 0.05;
+  const AUTO_SEGMENT_SPLIT_SETTLE_MS = 220;
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
 
   helper.state.cutDraft = null;
@@ -46,6 +51,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.selectionLoop = null;
   helper.state.longTaskProgress = null;
   if (isFeatureEnabled('timelineSelection')) {
+    helper.config.hotkeysHelpRows.unshift(['Alt + Ctrl/Cmd + Shift + R', 'Split visible segments on silence runs over 1000ms, then trim all']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
@@ -65,6 +71,17 @@ export function registerTimelineSelectionService(helper: any) {
   let zoomPersistenceLoaded = false;
   let zoomPersistenceDefaults = null;
   let zoomPersistenceSaveChain = Promise.resolve();
+  const getTranscriptRowsFromHelper =
+    typeof helper.getTranscriptRows === 'function' ? helper.getTranscriptRows.bind(helper) : null;
+
+  helper.getTranscriptRows = () => {
+    const rows = getTranscriptRowsFromHelper ? getTranscriptRowsFromHelper() : [];
+    if (Array.isArray(rows) && rows.length) {
+      return rows;
+    }
+
+    return getFallbackTranscriptRows();
+  };
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -262,6 +279,24 @@ export function registerTimelineSelectionService(helper: any) {
   function parseSecondsLabel(value) {
     const parsed = parseTimeValue(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function getFallbackTranscriptRows() {
+    return Array.from(document.querySelectorAll('tbody tr')).filter((row) => {
+      if (!(row instanceof HTMLTableRowElement) || row.children.length < 5) {
+        return false;
+      }
+
+      if (!row.querySelector('textarea')) {
+        return false;
+      }
+
+      const startText = helper.normalizeText(row.children[2]);
+      const endText = helper.normalizeText(row.children[3]);
+      const startSeconds = parseTimeValue(startText);
+      const endSeconds = parseTimeValue(endText);
+      return Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds;
+    });
   }
 
   function parsePixels(value) {
@@ -2227,11 +2262,12 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  function dispatchSplitClick(target, clientX, clientY) {
+  function dispatchSplitClick(target, clientX, clientY, options) {
     if (!(target instanceof HTMLElement)) {
       return;
     }
 
+    const settings = options || {};
     const useMeta = /\bMac\b/i.test(navigator.platform || '');
     target.dispatchEvent(
       new MouseEvent('click', {
@@ -2244,6 +2280,7 @@ export function registerTimelineSelectionService(helper: any) {
         button: 0,
         buttons: 0,
         detail: 1,
+        shiftKey: Boolean(settings.shiftKey),
         ctrlKey: !useMeta,
         metaKey: useMeta
       })
@@ -2679,6 +2716,80 @@ export function registerTimelineSelectionService(helper: any) {
     return getRowTimeLabels(row) || fallbackLabels;
   }
 
+  function getSameSpeakerBoundaryNeighborLimits(row, speakerKey) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return {
+        minStartSeconds: null,
+        maxEndSeconds: null
+      };
+    }
+
+    const targetSpeakerKey =
+      (typeof speakerKey === 'string' && speakerKey) || helper.getRowSpeakerKey(row);
+    if (!targetSpeakerKey) {
+      return {
+        minStartSeconds: null,
+        maxEndSeconds: null
+      };
+    }
+
+    const sameSpeakerRows = helper
+      .getTranscriptRows()
+      .filter(
+        (candidate) =>
+          candidate instanceof HTMLTableRowElement &&
+          candidate.isConnected &&
+          helper.getRowSpeakerKey(candidate) === targetSpeakerKey
+      );
+    const rowIndex = sameSpeakerRows.indexOf(row);
+    if (rowIndex < 0) {
+      return {
+        minStartSeconds: null,
+        maxEndSeconds: null
+      };
+    }
+
+    let minStartSeconds = null;
+    for (let index = rowIndex - 1; index >= 0; index -= 1) {
+      const previousRange = getRowTimeRange(sameSpeakerRows[index]);
+      if (previousRange && Number.isFinite(previousRange.endSeconds)) {
+        minStartSeconds = previousRange.endSeconds + AUDIO_TRIM_NEIGHBOR_GUARD_SECONDS;
+        break;
+      }
+    }
+
+    let maxEndSeconds = null;
+    for (let index = rowIndex + 1; index < sameSpeakerRows.length; index += 1) {
+      const nextRange = getRowTimeRange(sameSpeakerRows[index]);
+      if (nextRange && Number.isFinite(nextRange.startSeconds)) {
+        maxEndSeconds = nextRange.startSeconds - AUDIO_TRIM_NEIGHBOR_GUARD_SECONDS;
+        break;
+      }
+    }
+
+    return {
+      minStartSeconds,
+      maxEndSeconds
+    };
+  }
+
+  function capOutwardBoundaryTarget(row, side, speakerKey, targetSeconds) {
+    if (!Number.isFinite(targetSeconds)) {
+      return targetSeconds;
+    }
+
+    const limits = getSameSpeakerBoundaryNeighborLimits(row, speakerKey);
+    if (side === 'right' && Number.isFinite(limits.maxEndSeconds)) {
+      return Math.min(targetSeconds, limits.maxEndSeconds);
+    }
+
+    if (side === 'left' && Number.isFinite(limits.minStartSeconds)) {
+      return Math.max(targetSeconds, limits.minStartSeconds);
+    }
+
+    return targetSeconds;
+  }
+
   async function applyInwardTrimToRow(row, speakerKey, trimBridgeResult) {
     let labels = getRowTimeLabels(row);
     const rowRange = getRowTimeRange(row);
@@ -2733,6 +2844,363 @@ export function registerTimelineSelectionService(helper: any) {
 
     return requestTrimTargetsForSpeaker(speakerKey, labels);
   }
+
+  function collectAutoSegmentTargets() {
+    const targets = [];
+    const containers = discoverWaveformContainers();
+    for (const row of helper.getTranscriptRows()) {
+      if (!(row instanceof HTMLTableRowElement)) {
+        continue;
+      }
+
+      const labels = getRowTimeLabels(row);
+      const startSeconds = labels ? parseTimeValue(labels.startText) : null;
+      const endSeconds = labels ? parseTimeValue(labels.endText) : null;
+      if (!labels || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+        continue;
+      }
+
+      const speakerKey = helper.getRowSpeakerKey(row);
+      const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
+      const container =
+        containers.find((candidate) => {
+          const candidateSpeakerKey = getSpeakerKeyForContainer(candidate);
+          return !speakerKey || candidateSpeakerKey === speakerKey;
+        }) || null;
+
+      targets.push({
+        row,
+        rowIdentity,
+        annotationId:
+          rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : '',
+        container,
+        speakerKey,
+        entry: {
+          startText: labels.startText,
+          endText: labels.endText
+        },
+        startSeconds,
+        endSeconds
+      });
+    }
+
+    return targets;
+  }
+
+  function getAutoSegmentTargetDiagnostics() {
+    const rows = helper.getTranscriptRows();
+    const fallbackRows = getFallbackTranscriptRows();
+    const containers = discoverWaveformContainers();
+    return {
+      rowCount: rows.length,
+      fallbackRowCount: fallbackRows.length,
+      containerCount: containers.length,
+      rows: rows.slice(0, 5).map((row) => {
+        const labels = getRowTimeLabels(row);
+        return {
+          speakerKey: helper.getRowSpeakerKey(row),
+          startText: labels ? labels.startText : '',
+          endText: labels ? labels.endText : '',
+          hasTextarea: Boolean(row.querySelector('textarea'))
+        };
+      }),
+      containers: containers.slice(0, 5).map((container) => ({
+        speakerKey: getSpeakerKeyForContainer(container),
+        hasHost: getWaveformHostFromContainer(container) instanceof HTMLElement
+      }))
+    };
+  }
+
+  async function requestAutoSegmentSilenceRuns(target) {
+    if (!target || !target.entry) {
+      return null;
+    }
+
+    const hostMarker =
+      target.container instanceof HTMLElement ? ensureSelectionHostMarker(target.container) : '';
+    if (target.container instanceof HTMLElement && !hostMarker) {
+      return null;
+    }
+
+    return callSelectionBridge('find-segment-silence-runs', {
+      hostMarker,
+      speakerKey: target.speakerKey,
+      startSeconds: target.startSeconds,
+      endSeconds: target.endSeconds,
+      amplitudeThreshold: AUTO_SEGMENT_SILENCE_THRESHOLD,
+      minimumSilenceSeconds: AUTO_SEGMENT_SILENCE_MIN_SECONDS
+    });
+  }
+
+  function emitAutoSegmentDebug(detail) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
+      return;
+    }
+
+    window.dispatchEvent(
+      new CustomEvent('babel-helper-auto-segmentation-debug', {
+        detail
+      })
+    );
+  }
+
+  function collectAutoSegmentSplitPlans(targets, silenceResults) {
+    const plans = [];
+    const seen = new Set();
+    const results = Array.isArray(silenceResults) ? silenceResults : [];
+
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      const result = results[index];
+      const runs = result && result.ok && Array.isArray(result.runs) ? result.runs : [];
+      for (const run of runs) {
+        const splitSeconds = Number(run && run.splitSeconds);
+        if (
+          !Number.isFinite(splitSeconds) ||
+          splitSeconds <= target.startSeconds + AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS ||
+          splitSeconds >= target.endSeconds - AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS
+        ) {
+          continue;
+        }
+
+        const key = [
+          target.speakerKey || '',
+          Math.round(splitSeconds * 1000)
+        ].join(':');
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        plans.push({
+          container: target.container,
+          row: target.row,
+          rowIdentity: target.rowIdentity || null,
+          annotationId: target.annotationId || '',
+          speakerKey: target.speakerKey,
+          splitSeconds,
+          startSeconds: target.startSeconds,
+          endSeconds: target.endSeconds
+        });
+      }
+    }
+
+    return plans.sort((left, right) => right.splitSeconds - left.splitSeconds);
+  }
+
+  function findCurrentAutoSegmentSplitRow(plan) {
+    if (!plan || !Number.isFinite(plan.splitSeconds)) {
+      return null;
+    }
+
+    const speakerKey =
+      typeof plan.speakerKey === 'string' && plan.speakerKey ? plan.speakerKey : '';
+    for (const row of helper.getTranscriptRows()) {
+      if (!(row instanceof HTMLTableRowElement)) {
+        continue;
+      }
+
+      if (speakerKey && helper.getRowSpeakerKey(row) !== speakerKey) {
+        continue;
+      }
+
+      const range = getRowTimeRange(row);
+      if (!range) {
+        continue;
+      }
+
+      if (
+        plan.splitSeconds > range.startSeconds + AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS &&
+        plan.splitSeconds < range.endSeconds - Math.max(AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS, 0.1)
+      ) {
+        return row;
+      }
+    }
+
+    return plan.row instanceof HTMLTableRowElement && plan.row.isConnected ? plan.row : null;
+  }
+
+  function buildSmartSplitPlanForRow(row, splitSeconds, speakerKey) {
+    if (!(row instanceof HTMLTableRowElement) || !Number.isFinite(splitSeconds)) {
+      return null;
+    }
+
+    const range = getRowTimeRange(row);
+    if (
+      !range ||
+      splitSeconds <= range.startSeconds + AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS ||
+      splitSeconds >= range.endSeconds - AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS
+    ) {
+      return null;
+    }
+
+    const rows = helper.getTranscriptRows();
+    const sourceRowIndex = rows.indexOf(row);
+    if (sourceRowIndex < 0) {
+      return null;
+    }
+
+    const sourceSpeakerKey =
+      (typeof speakerKey === 'string' && speakerKey) || helper.getRowSpeakerKey(row);
+    const sameSpeakerRows = sourceSpeakerKey
+      ? rows.filter((candidate) => helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
+      : rows;
+    const sourceSpeakerIndex = sameSpeakerRows.indexOf(row);
+    const sourceText = helper.getRowTextValue(row).trim();
+    if (!sourceText) {
+      return null;
+    }
+
+    return {
+      sourceRow: row,
+      sourceRowIndex,
+      sourceSpeakerIndex,
+      rowCount: rows.length,
+      speakerKey: sourceSpeakerKey,
+      sourceText,
+      pivotPx: 0,
+      ratio: clamp(
+        (splitSeconds - range.startSeconds) / (range.endSeconds - range.startSeconds),
+        0,
+        1
+      )
+    };
+  }
+
+  helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences() {
+    const targets = collectAutoSegmentTargets();
+    if (!targets.length) {
+      emitAutoSegmentDebug({
+        phase: 'complete',
+        ok: false,
+        reason: 'missing-segments',
+        targetCount: 0,
+        splitCount: 0,
+        diagnostics: getAutoSegmentTargetDiagnostics()
+      });
+      return {
+        ok: false,
+        reason: 'missing-segments',
+        splitCount: 0
+      };
+    }
+
+    updateLongTaskProgress({
+      label: 'Finding silence runs',
+      current: 0,
+      total: targets.length
+    });
+
+    let splitCount = 0;
+    try {
+      const silenceResults = [];
+      for (let index = 0; index < targets.length; index += 1) {
+        updateLongTaskProgress({
+          label: 'Finding silence runs',
+          current: index,
+          total: targets.length
+        });
+        silenceResults.push(await requestAutoSegmentSilenceRuns(targets[index]));
+      }
+
+      const splitPlans = collectAutoSegmentSplitPlans(targets, silenceResults);
+      emitAutoSegmentDebug({
+        phase: 'planned',
+        ok: true,
+        targetCount: targets.length,
+        silenceResultCount: silenceResults.length,
+        splitPlanCount: splitPlans.length,
+        silenceResults: silenceResults.map((result) => ({
+          ok: Boolean(result && result.ok),
+          reason: result && result.reason ? result.reason : null,
+          source: result && result.source ? result.source : null,
+          runCount: result && Array.isArray(result.runs) ? result.runs.length : 0
+        }))
+      });
+
+      for (let index = 0; index < splitPlans.length; index += 1) {
+        updateLongTaskProgress({
+          label: 'Splitting on silence',
+          current: index,
+          total: splitPlans.length
+        });
+
+        const plan = splitPlans[index];
+        const row = findCurrentAutoSegmentSplitRow(plan);
+        if (!(row instanceof HTMLTableRowElement)) {
+          continue;
+        }
+
+        const labels = getRowTimeLabels(row);
+        const range = getRowTimeRange(row);
+        const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
+        const smartSplitPlan = buildSmartSplitPlanForRow(row, plan.splitSeconds, plan.speakerKey);
+        const splitResult = await helper.splitSegmentAtTime({
+          annotationId: plan.annotationId,
+          rowIdentity: rowIdentity || plan.rowIdentity || null,
+          startText: labels ? labels.startText : '',
+          endText: labels ? labels.endText : '',
+          startSeconds: range ? range.startSeconds : plan.startSeconds,
+          endSeconds: range ? range.endSeconds : plan.endSeconds,
+          speakerKey: plan.speakerKey,
+          splitSeconds: plan.splitSeconds
+        });
+
+        if (!splitResult || !splitResult.ok) {
+          continue;
+        }
+
+        splitCount += 1;
+        if (smartSplitPlan) {
+          await applySmartSplit(smartSplitPlan);
+        }
+        await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
+      }
+
+      updateLongTaskProgress({
+        label: 'Trimming segmented draft',
+        current: splitPlans.length,
+        total: splitPlans.length
+      });
+      const trimResult = await helper.trimAllSegmentsToAudio();
+      if (!trimResult || !trimResult.ok) {
+        emitAutoSegmentDebug({
+          phase: 'complete',
+          ok: false,
+          reason: trimResult && trimResult.reason ? trimResult.reason : 'trim-failed',
+          targetCount: targets.length,
+          splitPlanCount: splitPlans.length,
+          splitCount,
+          trim: trimResult || null
+        });
+        return {
+          ok: false,
+          reason: trimResult && trimResult.reason ? trimResult.reason : 'trim-failed',
+          splitCount,
+          trim: trimResult || null
+        };
+      }
+
+      const result = {
+        ok: true,
+        changed: splitCount > 0 || Boolean(trimResult && trimResult.changedCount),
+        splitCount,
+        trim: trimResult
+      };
+      emitAutoSegmentDebug({
+        phase: 'complete',
+        ok: true,
+        changed: result.changed,
+        targetCount: targets.length,
+        splitPlanCount: splitPlans.length,
+        splitCount,
+        trim: trimResult
+      });
+      return result;
+    } finally {
+      dismissLongTaskProgress();
+    }
+  };
 
   async function trimSegmentTarget(target) {
     if (!target || !target.entry) {
@@ -2836,13 +3304,17 @@ export function registerTimelineSelectionService(helper: any) {
 
     const extendStartSeconds = Number(extendResult.targetStartSeconds);
     const extendEndSeconds = Number(extendResult.targetEndSeconds);
+    const cappedExtendEndSeconds = capOutwardBoundaryTarget(row, 'right', speakerKey, extendEndSeconds);
+    const currentRightRange = getRowTimeRange(row) || rowRange;
 
     if (
       shouldExtendRight &&
-      Number.isFinite(extendEndSeconds) &&
-      extendEndSeconds > rowRange.endSeconds + AUDIO_TRIM_EPSILON_SECONDS
+      currentRightRange &&
+      Number.isFinite(cappedExtendEndSeconds) &&
+      cappedExtendEndSeconds > currentRightRange.endSeconds + AUDIO_TRIM_EPSILON_SECONDS &&
+      cappedExtendEndSeconds > currentRightRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedRight = await moveSegmentBoundary('right', labels, speakerKey, extendEndSeconds);
+      const movedRight = await moveSegmentBoundary('right', labels, speakerKey, cappedExtendEndSeconds);
       if (!movedRight || !movedRight.ok) {
         return { ok: false, reason: 'right-extend-failed', bridge: extendResult };
       }
@@ -2851,12 +3323,16 @@ export function registerTimelineSelectionService(helper: any) {
       await helper.sleep(32);
     }
 
+    const cappedExtendStartSeconds = capOutwardBoundaryTarget(row, 'left', speakerKey, extendStartSeconds);
+    const currentLeftRange = getRowTimeRange(row) || currentRightRange || rowRange;
     if (
       shouldExtendLeft &&
-      Number.isFinite(extendStartSeconds) &&
-      extendStartSeconds < rowRange.startSeconds - AUDIO_TRIM_EPSILON_SECONDS
+      currentLeftRange &&
+      Number.isFinite(cappedExtendStartSeconds) &&
+      cappedExtendStartSeconds < currentLeftRange.startSeconds - AUDIO_TRIM_EPSILON_SECONDS &&
+      cappedExtendStartSeconds < currentLeftRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS
     ) {
-      const movedLeft = await moveSegmentBoundary('left', getCurrentMoveLabels(row, labels), speakerKey, extendStartSeconds);
+      const movedLeft = await moveSegmentBoundary('left', getCurrentMoveLabels(row, labels), speakerKey, cappedExtendStartSeconds);
       if (!movedLeft || !movedLeft.ok) {
         return { ok: false, reason: 'left-extend-failed', bridge: extendResult };
       }
@@ -3792,6 +4268,24 @@ export function registerTimelineSelectionService(helper: any) {
       if (!helper.runtime.isSessionInteractive()) {
         return false;
       }
+    }
+
+    if (
+      event.altKey &&
+      event.shiftKey &&
+      (event.ctrlKey || event.metaKey) &&
+      event.code === 'KeyR'
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.autoSegmentVisibleSilences();
+      return {
+        handled: true,
+        analyticsType: 'hotkey:trim',
+        analyticsData: {
+          scope: 'auto-segmentation'
+        }
+      };
     }
 
     if (
