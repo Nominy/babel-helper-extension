@@ -50,8 +50,9 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.smartSplitClickContext = null;
   helper.state.selectionLoop = null;
   helper.state.longTaskProgress = null;
+  helper.state.autoSegmentationPending = false;
   if (isFeatureEnabled('timelineSelection')) {
-    helper.config.hotkeysHelpRows.unshift(['Alt + Ctrl/Cmd + Shift + R', 'Split visible segments on silence runs over 1000ms, then trim all']);
+    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + S', 'Split visible segments on silence runs over 1000ms, then trim all']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
@@ -3068,31 +3069,41 @@ export function registerTimelineSelectionService(helper: any) {
   }
 
   helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences() {
-    const targets = collectAutoSegmentTargets();
-    if (!targets.length) {
-      emitAutoSegmentDebug({
-        phase: 'complete',
-        ok: false,
-        reason: 'missing-segments',
-        targetCount: 0,
-        splitCount: 0,
-        diagnostics: getAutoSegmentTargetDiagnostics()
-      });
+    if (helper.state.autoSegmentationPending) {
       return {
         ok: false,
-        reason: 'missing-segments',
+        reason: 'auto-segmentation-pending',
         splitCount: 0
       };
     }
 
-    updateLongTaskProgress({
-      label: 'Finding silence runs',
-      current: 0,
-      total: targets.length
-    });
+    helper.state.autoSegmentationPending = true;
 
-    let splitCount = 0;
     try {
+      const targets = collectAutoSegmentTargets();
+      if (!targets.length) {
+        emitAutoSegmentDebug({
+          phase: 'complete',
+          ok: false,
+          reason: 'missing-segments',
+          targetCount: 0,
+          splitCount: 0,
+          diagnostics: getAutoSegmentTargetDiagnostics()
+        });
+        return {
+          ok: false,
+          reason: 'missing-segments',
+          splitCount: 0
+        };
+      }
+
+      updateLongTaskProgress({
+        label: 'Finding silence runs',
+        current: 0,
+        total: targets.length
+      });
+
+      let splitCount = 0;
       const silenceResults = [];
       for (let index = 0; index < targets.length; index += 1) {
         updateLongTaskProgress({
@@ -3198,6 +3209,7 @@ export function registerTimelineSelectionService(helper: any) {
       });
       return result;
     } finally {
+      helper.state.autoSegmentationPending = false;
       dismissLongTaskProgress();
     }
   };
@@ -4273,8 +4285,9 @@ export function registerTimelineSelectionService(helper: any) {
     if (
       event.altKey &&
       event.shiftKey &&
-      (event.ctrlKey || event.metaKey) &&
-      event.code === 'KeyR'
+      !event.ctrlKey &&
+      !event.metaKey &&
+      event.code === 'KeyS'
     ) {
       event.preventDefault();
       event.stopPropagation();

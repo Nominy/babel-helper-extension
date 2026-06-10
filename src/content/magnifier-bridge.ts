@@ -1861,7 +1861,7 @@ export function initMagnifierBridge() {
         hosts.find((candidate) => getSpeakerKeysForHost(candidate).includes(normalizedSpeakerKey)) || null;
     }
 
-    if (!(host instanceof HTMLElement) && hosts.length === 1) {
+    if (!normalizedSpeakerKey && !(host instanceof HTMLElement) && hosts.length === 1) {
       host = hosts[0];
     }
 

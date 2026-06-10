@@ -12,16 +12,26 @@ test('auto-segmentation hotkey is distinct from current and all-segment trim hot
 
   assert.match(source, /AUTO_SEGMENT_SILENCE_MIN_SECONDS = 1\b/);
   assert.match(source, /AUTO_SEGMENT_SILENCE_THRESHOLD = Math\.pow\(10, -24 \/ 20\)/);
-  assert.match(source, /\['Alt \+ Ctrl\/Cmd \+ Shift \+ R', 'Split visible segments on silence runs over 1000ms, then trim all'\]/);
-  assert.match(source, /event\.altKey &&[\s\S]*event\.shiftKey &&[\s\S]*\(event\.ctrlKey \|\| event\.metaKey\) &&[\s\S]*event\.code === 'KeyR'/);
-  assert.match(source, /void helper\.autoSegmentVisibleSilences\(\)/);
+  assert.match(source, /\['Alt \+ Shift \+ S', 'Split visible segments on silence runs over 1000ms, then trim all'\]/);
+  assert.doesNotMatch(source, /\['Alt \+ Ctrl\/Cmd \+ Shift \+ R', 'Split visible segments on silence runs over 1000ms, then trim all'\]/);
+
+  const autoSegmentCall = source.indexOf('void helper.autoSegmentVisibleSilences()');
+  const autoSegmentHotkeyStart = source.lastIndexOf('if (', autoSegmentCall);
+  const autoSegmentHotkeyBlock = source.slice(autoSegmentHotkeyStart, autoSegmentCall);
+  assert.ok(autoSegmentCall >= 0 && autoSegmentHotkeyStart >= 0, 'expected auto-segmentation hotkey block');
+  assert.match(autoSegmentHotkeyBlock, /event\.altKey/);
+  assert.match(autoSegmentHotkeyBlock, /event\.shiftKey/);
+  assert.match(autoSegmentHotkeyBlock, /!event\.ctrlKey/);
+  assert.match(autoSegmentHotkeyBlock, /!event\.metaKey/);
+  assert.match(autoSegmentHotkeyBlock, /event\.code === 'KeyS'/);
+  assert.doesNotMatch(autoSegmentHotkeyBlock, /KeyR/);
   assert.match(source, /analyticsData: \{\s*scope: 'auto-segmentation'\s*\}/);
 
   const windowCaptureStart = lifecycleSource.indexOf('function handleNativeArrowSuppress');
   const windowCaptureEnd = lifecycleSource.indexOf('if (isRightShiftSegmentNavigationShortcut', windowCaptureStart);
   const windowCaptureBlock = lifecycleSource.slice(windowCaptureStart, windowCaptureEnd);
-  assert.match(windowCaptureBlock, /event\.altKey &&[\s\S]*event\.code === 'KeyR'/);
-  assert.doesNotMatch(windowCaptureBlock, /!event\.ctrlKey &&[\s\S]*!event\.metaKey &&[\s\S]*event\.code === 'KeyR'/);
+  assert.match(windowCaptureBlock, /event\.altKey &&[\s\S]*event\.shiftKey &&[\s\S]*event\.code === 'KeyS'/);
+  assert.doesNotMatch(windowCaptureBlock, /event\.shiftKey &&[\s\S]*\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]*event\.code === 'KeyR'/);
 });
 
 test('auto-segmentation asks the bridge for silence runs over one second', () => {
@@ -106,4 +116,27 @@ test('auto-segmentation does not bind speaker rows to unlabeled waveform hosts',
   assert.doesNotMatch(collectBlock, /!candidateSpeakerKey \|\| candidateSpeakerKey === speakerKey/);
   assert.ok(findStart >= 0 && findEnd > findStart, 'expected silence-run host resolver');
   assert.match(findBlock, /hostMatchesSpeaker\(resolved\.host, speakerKey\)/);
+});
+
+test('auto-segmentation does not fall back to a mismatched single visible speaker lane', () => {
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+  const start = bridgeSource.indexOf('function resolveWaveForVisibleSpeaker');
+  const end = bridgeSource.indexOf('function findTrimTargets', start);
+  const block = bridgeSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'expected visible-speaker wave resolver');
+  assert.match(block, /if \(!normalizedSpeakerKey && !\(host instanceof HTMLElement\) && hosts\.length === 1\)/);
+});
+
+test('auto-segmentation ignores reentry while a run is already pending', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const start = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');
+  const end = source.indexOf('async function trimSegmentTarget', start);
+  const block = source.slice(start, end);
+
+  assert.match(source, /helper\.state\.autoSegmentationPending = false/);
+  assert.match(block, /if \(helper\.state\.autoSegmentationPending\)/);
+  assert.match(block, /reason: 'auto-segmentation-pending'/);
+  assert.match(block, /helper\.state\.autoSegmentationPending = true/);
+  assert.match(block, /helper\.state\.autoSegmentationPending = false/);
 });
