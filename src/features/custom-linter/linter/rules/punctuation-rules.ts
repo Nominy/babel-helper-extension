@@ -64,6 +64,18 @@ export const createPunctuationRules: CustomLinterRuleFactory = (deps) => [
     fix: (text) => deps.fixSquareBracketTagTrailingPunctuation(text)
   },
   {
+    id: 'comma-before-dash',
+    reason: deps.reasons.commaBeforeDash,
+    severity: deps.ruleSeverity,
+    markers: [
+      deps.reasons.commaBeforeDash,
+      'Comma before dash'
+    ],
+    getMatches: (entry, context) =>
+      deps.getCommaBeforeDashMatches(entry.text, context.textContext),
+    fix: (text) => deps.fixCommaBeforeDash(text)
+  },
+  {
     id: 'free-mid-sentence-double-dash',
     reason: deps.reasons.freeMidSentenceDoubleDash,
     severity: deps.ruleSeverity,

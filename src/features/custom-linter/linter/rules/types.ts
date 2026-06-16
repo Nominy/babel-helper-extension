@@ -15,6 +15,7 @@ export type CustomLinterReasons = {
   angleTagTrailingPunctuation: string;
   squareBracketTagTrailingPunctuation: string;
   unicodeDash: string;
+  commaBeforeDash: string;
   freeMidSentenceDoubleDash: string;
   doubleDashPunctuation: string;
   singleDashPunctuation: string;
@@ -57,6 +58,8 @@ export type CustomLinterRuleDependencies = {
   fixSquareBracketTagTrailingPunctuation(text: string): string;
   getUnicodeDashMatches(text: string): TextRange[];
   fixUnicodeDashes(text: string): string;
+  getCommaBeforeDashMatches(text: string, textContext?: TranscriptTextContext): TextRange[];
+  fixCommaBeforeDash(text: string): string;
   getFreeMidSentenceDoubleDashMatches(text: string, textContext?: TranscriptTextContext): TextRange[];
   fixFreeMidSentenceDoubleDash(text: string): string;
   getDoubleDashPunctuationMatches(text: string, textContext?: TranscriptTextContext): TextRange[];

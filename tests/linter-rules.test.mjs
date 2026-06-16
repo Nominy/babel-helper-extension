@@ -167,6 +167,10 @@ test('curly tag trailing punctuation rule lives in punctuation rules', async () 
   assert.match(punctuationRulesSource, /deps\.reasons\.squareBracketTagTrailingPunctuation/);
   assert.match(punctuationRulesSource, /getSquareBracketTagTrailingPunctuationMatches/);
   assert.match(punctuationRulesSource, /fixSquareBracketTagTrailingPunctuation/);
+  assert.match(punctuationRulesSource, /id:\s*'comma-before-dash'/);
+  assert.match(punctuationRulesSource, /deps\.reasons\.commaBeforeDash/);
+  assert.match(punctuationRulesSource, /getCommaBeforeDashMatches/);
+  assert.match(punctuationRulesSource, /fixCommaBeforeDash/);
 });
 
 test('period, angle tag, and free double dash rules live in co-located rule files', async () => {

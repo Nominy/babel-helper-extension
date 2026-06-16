@@ -46,6 +46,8 @@ export function initLinterBridge() {
     "Punctuation after square bracket tags must move before the tag.";
   const UNICODE_DASH_RULE_REASON =
     'Use ASCII hyphen "-" instead of typographic or Unicode dash variants.';
+  const COMMA_BEFORE_DASH_RULE_REASON =
+    "Commas before dash separators should be removed.";
   const FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON =
     'Free-floating mid-sentence double dash must be a single dash.';
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
@@ -1514,6 +1516,64 @@ export function initLinterBridge() {
     );
   }
 
+  function getCommaBeforeDashParts(
+    text,
+    textContext = createTranscriptTextContext(text),
+  ) {
+    if (typeof text !== "string" || text.indexOf(",") === -1 || text.indexOf("-") === -1) {
+      return [];
+    }
+
+    const parts = [];
+    for (
+      let commaStart = text.indexOf(",");
+      commaStart !== -1;
+      commaStart = text.indexOf(",", commaStart + 1)
+    ) {
+      if (!hasNonTagTextBeforeCurlyTag(text, commaStart)) {
+        continue;
+      }
+
+      let dashStart = commaStart + 1;
+      while (dashStart < text.length && /[ \t]/.test(text[dashStart])) {
+        dashStart += 1;
+      }
+
+      if (text[dashStart] !== "-") {
+        continue;
+      }
+
+      const dashEnd = text[dashStart + 1] === "-" ? dashStart + 2 : dashStart + 1;
+      if (text[dashEnd] === "-" || !/[ \t]/.test(text[dashEnd] || "")) {
+        continue;
+      }
+
+      let nextIndex = dashEnd;
+      while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
+        nextIndex += 1;
+      }
+
+      if (
+        nextIndex >= text.length ||
+        textContext.isRangeInsideGenericTag(commaStart, dashEnd)
+      ) {
+        continue;
+      }
+
+      parts.push({ commaStart, dashStart });
+    }
+
+    return parts;
+  }
+
+  function getCommaBeforeDashMatches(text, textContext) {
+    return compactMatches(
+      getCommaBeforeDashParts(text, textContext)
+        .map((part) => clampTextRange(text, part.commaStart, part.dashStart))
+        .filter(Boolean),
+    );
+  }
+
   function getIncorrectInterjectionFormMatches(text) {
     return compactMatches(
       INTERJECTION_CORRECTIONS.flatMap((correction) =>
@@ -2220,6 +2280,7 @@ export function initLinterBridge() {
         angleTagTrailingPunctuation: ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         squareBracketTagTrailingPunctuation: SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         unicodeDash: UNICODE_DASH_RULE_REASON,
+        commaBeforeDash: COMMA_BEFORE_DASH_RULE_REASON,
         freeMidSentenceDoubleDash: FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON,
         doubleDashPunctuation: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
         singleDashPunctuation: SINGLE_DASH_PUNCTUATION_RULE_REASON,
@@ -2259,6 +2320,8 @@ export function initLinterBridge() {
       fixSquareBracketTagTrailingPunctuation,
       getUnicodeDashMatches,
       fixUnicodeDashes,
+      getCommaBeforeDashMatches,
+      fixCommaBeforeDash,
       getFreeMidSentenceDoubleDashMatches,
       fixFreeMidSentenceDoubleDash,
       getDoubleDashPunctuationMatches,
@@ -3213,6 +3276,7 @@ export function initLinterBridge() {
       ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON,
       SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
       UNICODE_DASH_RULE_REASON,
+      COMMA_BEFORE_DASH_RULE_REASON,
       FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON,
       DOUBLE_DASH_PUNCTUATION_RULE_REASON,
       SINGLE_DASH_PUNCTUATION_RULE_REASON,
@@ -4662,6 +4726,30 @@ export function initLinterBridge() {
     return result + text.slice(cursor);
   }
 
+  function fixCommaBeforeDash(text) {
+    const parts = getCommaBeforeDashParts(text);
+    if (!parts.length) {
+      return text;
+    }
+
+    let result = "";
+    let cursor = 0;
+    for (const part of parts) {
+      if (part.commaStart < cursor) {
+        continue;
+      }
+
+      result += text.slice(cursor, part.commaStart);
+      result = result.replace(/[ \t]+$/u, "");
+      if (result.trimEnd().length > 0) {
+        result += " ";
+      }
+      cursor = part.dashStart;
+    }
+
+    return result + text.slice(cursor);
+  }
+
   function fixFreeMidSentenceDoubleDash(text) {
     const parts = getFreeMidSentenceDoubleDashParts(text);
     if (!parts.length) {
@@ -5065,6 +5153,7 @@ export function initLinterBridge() {
     fixUnicodeDashes,
     fixAngleTagTrailingPunctuation,
     fixSquareBracketTagTrailingPunctuation,
+    fixCommaBeforeDash,
     fixFreeMidSentenceDoubleDash,
     fixDoubleDashPunctuation,
     fixSingleDashPunctuation,

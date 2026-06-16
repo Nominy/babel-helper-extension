@@ -651,6 +651,62 @@ function hasDoubleDashPunctuationViolation(text) {
   return false;
 }
 
+function getCommaBeforeDashParts(text) {
+  if (typeof text !== 'string' || text.indexOf(',') === -1 || text.indexOf('-') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  for (
+    let commaStart = text.indexOf(',');
+    commaStart !== -1;
+    commaStart = text.indexOf(',', commaStart + 1)
+  ) {
+    if (!hasNonTagTextBeforeCurlyTag(text, commaStart)) {
+      continue;
+    }
+
+    let dashStart = commaStart + 1;
+    while (dashStart < text.length && /[ \t]/.test(text[dashStart])) {
+      dashStart += 1;
+    }
+
+    if (text[dashStart] !== '-') {
+      continue;
+    }
+
+    const dashEnd = text[dashStart + 1] === '-' ? dashStart + 2 : dashStart + 1;
+    if (text[dashEnd] === '-' || !/[ \t]/.test(text[dashEnd] || '')) {
+      continue;
+    }
+
+    let nextIndex = dashEnd;
+    while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
+      nextIndex += 1;
+    }
+
+    if (nextIndex >= text.length || isRangeInsideGenericTag(text, commaStart, dashEnd)) {
+      continue;
+    }
+
+    parts.push({ commaStart, dashStart });
+  }
+
+  return parts;
+}
+
+function getCommaBeforeDashMatches(text) {
+  return getCommaBeforeDashParts(text).map((part) => ({
+    start: part.commaStart,
+    end: part.dashStart,
+    text: text.slice(part.commaStart, part.dashStart)
+  }));
+}
+
+function hasCommaBeforeDashViolation(text) {
+  return getCommaBeforeDashMatches(text).length > 0;
+}
+
 function getFreeMidSentenceDoubleDashParts(text) {
   if (typeof text !== 'string' || text.indexOf('--') === -1) {
     return [];
@@ -1648,6 +1704,30 @@ function fixAngleTagTrailingPunctuation(text) {
   return result + text.slice(cursor);
 }
 
+function fixCommaBeforeDash(text) {
+  const parts = getCommaBeforeDashParts(text);
+  if (!parts.length) {
+    return text;
+  }
+
+  let result = '';
+  let cursor = 0;
+  for (const part of parts) {
+    if (part.commaStart < cursor) {
+      continue;
+    }
+
+    result += text.slice(cursor, part.commaStart);
+    result = result.replace(/[ \t]+$/u, '');
+    if (result.trimEnd().length > 0) {
+      result += ' ';
+    }
+    cursor = part.dashStart;
+  }
+
+  return result + text.slice(cursor);
+}
+
 function fixFreeMidSentenceDoubleDash(text) {
   const parts = getFreeMidSentenceDoubleDashParts(text);
   if (!parts.length) {
@@ -1807,6 +1887,7 @@ function applyAllFixes(text) {
   result = fixCurlyTagTrailingPunctuation(result);
   result = fixSquareBracketTagTrailingPunctuation(result);
   result = fixAngleTagTrailingPunctuation(result);
+  result = fixCommaBeforeDash(result);
   result = fixFreeMidSentenceDoubleDash(result);
   result = fixDoubleDashPunctuation(result);
   result = fixSingleDashPunctuation(result);
@@ -2528,6 +2609,30 @@ test('flags double dash punctuation violation', () => {
   assert.equal(hasDoubleDashPunctuationViolation('<wait--.>'), false);
   assert.equal(hasDoubleDashPunctuationViolation('{wait--.}'), false);
   assert.equal(hasDoubleDashPunctuationViolation('[wait--.]'), false);
+});
+
+test('flags and fixes commas before dash separators', () => {
+  assert.equal(hasCommaBeforeDashViolation('TEXT, - TEXT'), true);
+  assert.equal(hasCommaBeforeDashViolation('TEXT,  - TEXT'), true);
+  assert.equal(hasCommaBeforeDashViolation('TEXT,- TEXT'), true);
+  assert.equal(hasCommaBeforeDashViolation('TEXT, -- TEXT'), true);
+  assert.equal(hasCommaBeforeDashViolation('TEXT - TEXT'), false);
+  assert.equal(hasCommaBeforeDashViolation('TEXT, next'), false);
+  assert.equal(hasCommaBeforeDashViolation('TEXT, -2'), false);
+  assert.equal(hasCommaBeforeDashViolation('<TEXT, - TEXT>'), false);
+  assert.equal(hasCommaBeforeDashViolation('{TEXT, - TEXT}'), false);
+  assert.equal(hasCommaBeforeDashViolation('[TEXT, - TEXT]'), false);
+
+  assert.equal(fixCommaBeforeDash('TEXT, - TEXT'), 'TEXT - TEXT');
+  assert.equal(fixCommaBeforeDash('TEXT,  - TEXT'), 'TEXT - TEXT');
+  assert.equal(fixCommaBeforeDash('TEXT,- TEXT'), 'TEXT - TEXT');
+  assert.equal(fixCommaBeforeDash('TEXT, -- TEXT'), 'TEXT -- TEXT');
+  assert.equal(fixCommaBeforeDash('<TEXT, - TEXT> {TEXT, - TEXT} [TEXT, - TEXT]'), '<TEXT, - TEXT> {TEXT, - TEXT} [TEXT, - TEXT]');
+});
+
+test('applyAllFixes removes commas before dash separators', () => {
+  assert.equal(applyAllFixes('TEXT, - TEXT'), 'TEXT - TEXT.');
+  assert.equal(applyAllFixes('TEXT, -- TEXT'), 'TEXT - TEXT.');
 });
 
 test('flags and fixes free-floating mid-sentence double dashes', () => {
