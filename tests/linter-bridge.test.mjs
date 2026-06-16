@@ -5,6 +5,8 @@ import path from 'node:path';
 
 const bridgePath = path.resolve('src/content/linter-bridge.ts');
 const bridgeSource = fs.readFileSync(bridgePath, 'utf8');
+const languageRulesPath = path.resolve('src/features/custom-linter/linter/rules/language-rules.ts');
+const languageRulesSource = fs.readFileSync(languageRulesPath, 'utf8');
 const DEFAULT_HIGHLIGHTED_WORDS = ['все', 'всё', 'всем', 'всём', 'нем', 'нём', 'берет', 'берёт', 'угу', 'м-м'];
 const HIGHLIGHTED_WORD_RULE_REASON = 'Highlighted word requires clearance before use.';
 
@@ -14,6 +16,64 @@ function hasCommaSpacingViolation(text) {
   }
 
   return /\s+,/.test(text) || /(?<!\d),(?![\d ]|$)/.test(text) || /, {2,}/.test(text);
+}
+
+function isStandalonePeriodAt(text, index) {
+  if (typeof text !== 'string' || text[index] !== '.') {
+    return false;
+  }
+
+  const prevChar = index > 0 ? text[index - 1] : '';
+  const nextChar = index + 1 < text.length ? text[index + 1] : '';
+  if (prevChar === '.' || nextChar === '.') {
+    return false;
+  }
+
+  if (/\d/.test(prevChar) && /\d/.test(nextChar)) {
+    return false;
+  }
+
+  return !isRangeInsideGenericTag(text, index, index + 1);
+}
+
+function shouldPeriodHaveFollowingSpaceBefore(char) {
+  return typeof char === 'string' && /[\p{L}\p{N}<{\[]/u.test(char);
+}
+
+function getPeriodSpacingParts(text) {
+  if (typeof text !== 'string' || text.indexOf('.') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (!isStandalonePeriodAt(text, index)) {
+      continue;
+    }
+
+    const hasSpaceBefore = index > 0 && /[ \t]/.test(text[index - 1]);
+    let nextIndex = index + 1;
+    while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
+      nextIndex += 1;
+    }
+
+    const shouldHaveSpaceAfter = shouldPeriodHaveFollowingSpaceBefore(text[nextIndex]);
+    const hasExactlyOneSpaceAfter = nextIndex === index + 2 && text[index + 1] === ' ';
+    const hasBadSpaceAfter = shouldHaveSpaceAfter && !hasExactlyOneSpaceAfter;
+
+    if (hasSpaceBefore || hasBadSpaceAfter) {
+      parts.push({
+        start: hasSpaceBefore ? index - 1 : index,
+        end: hasBadSpaceAfter ? Math.max(index + 1, nextIndex) : index + 1
+      });
+    }
+  }
+
+  return parts;
+}
+
+function hasPeriodSpacingViolation(text) {
+  return getPeriodSpacingParts(text).length > 0;
 }
 
 function getQuoteIndices(text) {
@@ -270,6 +330,311 @@ function hasCurlySpacingViolation(text) {
   return stack.length > 0;
 }
 
+function normalizeAngleTagText(text) {
+  if (typeof text !== 'string' || text.length < 2) {
+    return text;
+  }
+
+  const inner = text
+    .slice(1, -1)
+    .trim()
+    .replace(/^\/\s+/u, '/');
+  return `<${inner}>`;
+}
+
+function normalizeSquareBracketTagText(text) {
+  if (typeof text !== 'string' || text.length < 2) {
+    return text;
+  }
+
+  const inner = text
+    .slice(1, -1)
+    .trim()
+    .replace(/^\/\s+/u, '/');
+  return `[${inner}]`;
+}
+
+function getAngleTagSpacingParts(text) {
+  if (typeof text !== 'string' || text.indexOf('<') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  const tagPattern = /<[^<>\r\n]*>/gu;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const tag = match[0];
+    const start = match.index;
+    const end = tagPattern.lastIndex;
+    const prevChar = start > 0 ? text[start - 1] : '';
+    const nextChar = end < text.length ? text[end] : '';
+    if (
+      normalizeAngleTagText(tag) !== tag ||
+      (prevChar && !/\s/.test(prevChar)) ||
+      (nextChar && !/\s/.test(nextChar))
+    ) {
+      parts.push({ start, end });
+    }
+  }
+
+  return parts;
+}
+
+function hasAngleTagSpacingViolation(text) {
+  return getAngleTagSpacingParts(text).length > 0;
+}
+
+function getSquareBracketTagSpacingParts(text) {
+  if (typeof text !== 'string' || text.indexOf('[') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  const tagPattern = /\[[^[\]\r\n]*\]/gu;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const tag = match[0];
+    const start = match.index;
+    const end = tagPattern.lastIndex;
+    const prevChar = start > 0 ? text[start - 1] : '';
+    const nextChar = end < text.length ? text[end] : '';
+    if (
+      normalizeSquareBracketTagText(tag) !== tag ||
+      (prevChar && !/\s/.test(prevChar)) ||
+      (nextChar && !/\s/.test(nextChar))
+    ) {
+      parts.push({ start, end });
+    }
+  }
+
+  return parts;
+}
+
+function hasSquareBracketTagSpacingViolation(text) {
+  return getSquareBracketTagSpacingParts(text).length > 0;
+}
+
+function isCurlyTagTrailingPunctuationChar(char) {
+  return typeof char === 'string' && /[.,?!:;"-]/.test(char);
+}
+
+function hasNonTagTextBeforeCurlyTag(text, openIndex) {
+  if (typeof text !== 'string' || openIndex <= 0) {
+    return false;
+  }
+
+  const visibleBefore = text
+    .slice(0, openIndex)
+    .replace(/\{[^{}\r\n]*\}|\[[^[\]\r\n]*\]|<[^<>\r\n]*>/gu, '');
+  return /[\p{L}\p{N}]/u.test(visibleBefore);
+}
+
+function hasNonTagTextAfterAngleTag(text, tagEnd) {
+  if (typeof text !== 'string' || tagEnd >= text.length) {
+    return false;
+  }
+
+  const visibleAfter = text
+    .slice(tagEnd)
+    .replace(/\{[^{}\r\n]*\}|\[[^[\]\r\n]*\]|<[^<>\r\n]*>/gu, '');
+  return /[\p{L}\p{N}]/u.test(visibleAfter);
+}
+
+function getCurlyTagTrailingPunctuationParts(text) {
+  if (typeof text !== 'string' || text.indexOf('}') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  const tagPattern = /\{[^{}\r\n]*\}/gu;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const openIndex = match.index;
+    const tagEnd = tagPattern.lastIndex;
+    if (!hasNonTagTextBeforeCurlyTag(text, openIndex)) {
+      continue;
+    }
+
+    let punctuationStart = tagEnd;
+    while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      punctuationStart += 1;
+    }
+
+    let punctuationEnd = punctuationStart;
+    while (
+      punctuationEnd < text.length &&
+      isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
+    ) {
+      punctuationEnd += 1;
+    }
+
+    if (punctuationEnd > punctuationStart) {
+      parts.push({
+        openIndex,
+        tagEnd,
+        punctuationStart,
+        punctuationEnd
+      });
+    }
+  }
+
+  return parts;
+}
+
+function getCurlyTagTrailingPunctuationMatches(text) {
+  return getCurlyTagTrailingPunctuationParts(text).map((part) => ({
+    start: part.punctuationStart,
+    end: part.punctuationEnd,
+    text: text.slice(part.punctuationStart, part.punctuationEnd)
+  }));
+}
+
+function getSquareBracketTagTrailingPunctuationParts(text) {
+  if (typeof text !== 'string' || text.indexOf(']') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  const tagPattern = /\[[^[\]\r\n]*\]/gu;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const openIndex = match.index;
+    const tagEnd = tagPattern.lastIndex;
+    if (!hasNonTagTextBeforeCurlyTag(text, openIndex)) {
+      continue;
+    }
+
+    let punctuationStart = tagEnd;
+    while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      punctuationStart += 1;
+    }
+
+    let punctuationEnd = punctuationStart;
+    while (
+      punctuationEnd < text.length &&
+      isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
+    ) {
+      punctuationEnd += 1;
+    }
+
+    if (punctuationEnd > punctuationStart) {
+      parts.push({
+        openIndex,
+        tagEnd,
+        punctuationStart,
+        punctuationEnd
+      });
+    }
+  }
+
+  return parts;
+}
+
+function getSquareBracketTagTrailingPunctuationMatches(text) {
+  return getSquareBracketTagTrailingPunctuationParts(text).map((part) => ({
+    start: part.punctuationStart,
+    end: part.punctuationEnd,
+    text: text.slice(part.punctuationStart, part.punctuationEnd)
+  }));
+}
+
+function getAngleTagTrailingPunctuationParts(text) {
+  if (typeof text !== 'string' || text.indexOf('<') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  const closingTagPattern = /<\/[^<>\r\n]*>/gu;
+  let match;
+  while ((match = closingTagPattern.exec(text))) {
+    const tagStart = match.index;
+    const tagEnd = closingTagPattern.lastIndex;
+    if (!hasNonTagTextBeforeCurlyTag(text, tagStart)) {
+      continue;
+    }
+
+    let punctuationStart = tagEnd;
+    while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      punctuationStart += 1;
+    }
+
+    let punctuationEnd = punctuationStart;
+    while (
+      punctuationEnd < text.length &&
+      isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
+    ) {
+      punctuationEnd += 1;
+    }
+
+    if (punctuationEnd > punctuationStart) {
+      parts.push({
+        kind: 'closing',
+        tagStart,
+        tagEnd,
+        punctuationStart,
+        punctuationEnd
+      });
+    }
+  }
+
+  const openingTagPattern = /<(?!\/)[^<>\r\n]*>/gu;
+  while ((match = openingTagPattern.exec(text))) {
+    const tagStart = match.index;
+    const tagEnd = openingTagPattern.lastIndex;
+    if (!hasNonTagTextAfterAngleTag(text, tagEnd)) {
+      continue;
+    }
+
+    let punctuationEnd = tagStart;
+    while (punctuationEnd > 0 && /[ \t]/.test(text[punctuationEnd - 1])) {
+      punctuationEnd -= 1;
+    }
+
+    if (text[punctuationEnd - 1] !== '"') {
+      continue;
+    }
+
+    let punctuationStart = punctuationEnd - 1;
+    while (punctuationStart > 0 && text[punctuationStart - 1] === '"') {
+      punctuationStart -= 1;
+    }
+
+    if (punctuationStart > 0 && !/[ \t]/.test(text[punctuationStart - 1])) {
+      continue;
+    }
+
+    parts.push({
+      kind: 'opening',
+      tagStart,
+      tagEnd,
+      punctuationStart,
+      punctuationEnd
+    });
+  }
+
+  return parts.sort((left, right) => left.punctuationStart - right.punctuationStart);
+}
+
+function getAngleTagTrailingPunctuationMatches(text) {
+  return getAngleTagTrailingPunctuationParts(text).map((part) => ({
+    start: part.punctuationStart,
+    end: part.punctuationEnd,
+    text: text.slice(part.punctuationStart, part.punctuationEnd)
+  }));
+}
+
+function hasCurlyTagTrailingPunctuationViolation(text) {
+  return getCurlyTagTrailingPunctuationMatches(text).length > 0;
+}
+
+function hasSquareBracketTagTrailingPunctuationViolation(text) {
+  return getSquareBracketTagTrailingPunctuationMatches(text).length > 0;
+}
+
+function hasAngleTagTrailingPunctuationViolation(text) {
+  return getAngleTagTrailingPunctuationMatches(text).length > 0;
+}
+
 function hasDoubleDashPunctuationViolation(text) {
   if (typeof text !== 'string' || text.indexOf('--') === -1) {
     return false;
@@ -284,6 +649,57 @@ function hasDoubleDashPunctuationViolation(text) {
   }
 
   return false;
+}
+
+function getFreeMidSentenceDoubleDashParts(text) {
+  if (typeof text !== 'string' || text.indexOf('--') === -1) {
+    return [];
+  }
+
+  const parts = [];
+  for (let index = text.indexOf('--'); index !== -1; index = text.indexOf('--', index + 2)) {
+    if (text[index - 1] === '-' || text[index + 2] === '-') {
+      continue;
+    }
+
+    if (
+      isRangeInsideGenericTag(text, index, index + 2) ||
+      isInsideOpenQuoteAt(text, index)
+    ) {
+      continue;
+    }
+
+    if (!/[ \t]/.test(text[index - 1] || '') || !/[ \t]/.test(text[index + 2] || '')) {
+      continue;
+    }
+
+    let start = index - 1;
+    while (start > 0 && /[ \t]/.test(text[start - 1])) {
+      start -= 1;
+    }
+
+    let end = index + 3;
+    while (end < text.length && /[ \t]/.test(text[end])) {
+      end += 1;
+    }
+
+    if (start === 0 || end >= text.length) {
+      continue;
+    }
+
+    parts.push({
+      start,
+      end,
+      dashStart: index,
+      dashEnd: index + 2
+    });
+  }
+
+  return parts;
+}
+
+function hasFreeMidSentenceDoubleDashViolation(text) {
+  return getFreeMidSentenceDoubleDashParts(text).length > 0;
 }
 
 const UNICODE_DASH_PATTERN = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58\uFE63\uFF0D]/gu;
@@ -465,7 +881,7 @@ function hasTerminalPunctuationViolation(text) {
     return false;
   }
 
-  return !/(?:\.\.\.|--|[?!."])$/.test(trimmed);
+  return !/(?:\.\.\.|--|[.,?!:;"-])$/.test(trimmed);
 }
 
 function isUppercaseLetter(char) {
@@ -1000,6 +1416,35 @@ function fixCommaSpacing(text) {
   return result;
 }
 
+function fixPeriodSpacing(text) {
+  if (typeof text !== 'string' || text.indexOf('.') === -1) {
+    return text;
+  }
+
+  let result = '';
+  for (let index = 0; index < text.length; index += 1) {
+    if (!isStandalonePeriodAt(text, index)) {
+      result += text[index];
+      continue;
+    }
+
+    result = result.replace(/[ \t]+$/u, '');
+    result += '.';
+
+    let nextIndex = index + 1;
+    while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
+      nextIndex += 1;
+    }
+
+    if (shouldPeriodHaveFollowingSpaceBefore(text[nextIndex])) {
+      result += ' ';
+      index = nextIndex - 1;
+    }
+  }
+
+  return result;
+}
+
 function fixUnicodeQuotes(text) {
   return normalizeUnicodeDoubleQuoteVariants(text);
 }
@@ -1021,6 +1466,76 @@ function fixCurlySpacing(text) {
   return result;
 }
 
+function fixAngleTagSpacing(text) {
+  if (typeof text !== 'string' || text.indexOf('<') === -1) {
+    return text;
+  }
+
+  const tagPattern = /<[^<>\r\n]*>/gu;
+  let result = '';
+  let cursor = 0;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const tagStart = match.index;
+    const tagEnd = tagPattern.lastIndex;
+    result += text.slice(cursor, tagStart);
+
+    const hasContentBefore = result.trimEnd().length > 0;
+    result = result.replace(/[ \t]+$/u, '');
+    if (hasContentBefore) {
+      result += ' ';
+    }
+
+    result += normalizeAngleTagText(match[0]);
+
+    cursor = tagEnd;
+    while (cursor < text.length && /[ \t]/.test(text[cursor])) {
+      cursor += 1;
+    }
+
+    if (cursor < text.length) {
+      result += ' ';
+    }
+  }
+
+  return result + text.slice(cursor);
+}
+
+function fixSquareBracketTagSpacing(text) {
+  if (typeof text !== 'string' || text.indexOf('[') === -1) {
+    return text;
+  }
+
+  const tagPattern = /\[[^[\]\r\n]*\]/gu;
+  let result = '';
+  let cursor = 0;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    const tagStart = match.index;
+    const tagEnd = tagPattern.lastIndex;
+    result += text.slice(cursor, tagStart);
+
+    const hasContentBefore = result.trimEnd().length > 0;
+    result = result.replace(/[ \t]+$/u, '');
+    if (hasContentBefore) {
+      result += ' ';
+    }
+
+    result += normalizeSquareBracketTagText(match[0]);
+
+    cursor = tagEnd;
+    while (cursor < text.length && /[ \t]/.test(text[cursor])) {
+      cursor += 1;
+    }
+
+    if (cursor < text.length) {
+      result += ' ';
+    }
+  }
+
+  return result + text.slice(cursor);
+}
+
 function fixUnicodeDashes(text) {
   if (typeof text !== 'string') {
     return text;
@@ -1033,6 +1548,124 @@ function fixUnicodeDashes(text) {
 
   UNICODE_DASH_PATTERN.lastIndex = 0;
   return text.replace(UNICODE_DASH_PATTERN, '-');
+}
+
+function fixCurlyTagTrailingPunctuation(text) {
+  const parts = getCurlyTagTrailingPunctuationParts(text);
+  if (!parts.length) {
+    return text;
+  }
+
+  let result = '';
+  let cursor = 0;
+  for (const part of parts) {
+    if (part.openIndex < cursor) {
+      continue;
+    }
+
+    result += text.slice(cursor, part.openIndex);
+    result = result.replace(/[ \t]+$/u, '');
+    result +=
+      text.slice(part.punctuationStart, part.punctuationEnd) +
+      ' ' +
+      text.slice(part.openIndex, part.tagEnd);
+    cursor = part.punctuationEnd;
+  }
+
+  return result + text.slice(cursor);
+}
+
+function fixSquareBracketTagTrailingPunctuation(text) {
+  const parts = getSquareBracketTagTrailingPunctuationParts(text);
+  if (!parts.length) {
+    return text;
+  }
+
+  let result = '';
+  let cursor = 0;
+  for (const part of parts) {
+    if (part.openIndex < cursor) {
+      continue;
+    }
+
+    result += text.slice(cursor, part.openIndex);
+    result = result.replace(/[ \t]+$/u, '');
+    result +=
+      text.slice(part.punctuationStart, part.punctuationEnd) +
+      ' ' +
+      text.slice(part.openIndex, part.tagEnd);
+    cursor = part.punctuationEnd;
+    while (cursor < text.length && /[ \t]/.test(text[cursor])) {
+      cursor += 1;
+    }
+    if (cursor < text.length) {
+      result += ' ';
+    }
+  }
+
+  return result + text.slice(cursor);
+}
+
+function fixAngleTagTrailingPunctuation(text) {
+  const parts = getAngleTagTrailingPunctuationParts(text);
+  if (!parts.length) {
+    return text;
+  }
+
+  let result = '';
+  let cursor = 0;
+  for (const part of parts) {
+    const partStart = part.kind === 'opening' ? part.punctuationStart : part.tagStart;
+    if (partStart < cursor) {
+      continue;
+    }
+
+    if (part.kind === 'opening') {
+      result += text.slice(cursor, part.punctuationStart);
+      result = result.replace(/[ \t]+$/u, '');
+      if (result.trimEnd().length > 0) {
+        result += ' ';
+      }
+      result +=
+        text.slice(part.tagStart, part.tagEnd) +
+        ' ' +
+        text.slice(part.punctuationStart, part.punctuationEnd);
+      cursor = part.tagEnd;
+      while (cursor < text.length && /[ \t]/.test(text[cursor])) {
+        cursor += 1;
+      }
+    } else {
+      result += text.slice(cursor, part.tagStart);
+      result = result.replace(/[ \t]+$/u, '');
+      result +=
+        text.slice(part.punctuationStart, part.punctuationEnd) +
+        ' ' +
+        text.slice(part.tagStart, part.tagEnd);
+      cursor = part.punctuationEnd;
+    }
+  }
+
+  return result + text.slice(cursor);
+}
+
+function fixFreeMidSentenceDoubleDash(text) {
+  const parts = getFreeMidSentenceDoubleDashParts(text);
+  if (!parts.length) {
+    return text;
+  }
+
+  let result = '';
+  let cursor = 0;
+  for (const part of parts) {
+    if (part.start < cursor) {
+      continue;
+    }
+
+    result += text.slice(cursor, part.start) + ' - ';
+    cursor = part.end;
+  }
+
+  return result + text.slice(cursor);
 }
 
 function fixDoubleDashPunctuation(text) {
@@ -1064,7 +1697,7 @@ function fixTerminalPunctuation(text) {
   }
 
   const trimmed = stripTrailingTagTokens(text);
-  if (!trimmed || /(?:\.\.\.|--|[?!."-])$/.test(trimmed)) {
+  if (!trimmed || /(?:\.\.\.|--|[.,?!:;"-])$/.test(trimmed)) {
     return text;
   }
 
@@ -1165,9 +1798,16 @@ function applyAllFixes(text) {
   result = fixLeadingTrailingSpaces(result);
   result = fixDoubleSpaces(result);
   result = fixCommaSpacing(result);
+  result = fixPeriodSpacing(result);
   result = fixUnicodeQuotes(result);
   result = fixCurlySpacing(result);
+  result = fixAngleTagSpacing(result);
+  result = fixSquareBracketTagSpacing(result);
   result = fixUnicodeDashes(result);
+  result = fixCurlyTagTrailingPunctuation(result);
+  result = fixSquareBracketTagTrailingPunctuation(result);
+  result = fixAngleTagTrailingPunctuation(result);
+  result = fixFreeMidSentenceDoubleDash(result);
   result = fixDoubleDashPunctuation(result);
   result = fixSingleDashPunctuation(result);
   result = normalizeIncorrectInterjectionForms(result);
@@ -1421,7 +2061,11 @@ test('linter bridge routes highlighted word clearance through Babel warning stat
   assert.match(bridgeSource, /taskKey:\s*highlightedWordClearanceTaskKey/);
   assert.match(bridgeSource, /sanitizeHelperAssertedWarningsRequest\(\s*input,\s*init,\s*\{\s*recordClearance: true,\s*\}/);
   assert.match(bridgeSource, new RegExp(escapeRegExp(HIGHLIGHTED_WORD_RULE_REASON)));
-  assert.match(bridgeSource, /makeCustomIssue\(entry,\s*HIGHLIGHTED_WORD_RULE_REASON/);
+  assert.match(bridgeSource, /highlightedWord:\s*HIGHLIGHTED_WORD_RULE_REASON/);
+  assert.match(bridgeSource, /highlightedWordRuleSeverity:\s*HIGHLIGHTED_WORD_RULE_SEVERITY/);
+  assert.match(languageRulesSource, /id:\s*'highlighted-words'/);
+  assert.match(languageRulesSource, /reason:\s*deps\.reasons\.highlightedWord/);
+  assert.match(languageRulesSource, /severity:\s*deps\.highlightedWordRuleSeverity/);
   assert.doesNotMatch(bridgeSource, /HIGHLIGHTED_WORD_MARKER_ATTR/);
   assert.doesNotMatch(bridgeSource, /body > div/);
   assert.doesNotMatch(bridgeSource, /stopNativeHighlightedWordWarningEvent/);
@@ -1448,6 +2092,24 @@ test('still flags missing space after non-decimal comma', () => {
 test('still flags stray space before comma and double spaces after comma', () => {
   assert.equal(hasCommaSpacingViolation('Привет , мир'), true);
   assert.equal(hasCommaSpacingViolation('Привет,  мир'), true);
+});
+
+test('flags and fixes spacing around standalone periods', () => {
+  assert.equal(hasPeriodSpacingViolation('Hello . world'), true);
+  assert.equal(hasPeriodSpacingViolation('Hello.world'), true);
+  assert.equal(hasPeriodSpacingViolation('Hello.  world'), true);
+  assert.equal(hasPeriodSpacingViolation('Hello .world'), true);
+  assert.equal(hasPeriodSpacingViolation('Hello. World'), false);
+  assert.equal(hasPeriodSpacingViolation('Hello... world'), false);
+  assert.equal(hasPeriodSpacingViolation('Value 1.5 is fine'), false);
+  assert.equal(hasPeriodSpacingViolation('<TAG.>'), false);
+
+  assert.equal(fixPeriodSpacing('Hello . world'), 'Hello. world');
+  assert.equal(fixPeriodSpacing('Hello.world'), 'Hello. world');
+  assert.equal(fixPeriodSpacing('Hello.  world'), 'Hello. world');
+  assert.equal(fixPeriodSpacing('Hello .world'), 'Hello. world');
+  assert.equal(fixPeriodSpacing('Value 1.5 is fine'), 'Value 1.5 is fine');
+  assert.equal(fixPeriodSpacing('Hello... world'), 'Hello... world');
 });
 
 test('flags unbalanced double quotes', () => {
@@ -1483,6 +2145,79 @@ test('flags bad curly tag spacing and imbalance', () => {
   assert.equal(hasCurlySpacingViolation('TEXT TAG: OTHER}'), true);
 });
 
+test('flags and fixes spaces around angle tags as standalone transcript tags', () => {
+  assert.equal(hasAngleTagSpacingViolation('TEXT <TAG> OTHER'), false);
+  assert.equal(hasAngleTagSpacingViolation('TEXT<TAG>OTHER'), true);
+  assert.equal(hasAngleTagSpacingViolation('TEXT < TAG > OTHER'), true);
+  assert.equal(hasAngleTagSpacingViolation('TEXT</TAG>OTHER'), true);
+  assert.equal(hasAngleTagSpacingViolation('<TAG>TEXT'), true);
+  assert.equal(hasAngleTagSpacingViolation('TEXT<TAG'), false);
+
+  assert.equal(fixAngleTagSpacing('TEXT<TAG>OTHER'), 'TEXT <TAG> OTHER');
+  assert.equal(fixAngleTagSpacing('TEXT < TAG > OTHER'), 'TEXT <TAG> OTHER');
+  assert.equal(fixAngleTagSpacing('TEXT</TAG>OTHER'), 'TEXT </TAG> OTHER');
+  assert.equal(fixAngleTagSpacing('<TAG>TEXT'), '<TAG> TEXT');
+  assert.equal(fixAngleTagSpacing('TEXT<TAG'), 'TEXT<TAG');
+});
+
+test('flags and fixes spaces around square bracket tags as standalone transcript tags', () => {
+  assert.equal(hasSquareBracketTagSpacingViolation('TEXT [laugh] OTHER'), false);
+  assert.equal(hasSquareBracketTagSpacingViolation('TEXT[laugh]OTHER'), true);
+  assert.equal(hasSquareBracketTagSpacingViolation('TEXT [ laugh ] OTHER'), true);
+  assert.equal(hasSquareBracketTagSpacingViolation('TEXT[/laugh]OTHER'), true);
+  assert.equal(hasSquareBracketTagSpacingViolation('[laugh]TEXT'), true);
+  assert.equal(hasSquareBracketTagSpacingViolation('TEXT[laugh'), false);
+
+  assert.equal(fixSquareBracketTagSpacing('TEXT[laugh]OTHER'), 'TEXT [laugh] OTHER');
+  assert.equal(fixSquareBracketTagSpacing('TEXT [ laugh ] OTHER'), 'TEXT [laugh] OTHER');
+  assert.equal(fixSquareBracketTagSpacing('TEXT[/laugh]OTHER'), 'TEXT [/laugh] OTHER');
+  assert.equal(fixSquareBracketTagSpacing('[laugh]TEXT'), '[laugh] TEXT');
+  assert.equal(fixSquareBracketTagSpacing('TEXT[laugh'), 'TEXT[laugh');
+});
+
+test('flags punctuation that appears outside closing angle tags', () => {
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>.'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>:'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>".'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>--'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да. </TAG>'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('<TAG> Да </TAG>'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да <TAG>.'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG'), false);
+});
+
+test('flags standalone opening quotes before opening angle tags', () => {
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da " <TAG> text'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da "<TAG> text'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da. <TAG> text'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da?! <TAG> text'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('. <TAG> text'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da." <TAG> text'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da <TAG>. text'), false);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Da. </TAG>'), false);
+});
+
+test('flags punctuation that appears after a curly tag for preceding text', () => {
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}".'), true);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}.'), true);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}, next'), true);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}--'), true);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}-'), true);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3". {SKAZ: three}'), false);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}'), false);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('{SKAZ: three}".'), false);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three'), false);
+});
+
+test('flags punctuation that appears after square bracket tags for preceding text', () => {
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh], who'), true);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh].'), true);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh]--'), true);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers, [laugh] who'), false);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('[laugh], who'), false);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh'), false);
+});
+
 test('flags missing terminal punctuation and accepts allowed endings', () => {
   assert.equal(hasTerminalPunctuationViolation('hello world'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world.'), false);
@@ -1498,6 +2233,8 @@ test('flags missing terminal punctuation and accepts allowed endings', () => {
   assert.equal(hasTerminalPunctuationViolation('hello world" [laughs]'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world {TAG: X}'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world. {TAG: X}'), false);
+  assert.equal(hasTerminalPunctuationViolation('hello world: </TAG>'), false);
+  assert.equal(hasTerminalPunctuationViolation('hello world, {TAG: X}'), false);
   assert.equal(hasTerminalPunctuationViolation('   '), false);
 });
 
@@ -1663,7 +2400,7 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   );
   assert.equal(
     applyAllFixes('hello world</i>'),
-    'hello world.</i>'
+    'hello world. </i>'
   );
   assert.equal(
     applyAllFixes('hello world [laughs]'),
@@ -1688,6 +2425,74 @@ test('applyAllFixes normalizes unicode quote variants without changing quote spa
     applyAllFixes('\u300chello\u300d'),
     '"hello"'
   );
+});
+
+test('applyAllFixes includes period and angle tag spacing fixes', () => {
+  assert.equal(applyAllFixes('hello .world'), 'hello. World.');
+  assert.equal(applyAllFixes('hello<TAG>world'), 'hello <TAG> world.');
+  assert.equal(applyAllFixes('<TAG>hello world</TAG>'), '<TAG> hello world. </TAG>');
+});
+
+test('moves punctuation before closing angle tags', () => {
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>.'), 'Да. </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>:'), 'Да: </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>".'), 'Да". </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>--'), 'Да-- </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>   ?! next'), 'Да?! </TAG> next');
+  assert.equal(fixAngleTagTrailingPunctuation('Да. </TAG>'), 'Да. </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да <TAG>.'), 'Да <TAG>.');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG'), 'Да </TAG');
+});
+
+test('applyAllFixes moves punctuation before closing angle tags', () => {
+  assert.equal(applyAllFixes('Да </TAG>.'), 'Да. </TAG>');
+  assert.equal(applyAllFixes('Да </TAG>:'), 'Да: </TAG>');
+  assert.equal(applyAllFixes('Да </TAG>".'), 'Да". </TAG>');
+});
+
+test('moves standalone opening quotes after opening angle tags', () => {
+  assert.equal(fixAngleTagTrailingPunctuation('Da " <TAG> text'), 'Da <TAG> "text');
+  assert.equal(fixAngleTagTrailingPunctuation('Da "<TAG> text'), 'Da <TAG> "text');
+  assert.equal(fixAngleTagTrailingPunctuation('Da. <TAG> text'), 'Da. <TAG> text');
+  assert.equal(fixAngleTagTrailingPunctuation('Da?! <TAG> text'), 'Da?! <TAG> text');
+  assert.equal(fixAngleTagTrailingPunctuation('. <TAG> text'), '. <TAG> text');
+  assert.equal(fixAngleTagTrailingPunctuation('Da." <TAG> text'), 'Da." <TAG> text');
+  assert.equal(fixAngleTagTrailingPunctuation('Da <TAG>. text'), 'Da <TAG>. text');
+  assert.equal(applyAllFixes('Da "<TAG>text'), 'Da <TAG> "text.');
+});
+
+test('moves punctuation before curly tags that annotate preceding text', () => {
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}".'), '3". {SKAZ: three}');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}.'), '3. {SKAZ: three}');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}, next'), '3, {SKAZ: three} next');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}--'), '3-- {SKAZ: three}');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}-'), '3- {SKAZ: three}');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three}   ?! next'), '3?! {SKAZ: three} next');
+  assert.equal(fixCurlyTagTrailingPunctuation('3". {SKAZ: three}'), '3". {SKAZ: three}');
+  assert.equal(fixCurlyTagTrailingPunctuation('{SKAZ: three}".'), '{SKAZ: three}".');
+  assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three'), '3 {SKAZ: three');
+});
+
+test('applyAllFixes moves punctuation before curly tags before terminal checks', () => {
+  assert.equal(applyAllFixes('3 {SKAZ: three}".'), '3". {SKAZ: three}');
+  assert.equal(applyAllFixes('3 {SKAZ: three}--'), '3-- {SKAZ: three}');
+  assert.equal(applyAllFixes('3 {SKAZ: three}, next'), '3, {SKAZ: three} next.');
+});
+
+test('moves punctuation before square bracket tags that annotate preceding text', () => {
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh], who'), 'workers, [laugh] who');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh].'), 'workers. [laugh]');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh]--'), 'workers-- [laugh]');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh]   ?! who'), 'workers?! [laugh] who');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers, [laugh] who'), 'workers, [laugh] who');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('[laugh], who'), '[laugh], who');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh'), 'workers [laugh');
+});
+
+test('applyAllFixes spaces bracket tags and moves punctuation before them', () => {
+  assert.equal(applyAllFixes('workers[laugh],who'), 'workers, [laugh] who.');
+  assert.equal(applyAllFixes('workers [laugh], who'), 'workers, [laugh] who.');
+  assert.equal(applyAllFixes('workers [ laugh ] .'), 'workers. [laugh]');
 });
 
 test('fixSegmentStartCapitalization respects same-speaker continuations and ellipsis starts', () => {
@@ -1723,6 +2528,26 @@ test('flags double dash punctuation violation', () => {
   assert.equal(hasDoubleDashPunctuationViolation('<wait--.>'), false);
   assert.equal(hasDoubleDashPunctuationViolation('{wait--.}'), false);
   assert.equal(hasDoubleDashPunctuationViolation('[wait--.]'), false);
+});
+
+test('flags and fixes free-floating mid-sentence double dashes', () => {
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('hello -- world'), true);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('hello  --   world'), true);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('hello--world'), false);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('hello --'), false);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('-- hello'), false);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('"hello -- world"'), false);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('<hello -- world>'), false);
+  assert.equal(hasFreeMidSentenceDoubleDashViolation('{hello -- world}'), false);
+
+  assert.equal(fixFreeMidSentenceDoubleDash('hello -- world'), 'hello - world');
+  assert.equal(fixFreeMidSentenceDoubleDash('hello  --   world'), 'hello - world');
+  assert.equal(fixFreeMidSentenceDoubleDash('"hello -- world"'), '"hello -- world"');
+  assert.equal(fixFreeMidSentenceDoubleDash('<hello -- world>'), '<hello -- world>');
+});
+
+test('applyAllFixes replaces free-floating mid-sentence double dashes', () => {
+  assert.equal(applyAllFixes('hello -- world'), 'hello - world.');
 });
 
 test('fixes double dash punctuation', () => {
