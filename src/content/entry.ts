@@ -1,5 +1,5 @@
 import { createHelperKernel } from '../core/kernel';
-import { bootstrapCustomLinterBridge } from '../features/custom-linter';
+import { bootstrapCustomLinterBridge, preloadCustomLinterBridge } from '../features/custom-linter';
 
 declare global {
   interface Window {
@@ -17,6 +17,7 @@ async function boot() {
       'script[data-babel-helper-linter-bridge="true"], script[data-babel-helper-quick-region-autocomplete-bridge="true"]'
     )
     .forEach((script) => script.remove());
+  const linterBridgePreload = preloadCustomLinterBridge();
 
   const previousKernel = window.__babelHelperKernel;
   if (previousKernel && typeof previousKernel.stop === 'function') {
@@ -34,7 +35,7 @@ async function boot() {
   });
 
   if (kernel.helper?.isFeatureEnabled?.('customLinter')) {
-    void bootstrapCustomLinterBridge({ helper: kernel.helper });
+    void linterBridgePreload.finally(() => bootstrapCustomLinterBridge({ helper: kernel.helper }));
   }
 }
 

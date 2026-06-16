@@ -52,3 +52,19 @@ test('custom linter feature sends highlighted words into the page bridge', () =>
   assert.match(entrySource, /bootstrapCustomLinterBridge/);
   assert.match(manifestSource, /"run_at": "document_start"/);
 });
+
+test('custom linter bridge preloads before kernel start for native lint patching', () => {
+  assert.match(customLinterFeatureSource, /export function preloadCustomLinterBridge/);
+  assert.match(customLinterFeatureSource, /bridgeLoadPromise/);
+  assert.match(entrySource, /preloadCustomLinterBridge/);
+
+  const preloadIndex = entrySource.indexOf('preloadCustomLinterBridge()');
+  const kernelStartIndex = entrySource.indexOf('await kernel.start()');
+  const bootstrapIndex = entrySource.indexOf('bootstrapCustomLinterBridge');
+
+  assert.ok(preloadIndex > -1, 'entry should start linter bridge preload');
+  assert.ok(kernelStartIndex > -1, 'entry should start the kernel');
+  assert.ok(bootstrapIndex > -1, 'entry should still send config and enable after settings load');
+  assert.ok(preloadIndex < kernelStartIndex, 'linter bridge should preload before kernel startup');
+  assert.match(entrySource, /linterBridgePreload\.finally\(\(\) =>/);
+});

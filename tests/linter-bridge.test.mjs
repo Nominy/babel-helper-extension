@@ -2160,6 +2160,54 @@ test('linter bridge routes highlighted word clearance through Babel warning stat
   assert.doesNotMatch(bridgeSource, /fixHighlightedWords/);
 });
 
+test('highlighted word status clicks record clearance immediately', () => {
+  const handlerStart = bridgeSource.indexOf('function observeNativeHighlightedWordWarningClick');
+  const handlerEnd = bridgeSource.indexOf('function handleHighlightClick', handlerStart);
+  assert.notEqual(handlerStart, -1);
+  assert.notEqual(handlerEnd, -1);
+
+  const handlerBody = bridgeSource.slice(handlerStart, handlerEnd);
+  assert.match(
+    handlerBody,
+    /markHighlightedWordCleared\(\{\s*annotationId:\s*issue\.annotationId\s*\|\|\s*""[\s\S]*reviewActionId:[\s\S]*issue\.reviewActionId[\s\S]*text:\s*getIssueSourceText\(issue\)[\s\S]*\}\)/
+  );
+});
+
+test('linter bridge reattaches fetch patch when another page bridge replaces it', () => {
+  assert.match(bridgeSource, /function installFetchPatch/);
+  assert.match(bridgeSource, /__babelHelperLinterPatched/);
+  assert.match(bridgeSource, /fetchPatchTimer\s*=\s*window\.setInterval/);
+  assert.match(bridgeSource, /installFetchPatch\("init"\)/);
+  assert.match(bridgeSource, /installFetchPatch\("watchdog"\)/);
+  assert.match(bridgeSource, /forwardingFetch/);
+  assert.match(bridgeSource, /return fallbackFetch\(input,\s*init\)/);
+});
+
+test('linter bridge plugs helper rules into Babel native client linter', () => {
+  assert.match(bridgeSource, /NATIVE_LINT_AUGMENT_GLOBAL/);
+  assert.match(bridgeSource, /function installNativeLinterWebpackPatch/);
+  assert.match(bridgeSource, /window\.webpackChunk_N_E/);
+  assert.match(bridgeSource, /function patchNativeLinterModuleFactory/);
+  assert.match(bridgeSource, /function augmentNativeLintIssues/);
+  assert.match(bridgeSource, /function mergeNativeAndHelperIssues/);
+  assert.match(bridgeSource, /function findNativeReviewFiber/);
+  assert.match(bridgeSource, /function syncNativeLintState/);
+  assert.match(bridgeSource, /lintHook\.hook\.queue\.dispatch/);
+  assert.match(bridgeSource, /scheduleNativeLintStateSync\("boot"\)/);
+  assert.match(bridgeSource, /scheduleNativeLintStateSync\("textarea-input"\)/);
+
+  const fallbackStart = bridgeSource.indexOf('function scheduleInitialNativeLintTrigger');
+  const fallbackEnd = bridgeSource.indexOf('function notifyRouteChange', fallbackStart);
+  assert.notEqual(fallbackStart, -1);
+  assert.notEqual(fallbackEnd, -1);
+  const fallbackBody = bridgeSource.slice(fallbackStart, fallbackEnd);
+  assert.match(fallbackBody, /syncNativeLintState\("native-lint-fallback"\)/);
+
+  assert.doesNotMatch(bridgeSource, /CLIENT_LINT_STATUS_ATTR/);
+  assert.doesNotMatch(bridgeSource, /data-babel-helper-client-lint-status/);
+  assert.doesNotMatch(bridgeSource, /renderClientLintStatusIndicators/);
+});
+
 test('does not flag decimal comma numbers', () => {
   assert.equal(hasCommaSpacingViolation('Это стоит 1,5 евро.'), false);
   assert.equal(hasCommaSpacingViolation('Диапазон 0,25 и 10,7 допустим.'), false);

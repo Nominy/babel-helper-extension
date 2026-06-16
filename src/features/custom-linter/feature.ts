@@ -10,6 +10,9 @@ const AUTOFIX_REQUEST_EVENT = 'babel-helper-linter-autofix';
 const AUTOFIX_RESPONSE_EVENT = 'babel-helper-linter-autofix-response';
 const AUTOFIX_TIMEOUT_MS = 2000;
 
+let bridgeLoadPromise: Promise<boolean> | null = null;
+let bridgeLoaded = false;
+
 function setBridgeEnabled(enabled: boolean): void {
   window.dispatchEvent(
     new CustomEvent(TOGGLE_EVENT, {
@@ -32,7 +35,12 @@ function setBridgeConfig(ctx: Pick<FeatureContext, 'helper'>): void {
 }
 
 function injectBridge(): Promise<boolean> {
-  if (document.querySelector(`script[${BRIDGE_SCRIPT_ATTR}="true"]`)) {
+  if (bridgeLoadPromise) {
+    return bridgeLoadPromise;
+  }
+
+  const existingScript = document.querySelector(`script[${BRIDGE_SCRIPT_ATTR}="true"]`);
+  if (bridgeLoaded && existingScript) {
     return Promise.resolve(true);
   }
 
@@ -46,27 +54,38 @@ function injectBridge(): Promise<boolean> {
     return Promise.resolve(false);
   }
 
-  return new Promise((resolve) => {
+  bridgeLoadPromise = new Promise((resolve) => {
     const script = document.createElement('script');
     script.setAttribute(BRIDGE_SCRIPT_ATTR, 'true');
     try {
       script.src = chromeApi.runtime.getURL(BRIDGE_SCRIPT_PATH);
     } catch (_error) {
       script.remove();
+      bridgeLoadPromise = null;
+      bridgeLoaded = false;
       resolve(false);
       return;
     }
     script.async = false;
     script.onload = () => {
+      bridgeLoaded = true;
+      bridgeLoadPromise = null;
       resolve(true);
     };
     script.onerror = () => {
       script.remove();
+      bridgeLoadPromise = null;
+      bridgeLoaded = false;
       resolve(false);
     };
 
     root.appendChild(script);
   });
+  return bridgeLoadPromise;
+}
+
+export function preloadCustomLinterBridge(): Promise<boolean> {
+  return injectBridge();
 }
 
 export async function bootstrapCustomLinterBridge(

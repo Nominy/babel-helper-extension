@@ -74,6 +74,10 @@ export function initLinterBridge() {
   const HIGHLIGHT_SWATCH_ATTR = "data-babel-helper-linter-swatch";
   const HIGHLIGHT_PREVIEW_ATTR = "data-babel-helper-linter-preview";
   const HIGHLIGHT_OBSERVER_DELAY_MS = 50;
+  const NATIVE_LINT_AUGMENT_GLOBAL =
+    "__babelHelperLinterAugmentNativeIssues";
+  const NATIVE_LINT_PATCH_MARK = "__babelHelperLinterWebpackPatched";
+  const NATIVE_LINT_STATE_SYNC_DELAY_MS = 1750;
   const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
     "babel-helper-highlighted-word-clearances:v1";
   const AUTO_LINT_MAX_ATTEMPTS = 20;
@@ -86,17 +90,24 @@ export function initLinterBridge() {
   const POLITE_PRONOUN_PATTERN =
     /(^|[^\p{L}\p{N}\p{M}])(вы|вас|вам|вами|ваш(?:а|е|и|его|ему|им|ем|у|ей|ею|их|ими)?)(?=$|[^\p{L}\p{N}\p{M}])/giu;
 
-  const originalFetch = (
+  const fallbackFetch = (
     window.fetch.__babelHelperLinterOriginal || window.fetch
   ).bind(window);
-  let enabled = true;
+  let upstreamFetch = fallbackFetch;
+  let forwardingFetch = 0;
+  let enabled = false;
   let autoLintAttemptCount = 0;
   let autoLintTimer = 0;
+  let fetchPatchTimer = 0;
   let highlightObserver = null;
   let highlightTimer = 0;
   let applyingHighlights = false;
   let currentHighlightIssues = [];
   let highlightedRow = null;
+  let nativeLintStateTimer = 0;
+  let nativeLintStateObserver = null;
+  let nativeLinterWebpackPatchInstalled = false;
+  let nativeLinterWebpackOriginalPush = null;
   let textareaVisibilityObserver = null;
   let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
@@ -108,6 +119,7 @@ export function initLinterBridge() {
     totalLintCalls: 0,
     last: null,
     autoLint: null,
+    nativeLint: null,
   };
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
@@ -2366,6 +2378,386 @@ export function initLinterBridge() {
     );
   }
 
+  function isHelperInjectedIssue(issue) {
+    return Boolean(
+      issue &&
+        typeof issue === "object" &&
+        issue.babelHelper &&
+        typeof issue.babelHelper === "object",
+    );
+  }
+
+  function getLintIssueKey(issue) {
+    if (!isLintIssueLike(issue)) {
+      return "";
+    }
+
+    return [
+      issue.annotationId || "",
+      issue.reason || "",
+      issue.severity || "",
+    ].join("\u0000");
+  }
+
+  function mergeNativeAndHelperIssues(nativeIssues, helperIssues) {
+    const merged = [];
+    const seen = new Set();
+    for (const issue of Array.isArray(nativeIssues) ? nativeIssues : []) {
+      if (!isLintIssueLike(issue) || isHelperInjectedIssue(issue)) {
+        continue;
+      }
+
+      const key = getLintIssueKey(issue);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      merged.push(issue);
+    }
+
+    for (const issue of Array.isArray(helperIssues) ? helperIssues : []) {
+      if (!isLintIssueLike(issue)) {
+        continue;
+      }
+
+      const key = getLintIssueKey(issue);
+      if (!key || seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      merged.push(issue);
+    }
+
+    return merged;
+  }
+
+  function areLintIssueArraysEqual(left, right) {
+    const leftItems = Array.isArray(left) ? left : [];
+    const rightItems = Array.isArray(right) ? right : [];
+    if (leftItems.length !== rightItems.length) {
+      return false;
+    }
+
+    return leftItems.every((issue, index) => {
+      const other = rightItems[index];
+      if (getLintIssueKey(issue) !== getLintIssueKey(other)) {
+        return false;
+      }
+
+      return isHelperInjectedIssue(issue) === isHelperInjectedIssue(other);
+    });
+  }
+
+  function setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason) {
+    currentHighlightIssues = Array.isArray(helperIssues) ? helperIssues : [];
+    if (currentHighlightIssues.length) {
+      startHighlightObserver();
+    }
+    scheduleLinterHighlights();
+    debugState.nativeLint = {
+      changed: currentHighlightIssues.length > 0,
+      reason,
+      route: getRouteKey(),
+      annotationCount: Array.isArray(annotationEntries)
+        ? annotationEntries.length
+        : 0,
+      issueCount: currentHighlightIssues.length,
+      syncedAt: Date.now(),
+    };
+  }
+
+  function augmentNativeLintIssues(_linter, annotations, nativeIssues) {
+    if (!enabled) {
+      return nativeIssues;
+    }
+
+    const annotationEntries = extractAnnotationEntries(annotations);
+    const helperIssues = buildCustomIssues(annotationEntries);
+    setCurrentNativeHelperIssues(
+      annotationEntries,
+      helperIssues,
+      "native-linter-augment",
+    );
+    return mergeNativeAndHelperIssues(nativeIssues, helperIssues);
+  }
+
+  window[NATIVE_LINT_AUGMENT_GLOBAL] = augmentNativeLintIssues;
+
+  function patchNativeLinterModuleFactory(factory) {
+    if (
+      typeof factory !== "function" ||
+      factory.__babelHelperNativeLinterPatched
+    ) {
+      return factory;
+    }
+
+    const source = Function.prototype.toString.call(factory);
+    if (
+      source.indexOf("class eR") === -1 ||
+      source.indexOf("lintAnnotations(e)") === -1
+    ) {
+      return factory;
+    }
+
+    const needle =
+      'if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}return t}constructor';
+    if (source.indexOf(needle) === -1) {
+      debugState.nativeLintPatch = {
+        changed: false,
+        reason: "lint-annotations-needle-not-found",
+        checkedAt: Date.now(),
+      };
+      return factory;
+    }
+
+    const replacement =
+      `if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}if("function"==typeof window["${NATIVE_LINT_AUGMENT_GLOBAL}"]){try{t=window["${NATIVE_LINT_AUGMENT_GLOBAL}"](this,e,t)||t}catch(e){}}return t}constructor`;
+    try {
+      const patched = (0, eval)(`(${source.replace(needle, replacement)})`);
+      patched.__babelHelperNativeLinterPatched = true;
+      patched.__babelHelperNativeLinterOriginal = factory;
+      debugState.nativeLintPatch = {
+        changed: true,
+        reason: "module-factory",
+        patchedAt: Date.now(),
+      };
+      return patched;
+    } catch (error) {
+      debugState.nativeLintPatch = {
+        changed: false,
+        reason: "module-factory-eval-failed",
+        error: String(error && error.message ? error.message : error),
+        checkedAt: Date.now(),
+      };
+      return factory;
+    }
+  }
+
+  function patchWebpackChunkEntry(entry) {
+    if (!Array.isArray(entry) || !entry[1] || typeof entry[1] !== "object") {
+      return false;
+    }
+
+    let changed = false;
+    for (const key of Object.keys(entry[1])) {
+      const currentFactory = entry[1][key];
+      const patchedFactory = patchNativeLinterModuleFactory(currentFactory);
+      if (patchedFactory !== currentFactory) {
+        entry[1][key] = patchedFactory;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  function installNativeLinterWebpackPatch() {
+    const chunkName = "webpackChunk_N_E";
+    const chunk = (window[chunkName] = window[chunkName] || []);
+    if (!Array.isArray(chunk)) {
+      return false;
+    }
+
+    for (const entry of chunk) {
+      patchWebpackChunkEntry(entry);
+    }
+
+    if (chunk[NATIVE_LINT_PATCH_MARK]) {
+      nativeLinterWebpackOriginalPush =
+        nativeLinterWebpackOriginalPush ||
+        chunk.push?.__babelHelperNativeLinterOriginalPush ||
+        null;
+      nativeLinterWebpackPatchInstalled = true;
+      return false;
+    }
+
+    const originalPush =
+      nativeLinterWebpackOriginalPush ||
+      chunk.push.__babelHelperNativeLinterOriginalPush ||
+      chunk.push;
+    if (typeof originalPush !== "function") {
+      return false;
+    }
+
+    const patchedPush = function babelHelperNativeLinterPatchedPush(...entries) {
+      for (const entry of entries) {
+        patchWebpackChunkEntry(entry);
+      }
+      return originalPush.apply(this, entries);
+    };
+    patchedPush.__babelHelperNativeLinterOriginalPush = originalPush;
+    chunk.push = patchedPush;
+    chunk[NATIVE_LINT_PATCH_MARK] = true;
+    nativeLinterWebpackOriginalPush = originalPush;
+    nativeLinterWebpackPatchInstalled = true;
+    debugState.nativeLintPatch = {
+      changed: true,
+      reason: "webpack-push",
+      patchedAt: Date.now(),
+    };
+    return true;
+  }
+
+  function getReactInternalValue(element, prefix) {
+    if (
+      !(element instanceof Element) ||
+      typeof prefix !== "string" ||
+      !prefix
+    ) {
+      return null;
+    }
+
+    for (const name of Object.getOwnPropertyNames(element)) {
+      if (typeof name === "string" && name.indexOf(prefix) === 0) {
+        return element[name];
+      }
+    }
+
+    return null;
+  }
+
+  function getReactFiber(element) {
+    return getReactInternalValue(element, "__reactFiber$");
+  }
+
+  function getNativeReviewSeedElement() {
+    return (
+      document.querySelector(ROW_TEXTAREA_SELECTOR) ||
+      document.querySelector("tbody tr")
+    );
+  }
+
+  function findNativeReviewFiber() {
+    let current = getReactFiber(getNativeReviewSeedElement());
+    while (current && typeof current === "object") {
+      const props = current.memoizedProps || current.pendingProps || {};
+      if (
+        props &&
+        typeof props === "object" &&
+        typeof props.reviewActionId === "string" &&
+        Array.isArray(props.annotations) &&
+        Array.isArray(props.linterErrors)
+      ) {
+        return current;
+      }
+
+      current = current.return;
+    }
+
+    return null;
+  }
+
+  function isNativeAnnotationArray(value) {
+    return (
+      Array.isArray(value) &&
+      value.some(
+        (item) =>
+          item &&
+          typeof item === "object" &&
+          typeof item.id === "string" &&
+          typeof item.content === "string" &&
+          item.type === "transcription",
+      )
+    );
+  }
+
+  function getNativeReviewHooks(fiber) {
+    let current = fiber && fiber.memoizedState;
+    let index = 0;
+    let annotationHook = null;
+    while (current && typeof current === "object" && index < 120) {
+      if (!annotationHook && isNativeAnnotationArray(current.memoizedState)) {
+        annotationHook = { hook: current, index };
+      } else if (
+        annotationHook &&
+        Array.isArray(current.memoizedState) &&
+        current.queue &&
+        typeof current.queue.dispatch === "function" &&
+        !isNativeAnnotationArray(current.memoizedState)
+      ) {
+        return {
+          annotationHook,
+          lintHook: { hook: current, index },
+        };
+      }
+
+      current = current.next;
+      index += 1;
+    }
+
+    return null;
+  }
+
+  function syncNativeLintState(reason) {
+    if (!enabled) {
+      return false;
+    }
+
+    const fiber = findNativeReviewFiber();
+    const hooks = getNativeReviewHooks(fiber);
+    if (!hooks) {
+      debugState.nativeLint = {
+        changed: false,
+        reason: "native-react-hooks-not-found",
+        source: reason,
+        route: getRouteKey(),
+        syncedAt: Date.now(),
+      };
+      return false;
+    }
+
+    const annotations = hooks.annotationHook.hook.memoizedState;
+    const nativeIssues = Array.isArray(
+      hooks.lintHook.hook.queue.lastRenderedState,
+    )
+      ? hooks.lintHook.hook.queue.lastRenderedState
+      : hooks.lintHook.hook.memoizedState;
+    const annotationEntries = extractAnnotationEntries(annotations);
+    const helperIssues = buildCustomIssues(annotationEntries);
+    const mergedIssues = mergeNativeAndHelperIssues(
+      nativeIssues,
+      helperIssues,
+    );
+    setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason);
+
+    if (!areLintIssueArraysEqual(nativeIssues, mergedIssues)) {
+      hooks.lintHook.hook.queue.dispatch(mergedIssues);
+      debugState.nativeLint.dispatched = true;
+      debugState.nativeLint.nativeIssueCount = Array.isArray(nativeIssues)
+        ? nativeIssues.length
+        : 0;
+      debugState.nativeLint.mergedIssueCount = mergedIssues.length;
+      debugState.nativeLint.annotationHookIndex = hooks.annotationHook.index;
+      debugState.nativeLint.lintHookIndex = hooks.lintHook.index;
+      return true;
+    }
+
+    debugState.nativeLint.dispatched = false;
+    debugState.nativeLint.nativeIssueCount = Array.isArray(nativeIssues)
+      ? nativeIssues.length
+      : 0;
+    debugState.nativeLint.mergedIssueCount = mergedIssues.length;
+    debugState.nativeLint.annotationHookIndex = hooks.annotationHook.index;
+    debugState.nativeLint.lintHookIndex = hooks.lintHook.index;
+    return false;
+  }
+
+  function scheduleNativeLintStateSync(reason) {
+    if (!enabled) {
+      return;
+    }
+
+    if (nativeLintStateTimer) {
+      window.clearTimeout(nativeLintStateTimer);
+    }
+
+    nativeLintStateTimer = window.setTimeout(() => {
+      nativeLintStateTimer = 0;
+      syncNativeLintState(reason);
+    }, NATIVE_LINT_STATE_SYNC_DELAY_MS);
+  }
+
   function isLintIssueLike(value) {
     return Boolean(
       value &&
@@ -3488,7 +3880,9 @@ export function initLinterBridge() {
       target instanceof Element ? target.closest(".cursor-pointer") : null;
     if (!isNativeLintStatusTrigger(warningTrigger)) {
       if (isNativeLintSuccessTrigger(warningTrigger)) {
-        rememberNativeHighlightedWordWarningUndo(warningTrigger);
+        if (rememberNativeHighlightedWordWarningUndo(warningTrigger)) {
+          scheduleNativeLintStateSync("highlighted-word-unclearance");
+        }
       }
       return false;
     }
@@ -3499,6 +3893,13 @@ export function initLinterBridge() {
       return false;
     }
 
+    markHighlightedWordCleared({
+      annotationId: issue.annotationId || "",
+      reviewActionId:
+        typeof issue.reviewActionId === "string" ? issue.reviewActionId : "",
+      text: getIssueSourceText(issue),
+    });
+    scheduleNativeLintStateSync("highlighted-word-clearance");
     scheduleLinterHighlights();
     return true;
   }
@@ -3778,6 +4179,65 @@ export function initLinterBridge() {
     textareaMountObserver = null;
   }
 
+  function nodeTouchesTranscriptRows(node) {
+    if (!(node instanceof Element)) {
+      return false;
+    }
+
+    return (
+      node.matches?.("tbody tr") ||
+      node.matches?.(ROW_TEXTAREA_SELECTOR) ||
+      Boolean(node.querySelector?.("tbody tr")) ||
+      Boolean(node.querySelector?.(ROW_TEXTAREA_SELECTOR))
+    );
+  }
+
+  function startNativeLintStateObserver() {
+    if (
+      nativeLintStateObserver ||
+      !(document.body instanceof HTMLElement) ||
+      typeof MutationObserver !== "function"
+    ) {
+      return;
+    }
+
+    nativeLintStateObserver = new MutationObserver((mutations) => {
+      const shouldSync = mutations.some((mutation) =>
+        [...mutation.addedNodes, ...mutation.removedNodes].some(
+          nodeTouchesTranscriptRows,
+        ),
+      );
+      if (shouldSync) {
+        scheduleNativeLintStateSync("dom-mutation");
+      }
+    });
+    nativeLintStateObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function stopNativeLintStateObserver() {
+    if (nativeLintStateTimer) {
+      window.clearTimeout(nativeLintStateTimer);
+      nativeLintStateTimer = 0;
+    }
+    if (nativeLintStateObserver) {
+      nativeLintStateObserver.disconnect();
+      nativeLintStateObserver = null;
+    }
+  }
+
+  function handleNativeLintTextareaInput(event) {
+    const target = event && event.target;
+    if (
+      target instanceof HTMLTextAreaElement &&
+      target.matches(ROW_TEXTAREA_SELECTOR)
+    ) {
+      scheduleNativeLintStateSync("textarea-input");
+    }
+  }
+
   function handleVisibleTextarea(routeKey, reason) {
     if (!enabled) {
       return;
@@ -4040,6 +4500,19 @@ export function initLinterBridge() {
       }
 
       if (autoLintAttemptCount >= AUTO_LINT_MAX_ATTEMPTS) {
+        syncNativeLintState("native-lint-fallback");
+        autoLintTriggeredRoutes.add(activeRouteKey);
+        debugState.autoLint = {
+          changed: false,
+          reason: "native-lint-fallback",
+          route: activeRouteKey,
+          attempts: autoLintAttemptCount,
+          source: reason,
+          helperIssueCount:
+            debugState.nativeLint && debugState.nativeLint.issueCount,
+          mergedIssueCount:
+            debugState.nativeLint && debugState.nativeLint.mergedIssueCount,
+        };
         stopTextareaVisibilityObservers();
         return;
       }
@@ -4060,6 +4533,7 @@ export function initLinterBridge() {
     currentRouteKey = nextRouteKey;
     startTextareaVisibilityObserver(`${source}-textarea-visible`);
     scheduleInitialNativeLintTrigger(source);
+    scheduleNativeLintStateSync(source);
   }
 
   function patchHistoryMethod(methodName) {
@@ -4118,7 +4592,11 @@ export function initLinterBridge() {
       suppressionIds.has(issue.annotationId) &&
       isDoubleDashOutsideQuoteOrTagReason(issue.reason);
     if (!additionalIssues.length && suppressionIds.size === 0) {
-      currentHighlightIssues = [];
+      setCurrentNativeHelperIssues(
+        annotationEntries,
+        [],
+        "legacy-lint-response-no-custom-issues",
+      );
       scheduleLinterHighlights();
       debugState.last = {
         changed: false,
@@ -4128,11 +4606,11 @@ export function initLinterBridge() {
       return response;
     }
 
-    currentHighlightIssues = additionalIssues;
-    if (additionalIssues.length) {
-      startHighlightObserver();
-    }
-    scheduleLinterHighlights();
+    setCurrentNativeHelperIssues(
+      annotationEntries,
+      additionalIssues,
+      "legacy-lint-response",
+    );
 
     let responseText = "";
     try {
@@ -4331,9 +4809,22 @@ export function initLinterBridge() {
     };
   }
 
-  window.fetch = async function babelHelperLinterPatchedFetch(input, init) {
+  async function callUpstreamFetch(input, init) {
+    forwardingFetch += 1;
+    try {
+      return await upstreamFetch(input, init);
+    } finally {
+      forwardingFetch = Math.max(0, forwardingFetch - 1);
+    }
+  }
+
+  async function babelHelperLinterPatchedFetch(input, init) {
+    if (forwardingFetch > 0) {
+      return fallbackFetch(input, init);
+    }
+
     if (!enabled) {
-      return originalFetch(input, init);
+      return callUpstreamFetch(input, init);
     }
 
     if (isSaveAnnotationsRequest(input, init)) {
@@ -4344,12 +4835,12 @@ export function initLinterBridge() {
           recordClearance: true,
         },
       );
-      const response = await originalFetch(sanitized.input, sanitized.init);
+      const response = await callUpstreamFetch(sanitized.input, sanitized.init);
       return maybeAugmentHighlightedWordClearanceResponse(response);
     }
 
     if (!isLintRequest(input, init)) {
-      const response = await originalFetch(input, init);
+      const response = await callUpstreamFetch(input, init);
       if (isTranscriptionsRequest(input)) {
         return maybeAugmentHighlightedWordClearanceResponse(response);
       }
@@ -4369,10 +4860,36 @@ export function initLinterBridge() {
         recordClearance: true,
       },
     );
-    const response = await originalFetch(sanitized.input, sanitized.init);
+    const response = await callUpstreamFetch(sanitized.input, sanitized.init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
-  };
-  window.fetch.__babelHelperLinterOriginal = originalFetch;
+  }
+
+  function installFetchPatch(reason) {
+    const currentFetch = window.fetch;
+    if (
+      currentFetch === babelHelperLinterPatchedFetch ||
+      currentFetch?.__babelHelperLinterPatched ||
+      typeof currentFetch !== "function"
+    ) {
+      return false;
+    }
+
+    upstreamFetch = currentFetch.bind(window);
+    window.fetch = babelHelperLinterPatchedFetch;
+    window.fetch.__babelHelperLinterPatched = true;
+    window.fetch.__babelHelperLinterOriginal = upstreamFetch;
+    debugState.fetchPatch = {
+      reason,
+      upstreamName: currentFetch.name || "",
+      patchedAt: Date.now(),
+    };
+    return true;
+  }
+
+  installFetchPatch("init");
+  fetchPatchTimer = window.setInterval(() => {
+    installFetchPatch("watchdog");
+  }, 1000);
 
   function handleToggle(event) {
     const nextEnabled = Boolean(
@@ -4385,11 +4902,16 @@ export function initLinterBridge() {
     }
     if (!enabled) {
       stopTextareaVisibilityObservers();
+      stopNativeLintStateObserver();
       stopHighlightObserver();
     }
     if (enabled) {
+      installNativeLinterWebpackPatch();
+      installFetchPatch("toggle-enable");
+      startNativeLintStateObserver();
       startTextareaVisibilityObserver("toggle-enable-textarea-visible");
       scheduleInitialNativeLintTrigger("toggle-enable");
+      scheduleNativeLintStateSync("toggle-enable");
     }
   }
 
@@ -4401,6 +4923,7 @@ export function initLinterBridge() {
       removeCurrentHighlightedWordIssues();
     }
     if (enabled) {
+      scheduleNativeLintStateSync("config");
       scheduleLinterHighlights();
     }
   }
@@ -4415,25 +4938,56 @@ export function initLinterBridge() {
       window.clearTimeout(autoLintTimer);
       autoLintTimer = 0;
     }
+    if (fetchPatchTimer) {
+      window.clearInterval(fetchPatchTimer);
+      fetchPatchTimer = 0;
+    }
     stopTextareaVisibilityObservers();
+    stopNativeLintStateObserver();
     stopHighlightObserver();
     restoreHistoryMethod("pushState");
     restoreHistoryMethod("replaceState");
-    if (window.fetch && window.fetch.__babelHelperLinterOriginal) {
-      window.fetch = window.fetch.__babelHelperLinterOriginal;
+    const chunk = window.webpackChunk_N_E;
+    if (
+      Array.isArray(chunk) &&
+      nativeLinterWebpackOriginalPush &&
+      chunk.push?.__babelHelperNativeLinterOriginalPush ===
+        nativeLinterWebpackOriginalPush
+    ) {
+      chunk.push = nativeLinterWebpackOriginalPush;
+      try {
+        delete chunk[NATIVE_LINT_PATCH_MARK];
+      } catch (_error) {
+        chunk[NATIVE_LINT_PATCH_MARK] = false;
+      }
+    }
+    const restoreFetch = upstreamFetch;
+    upstreamFetch = fallbackFetch;
+    if (
+      window.fetch === babelHelperLinterPatchedFetch ||
+      window.fetch?.__babelHelperLinterPatched
+    ) {
+      window.fetch = restoreFetch;
     }
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
     window.removeEventListener(CONFIG_EVENT, handleConfig, true);
+    window.removeEventListener("input", handleNativeLintTextareaInput, true);
+    window.removeEventListener("change", handleNativeLintTextareaInput, true);
     window.removeEventListener("pointerover", handleHighlightPointerOver, true);
     window.removeEventListener("pointerout", handleHighlightPointerOut, true);
     window.removeEventListener("click", handleHighlightClick, true);
     window.removeEventListener("popstate", handlePopState, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    if (window[NATIVE_LINT_AUGMENT_GLOBAL] === augmentNativeLintIssues) {
+      delete window[NATIVE_LINT_AUGMENT_GLOBAL];
+    }
     delete window.__babelHelperLinterBridge;
   }
 
   window.addEventListener(TOGGLE_EVENT, handleToggle, true);
   window.addEventListener(CONFIG_EVENT, handleConfig, true);
+  window.addEventListener("input", handleNativeLintTextareaInput, true);
+  window.addEventListener("change", handleNativeLintTextareaInput, true);
   window.addEventListener("pointerover", handleHighlightPointerOver, true);
   window.addEventListener("pointerout", handleHighlightPointerOut, true);
   window.addEventListener("click", handleHighlightClick, true);
@@ -4443,8 +4997,11 @@ export function initLinterBridge() {
   window.addEventListener("popstate", handlePopState, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
+  installNativeLinterWebpackPatch();
+  startNativeLintStateObserver();
   startTextareaVisibilityObserver("boot-textarea-visible");
   scheduleInitialNativeLintTrigger("boot");
+  scheduleNativeLintStateSync("boot");
 
   // ---------------------------------------------------------------------------
   // Auto-fix functions
@@ -5123,6 +5680,7 @@ export function initLinterBridge() {
 
       // Re-trigger lint after fixes so the linter UI updates
       scheduleInitialNativeLintTrigger("autofix");
+      scheduleNativeLintStateSync("autofix");
 
       window.dispatchEvent(
         new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
