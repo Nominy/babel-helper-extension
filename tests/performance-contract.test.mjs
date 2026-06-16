@@ -18,7 +18,7 @@ test('entry kernel lazy-loads the heavy session runtime', () => {
 });
 
 test('custom linter and quick autocomplete bridges do not inject during feature start', () => {
-  const linterSource = read('../src/features/custom-linter-feature.ts');
+  const linterSource = read('../src/features/custom-linter/feature.ts');
   const quickSource = read('../src/features/quick-region-autocomplete-feature.ts');
 
   assert.match(linterSource, /start\(ctx: FeatureContext\) {\s*ctx\.helper\.requestAutoFix = requestAutoFix;\s*}/);

@@ -24,19 +24,21 @@ test('package build bumps the version before syncing unpacked assets', () => {
 });
 
 test('all extension features remain enabled by default', () => {
-  const raw = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
-  const match = /DEFAULT_FEATURE_SETTINGS[\s\S]*?=\s*{([\s\S]*?)};/.exec(raw);
+  const registry = fs.readFileSync(new URL('../src/features/registry.ts', import.meta.url), 'utf8');
+  const settings = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
 
-  assert.ok(match, 'DEFAULT_FEATURE_SETTINGS should be present');
-  assert.doesNotMatch(match[1], /:\s*false[,}]/);
+  assert.match(settings, /DEFAULT_FEATURE_SETTINGS:\s*FeatureSettings\s*=\s*buildFeatureSettings\(\)/);
+  assert.doesNotMatch(registry, /defaultEnabled:\s*false/);
 });
 
 test('native timeline double-click blocker is a default-on feature toggle', () => {
-  const raw = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
+  const registry = fs.readFileSync(new URL('../src/features/registry.ts', import.meta.url), 'utf8');
+  const settings = fs.readFileSync(new URL('../src/core/settings.ts', import.meta.url), 'utf8');
+  const registration = /id:\s*'disable-native-timeline-double-click'[\s\S]*?\}\),/.exec(registry);
 
-  assert.match(raw, /\|\s*'disableNativeTimelineDoubleClick'/);
-  assert.match(raw, /disableNativeTimelineDoubleClick:\s*boolean/);
-  assert.match(raw, /disableNativeTimelineDoubleClick:\s*true/);
-  assert.match(raw, /'disableNativeTimelineDoubleClick'/);
-  assert.match(raw, /disableNativeTimelineDoubleClick:\s*{\s*label:\s*'Disable Native Timeline Double Click'/);
+  assert.ok(registration, 'disable native timeline double-click should be registered');
+  assert.match(settings, /FeatureSettingKey = \(typeof FEATURE_REGISTRATIONS\)\[number\]\['setting'\]\['key'\]/);
+  assert.match(registration[0], /key:\s*'disableNativeTimelineDoubleClick'/);
+  assert.match(registration[0], /defaultEnabled:\s*true/);
+  assert.match(registration[0], /label:\s*'Disable Native Timeline Double Click'/);
 });

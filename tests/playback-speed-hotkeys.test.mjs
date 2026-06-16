@@ -14,6 +14,10 @@ const settingsSource = fs.readFileSync(
   new URL('../src/core/settings.ts', import.meta.url),
   'utf8'
 );
+const registrySource = fs.readFileSync(
+  new URL('../src/features/registry.ts', import.meta.url),
+  'utf8'
+);
 const rowServiceSource = fs.readFileSync(
   new URL('../src/services/row-service.ts', import.meta.url),
   'utf8'
@@ -67,15 +71,18 @@ test('playback speed changes preserve the current playback timestamp', () => {
 });
 
 test('playback speed hotkeys can be disabled from extension settings', () => {
-  assert.match(settingsSource, /\|\s*'playbackSpeedHotkeys'/);
-  assert.match(settingsSource, /playbackSpeedHotkeys:\s*boolean/);
-  assert.match(settingsSource, /playbackSpeedHotkeys:\s*true/);
-  assert.match(settingsSource, /'playbackSpeedHotkeys'/);
-  assert.match(settingsSource, /label:\s*'Playback Speed Hotkeys'/);
-  assert.match(settingsSource, /description:\s*'Enable Shift \+ 1 \/ Shift \+ 2 playback speed shortcuts\.'/);
-  assert.match(configSource, /featureSettings\.playbackSpeedHotkeys[\s\S]*\['Shift \+ 1 \/ Shift \+ 2', 'Increase \/ decrease playback speed'\]/);
+  const registration = /id:\s*'playback-speed-hotkeys'[\s\S]*?\}\),/.exec(registrySource);
+
+  assert.ok(registration, 'playback speed hotkeys should be registered');
+  assert.match(settingsSource, /FeatureSettingKey = \(typeof FEATURE_REGISTRATIONS\)\[number\]\['setting'\]\['key'\]/);
+  assert.match(registration[0], /key:\s*'playbackSpeedHotkeys'/);
+  assert.match(registration[0], /defaultEnabled:\s*true/);
+  assert.match(registration[0], /label:\s*'Playback Speed Hotkeys'/);
+  assert.match(registration[0], /description:\s*'Enable Shift \+ 1 \/ Shift \+ 2 playback speed shortcuts\.'/);
+  assert.match(registrySource, /featureSettings\.playbackSpeedHotkeys[\s\S]*\['Shift \+ 1 \/ Shift \+ 2', 'Increase \/ decrease playback speed'\]/);
+  assert.match(configSource, /getRegisteredHotkeysHelpRows/);
 });
 
 test('hotkeys help advertises playback speed shortcuts', () => {
-  assert.match(configSource, /\['Shift \+ 1 \/ Shift \+ 2', 'Increase \/ decrease playback speed'\]/);
+  assert.match(registrySource, /\['Shift \+ 1 \/ Shift \+ 2', 'Increase \/ decrease playback speed'\]/);
 });

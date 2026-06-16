@@ -58,7 +58,7 @@ test('page-world bridges expose teardown cleanup hooks', () => {
 
 test('bridge injection handles invalidated extension context', () => {
   const injectors = [
-    '../src/features/custom-linter-feature.ts',
+    '../src/features/custom-linter/feature.ts',
     '../src/features/quick-region-autocomplete-feature.ts',
     '../src/services/row-service.ts',
     '../src/services/timestamp-edit-service.ts',

@@ -1,6 +1,6 @@
-import type { FeatureContext, FeatureModule } from '../core/types';
+import type { FeatureContext, FeatureModule } from '../../core/types';
 
-import { normalizeHighlightedWords } from '../core/highlighted-words';
+import { normalizeHighlightedWords } from '../../core/highlighted-words';
 
 const BRIDGE_SCRIPT_PATH = 'dist/content/linter-bridge.js';
 const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';

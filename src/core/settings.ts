@@ -1,49 +1,8 @@
+import { FEATURE_REGISTRATIONS } from '../features/registry';
 import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from './highlighted-words';
 
-export type FeatureSettingKey =
-  | 'hotkeysHelp'
-  | 'rowActions'
-  | 'playbackSpeedHotkeys'
-  | 'speakerWorkflowHotkeys'
-  | 'selectedNumberToSkaz'
-  | 'textMove'
-  | 'quickRegionAutocomplete'
-  | 'disableNativeArrowSeek'
-  | 'disableNativeTimelineDoubleClick'
-  | 'focusToggle'
-  | 'timelineSelection'
-  | 'audioTrimOutwardPass'
-  | 'timelineZoomDefaults'
-  | 'waveformScaleUnlock'
-  | 'magnifier'
-  | 'minimap'
-  | 'customLinter'
-  | 'proportionalCursorRestore'
-  | 'wavesurferTooltipEllipsis'
-  | 'extendedDiffView';
-
-export interface FeatureSettings {
-  hotkeysHelp: boolean;
-  rowActions: boolean;
-  playbackSpeedHotkeys: boolean;
-  speakerWorkflowHotkeys: boolean;
-  selectedNumberToSkaz: boolean;
-  textMove: boolean;
-  quickRegionAutocomplete: boolean;
-  disableNativeArrowSeek: boolean;
-  disableNativeTimelineDoubleClick: boolean;
-  focusToggle: boolean;
-  timelineSelection: boolean;
-  audioTrimOutwardPass: boolean;
-  timelineZoomDefaults: boolean;
-  waveformScaleUnlock: boolean;
-  magnifier: boolean;
-  minimap: boolean;
-  customLinter: boolean;
-  proportionalCursorRestore: boolean;
-  wavesurferTooltipEllipsis: boolean;
-  extendedDiffView: boolean;
-}
+export type FeatureSettingKey = (typeof FEATURE_REGISTRATIONS)[number]['setting']['key'];
+export type FeatureSettings = Record<FeatureSettingKey, boolean>;
 
 export interface ExtensionSettings {
   features: FeatureSettings;
@@ -58,28 +17,26 @@ export interface FeatureSettingMeta {
 
 export const SETTINGS_STORAGE_KEY = 'settings';
 
-export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
-  hotkeysHelp: true,
-  rowActions: true,
-  playbackSpeedHotkeys: true,
-  speakerWorkflowHotkeys: true,
-  selectedNumberToSkaz: true,
-  textMove: true,
-  quickRegionAutocomplete: true,
-  disableNativeArrowSeek: true,
-  disableNativeTimelineDoubleClick: true,
-  focusToggle: true,
-  timelineSelection: true,
-  audioTrimOutwardPass: true,
-  timelineZoomDefaults: true,
-  waveformScaleUnlock: true,
-  magnifier: true,
-  minimap: true,
-  customLinter: true,
-  proportionalCursorRestore: true,
-  wavesurferTooltipEllipsis: true,
-  extendedDiffView: true
-};
+function buildFeatureSettings(): FeatureSettings {
+  const features = {} as FeatureSettings;
+  for (const registration of FEATURE_REGISTRATIONS) {
+    features[registration.setting.key] = registration.setting.defaultEnabled;
+  }
+  return features;
+}
+
+function buildFeatureMeta(): Record<FeatureSettingKey, FeatureSettingMeta> {
+  const meta = {} as Record<FeatureSettingKey, FeatureSettingMeta>;
+  for (const registration of FEATURE_REGISTRATIONS) {
+    meta[registration.setting.key] = {
+      label: registration.setting.label,
+      description: registration.setting.description
+    };
+  }
+  return meta;
+}
+
+export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = buildFeatureSettings();
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   features: DEFAULT_FEATURE_SETTINGS,
@@ -87,111 +44,11 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   highlightedWords: normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS)
 };
 
-export const FEATURE_KEYS: FeatureSettingKey[] = [
-  'hotkeysHelp',
-  'rowActions',
-  'playbackSpeedHotkeys',
-  'speakerWorkflowHotkeys',
-  'selectedNumberToSkaz',
-  'textMove',
-  'quickRegionAutocomplete',
-  'disableNativeArrowSeek',
-  'disableNativeTimelineDoubleClick',
-  'focusToggle',
-  'timelineSelection',
-  'audioTrimOutwardPass',
-  'timelineZoomDefaults',
-  'waveformScaleUnlock',
-  'magnifier',
-  'minimap',
-  'customLinter',
-  'proportionalCursorRestore',
-  'wavesurferTooltipEllipsis',
-  'extendedDiffView'
-];
+export const FEATURE_KEYS: FeatureSettingKey[] = FEATURE_REGISTRATIONS.map(
+  (registration) => registration.setting.key
+);
 
-export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = {
-  hotkeysHelp: {
-    label: 'Hotkeys Help',
-    description: 'Enhances the keyboard shortcuts dialog with Babel Helper hints.'
-  },
-  rowActions: {
-    label: 'Row Actions',
-    description: 'Enable D and Alt + Shift + Arrow merge shortcuts.'
-  },
-  playbackSpeedHotkeys: {
-    label: 'Playback Speed Hotkeys',
-    description: 'Enable Shift + 1 / Shift + 2 playback speed shortcuts.'
-  },
-  speakerWorkflowHotkeys: {
-    label: 'Speaker Workflow Hotkeys',
-    description: 'Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts.'
-  },
-  selectedNumberToSkaz: {
-    label: 'Selected Number to SKAZ',
-    description: 'Enable immediate digit-to-SKAZ conversion (Select text + type digit) and Alt + A to convert selected digits into `digits {СКАЗ: words}`.'
-  },
-  textMove: {
-    label: 'Text Move',
-    description: 'Enable Alt + [ and Alt + ] to move text between adjacent segments.'
-  },
-  quickRegionAutocomplete: {
-    label: 'Quick Region Autocomplete',
-    description: 'Reuse Babel tag autocomplete in quick region and row editors, including selected-text style tag wrapping.'
-  },
-  disableNativeArrowSeek: {
-    label: 'Disable Native Arrow Seek',
-    description: 'Block Babel’s bare Left/Right Arrow segment-jump hotkeys while keeping normal caret movement.'
-  },
-  disableNativeTimelineDoubleClick: {
-    label: 'Disable Native Timeline Double Click',
-    description: 'Block Babel’s native timeline double-click jump to the beginning of a segment.'
-  },
-  focusToggle: {
-    label: 'Focus Toggle',
-    description: 'Enable Esc to pause and blur the active transcript textarea, then resume and restore it.'
-  },
-  timelineSelection: {
-    label: 'Timeline Selection',
-    description: 'Enable Alt + Drag cut preview and S/Shift + S/L timeline actions.'
-  },
-  audioTrimOutwardPass: {
-    label: 'Audio Trim Outward Pass',
-    description: 'When Alt + R cannot trim silence inward on a boundary, allow it to extend outward to the next quiet block and then refine inward.'
-  },
-  timelineZoomDefaults: {
-    label: 'Timeline Zoom Defaults',
-    description: 'Remember last timeline zoom and apply it when a transcription session starts.'
-  },
-  waveformScaleUnlock: {
-    label: 'Waveform Scale Unlock',
-    description: 'Raise Babel’s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders.'
-  },
-  magnifier: {
-    label: 'Magnifier',
-    description: 'Show live waveform magnifier while dragging timeline segment edges.'
-  },
-  minimap: {
-    label: 'Minimap',
-    description: 'Show a full-timeline minimap with the current viewing window highlighted.'
-  },
-  customLinter: {
-    label: 'Custom Linter',
-    description: 'Inject helper rules into Babel lintAnnotations results so issues appear in native linter UI.'
-  },
-  proportionalCursorRestore: {
-    label: 'Proportional Cursor Restore',
-    description: 'When restoring focus after Esc, advance cursor to the text position proportional to playback progress (never backward from your last edit position).'
-  },
-  wavesurferTooltipEllipsis: {
-    label: 'Wavesurfer Tooltip Ellipsis',
-    description: 'Truncate long Wavesurfer region tooltip labels with an ellipsis. Edit the template in src/features/wavesurfer-tooltip-ellipsis-feature.ts.'
-  },
-  extendedDiffView: {
-    label: 'Extended Diff View',
-    description: 'Extend read-only feedback diff tables in place with extra text, punctuation, tag, segmentation, and timestamp details from Babel diff payloads.'
-  }
-};
+export const FEATURE_META: Record<FeatureSettingKey, FeatureSettingMeta> = buildFeatureMeta();
 
 function getExtensionStorage() {
   const chromeApi = (globalThis as { chrome?: any }).chrome;

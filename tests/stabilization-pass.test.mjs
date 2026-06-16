@@ -167,7 +167,7 @@ test('ghost cursor lane toggle uses isolated per-lane projections over the old a
   const source = read('../src/services/row-service.ts');
   const stateSource = read('../src/core/state-store.ts');
   const lifecycleSource = read('../src/core/lifecycle.ts');
-  const configSource = read('../src/core/config.ts');
+  const registrySource = read('../src/features/registry.ts');
 
   assert.match(stateSource, /ghostCursorProjectionSpeakerKey: null/);
   assert.match(stateSource, /ghostCursorProjectionSource: 'auto'/);
@@ -198,5 +198,5 @@ test('ghost cursor lane toggle uses isolated per-lane projections over the old a
 
   assert.match(lifecycleSource, /function isGhostCursorLaneToggleShortcut/);
   assert.match(lifecycleSource, /helper\.toggleGhostCursorLane\(\)/);
-  assert.match(configSource, /rows\.push\(\['Tab', 'Toggle active ghost cursor lane'\]\)/);
+  assert.match(registrySource, /rows\.push\(\['Tab', 'Toggle active ghost cursor lane'\]\)/);
 });

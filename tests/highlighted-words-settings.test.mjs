@@ -11,7 +11,7 @@ const settingsSource = fs.readFileSync(
   'utf8'
 );
 const customLinterFeatureSource = fs.readFileSync(
-  new URL('../src/features/custom-linter-feature.ts', import.meta.url),
+  new URL('../src/features/custom-linter/feature.ts', import.meta.url),
   'utf8'
 );
 const entrySource = fs.readFileSync(

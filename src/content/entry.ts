@@ -1,5 +1,5 @@
 import { createHelperKernel } from '../core/kernel';
-import { bootstrapCustomLinterBridge } from '../features/custom-linter-feature';
+import { bootstrapCustomLinterBridge } from '../features/custom-linter';
 
 declare global {
   interface Window {

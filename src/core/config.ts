@@ -1,57 +1,9 @@
 import type { FeatureSettings } from './settings';
 import { DEFAULT_FEATURE_SETTINGS } from './settings';
-
-const PLAYBACK_REWIND_SHORTCUTS = [
-  { code: 'KeyX', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false, seconds: 1, label: 'Alt + X' }
-];
+import { getRegisteredHotkeysHelpRows, PLAYBACK_REWIND_SHORTCUTS } from '../features/registry';
 
 function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, string]> {
-  const rows: Array<[string, string]> = [];
-
-  if (featureSettings.focusToggle) {
-    rows.push([
-      'Esc',
-      'Pause and blur / resume and restore cursor' +
-        (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')
-    ]);
-  }
-
-  if (featureSettings.textMove) {
-    rows.push(['Alt + [ (\u0425)', 'Move text before caret to previous segment']);
-    rows.push(['Alt + ] (\u0404)', 'Move text after caret to next segment']);
-  }
-
-  if (featureSettings.rowActions && featureSettings.speakerWorkflowHotkeys) {
-    rows.push(['Alt + 1 / Alt + 2', 'Switch active speaker workflow lane']);
-    rows.push(['Alt + ~', 'Reset lanes: show both, unmute both, select All Tracks']);
-  }
-
-  if (featureSettings.selectedNumberToSkaz) {
-    rows.push(['Digit', 'Replace selection with `digit {\u0421\u041a\u0410\u0417: original}`']);
-    rows.push(['Alt + A', 'Auto-convert selected digits into `digits {\u0421\u041a\u0410\u0417: words}`']);
-  }
-
-  if (featureSettings.rowActions) {
-    for (const shortcut of PLAYBACK_REWIND_SHORTCUTS) {
-      const milliseconds = Math.round(shortcut.seconds * 1000);
-      rows.push([shortcut.label, 'Rewind playback ' + milliseconds + 'ms']);
-    }
-    if (featureSettings.playbackSpeedHotkeys) {
-      rows.push(['Shift + 1 / Shift + 2', 'Increase / decrease playback speed']);
-    }
-    rows.push(['Right Shift + Left / Right', 'Focus previous / next segment from start']);
-    rows.push(['Tab', 'Toggle active ghost cursor lane']);
-    rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
-    rows.push(['Alt + Shift + Down', 'Merge with next segment']);
-    rows.push(['D', 'Delete current segment when not typing']);
-  }
-
-  if (featureSettings.customLinter) {
-    rows.push(['Alt + F', 'Auto-fix lint issues in current row']);
-    rows.push(['Alt + Shift + F', 'Auto-fix lint issues in all rows']);
-  }
-
-  return rows;
+  return getRegisteredHotkeysHelpRows(featureSettings);
 }
 
 export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_SETTINGS) {
