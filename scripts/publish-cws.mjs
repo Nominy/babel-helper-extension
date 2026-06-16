@@ -37,6 +37,14 @@ const pollTimeoutMs = parsePositiveInteger(
   args.values.get('poll-timeout-ms') ?? process.env.CWS_POLL_TIMEOUT_MS ?? '120000',
   'poll timeout'
 );
+const requestRetryCount = parseNonNegativeInteger(
+  args.values.get('request-retries') ?? process.env.CWS_REQUEST_RETRIES ?? '3',
+  'request retry count'
+);
+const requestRetryDelayMs = parsePositiveInteger(
+  args.values.get('request-retry-delay-ms') ?? process.env.CWS_REQUEST_RETRY_DELAY_MS ?? '1000',
+  'request retry delay'
+);
 const { publisherId, extensionId } = resolveItemTarget();
 
 await ensureReadableFile(zipPath);
@@ -142,6 +150,9 @@ Options:
   --skip-review            Request skipReview=true
   --poll-interval-ms N     Upload-status polling interval in milliseconds
   --poll-timeout-ms N      Upload-status polling timeout in milliseconds
+  --request-retries N      Transient transport retries per API request. Defaults to 3
+  --request-retry-delay-ms N
+                           Base delay between transient request retries in milliseconds
   --help                   Show this help
 
 Environment:
@@ -155,6 +166,8 @@ Environment:
   CWS_ZIP_PATH
   CWS_PUBLISH_TYPE
   CWS_SKIP_REVIEW
+  CWS_REQUEST_RETRIES
+  CWS_REQUEST_RETRY_DELAY_MS
 `);
 }
 
@@ -235,7 +248,7 @@ async function getAccessToken() {
 }
 
 async function requestJson(url, options) {
-  const response = await fetch(url, options);
+  const response = await fetchWithRetry(url, options);
   const text = await response.text();
   const payload = parseJson(text);
 
@@ -248,6 +261,58 @@ async function requestJson(url, options) {
   }
 
   return payload ?? {};
+}
+
+async function fetchWithRetry(url, options) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      if (attempt >= requestRetryCount || !isTransientFetchError(error)) {
+        throw error;
+      }
+
+      const delayMs = requestRetryDelayMs * (attempt + 1);
+      console.warn(
+        `${options.method ?? 'GET'} ${url} failed with a transient transport error; retrying in ${delayMs}ms (${attempt + 1}/${requestRetryCount}).\n${formatError(
+          error
+        )}`
+      );
+      await sleep(delayMs);
+    }
+  }
+}
+
+function isTransientFetchError(error) {
+  return (
+    hasTransientErrorCode(error) ||
+    /\b(fetch failed|network|socket|timeout)\b/i.test(error instanceof Error ? error.message : String(error))
+  );
+}
+
+function hasTransientErrorCode(error) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  if (
+    [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ETIMEDOUT',
+      'EAI_AGAIN',
+      'ENOTFOUND',
+      'UND_ERR_SOCKET',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT'
+    ].includes(code)
+  ) {
+    return true;
+  }
+
+  return hasTransientErrorCode(error.cause);
 }
 
 async function waitForUploadIfNeeded(initialResult, accessToken, statusUrl, intervalMs, timeoutMs) {
@@ -381,6 +446,23 @@ function parsePositiveInteger(value, label) {
     throw new Error(`Invalid ${label}: ${value}`);
   }
   return number;
+}
+
+function parseNonNegativeInteger(value, label) {
+  const number = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`Invalid ${label}: ${value}`);
+  }
+  return number;
+}
+
+function formatError(error) {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const cause = error.cause instanceof Error ? `\nCaused by: ${error.cause.stack ?? error.cause.message}` : '';
+  return `${error.stack ?? error.message}${cause}`;
 }
 
 function sleep(ms) {
