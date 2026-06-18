@@ -418,6 +418,10 @@ function isCurlyTagTrailingPunctuationChar(char) {
   return typeof char === 'string' && /[.,?!:;"-]/.test(char);
 }
 
+function isSquareBracketTagTrailingPunctuationChar(char) {
+  return typeof char === 'string' && /[.,?!:;-]/.test(char);
+}
+
 function hasNonTagTextBeforeCurlyTag(text, openIndex) {
   if (typeof text !== 'string' || openIndex <= 0) {
     return false;
@@ -512,7 +516,7 @@ function getSquareBracketTagTrailingPunctuationParts(text) {
     let punctuationEnd = punctuationStart;
     while (
       punctuationEnd < text.length &&
-      isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
+      isSquareBracketTagTrailingPunctuationChar(text[punctuationEnd])
     ) {
       punctuationEnd += 1;
     }
@@ -2342,6 +2346,9 @@ test('flags punctuation that appears after square bracket tags for preceding tex
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh], who'), true);
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh].'), true);
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh]--'), true);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('TEXT: [tag] "TEXT'), false);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('TEXT: [tag] "TEXT"'), false);
+  assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh] "quoted"'), false);
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers, [laugh] who'), false);
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('[laugh], who'), false);
   assert.equal(hasSquareBracketTagTrailingPunctuationViolation('workers [laugh'), false);
@@ -2613,6 +2620,9 @@ test('moves punctuation before square bracket tags that annotate preceding text'
   assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh].'), 'workers. [laugh]');
   assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh]--'), 'workers-- [laugh]');
   assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh]   ?! who'), 'workers?! [laugh] who');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('TEXT: [tag] "TEXT'), 'TEXT: [tag] "TEXT');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('TEXT: [tag] "TEXT"'), 'TEXT: [tag] "TEXT"');
+  assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh] "quoted"'), 'workers [laugh] "quoted"');
   assert.equal(fixSquareBracketTagTrailingPunctuation('workers, [laugh] who'), 'workers, [laugh] who');
   assert.equal(fixSquareBracketTagTrailingPunctuation('[laugh], who'), '[laugh], who');
   assert.equal(fixSquareBracketTagTrailingPunctuation('workers [laugh'), 'workers [laugh');

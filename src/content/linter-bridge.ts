@@ -1,5 +1,8 @@
 // @ts-nocheck
-import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from "../core/highlighted-words";
+import {
+  DEFAULT_HIGHLIGHTED_WORDS,
+  normalizeHighlightedWords,
+} from "../core/highlighted-words";
 import {
   applyRuleFixes,
   buildRegistryIssues,
@@ -49,7 +52,7 @@ export function initLinterBridge() {
   const COMMA_BEFORE_DASH_RULE_REASON =
     "Commas before dash separators should be removed.";
   const FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON =
-    'Free-floating mid-sentence double dash must be a single dash.';
+    "Free-floating mid-sentence double dash must be a single dash.";
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
     "Punctuation immediately after double dash is typically avoided.";
   const SINGLE_DASH_PUNCTUATION_RULE_REASON =
@@ -74,8 +77,7 @@ export function initLinterBridge() {
   const HIGHLIGHT_SWATCH_ATTR = "data-babel-helper-linter-swatch";
   const HIGHLIGHT_PREVIEW_ATTR = "data-babel-helper-linter-preview";
   const HIGHLIGHT_OBSERVER_DELAY_MS = 50;
-  const NATIVE_LINT_AUGMENT_GLOBAL =
-    "__babelHelperLinterAugmentNativeIssues";
+  const NATIVE_LINT_AUGMENT_GLOBAL = "__babelHelperLinterAugmentNativeIssues";
   const NATIVE_LINT_PATCH_MARK = "__babelHelperLinterWebpackPatched";
   const NATIVE_LINT_STATE_SYNC_DELAY_MS = 1750;
   const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
@@ -475,7 +477,11 @@ export function initLinterBridge() {
     );
   }
 
-  function isStandalonePeriodAt(text, index, textContext = createTranscriptTextContext(text)) {
+  function isStandalonePeriodAt(
+    text,
+    index,
+    textContext = createTranscriptTextContext(text),
+  ) {
     if (typeof text !== "string" || text[index] !== ".") {
       return false;
     }
@@ -497,7 +503,10 @@ export function initLinterBridge() {
     return typeof char === "string" && /[\p{L}\p{N}<{\[]/u.test(char);
   }
 
-  function getPeriodSpacingParts(text, textContext = createTranscriptTextContext(text)) {
+  function getPeriodSpacingParts(
+    text,
+    textContext = createTranscriptTextContext(text),
+  ) {
     if (typeof text !== "string" || text.indexOf(".") === -1) {
       return [];
     }
@@ -514,11 +523,12 @@ export function initLinterBridge() {
         nextIndex += 1;
       }
 
-      const shouldHaveSpaceAfter = shouldPeriodHaveFollowingSpaceBefore(text[nextIndex]);
+      const shouldHaveSpaceAfter = shouldPeriodHaveFollowingSpaceBefore(
+        text[nextIndex],
+      );
       const hasExactlyOneSpaceAfter =
         nextIndex === index + 2 && text[index + 1] === " ";
-      const hasBadSpaceAfter =
-        shouldHaveSpaceAfter && !hasExactlyOneSpaceAfter;
+      const hasBadSpaceAfter = shouldHaveSpaceAfter && !hasExactlyOneSpaceAfter;
 
       if (hasSpaceBefore || hasBadSpaceAfter) {
         parts.push({
@@ -735,7 +745,13 @@ export function initLinterBridge() {
     const pattern = /--[.,?!:;]/gu;
     let match;
     while ((match = pattern.exec(text))) {
-      if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+      if (
+        !isRangeInsideGenericTag(
+          text,
+          match.index,
+          match.index + match[0].length,
+        )
+      ) {
         return true;
       }
     }
@@ -752,7 +768,11 @@ export function initLinterBridge() {
     }
 
     const parts = [];
-    for (let index = text.indexOf("--"); index !== -1; index = text.indexOf("--", index + 2)) {
+    for (
+      let index = text.indexOf("--");
+      index !== -1;
+      index = text.indexOf("--", index + 2)
+    ) {
       if (text[index - 1] === "-" || text[index + 2] === "-") {
         continue;
       }
@@ -764,7 +784,10 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (!/[ \t]/.test(text[index - 1] || "") || !/[ \t]/.test(text[index + 2] || "")) {
+      if (
+        !/[ \t]/.test(text[index - 1] || "") ||
+        !/[ \t]/.test(text[index + 2] || "")
+      ) {
         continue;
       }
 
@@ -814,7 +837,13 @@ export function initLinterBridge() {
     const pattern = /(?<!-)-[.,?!:;]/gu;
     let match;
     while ((match = pattern.exec(text))) {
-      if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+      if (
+        !isRangeInsideGenericTag(
+          text,
+          match.index,
+          match.index + match[0].length,
+        )
+      ) {
         return true;
       }
     }
@@ -1103,7 +1132,10 @@ export function initLinterBridge() {
         continue;
       }
 
-      if (char === "." && (text[index - 1] === "." || text[index + 1] === ".")) {
+      if (
+        char === "." &&
+        (text[index - 1] === "." || text[index + 1] === ".")
+      ) {
         continue;
       }
 
@@ -1132,7 +1164,10 @@ export function initLinterBridge() {
     return indices;
   }
 
-  function getRussianDirectSpeechAuthorContinuationLetterIndex(text, boundaryIndex) {
+  function getRussianDirectSpeechAuthorContinuationLetterIndex(
+    text,
+    boundaryIndex,
+  ) {
     if (typeof text !== "string" || boundaryIndex < 0) {
       return -1;
     }
@@ -1388,10 +1423,7 @@ export function initLinterBridge() {
       return isUppercaseLetter(trimmed[ellipsisLetterIndex]);
     }
 
-    const firstLetterIndex = findFirstLetterIndex(
-      trimmed,
-      contentStartIndex,
-    );
+    const firstLetterIndex = findFirstLetterIndex(trimmed, contentStartIndex);
     if (firstLetterIndex === -1) {
       return false;
     }
@@ -1466,8 +1498,7 @@ export function initLinterBridge() {
     while ((match = pattern.exec(text))) {
       const token = match[groupIndex] || match[0] || "";
       if (token) {
-        const tokenOffset =
-          groupIndex > 0 ? match[0].indexOf(token) : 0;
+        const tokenOffset = groupIndex > 0 ? match[0].indexOf(token) : 0;
         const start = match.index + Math.max(0, tokenOffset);
         const range = clampTextRange(text, start, start + token.length);
         if (range) {
@@ -1532,7 +1563,11 @@ export function initLinterBridge() {
     text,
     textContext = createTranscriptTextContext(text),
   ) {
-    if (typeof text !== "string" || text.indexOf(",") === -1 || text.indexOf("-") === -1) {
+    if (
+      typeof text !== "string" ||
+      text.indexOf(",") === -1 ||
+      text.indexOf("-") === -1
+    ) {
       return [];
     }
 
@@ -1555,7 +1590,8 @@ export function initLinterBridge() {
         continue;
       }
 
-      const dashEnd = text[dashStart + 1] === "-" ? dashStart + 2 : dashStart + 1;
+      const dashEnd =
+        text[dashStart + 1] === "-" ? dashStart + 2 : dashStart + 1;
       if (text[dashEnd] === "-" || !/[ \t]/.test(text[dashEnd] || "")) {
         continue;
       }
@@ -1602,7 +1638,10 @@ export function initLinterBridge() {
     );
   }
 
-  function getHighlightedWordMatches(text, textContext = createTranscriptTextContext(text)) {
+  function getHighlightedWordMatches(
+    text,
+    textContext = createTranscriptTextContext(text),
+  ) {
     if (!highlightedWordsEnabled || !highlightedWords.length) {
       return [];
     }
@@ -1786,9 +1825,7 @@ export function initLinterBridge() {
         changed = true;
       }
 
-      Object.values(value).forEach((nested) =>
-        visit(nested, reviewActionId),
-      );
+      Object.values(value).forEach((nested) => visit(nested, reviewActionId));
     }
 
     visit(root);
@@ -1883,7 +1920,11 @@ export function initLinterBridge() {
 
       if (/\s/.test(prevCharBeforeClose) || isWordCharacter(nextChar)) {
         matches.push(
-          clampTextRange(text, Math.max(0, index - 1), Math.min(text.length, index + 2)),
+          clampTextRange(
+            text,
+            Math.max(0, index - 1),
+            Math.min(text.length, index + 2),
+          ),
         );
       }
     }
@@ -1992,7 +2033,11 @@ export function initLinterBridge() {
   }
 
   function isCurlyTagTrailingPunctuationChar(char) {
-    return typeof char === "string" && /[.,?!:;"-]/.test(char);
+    return typeof char === "string" && /[.,?!:;"]/.test(char);
+  }
+
+  function isSquareBracketTagTrailingPunctuationChar(char) {
+    return typeof char === "string" && /[.,?!:;-]/.test(char);
   }
 
   function hasNonTagTextBeforeCurlyTag(text, openIndex) {
@@ -2033,7 +2078,10 @@ export function initLinterBridge() {
       }
 
       let punctuationStart = tagEnd;
-      while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      while (
+        punctuationStart < text.length &&
+        /[ \t]/.test(text[punctuationStart])
+      ) {
         punctuationStart += 1;
       }
 
@@ -2061,7 +2109,9 @@ export function initLinterBridge() {
   function getCurlyTagTrailingPunctuationMatches(text) {
     return compactMatches(
       getCurlyTagTrailingPunctuationParts(text)
-        .map((part) => clampTextRange(text, part.punctuationStart, part.punctuationEnd))
+        .map((part) =>
+          clampTextRange(text, part.punctuationStart, part.punctuationEnd),
+        )
         .filter(Boolean),
     );
   }
@@ -2082,14 +2132,17 @@ export function initLinterBridge() {
       }
 
       let punctuationStart = tagEnd;
-      while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      while (
+        punctuationStart < text.length &&
+        /[ \t]/.test(text[punctuationStart])
+      ) {
         punctuationStart += 1;
       }
 
       let punctuationEnd = punctuationStart;
       while (
         punctuationEnd < text.length &&
-        isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
+        isSquareBracketTagTrailingPunctuationChar(text[punctuationEnd])
       ) {
         punctuationEnd += 1;
       }
@@ -2110,7 +2163,9 @@ export function initLinterBridge() {
   function getSquareBracketTagTrailingPunctuationMatches(text) {
     return compactMatches(
       getSquareBracketTagTrailingPunctuationParts(text)
-        .map((part) => clampTextRange(text, part.punctuationStart, part.punctuationEnd))
+        .map((part) =>
+          clampTextRange(text, part.punctuationStart, part.punctuationEnd),
+        )
         .filter(Boolean),
     );
   }
@@ -2131,7 +2186,10 @@ export function initLinterBridge() {
       }
 
       let punctuationStart = tagEnd;
-      while (punctuationStart < text.length && /[ \t]/.test(text[punctuationStart])) {
+      while (
+        punctuationStart < text.length &&
+        /[ \t]/.test(text[punctuationStart])
+      ) {
         punctuationStart += 1;
       }
 
@@ -2189,13 +2247,17 @@ export function initLinterBridge() {
       });
     }
 
-    return parts.sort((left, right) => left.punctuationStart - right.punctuationStart);
+    return parts.sort(
+      (left, right) => left.punctuationStart - right.punctuationStart,
+    );
   }
 
   function getAngleTagTrailingPunctuationMatches(text) {
     return compactMatches(
       getAngleTagTrailingPunctuationParts(text)
-        .map((part) => clampTextRange(text, part.punctuationStart, part.punctuationEnd))
+        .map((part) =>
+          clampTextRange(text, part.punctuationStart, part.punctuationEnd),
+        )
         .filter(Boolean),
     );
   }
@@ -2222,7 +2284,9 @@ export function initLinterBridge() {
       const tokenIndex = match.index + prefix.length;
       const targetToken = getPolitePronounTargetToken(text, tokenIndex, token);
       if (token && targetToken && token !== targetToken) {
-        matches.push(clampTextRange(text, tokenIndex, tokenIndex + token.length));
+        matches.push(
+          clampTextRange(text, tokenIndex, tokenIndex + token.length),
+        );
       }
     }
 
@@ -2263,16 +2327,25 @@ export function initLinterBridge() {
         getCapitalizationContentStart(trimmed, contentStartIndex + 3),
       );
       return compactMatches(
-        [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
+        [
+          clampTextRange(
+            text,
+            leadingWhitespace + localIndex,
+            leadingWhitespace + localIndex + 1,
+          ),
+        ].filter(Boolean),
       );
     }
 
-    const localIndex = findFirstLetterIndex(
-      trimmed,
-      contentStartIndex,
-    );
+    const localIndex = findFirstLetterIndex(trimmed, contentStartIndex);
     return compactMatches(
-      [clampTextRange(text, leadingWhitespace + localIndex, leadingWhitespace + localIndex + 1)].filter(Boolean),
+      [
+        clampTextRange(
+          text,
+          leadingWhitespace + localIndex,
+          leadingWhitespace + localIndex + 1,
+        ),
+      ].filter(Boolean),
     );
   }
 
@@ -2290,7 +2363,8 @@ export function initLinterBridge() {
         squareBracketTagSpacing: SQUARE_BRACKET_TAG_SPACING_RULE_REASON,
         curlyTagTrailingPunctuation: CURLY_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         angleTagTrailingPunctuation: ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON,
-        squareBracketTagTrailingPunctuation: SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
+        squareBracketTagTrailingPunctuation:
+          SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         unicodeDash: UNICODE_DASH_RULE_REASON,
         commaBeforeDash: COMMA_BEFORE_DASH_RULE_REASON,
         freeMidSentenceDoubleDash: FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON,
@@ -2298,7 +2372,8 @@ export function initLinterBridge() {
         singleDashPunctuation: SINGLE_DASH_PUNCTUATION_RULE_REASON,
         incorrectInterjectionForms: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
         highlightedWord: HIGHLIGHTED_WORD_RULE_REASON,
-        sentenceBoundaryCapitalization: SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
+        sentenceBoundaryCapitalization:
+          SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
         politePronounCase: POLITE_PRONOUN_CASE_RULE_REASON,
         terminalPunctuation: TERMINAL_PUNCTUATION_RULE_REASON,
         segmentStartCapitalization: SEGMENT_START_CAPITALIZATION_RULE_REASON,
@@ -2381,9 +2456,9 @@ export function initLinterBridge() {
   function isHelperInjectedIssue(issue) {
     return Boolean(
       issue &&
-        typeof issue === "object" &&
-        issue.babelHelper &&
-        typeof issue.babelHelper === "object",
+      typeof issue === "object" &&
+      issue.babelHelper &&
+      typeof issue.babelHelper === "object",
     );
   }
 
@@ -2450,7 +2525,11 @@ export function initLinterBridge() {
     });
   }
 
-  function setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason) {
+  function setCurrentNativeHelperIssues(
+    annotationEntries,
+    helperIssues,
+    reason,
+  ) {
     currentHighlightIssues = Array.isArray(helperIssues) ? helperIssues : [];
     if (currentHighlightIssues.length) {
       startHighlightObserver();
@@ -2502,7 +2581,7 @@ export function initLinterBridge() {
     }
 
     const needle =
-      'if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}return t}constructor';
+      "if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}return t}constructor";
     if (source.indexOf(needle) === -1) {
       debugState.nativeLintPatch = {
         changed: false,
@@ -2512,8 +2591,7 @@ export function initLinterBridge() {
       return factory;
     }
 
-    const replacement =
-      `if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}if("function"==typeof window["${NATIVE_LINT_AUGMENT_GLOBAL}"]){try{t=window["${NATIVE_LINT_AUGMENT_GLOBAL}"](this,e,t)||t}catch(e){}}return t}constructor`;
+    const replacement = `if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}if("function"==typeof window["${NATIVE_LINT_AUGMENT_GLOBAL}"]){try{t=window["${NATIVE_LINT_AUGMENT_GLOBAL}"](this,e,t)||t}catch(e){}}return t}constructor`;
     try {
       const patched = (0, eval)(`(${source.replace(needle, replacement)})`);
       patched.__babelHelperNativeLinterPatched = true;
@@ -2580,7 +2658,9 @@ export function initLinterBridge() {
       return false;
     }
 
-    const patchedPush = function babelHelperNativeLinterPatchedPush(...entries) {
+    const patchedPush = function babelHelperNativeLinterPatchedPush(
+      ...entries
+    ) {
       for (const entry of entries) {
         patchWebpackChunkEntry(entry);
       }
@@ -2715,10 +2795,7 @@ export function initLinterBridge() {
       : hooks.lintHook.hook.memoizedState;
     const annotationEntries = extractAnnotationEntries(annotations);
     const helperIssues = buildCustomIssues(annotationEntries);
-    const mergedIssues = mergeNativeAndHelperIssues(
-      nativeIssues,
-      helperIssues,
-    );
+    const mergedIssues = mergeNativeAndHelperIssues(nativeIssues, helperIssues);
     setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason);
 
     if (!areLintIssueArraysEqual(nativeIssues, mergedIssues)) {
@@ -2776,13 +2853,11 @@ export function initLinterBridge() {
     const normalized = reason.toLocaleLowerCase();
     return (
       normalized.includes("double-dash-outside-quote-or-tag") ||
-      (
-        normalized.includes("double") &&
+      (normalized.includes("double") &&
         normalized.includes("dash") &&
         normalized.includes("quote") &&
         normalized.includes("tag") &&
-        (normalized.includes("outside") || normalized.includes("only"))
-      )
+        (normalized.includes("outside") || normalized.includes("only")))
     );
   }
 
@@ -2825,7 +2900,11 @@ export function initLinterBridge() {
   }
 
   function filterSuppressedIssuesInPayload(root, shouldSuppressIssue) {
-    if (!root || typeof root !== "object" || typeof shouldSuppressIssue !== "function") {
+    if (
+      !root ||
+      typeof root !== "object" ||
+      typeof shouldSuppressIssue !== "function"
+    ) {
       return false;
     }
 
@@ -3005,7 +3084,10 @@ export function initLinterBridge() {
   }
 
   function rewriteJsonPayload(payload, additionalIssues, shouldSuppressIssue) {
-    const filtered = filterSuppressedIssuesInPayload(payload, shouldSuppressIssue);
+    const filtered = filterSuppressedIssuesInPayload(
+      payload,
+      shouldSuppressIssue,
+    );
     const appended = augmentJsonPayload(payload, additionalIssues);
     return filtered || appended;
   }
@@ -3274,9 +3356,7 @@ export function initLinterBridge() {
 
   function getIssueSourceText(issue) {
     const helper =
-      issue &&
-      issue.babelHelper &&
-      typeof issue.babelHelper === "object"
+      issue && issue.babelHelper && typeof issue.babelHelper === "object"
         ? issue.babelHelper
         : null;
     return helper && typeof helper.sourceText === "string"
@@ -3303,7 +3383,12 @@ export function initLinterBridge() {
           ranges,
         };
       })
-      .filter((entry) => entry && entry.reason && (entry.matches.length || entry.ranges.length));
+      .filter(
+        (entry) =>
+          entry &&
+          entry.reason &&
+          (entry.matches.length || entry.ranges.length),
+      );
   }
 
   function getHoveredRowText() {
@@ -3396,7 +3481,11 @@ export function initLinterBridge() {
 
       if (Array.isArray(entry.matches)) {
         for (const match of entry.matches) {
-          if (typeof match === "string" && match && !target.matches.includes(match)) {
+          if (
+            typeof match === "string" &&
+            match &&
+            !target.matches.includes(match)
+          ) {
             target.matches.push(match);
           }
         }
@@ -3430,12 +3519,9 @@ export function initLinterBridge() {
     }
 
     const bodyText = document.body.innerText || "";
-    return getVisibleTooltipEntries(
-      rowText,
-      bodyText,
-      getCustomLintRules(),
-      { createTextContext: createTranscriptTextContext },
-    );
+    return getVisibleTooltipEntries(rowText, bodyText, getCustomLintRules(), {
+      createTextContext: createTranscriptTextContext,
+    });
   }
 
   function findReasonTextNode(reason) {
@@ -3443,7 +3529,10 @@ export function initLinterBridge() {
       return null;
     }
 
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+    );
     while (walker.nextNode()) {
       const node = walker.currentNode;
       if (
@@ -3462,7 +3551,10 @@ export function initLinterBridge() {
       return null;
     }
 
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+    );
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const value = node.nodeValue || "";
@@ -3736,11 +3828,13 @@ export function initLinterBridge() {
 
       const swatchedReasonNodes = new Set();
       coloredEntries.forEach((entry) => {
-        const reasonNode = (Array.isArray(entry.aliases)
-          ? entry.aliases
-          : [entry.reason]
+        const reasonNode = (
+          Array.isArray(entry.aliases) ? entry.aliases : [entry.reason]
         )
-          .map((reason) => findReasonTextNode(reason) || findNativeReasonTextNode(reason))
+          .map(
+            (reason) =>
+              findReasonTextNode(reason) || findNativeReasonTextNode(reason),
+          )
           .find(Boolean);
         if (!reasonNode || swatchedReasonNodes.has(reasonNode)) {
           return;
@@ -3784,8 +3878,7 @@ export function initLinterBridge() {
 
   function handleHighlightPointerOver(event) {
     const target = event && event.target;
-    const row =
-      target instanceof Element ? target.closest("tr") : null;
+    const row = target instanceof Element ? target.closest("tr") : null;
     if (row instanceof HTMLTableRowElement) {
       highlightedRow = row;
       startHighlightObserver();
@@ -4031,11 +4124,15 @@ export function initLinterBridge() {
 
       const lineChanged = hasCompactFrames
         ? rewriteIssuesInCompactJsonlFrame(
-          parsed.payload,
-          additionalIssues,
-          shouldSuppressIssue,
-        )
-        : rewriteJsonPayload(parsed.payload, additionalIssues, shouldSuppressIssue);
+            parsed.payload,
+            additionalIssues,
+            shouldSuppressIssue,
+          )
+        : rewriteJsonPayload(
+            parsed.payload,
+            additionalIssues,
+            shouldSuppressIssue,
+          );
       if (!lineChanged) {
         return line;
       }
@@ -4787,17 +4884,18 @@ export function initLinterBridge() {
     };
   }
 
-  async function sanitizeHelperAssertedWarningsRequest(input, init, options = {}) {
+  async function sanitizeHelperAssertedWarningsRequest(
+    input,
+    init,
+    options = {},
+  ) {
     const bodyText = await readRequestBodyText(input, init);
     const bodyPayload = safeJsonParse(bodyText);
     if (!bodyPayload || typeof bodyPayload !== "object") {
       return { input, init, changed: false, payload: null };
     }
 
-    const result = stripHelperAssertedWarningsFromPayload(
-      bodyPayload,
-      options,
-    );
+    const result = stripHelperAssertedWarningsFromPayload(bodyPayload, options);
     if (!result.changed) {
       return { input, init, changed: false, payload: bodyPayload };
     }
@@ -4853,13 +4951,9 @@ export function initLinterBridge() {
       input,
       init,
     );
-    const sanitized = await sanitizeHelperAssertedWarningsRequest(
-      input,
-      init,
-      {
-        recordClearance: true,
-      },
-    );
+    const sanitized = await sanitizeHelperAssertedWarningsRequest(input, init, {
+      recordClearance: true,
+    });
     const response = await callUpstreamFetch(sanitized.input, sanitized.init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   }
@@ -4892,9 +4986,7 @@ export function initLinterBridge() {
   }, 1000);
 
   function handleToggle(event) {
-    const nextEnabled = Boolean(
-      event && event.detail && event.detail.enabled,
-    );
+    const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
     enabled = nextEnabled;
     if (!enabled && autoLintTimer) {
       window.clearTimeout(autoLintTimer);
@@ -5250,7 +5342,8 @@ export function initLinterBridge() {
     let result = "";
     let cursor = 0;
     for (const part of parts) {
-      const partStart = part.kind === "opening" ? part.punctuationStart : part.tagStart;
+      const partStart =
+        part.kind === "opening" ? part.punctuationStart : part.tagStart;
       if (partStart < cursor) {
         continue;
       }
@@ -5441,10 +5534,7 @@ export function initLinterBridge() {
         return text;
       }
 
-      const letterIndex = findFirstLetterIndex(
-        text,
-        ellipsisContentStartIndex,
-      );
+      const letterIndex = findFirstLetterIndex(text, ellipsisContentStartIndex);
       if (letterIndex === -1 || !isUppercaseLetter(text[letterIndex])) {
         return text;
       }
@@ -5456,10 +5546,7 @@ export function initLinterBridge() {
       );
     }
 
-    const letterIndex = findFirstLetterIndex(
-      text,
-      contentStartIndex,
-    );
+    const letterIndex = findFirstLetterIndex(text, contentStartIndex);
     if (letterIndex === -1 || !isLowercaseLetter(text[letterIndex])) {
       return text;
     }
@@ -5725,4 +5812,3 @@ export function initLinterBridge() {
 }
 
 initLinterBridge();
-
