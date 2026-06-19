@@ -19,12 +19,27 @@ export function initMagnifierBridge() {
   const WAVEFORM_SCALE_DEFAULT_MIN = 0.3;
   const WAVEFORM_SCALE_DEFAULT_MAX = 20;
   const WAVEFORM_SCALE_DEFAULT_STEP = 0.001;
+  const AUTO_SEGMENT_PROMPT_SESSION_OPTIONS = {
+    expectedInputs: [{ type: 'text' }, { type: 'audio' }],
+    expectedOutputs: [{ type: 'text' }],
+    initialPrompts: [
+      {
+        role: 'system',
+        content:
+          'You review a deterministic same-speaker transcript alignment. Do not rewrite, translate, invent, copy, or return transcript text. Return only valid JSON that either accepts the draft or requests adjacent whole-sentence moves.'
+      }
+    ]
+  };
+  const AUTO_SEGMENT_PROMPT_MAX_AUDIO_SAMPLES = 4;
+  const AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS = 12;
   const waveformScaleState = {
     enabled: false,
     max: 1000,
     drag: null,
     observer: null
   };
+  const promptSessions = new Map();
+  let promptSessionCounter = 0;
 
   function safe(callback, fallbackValue) {
     try {
@@ -1311,6 +1326,464 @@ export function initMagnifierBridge() {
     }
 
     return channels.length ? { audio, channels } : null;
+  }
+
+  async function getPromptApiLanguageModel() {
+    const LanguageModel = safe(() => globalThis.LanguageModel, null);
+    if (
+      typeof LanguageModel !== 'function' ||
+      typeof LanguageModel.availability !== 'function' ||
+      typeof LanguageModel.create !== 'function'
+    ) {
+      return {
+        ok: false,
+        reason: 'prompt-api-missing'
+      };
+    }
+
+    let availability = 'unavailable';
+    try {
+      availability = await LanguageModel.availability(AUTO_SEGMENT_PROMPT_SESSION_OPTIONS);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'prompt-api-availability-failed',
+        errorName: error && error.name ? error.name : '',
+        errorMessage: error && error.message ? error.message : ''
+      };
+    }
+
+    if (availability !== 'available') {
+      return {
+        ok: false,
+        reason: 'prompt-api-' + availability,
+        availability
+      };
+    }
+
+    try {
+      const session = await LanguageModel.create(AUTO_SEGMENT_PROMPT_SESSION_OPTIONS);
+      return {
+        ok: true,
+        availability,
+        session
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'prompt-api-create-failed',
+        availability,
+        errorName: error && error.name ? error.name : '',
+        errorMessage: error && error.message ? error.message : ''
+      };
+    }
+  }
+
+  function destroyPromptSessionRecord(record) {
+    const session = record && record.session ? record.session : null;
+    if (session && typeof session.destroy === 'function') {
+      try {
+        session.destroy();
+      } catch (_error) {
+        // Ignore session disposal errors; a later prepare call can create a fresh session.
+      }
+    }
+  }
+
+  async function prepareAutoSegmentTextRedistributionSession() {
+    const model = await getPromptApiLanguageModel();
+    if (!model || !model.ok || !model.session) {
+      return model || { ok: false, reason: 'prompt-api-unavailable' };
+    }
+
+    promptSessionCounter += 1;
+    const sessionId = 'auto-segment-prompt-' + Date.now() + '-' + promptSessionCounter;
+    promptSessions.set(sessionId, {
+      session: model.session,
+      createdAt: Date.now()
+    });
+
+    return {
+      ok: true,
+      sessionId,
+      availability: model.availability
+    };
+  }
+
+  function destroyAutoSegmentTextRedistributionSession(payload) {
+    const sessionId = payload && typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    if (!sessionId) {
+      return {
+        ok: false,
+        reason: 'missing-session-id'
+      };
+    }
+
+    const record = promptSessions.get(sessionId);
+    if (record) {
+      destroyPromptSessionRecord(record);
+      promptSessions.delete(sessionId);
+    }
+
+    return {
+      ok: true,
+      destroyed: Boolean(record)
+    };
+  }
+
+  function normalizeAutoSegmentPromptText(value) {
+    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  }
+
+  function normalizeAutoSegmentPromptSegment(segment, index) {
+    const id = segment && typeof segment.id === 'string' ? segment.id.trim() : '';
+    const speakerKey = segment && typeof segment.speakerKey === 'string' ? segment.speakerKey.trim() : '';
+    const startSeconds = Number(segment && segment.startSeconds);
+    const endSeconds = Number(segment && segment.endSeconds);
+    if (!id || !speakerKey || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return null;
+    }
+
+    return {
+      id,
+      index,
+      speakerKey,
+      startSeconds,
+      endSeconds,
+      text: normalizeAutoSegmentPromptText(segment.text)
+    };
+  }
+
+  function normalizeAutoSegmentPromptAllocation(allocation) {
+    const id = allocation && typeof allocation.id === 'string' ? allocation.id.trim() : '';
+    if (!id || typeof allocation.text !== 'string') {
+      return null;
+    }
+    return {
+      id,
+      text: normalizeAutoSegmentPromptText(allocation.text)
+    };
+  }
+
+  function normalizeAutoSegmentPromptGroup(payload) {
+    const speakerKey = payload && typeof payload.speakerKey === 'string' ? payload.speakerKey.trim() : '';
+    const rawSegments = payload && Array.isArray(payload.segments) ? payload.segments : [];
+    const fullText = normalizeAutoSegmentPromptText(payload && payload.fullText);
+    const rawDraftAllocations = payload && Array.isArray(payload.draftAllocations) ? payload.draftAllocations : [];
+    if (!speakerKey || rawSegments.length < 2) {
+      return null;
+    }
+
+    const segments = rawSegments
+      .map((segment, index) => normalizeAutoSegmentPromptSegment(segment, index))
+      .filter(Boolean)
+      .filter((segment) => segment.speakerKey === speakerKey);
+    if (segments.length !== rawSegments.length || segments.length < 2) {
+      return null;
+    }
+
+    const draftAllocations = rawDraftAllocations
+      .map((allocation) => normalizeAutoSegmentPromptAllocation(allocation))
+      .filter(Boolean);
+    if (draftAllocations.length !== segments.length) {
+      return null;
+    }
+
+    for (let index = 0; index < segments.length; index += 1) {
+      if (draftAllocations[index].id !== segments[index].id) {
+        return null;
+      }
+    }
+
+    return {
+      speakerKey,
+      fullText,
+      draftAllocations,
+      segments
+    };
+  }
+
+  function getAutoSegmentPromptReviewSchema() {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['acceptDraft', 'moves', 'notes'],
+      properties: {
+        acceptDraft: { type: 'boolean' },
+        notes: { type: 'string' },
+        moves: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['fromIndex', 'toIndex', 'sentenceCount'],
+            properties: {
+              fromIndex: { type: 'number' },
+              toIndex: { type: 'number' },
+              sentenceCount: { type: 'number' }
+            }
+          }
+        }
+      }
+    };
+  }
+
+  function selectAutoSegmentPromptAudioSampleIndexes(segments) {
+    const limit = Math.min(AUTO_SEGMENT_PROMPT_MAX_AUDIO_SAMPLES, segments.length);
+    const indexes = new Set();
+    if (!limit) {
+      return [];
+    }
+
+    indexes.add(0);
+    indexes.add(segments.length - 1);
+
+    let seed = segments.reduce((value, segment) => {
+      const text = segment.id + ':' + segment.startSeconds + ':' + segment.endSeconds;
+      for (let index = 0; index < text.length; index += 1) {
+        value = ((value << 5) - value + text.charCodeAt(index)) >>> 0;
+      }
+      return value >>> 0;
+    }, 2166136261);
+
+    while (indexes.size < limit) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      indexes.add(seed % segments.length);
+    }
+
+    return Array.from(indexes).sort((left, right) => left - right);
+  }
+
+  function createAutoSegmentPromptAudioBuffer(decoded, segment) {
+    if (!decoded || !decoded.audio || !Array.isArray(decoded.channels) || !decoded.channels.length) {
+      return null;
+    }
+
+    const AudioContextCtor = safe(() => window.AudioContext || window.webkitAudioContext, null);
+    if (typeof AudioContextCtor !== 'function') {
+      return null;
+    }
+
+    const sourceDuration = Number(decoded.audio.duration) || 0;
+    const sourceLength = Number(decoded.audio.length) || decoded.channels[0].length || 0;
+    const sourceSampleRate = Math.max(1, Number(decoded.audio.sampleRate) || 44100);
+    if (!(sourceDuration > 0) || !(sourceLength > 1)) {
+      return null;
+    }
+
+    let startSeconds = clamp(Number(segment.startSeconds) || 0, 0, sourceDuration);
+    let endSeconds = clamp(Number(segment.endSeconds) || 0, 0, sourceDuration);
+    if (!(endSeconds > startSeconds)) {
+      return null;
+    }
+
+    if (endSeconds - startSeconds > AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS) {
+      const centerSeconds = (startSeconds + endSeconds) / 2;
+      startSeconds = clamp(centerSeconds - AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS / 2, 0, sourceDuration);
+      endSeconds = clamp(startSeconds + AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS, 0, sourceDuration);
+      startSeconds = clamp(endSeconds - AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS, 0, sourceDuration);
+    }
+
+    const startIndex = clamp(Math.floor((startSeconds / sourceDuration) * sourceLength), 0, sourceLength - 1);
+    const endIndex = clamp(Math.ceil((endSeconds / sourceDuration) * sourceLength), startIndex + 1, sourceLength);
+    const frameCount = endIndex - startIndex;
+    if (!(frameCount > 0)) {
+      return null;
+    }
+
+    const context = new AudioContextCtor();
+    const channelCount = Math.min(2, decoded.channels.length);
+    const buffer = context.createBuffer(channelCount, frameCount, sourceSampleRate);
+    for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+      const source = decoded.channels[channelIndex] || decoded.channels[0];
+      const target = buffer.getChannelData(channelIndex);
+      for (let index = 0; index < frameCount; index += 1) {
+        target[index] = Number(source[startIndex + index]) || 0;
+      }
+    }
+    safe(() => context.close(), null);
+
+    return buffer;
+  }
+
+  function collectAutoSegmentPromptAudioSamples(group) {
+    const resolved = resolveWaveForVisibleSpeaker(group.speakerKey);
+    if (!resolved.wave || !isUsableWaveCandidate(resolved.wave, resolved.host)) {
+      return [];
+    }
+
+    const wave = resolved.wave;
+    const decoded = getDecodedAudioChannelsForTrim(wave);
+    if (!decoded) {
+      return [];
+    }
+
+    const samples = [];
+    for (const index of selectAutoSegmentPromptAudioSampleIndexes(group.segments)) {
+      const segment = group.segments[index];
+      const audioBuffer = createAutoSegmentPromptAudioBuffer(decoded, segment);
+      if (audioBuffer) {
+        samples.push({
+          id: segment.id,
+          index,
+          audioBuffer
+        });
+      }
+    }
+
+    return samples;
+  }
+
+  function buildAutoSegmentPromptMessages(group, audioSamples) {
+    const rowLines = group.segments
+      .map((segment, index) =>
+        [
+          'index=' + (index + 1),
+          'id=' + segment.id,
+          'start=' + segment.startSeconds.toFixed(3),
+          'end=' + segment.endSeconds.toFixed(3),
+          'draftText=' + JSON.stringify(group.draftAllocations[index].text)
+        ].join(' | ')
+      )
+      .join('\n');
+    const sampledIds = audioSamples.map((sample) => sample.id).join(', ') || 'none';
+    const content = [
+      {
+        type: 'text',
+        value:
+          'Speaker key: ' + group.speakerKey + '\n' +
+          'Rows are same-speaker transcript segments after automatic audio cuts. The draft split was produced deterministically from the exact baseline transcript and segment durations.\n\n' +
+          'Rules:\n' +
+          '- If the draft is plausible, return acceptDraft true and moves [].\n' +
+          '- Do not return transcript text.\n' +
+          '- Do not rewrite, correct, translate, deduplicate, invent, or remove words.\n' +
+          '- If a sampled boundary is clearly wrong, move only whole sentences between adjacent one-based row indexes.\n' +
+          '- If unsure, accept the draft.\n\n' +
+          'Exact baseline transcript, for reference only:\n' + group.fullText + '\n\n' +
+          'Draft rows:\n' + rowLines + '\n\n' +
+          'Audio samples are attached for these row ids: ' + sampledIds + '.'
+      }
+    ];
+
+    for (const sample of audioSamples) {
+      content.push({
+        type: 'text',
+        value: 'Audio sample for row id ' + sample.id + '.'
+      });
+      content.push({
+        type: 'audio',
+        value: sample.audioBuffer
+      });
+    }
+
+    return [
+      {
+        role: 'user',
+        content
+      }
+    ];
+  }
+
+  function parseAutoSegmentPromptResponse(response) {
+    if (response && typeof response === 'object' && typeof response.acceptDraft === 'boolean' && Array.isArray(response.moves)) {
+      return response;
+    }
+
+    if (typeof response !== 'string') {
+      return null;
+    }
+
+    try {
+      return JSON.parse(response);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function validateAutoSegmentPromptReview(group, review) {
+    if (!review || typeof review.acceptDraft !== 'boolean' || !Array.isArray(review.moves)) {
+      return false;
+    }
+
+    for (const move of review.moves) {
+      const fromIndex = Math.round(Number(move && move.fromIndex));
+      const toIndex = Math.round(Number(move && move.toIndex));
+      const sentenceCount = Math.round(Number(move && move.sentenceCount));
+      if (
+        !Number.isInteger(fromIndex) ||
+        !Number.isInteger(toIndex) ||
+        Math.abs(fromIndex - toIndex) !== 1 ||
+        fromIndex < 1 ||
+        toIndex < 1 ||
+        fromIndex > group.segments.length ||
+        toIndex > group.segments.length ||
+        !Number.isInteger(sentenceCount) ||
+        sentenceCount < 1
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  async function redistributeAutoSegmentText(payload) {
+    const group = normalizeAutoSegmentPromptGroup(payload);
+    if (!group) {
+      return {
+        ok: false,
+        reason: 'invalid-group'
+      };
+    }
+
+    const sessionId = payload && typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    let record = sessionId ? promptSessions.get(sessionId) : null;
+    let shouldDestroy = false;
+    if (!record) {
+      const model = await getPromptApiLanguageModel();
+      if (!model || !model.ok || !model.session) {
+        return model || { ok: false, reason: 'prompt-api-unavailable' };
+      }
+      record = { session: model.session };
+      shouldDestroy = true;
+    }
+
+    const session = record.session;
+    try {
+      const audioSamples = collectAutoSegmentPromptAudioSamples(group);
+      const responseConstraint = getAutoSegmentPromptReviewSchema();
+      const response = await session.prompt(buildAutoSegmentPromptMessages(group, audioSamples), {
+        responseConstraint
+      });
+      const parsed = parseAutoSegmentPromptResponse(response);
+      if (!validateAutoSegmentPromptReview(group, parsed)) {
+        return {
+          ok: false,
+          reason: 'invalid-prompt-review'
+        };
+      }
+
+      return {
+        ok: true,
+        review: {
+          acceptDraft: parsed.acceptDraft,
+          moves: parsed.moves,
+          notes: typeof parsed.notes === 'string' ? parsed.notes : ''
+        },
+        audioSampleCount: audioSamples.length
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'prompt-api-prompt-failed',
+        errorName: error && error.name ? error.name : '',
+        errorMessage: error && error.message ? error.message : ''
+      };
+    } finally {
+      if (shouldDestroy) {
+        destroyPromptSessionRecord(record);
+      }
+    }
   }
 
   function indexToSeconds(index, length, duration) {
@@ -3332,6 +3805,39 @@ export function initMagnifierBridge() {
       return;
     }
 
+    if (operation === 'prepare-auto-segment-text-redistribution') {
+      Promise.resolve(prepareAutoSegmentTextRedistributionSession(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            reason: 'prompt-api-prepare-failed',
+            errorName: error && error.name ? error.name : '',
+            errorMessage: error && error.message ? error.message : ''
+          })
+        );
+      return;
+    }
+
+    if (operation === 'auto-segment-redistribute-text') {
+      Promise.resolve(redistributeAutoSegmentText(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            reason: 'prompt-api-redistribution-failed',
+            errorName: error && error.name ? error.name : '',
+            errorMessage: error && error.message ? error.message : ''
+          })
+        );
+      return;
+    }
+
+    if (operation === 'destroy-auto-segment-text-redistribution-session') {
+      respond(id, destroyAutoSegmentTextRedistributionSession(payload));
+      return;
+    }
+
     if (operation === 'trim-segment-audio-for-speaker') {
       respond(
         id,
@@ -3422,6 +3928,10 @@ export function initMagnifierBridge() {
     for (const hostMarker of Array.from(loops.keys())) {
       stopLoop(hostMarker);
     }
+    for (const record of Array.from(promptSessions.values())) {
+      destroyPromptSessionRecord(record);
+    }
+    promptSessions.clear();
     unbindWaveformScaleUnlock();
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);

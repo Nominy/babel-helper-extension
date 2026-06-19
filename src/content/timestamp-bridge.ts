@@ -340,6 +340,59 @@ export function initTimestampBridge() {
     return null;
   }
 
+  function resolveRowActionBinding(row) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    let fiber = getReactFiber(row);
+    if (!fiber) {
+      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
+    }
+
+    let current = fiber;
+    let depth = 0;
+    while (current && typeof current === 'object' && depth < 24) {
+      const props = current.memoizedProps;
+      const annotation =
+        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
+          ? props.annotation
+          : null;
+      if (annotation && typeof annotation.id === 'string' && annotation.id) {
+        const onMergeAbove =
+          props && typeof props === 'object' && typeof props.onMergeAbove === 'function'
+            ? props.onMergeAbove
+            : null;
+        const onMergeBelow =
+          props && typeof props === 'object' && typeof props.onMergeBelow === 'function'
+            ? props.onMergeBelow
+            : null;
+        const onDelete =
+          props && typeof props === 'object' && typeof props.onDelete === 'function'
+            ? props.onDelete
+            : null;
+        if (onMergeAbove || onMergeBelow || onDelete) {
+          return {
+            annotation,
+            annotationId: annotation.id,
+            canMergeAbove: Boolean(props.canMergeAbove),
+            canMergeBelow: Boolean(props.canMergeBelow),
+            onDelete,
+            onMergeAbove,
+            onMergeBelow,
+            startSeconds: Number(annotation.startTimeInSeconds),
+            endSeconds: Number(annotation.endTimeInSeconds)
+          };
+        }
+      }
+
+      current = current.return;
+      depth += 1;
+    }
+
+    return null;
+  }
+
   function findRowByAnnotationId(annotationId) {
     if (typeof annotationId !== 'string' || !annotationId) {
       return null;
@@ -466,6 +519,171 @@ export function initTimestampBridge() {
     return leftRow && rightRow ? { leftRow, rightRow } : null;
   }
 
+  function resolveRowFromPayload(payload) {
+    let row =
+      (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) ||
+      findRowByTimeLabels(payload?.startText, payload?.endText, {
+        speakerKey: payload?.speakerKey
+      }) ||
+      findRowByTimeRange(Number(payload?.startSeconds), Number(payload?.endSeconds), {
+        speakerKey: payload?.speakerKey
+      });
+    if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === 'object') {
+      row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
+    }
+    return row instanceof HTMLTableRowElement ? row : null;
+  }
+
+  async function mergeSegment(payload) {
+    const direction = payload && payload.direction === 'below' ? 'below' : 'above';
+    const row = resolveRowFromPayload(payload);
+    if (!(row instanceof HTMLTableRowElement)) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'row-not-found'
+      };
+    }
+
+    const binding = resolveRowActionBinding(row);
+    const action = direction === 'below' ? binding?.onMergeBelow : binding?.onMergeAbove;
+    const canMerge = direction === 'below' ? binding?.canMergeBelow : binding?.canMergeAbove;
+    if (!binding || typeof action !== 'function' || typeof binding.annotationId !== 'string' || !binding.annotationId) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'binding-not-found'
+      };
+    }
+
+    if (!canMerge) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'merge-disabled',
+        annotationId: binding.annotationId,
+        direction
+      };
+    }
+
+    const rowCountBefore = getTranscriptRows().length;
+    try {
+      if (direction === 'below') {
+        binding.onMergeBelow(binding.annotationId);
+      } else {
+        binding.onMergeAbove(binding.annotationId);
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'apply-threw',
+        message: error instanceof Error ? error.message : String(error || '')
+      };
+    }
+
+    const settled = await waitFor(() => {
+      const rows = getTranscriptRows();
+      if (rows.length < rowCountBefore) {
+        return { rowCountAfter: rows.length, removed: true };
+      }
+
+      const current = findRowByAnnotationId(binding.annotationId);
+      if (!(current instanceof HTMLTableRowElement)) {
+        return { rowCountAfter: rows.length, removed: true };
+      }
+
+      return null;
+    }, 1600, 40);
+
+    if (!settled) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'verify-timeout',
+        annotationId: binding.annotationId,
+        direction
+      };
+    }
+
+    return {
+      ok: true,
+      backend: 'page-react-row-action',
+      annotationId: binding.annotationId,
+      direction,
+      rowCountBefore,
+      rowCountAfter: settled.rowCountAfter
+    };
+  }
+
+  async function deleteSegment(payload) {
+    const row = resolveRowFromPayload(payload);
+    if (!(row instanceof HTMLTableRowElement)) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'row-not-found'
+      };
+    }
+
+    const binding = resolveRowActionBinding(row);
+    if (
+      !binding ||
+      typeof binding.onDelete !== 'function' ||
+      typeof binding.annotationId !== 'string' ||
+      !binding.annotationId
+    ) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'binding-not-found'
+      };
+    }
+
+    const rowCountBefore = getTranscriptRows().length;
+    try {
+      binding.onDelete(binding.annotationId);
+    } catch (error) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'apply-threw',
+        message: error instanceof Error ? error.message : String(error || '')
+      };
+    }
+
+    const settled = await waitFor(() => {
+      const rows = getTranscriptRows();
+      if (rows.length < rowCountBefore) {
+        return { rowCountAfter: rows.length, removed: true };
+      }
+
+      const current = findRowByAnnotationId(binding.annotationId);
+      if (!(current instanceof HTMLTableRowElement)) {
+        return { rowCountAfter: rows.length, removed: true };
+      }
+
+      return null;
+    }, 1600, 40);
+
+    if (!settled) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'verify-timeout',
+        annotationId: binding.annotationId
+      };
+    }
+
+    return {
+      ok: true,
+      backend: 'page-react-row-action',
+      annotationId: binding.annotationId,
+      rowCountBefore,
+      rowCountAfter: settled.rowCountAfter
+    };
+  }
+
   async function setBoundaryTime(payload) {
     const side = payload && payload.side === 'left' ? 'left' : 'right';
     const targetSeconds = Number(payload?.targetSeconds);
@@ -478,16 +696,10 @@ export function initTimestampBridge() {
     }
 
     let row =
-      (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) ||
-      findRowByTimeLabels(payload?.startText, payload?.endText, {
-        speakerKey: payload?.speakerKey
-      }) ||
+      resolveRowFromPayload(payload) ||
       findRowNearBoundary(side, targetSeconds, {
         speakerKey: payload?.speakerKey
       });
-    if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === 'object') {
-      row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
-    }
     if (!(row instanceof HTMLTableRowElement)) {
       return {
         ok: false,
@@ -610,17 +822,7 @@ export function initTimestampBridge() {
       };
     }
 
-    let row =
-      (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) ||
-      findRowByTimeLabels(payload?.startText, payload?.endText, {
-        speakerKey: payload?.speakerKey
-      }) ||
-      findRowByTimeRange(Number(payload?.startSeconds), Number(payload?.endSeconds), {
-        speakerKey: payload?.speakerKey
-      });
-    if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === 'object') {
-      row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
-    }
+    let row = resolveRowFromPayload(payload);
     if (!(row instanceof HTMLTableRowElement)) {
       return {
         ok: false,
@@ -755,6 +957,28 @@ export function initTimestampBridge() {
             message: error instanceof Error ? error.message : String(error || '')
           })
         );
+    } else if (operation === 'merge-segment') {
+      Promise.resolve(mergeSegment(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            backend: 'page-react-row-action',
+            reason: 'bridge-error',
+            message: error instanceof Error ? error.message : String(error || '')
+          })
+        );
+    } else if (operation === 'delete-segment') {
+      Promise.resolve(deleteSegment(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            backend: 'page-react-row-action',
+            reason: 'bridge-error',
+            message: error instanceof Error ? error.message : String(error || '')
+          })
+        );
     }
   }
 
@@ -768,6 +992,8 @@ export function initTimestampBridge() {
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperTimestampBridge = {
+    deleteSegment,
+    mergeSegment,
     setBoundaryTime,
     splitSegmentAtTime,
     dispose

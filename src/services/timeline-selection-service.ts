@@ -4,6 +4,12 @@ import {
   updateWorkflowDefaults,
   normalizeZoomValue
 } from '../core/workflow-defaults';
+import {
+  applyAutoSegmentTextReview,
+  createAutoSegmentTextRedistributionDraft,
+  normalizeAutoSegmentText,
+  validateAutoSegmentTextAllocationsPreserveText
+} from './auto-segment-text-allocation';
 
 export function registerTimelineSelectionService(helper: any) {
   if (!helper || helper.__cutRegistered) {
@@ -35,8 +41,9 @@ export function registerTimelineSelectionService(helper: any) {
   const AUDIO_TRIM_PADDING_SECONDS = 0.005;
   const AUDIO_TRIM_EPSILON_SECONDS = 0.0015;
   const AUDIO_TRIM_NEIGHBOR_GUARD_SECONDS = 0.01;
-  const AUTO_SEGMENT_SILENCE_THRESHOLD = Math.pow(10, -24 / 20);
+  const AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD = Math.pow(10, -56 / 20);
   const AUTO_SEGMENT_SILENCE_MIN_SECONDS = 1;
+  const AUTO_SEGMENT_MERGE_GAP_SECONDS = 1;
   const AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS = 0.05;
   const AUTO_SEGMENT_SPLIT_SETTLE_MS = 220;
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
@@ -72,6 +79,7 @@ export function registerTimelineSelectionService(helper: any) {
   let zoomPersistenceLoaded = false;
   let zoomPersistenceDefaults = null;
   let zoomPersistenceSaveChain = Promise.resolve();
+  let autoSegmentTextRedistributionSession = null;
   const getTranscriptRowsFromHelper =
     typeof helper.getTranscriptRows === 'function' ? helper.getTranscriptRows.bind(helper) : null;
 
@@ -1252,7 +1260,12 @@ export function registerTimelineSelectionService(helper: any) {
         finish(detail.result || null);
       };
 
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
+      const requestedTimeoutMs = Number(payload && payload.timeoutMs);
+      const timeoutMs = Math.max(
+        BRIDGE_TIMEOUT_MS,
+        Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 0
+      );
+      const timeoutId = window.setTimeout(() => finish(null), timeoutMs);
       window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
       window.dispatchEvent(
         new CustomEvent(BRIDGE_REQUEST_EVENT, {
@@ -2573,7 +2586,17 @@ export function registerTimelineSelectionService(helper: any) {
     return targets;
   }
 
-  async function requestTrimTargetsForContainer(container, entry) {
+  function getAudioTrimAmplitudeThreshold(options, fallback) {
+    const value = Number(options && options.amplitudeThreshold);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
+  function getTrimProgressLabel(options) {
+    const label = options && typeof options.progressLabel === 'string' ? options.progressLabel.trim() : '';
+    return label || 'Trimming visible segments';
+  }
+
+  async function requestTrimTargetsForContainer(container, entry, options) {
     if (!(container instanceof HTMLElement) || !entry) {
       return null;
     }
@@ -2593,12 +2616,12 @@ export function registerTimelineSelectionService(helper: any) {
       hostMarker,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_INWARD_THRESHOLD,
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_INWARD_THRESHOLD),
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
 
-  async function requestTrimTargetsForSpeaker(speakerKey, entry) {
+  async function requestTrimTargetsForSpeaker(speakerKey, entry, options) {
     if (!entry) {
       return null;
     }
@@ -2613,15 +2636,15 @@ export function registerTimelineSelectionService(helper: any) {
       speakerKey,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_INWARD_THRESHOLD,
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_INWARD_THRESHOLD),
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
 
-  async function requestTrimTargets(target, labels, speakerKey) {
+  async function requestTrimTargets(target, labels, speakerKey, options) {
     const primary =
       target && target.container instanceof HTMLElement && target.entry
-        ? await requestTrimTargetsForContainer(target.container, target.entry)
+        ? await requestTrimTargetsForContainer(target.container, target.entry, options)
         : null;
     if (primary && primary.ok) {
       return primary;
@@ -2632,12 +2655,12 @@ export function registerTimelineSelectionService(helper: any) {
         ? target.entry
         : labels && labels.startText && labels.endText
           ? labels
-          : null;
-    const fallback = await requestTrimTargetsForSpeaker(speakerKey, fallbackEntry);
+            : null;
+    const fallback = await requestTrimTargetsForSpeaker(speakerKey, fallbackEntry, options);
     return fallback || primary;
   }
 
-  async function requestExtendTargetsForContainer(container, entry) {
+  async function requestExtendTargetsForContainer(container, entry, options) {
     if (!(container instanceof HTMLElement) || !entry) {
       return null;
     }
@@ -2657,12 +2680,12 @@ export function registerTimelineSelectionService(helper: any) {
       hostMarker,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_OUTWARD_THRESHOLD,
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_OUTWARD_THRESHOLD),
       stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
     });
   }
 
-  async function requestExtendTargetsForSpeaker(speakerKey, entry) {
+  async function requestExtendTargetsForSpeaker(speakerKey, entry, options) {
     if (!entry) {
       return null;
     }
@@ -2677,15 +2700,15 @@ export function registerTimelineSelectionService(helper: any) {
       speakerKey,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: AUDIO_TRIM_OUTWARD_THRESHOLD,
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_OUTWARD_THRESHOLD),
       stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
     });
   }
 
-  async function requestExtendTargets(target, labels, speakerKey) {
+  async function requestExtendTargets(target, labels, speakerKey, options) {
     const primary =
       target && target.container instanceof HTMLElement && target.entry
-        ? await requestExtendTargetsForContainer(target.container, target.entry)
+        ? await requestExtendTargetsForContainer(target.container, target.entry, options)
         : null;
     if (primary && primary.ok) {
       return primary;
@@ -2696,8 +2719,8 @@ export function registerTimelineSelectionService(helper: any) {
         ? target.entry
         : labels && labels.startText && labels.endText
           ? labels
-          : null;
-    const fallback = await requestExtendTargetsForSpeaker(speakerKey, fallbackEntry);
+            : null;
+    const fallback = await requestExtendTargetsForSpeaker(speakerKey, fallbackEntry, options);
     return fallback || primary;
   }
 
@@ -2837,13 +2860,13 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  async function requestTrimTargetsForRow(row, speakerKey) {
+  async function requestTrimTargetsForRow(row, speakerKey, options) {
     const labels = getRowTimeLabels(row);
     if (!labels) {
       return null;
     }
 
-    return requestTrimTargetsForSpeaker(speakerKey, labels);
+    return requestTrimTargetsForSpeaker(speakerKey, labels, options);
   }
 
   function collectAutoSegmentTargets() {
@@ -2928,9 +2951,697 @@ export function registerTimelineSelectionService(helper: any) {
       speakerKey: target.speakerKey,
       startSeconds: target.startSeconds,
       endSeconds: target.endSeconds,
-      amplitudeThreshold: AUTO_SEGMENT_SILENCE_THRESHOLD,
+      amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
       minimumSilenceSeconds: AUTO_SEGMENT_SILENCE_MIN_SECONDS
     });
+  }
+
+  function getAutoSegmentRowActionSnapshot(row) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    const labels = getRowTimeLabels(row);
+    const range = getRowTimeRange(row);
+    if (!labels || !range) {
+      return null;
+    }
+
+    const speakerKey = helper.getRowSpeakerKey(row);
+    const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
+    return {
+      row,
+      rowIdentity,
+      annotationId:
+        rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : '',
+      speakerKey,
+      startText: labels.startText,
+      endText: labels.endText,
+      startSeconds: range.startSeconds,
+      endSeconds: range.endSeconds
+    };
+  }
+
+  function collectAutoSegmentMergePlans() {
+    const rows = helper.getTranscriptRows();
+    const rowsBySpeaker = new Map();
+    const plans = [];
+    const seen = new Set();
+
+    for (const row of rows) {
+      const snapshot = getAutoSegmentRowActionSnapshot(row);
+      if (!snapshot || !snapshot.speakerKey) {
+        continue;
+      }
+
+      const speakerRows = rowsBySpeaker.get(snapshot.speakerKey);
+      if (speakerRows) {
+        speakerRows.push(snapshot);
+      } else {
+        rowsBySpeaker.set(snapshot.speakerKey, [snapshot]);
+      }
+    }
+
+    for (const speakerRows of rowsBySpeaker.values()) {
+      speakerRows.sort((left, right) => left.startSeconds - right.startSeconds);
+
+      for (let index = speakerRows.length - 2; index >= 0; index -= 1) {
+        const current = speakerRows[index];
+        const next = speakerRows[index + 1];
+        const gapSeconds = next.startSeconds - current.endSeconds;
+        if (!Number.isFinite(gapSeconds) || gapSeconds > AUTO_SEGMENT_MERGE_GAP_SECONDS) {
+          continue;
+        }
+
+        const key = [
+          current.annotationId || current.startText,
+          next.annotationId || next.startText,
+          Math.round(current.endSeconds * 1000),
+          Math.round(next.startSeconds * 1000)
+        ].join(':');
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        plans.push({
+          key,
+          current,
+          next,
+          gapSeconds
+        });
+      }
+    }
+
+    return plans;
+  }
+
+  async function mergeAutoSegmentCloseRows() {
+    const skipped = new Set();
+    let mergeCount = 0;
+    let skippedCount = 0;
+
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const plan = collectAutoSegmentMergePlans().find((candidate) => !skipped.has(candidate.key));
+      if (!plan) {
+        break;
+      }
+
+      const result = await helper.mergeSegmentWithNativeAction({
+        direction: 'below',
+        annotationId: plan.current.annotationId,
+        rowIdentity: plan.current.rowIdentity,
+        startText: plan.current.startText,
+        endText: plan.current.endText,
+        startSeconds: plan.current.startSeconds,
+        endSeconds: plan.current.endSeconds,
+        speakerKey: plan.current.speakerKey,
+        attempts: 2,
+        retryDelayMs: 80
+      });
+
+      if (result && result.ok) {
+        mergeCount += 1;
+        skipped.clear();
+        await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
+        continue;
+      }
+
+      skipped.add(plan.key);
+      skippedCount += 1;
+    }
+
+    return {
+      ok: true,
+      mergeCount,
+      skippedCount
+    };
+  }
+
+  function findNearestSameSpeakerAutoSegmentRow(silent) {
+    if (!silent || !(silent.row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    const speakerKey = typeof silent.speakerKey === 'string' ? silent.speakerKey : '';
+    if (!speakerKey) {
+      return null;
+    }
+
+    let best = null;
+    let bestDistance = Infinity;
+    let bestBefore = false;
+    for (const candidate of helper.getTranscriptRows()) {
+      if (!(candidate instanceof HTMLTableRowElement) || candidate === silent.row) {
+        continue;
+      }
+
+      const candidateSpeakerKey = helper.getRowSpeakerKey(candidate);
+      if (candidateSpeakerKey !== speakerKey) {
+        continue;
+      }
+
+      const range = getRowTimeRange(candidate);
+      if (!range) {
+        continue;
+      }
+
+      const isBefore = range.endSeconds <= silent.startSeconds;
+      const distance = isBefore
+        ? silent.startSeconds - range.endSeconds
+        : range.startSeconds >= silent.endSeconds
+          ? range.startSeconds - silent.endSeconds
+          : 0;
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance && isBefore && !bestBefore)
+      ) {
+        best = {
+          row: candidate,
+          range
+        };
+        bestDistance = distance;
+        bestBefore = isBefore;
+      }
+    }
+
+    return best;
+  }
+
+  function stitchAutoSegmentSilentText(silent, nearest) {
+    if (!silent || !nearest || !(nearest.row instanceof HTMLTableRowElement)) {
+      return { ok: false, reason: 'missing-nearest-row' };
+    }
+
+    const silentText = helper.getRowTextValue(silent.row);
+    if (!silentText) {
+      return { ok: true, changed: false };
+    }
+
+    const nearestTextarea = helper.getRowTextarea(nearest.row);
+    if (!(nearestTextarea instanceof HTMLTextAreaElement)) {
+      return { ok: false, reason: 'missing-nearest-textarea' };
+    }
+
+    const nearestText = helper.getRowTextValue(nearest.row);
+    const silentComesFirst =
+      silent.endSeconds <= nearest.range.startSeconds ||
+      (silent.startSeconds < nearest.range.startSeconds &&
+        !(nearest.range.endSeconds <= silent.startSeconds));
+    const nextText = silentComesFirst
+      ? helper.joinSegmentText(silentText, nearestText)
+      : helper.joinSegmentText(nearestText, silentText);
+    if (nextText === nearestText) {
+      return { ok: true, changed: false };
+    }
+
+    if (!helper.setEditableValue(nearestTextarea, nextText)) {
+      return { ok: false, reason: 'text-stitch-failed' };
+    }
+
+    return { ok: true, changed: true };
+  }
+
+  async function collectAutoSegmentSilentRowPlans() {
+    const targets = collectAutoSegmentTargets();
+    const silentRows = [];
+    for (const target of targets) {
+      const labels =
+        target && target.entry && target.entry.startText && target.entry.endText
+          ? target.entry
+          : null;
+      if (!labels) {
+        continue;
+      }
+
+      const probe = await requestTrimTargets(target, labels, target.speakerKey, {
+        amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD
+      });
+      if (probe && probe.ok && !probe.foundAudio) {
+        silentRows.push({
+          ...target,
+          probe
+        });
+      }
+    }
+
+    return silentRows;
+  }
+
+  function getAutoSegmentErrorMessage(error) {
+    if (!error) {
+      return '';
+    }
+    if (typeof error === 'string') {
+      return error.slice(0, 240);
+    }
+    if (typeof error.message === 'string') {
+      return error.message.slice(0, 240);
+    }
+    return String(error).slice(0, 240);
+  }
+
+  function createAutoSegmentCleanupFailureResult(error) {
+    return {
+      ok: false,
+      reason: 'silent-cleanup-threw',
+      deleteCount: 0,
+      stitchCount: 0,
+      skippedCount: 0,
+      errorMessage: getAutoSegmentErrorMessage(error)
+    };
+  }
+
+  function createAutoSegmentRedistributionFailureResult(error) {
+    return {
+      ok: false,
+      reason: 'redistribution-threw',
+      changedCount: 0,
+      appliedGroupCount: 0,
+      skippedCount: 0,
+      groupCount: 0,
+      audioSampleCount: 0,
+      errorMessage: getAutoSegmentErrorMessage(error)
+    };
+  }
+
+  async function cleanupAutoSegmentSilentRows() {
+    let silentRows = [];
+    try {
+      silentRows = await collectAutoSegmentSilentRowPlans();
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'silent-cleanup-probe-failed',
+        deleteCount: 0,
+        stitchCount: 0,
+        skippedCount: 0,
+        errorMessage: getAutoSegmentErrorMessage(error)
+      };
+    }
+
+    let deleteCount = 0;
+    let stitchCount = 0;
+    let skippedCount = 0;
+    let lastErrorMessage = '';
+
+    if (!silentRows.length) {
+      return {
+        ok: true,
+        deleteCount,
+        stitchCount,
+        skippedCount,
+        reason: 'no-silent-rows'
+      };
+    }
+
+    if (typeof helper.deleteSegmentWithNativeAction !== 'function') {
+      return {
+        ok: false,
+        reason: 'missing-delete-action',
+        deleteCount,
+        stitchCount,
+        skippedCount: silentRows.length
+      };
+    }
+
+    for (const silent of silentRows.reverse()) {
+      try {
+        if (!(silent.row instanceof HTMLTableRowElement) || !silent.row.isConnected) {
+          continue;
+        }
+
+        const silentText = helper.getRowTextValue(silent.row);
+        const nearest = findNearestSameSpeakerAutoSegmentRow(silent);
+        if (!nearest && silentText) {
+          skippedCount += 1;
+          continue;
+        }
+
+        if (nearest) {
+          const stitchResult = stitchAutoSegmentSilentText(silent, nearest);
+          if (!stitchResult || !stitchResult.ok) {
+            skippedCount += 1;
+            continue;
+          }
+          if (stitchResult.changed) {
+            stitchCount += 1;
+            await helper.sleep(32);
+          }
+        }
+
+        const deleteResult = await helper.deleteSegmentWithNativeAction({
+          annotationId: silent.annotationId,
+          rowIdentity: silent.rowIdentity,
+          startText: silent.entry.startText,
+          endText: silent.entry.endText,
+          startSeconds: silent.startSeconds,
+          endSeconds: silent.endSeconds,
+          speakerKey: silent.speakerKey,
+          attempts: 2,
+          retryDelayMs: 80
+        });
+        if (deleteResult && deleteResult.ok) {
+          deleteCount += 1;
+          await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
+        } else {
+          skippedCount += 1;
+        }
+      } catch (error) {
+        skippedCount += 1;
+        lastErrorMessage = getAutoSegmentErrorMessage(error);
+      }
+    }
+
+    const result = {
+      ok: true,
+      deleteCount,
+      stitchCount,
+      skippedCount
+    };
+    if (lastErrorMessage) {
+      result.errorMessage = lastErrorMessage;
+    }
+    return result;
+  }
+
+  function normalizeAutoSegmentRedistributionText(value) {
+    return normalizeAutoSegmentText(value);
+  }
+
+  function getAutoSegmentRedistributionRowSegment(row, index) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    const speakerKey = helper.getRowSpeakerKey(row);
+    const labels = getRowTimeLabels(row);
+    const range = getRowTimeRange(row);
+    if (!speakerKey || !labels || !range) {
+      return null;
+    }
+
+    const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
+    const annotationId =
+      rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : '';
+    return {
+      id:
+        annotationId ||
+        [
+          speakerKey,
+          Math.round(range.startSeconds * 1000),
+          Math.round(range.endSeconds * 1000),
+          index
+        ].join(':'),
+      row,
+      rowIdentity,
+      speakerKey,
+      startSeconds: range.startSeconds,
+      endSeconds: range.endSeconds,
+      startText: labels.startText,
+      endText: labels.endText,
+      text: normalizeAutoSegmentRedistributionText(helper.getRowTextValue(row))
+    };
+  }
+
+  function collectAutoSegmentTextBaselineGroups() {
+    const groups = [];
+    let current = null;
+    const rows = helper.getTranscriptRows();
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const segment = getAutoSegmentRedistributionRowSegment(rows[index], index);
+      if (!segment) {
+        current = null;
+        continue;
+      }
+
+      const gapSeconds = current ? segment.startSeconds - current.endSeconds : Infinity;
+      if (
+        !current ||
+        segment.speakerKey !== current.speakerKey ||
+        !Number.isFinite(gapSeconds) ||
+        gapSeconds > AUTO_SEGMENT_MERGE_GAP_SECONDS
+      ) {
+        current = {
+          id: 'baseline-' + groups.length,
+          speakerKey: segment.speakerKey,
+          startSeconds: segment.startSeconds,
+          endSeconds: segment.endSeconds,
+          fullText: '',
+          segments: []
+        };
+        groups.push(current);
+      }
+
+      current.segments.push(segment);
+      current.startSeconds = Math.min(current.startSeconds, segment.startSeconds);
+      current.endSeconds = Math.max(current.endSeconds, segment.endSeconds);
+      current.fullText = current.segments
+        .map((item) => normalizeAutoSegmentRedistributionText(item.text))
+        .filter(Boolean)
+        .join(' ');
+    }
+
+    return groups.filter(
+      (group) =>
+        normalizeAutoSegmentRedistributionText(group.fullText) &&
+        group.segments.some((segment) => normalizeAutoSegmentRedistributionText(segment.text))
+    );
+  }
+
+  function collectCurrentAutoSegmentRedistributionSegments() {
+    const rows = helper.getTranscriptRows();
+    return rows
+      .map((row, index) => getAutoSegmentRedistributionRowSegment(row, index))
+      .filter(Boolean);
+  }
+
+  function collectAutoSegmentTextRedistributionGroups(baselineGroups) {
+    const baselines = Array.isArray(baselineGroups) ? baselineGroups : [];
+    const currentSegments = collectCurrentAutoSegmentRedistributionSegments();
+    if (baselines.length) {
+      return baselines
+        .map((baseline) => {
+          const segments = currentSegments
+            .filter(
+              (segment) =>
+                segment.speakerKey === baseline.speakerKey &&
+                segment.endSeconds > baseline.startSeconds - AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS &&
+                segment.startSeconds < baseline.endSeconds + AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS
+            )
+            .sort((left, right) => left.startSeconds - right.startSeconds);
+          return {
+            speakerKey: baseline.speakerKey,
+            fullText: normalizeAutoSegmentRedistributionText(baseline.fullText),
+            segments
+          };
+        })
+        .filter((group) => group.fullText && group.segments.length > 0);
+    }
+
+    const groups = [];
+    let current = null;
+    for (const segment of currentSegments) {
+      if (!current || segment.speakerKey !== current.speakerKey) {
+        current = {
+          speakerKey: segment.speakerKey,
+          fullText: '',
+          segments: []
+        };
+        groups.push(current);
+      }
+      current.segments.push(segment);
+      current.fullText = current.segments
+        .map((item) => normalizeAutoSegmentRedistributionText(item.text))
+        .filter(Boolean)
+        .join(' ');
+    }
+
+    return groups.filter((group) => group.segments.length > 0 && normalizeAutoSegmentRedistributionText(group.fullText));
+  }
+
+  async function prepareAutoSegmentTextRedistributionSession() {
+    const result = await callSelectionBridge('prepare-auto-segment-text-redistribution', {
+      timeoutMs: 30000
+    });
+    return result || {
+      ok: false,
+      reason: 'prompt-api-prepare-timeout'
+    };
+  }
+
+  async function disposeAutoSegmentTextRedistributionSession(sessionResult) {
+    const sessionId =
+      sessionResult && sessionResult.ok && typeof sessionResult.sessionId === 'string'
+        ? sessionResult.sessionId
+        : '';
+    if (!sessionId) {
+      return null;
+    }
+
+    return callSelectionBridge('destroy-auto-segment-text-redistribution-session', {
+      sessionId,
+      timeoutMs: 3000
+    });
+  }
+
+  function applyAutoSegmentTextRedistributionAllocations(group, allocations) {
+    if (!validateAutoSegmentTextAllocationsPreserveText(group, allocations)) {
+      return {
+        ok: false,
+        reason: 'invalid-redistribution'
+      };
+    }
+
+    let changedCount = 0;
+    for (let index = 0; index < group.segments.length; index += 1) {
+      const segment = group.segments[index];
+      const allocation = allocations[index];
+      if (!(segment.row instanceof HTMLTableRowElement) || !segment.row.isConnected) {
+        continue;
+      }
+
+      const textarea = helper.getRowTextarea(segment.row);
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        continue;
+      }
+
+      if (allocation.text === normalizeAutoSegmentRedistributionText(textarea.value || '')) {
+        continue;
+      }
+
+      if (helper.setEditableValue(textarea, allocation.text)) {
+        changedCount += 1;
+      }
+    }
+
+    return {
+      ok: true,
+      changedCount
+    };
+  }
+
+  async function redistributeAutoSegmentTextWithPromptApi(baselineGroups) {
+    const sessionResult = autoSegmentTextRedistributionSession;
+    const hasPromptSession = Boolean(sessionResult && sessionResult.ok && sessionResult.sessionId);
+    const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
+    if (!groups.length) {
+      return {
+        ok: true,
+        changedCount: 0,
+        appliedGroupCount: 0,
+        skippedCount: 0,
+        groupCount: 0,
+        reason: 'no-text-redistribution-groups'
+      };
+    }
+
+    let changedCount = 0;
+    let appliedGroupCount = 0;
+    let skippedCount = 0;
+    let audioSampleCount = 0;
+    let errorCount = 0;
+    let draftGroupCount = 0;
+    let promptReviewCount = 0;
+    let rejectedPromptReviewCount = 0;
+    let lastErrorMessage = '';
+
+    for (let index = 0; index < groups.length; index += 1) {
+      const group = groups[index];
+      updateLongTaskProgress({
+        label: 'Aligning segmented text',
+        current: index,
+        total: groups.length
+      });
+
+      const draftResult = createAutoSegmentTextRedistributionDraft(group);
+      if (!draftResult || !draftResult.ok) {
+        skippedCount += 1;
+        continue;
+      }
+
+      draftGroupCount += 1;
+      let allocations = draftResult.allocations;
+      let bridgeResult = null;
+      if (hasPromptSession) {
+        try {
+          bridgeResult = await callSelectionBridge('auto-segment-redistribute-text', {
+            sessionId: sessionResult.sessionId,
+            speakerKey: group.speakerKey,
+            fullText: draftResult.fullText,
+            segments: group.segments.map((segment) => ({
+              id: segment.id,
+              speakerKey: segment.speakerKey,
+              startSeconds: segment.startSeconds,
+              endSeconds: segment.endSeconds
+            })),
+            draftAllocations: draftResult.allocations,
+            timeoutMs: 45000
+          });
+        } catch (error) {
+          errorCount += 1;
+          lastErrorMessage = getAutoSegmentErrorMessage(error);
+        }
+
+        if (bridgeResult && bridgeResult.ok && bridgeResult.review) {
+          const reviewResult = applyAutoSegmentTextReview(group, draftResult.allocations, bridgeResult.review);
+          if (reviewResult && reviewResult.ok) {
+            allocations = reviewResult.allocations;
+            promptReviewCount += 1;
+          } else {
+            rejectedPromptReviewCount += 1;
+          }
+          audioSampleCount += Number(bridgeResult.audioSampleCount) || 0;
+        } else if (bridgeResult && !bridgeResult.ok) {
+          rejectedPromptReviewCount += 1;
+        }
+      }
+
+      let applyResult = null;
+      try {
+        applyResult = applyAutoSegmentTextRedistributionAllocations(group, allocations);
+      } catch (error) {
+        skippedCount += 1;
+        errorCount += 1;
+        lastErrorMessage = getAutoSegmentErrorMessage(error);
+        continue;
+      }
+      if (!applyResult || !applyResult.ok) {
+        skippedCount += 1;
+        continue;
+      }
+
+      appliedGroupCount += 1;
+      changedCount += applyResult.changedCount || 0;
+      if (applyResult.changedCount) {
+        await helper.sleep(32);
+      }
+    }
+
+    updateLongTaskProgress({
+      label: 'Aligning segmented text',
+      current: groups.length,
+      total: groups.length
+    });
+
+    const result = {
+      ok: true,
+      changedCount,
+      appliedGroupCount,
+      skippedCount,
+      groupCount: groups.length,
+      audioSampleCount,
+      draftGroupCount,
+      promptReviewCount,
+      rejectedPromptReviewCount,
+      unavailable: !hasPromptSession
+    };
+    if (errorCount) {
+      result.errorCount = errorCount;
+      result.errorMessage = lastErrorMessage;
+    }
+    return result;
   }
 
   function emitAutoSegmentDebug(detail) {
@@ -3078,8 +3789,54 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     helper.state.autoSegmentationPending = true;
+    autoSegmentTextRedistributionSession = null;
 
     try {
+      autoSegmentTextRedistributionSession = await prepareAutoSegmentTextRedistributionSession();
+      const preTrimResult = await helper.trimAllSegmentsToAudio({
+        amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
+        progressLabel: 'Pre-trimming visible segments'
+      });
+      if (!(preTrimResult && preTrimResult.ok)) {
+        emitAutoSegmentDebug({
+          phase: 'complete',
+          ok: false,
+          reason: preTrimResult && preTrimResult.reason ? preTrimResult.reason : 'pre-trim-failed',
+          targetCount: 0,
+          splitCount: 0,
+          preTrim: preTrimResult || null,
+          diagnostics: getAutoSegmentTargetDiagnostics()
+        });
+        return {
+          ok: false,
+          reason: preTrimResult && preTrimResult.reason ? preTrimResult.reason : 'pre-trim-failed',
+          splitCount: 0,
+          preTrim: preTrimResult || null
+        };
+      }
+
+      const mergeResult = await mergeAutoSegmentCloseRows();
+      if (!mergeResult || !mergeResult.ok) {
+        emitAutoSegmentDebug({
+          phase: 'complete',
+          ok: false,
+          reason: mergeResult && mergeResult.reason ? mergeResult.reason : 'merge-failed',
+          targetCount: 0,
+          splitCount: 0,
+          preTrim: preTrimResult,
+          merge: mergeResult || null,
+          diagnostics: getAutoSegmentTargetDiagnostics()
+        });
+        return {
+          ok: false,
+          reason: mergeResult && mergeResult.reason ? mergeResult.reason : 'merge-failed',
+          splitCount: 0,
+          preTrim: preTrimResult,
+          merge: mergeResult || null
+        };
+      }
+
+      const textBaselineGroups = collectAutoSegmentTextBaselineGroups();
       const targets = collectAutoSegmentTargets();
       if (!targets.length) {
         emitAutoSegmentDebug({
@@ -3088,12 +3845,18 @@ export function registerTimelineSelectionService(helper: any) {
           reason: 'missing-segments',
           targetCount: 0,
           splitCount: 0,
+          preTrim: preTrimResult,
+          merge: mergeResult,
+          textBaselineGroupCount: textBaselineGroups.length,
           diagnostics: getAutoSegmentTargetDiagnostics()
         });
         return {
           ok: false,
           reason: 'missing-segments',
-          splitCount: 0
+          splitCount: 0,
+          preTrim: preTrimResult,
+          merge: mergeResult,
+          textBaselineGroupCount: textBaselineGroups.length
         };
       }
 
@@ -3173,48 +3936,78 @@ export function registerTimelineSelectionService(helper: any) {
         current: splitPlans.length,
         total: splitPlans.length
       });
-      const trimResult = await helper.trimAllSegmentsToAudio();
-      if (!trimResult || !trimResult.ok) {
+      const postTrimResult = await helper.trimAllSegmentsToAudio({
+        amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
+        progressLabel: 'Post-trimming segmented draft'
+      });
+      if (!(postTrimResult && postTrimResult.ok)) {
         emitAutoSegmentDebug({
           phase: 'complete',
           ok: false,
-          reason: trimResult && trimResult.reason ? trimResult.reason : 'trim-failed',
+          reason: postTrimResult && postTrimResult.reason ? postTrimResult.reason : 'trim-failed',
           targetCount: targets.length,
           splitPlanCount: splitPlans.length,
           splitCount,
-          trim: trimResult || null
+          preTrim: preTrimResult,
+          merge: mergeResult,
+          trim: postTrimResult || null
         });
         return {
           ok: false,
-          reason: trimResult && trimResult.reason ? trimResult.reason : 'trim-failed',
+          reason: postTrimResult && postTrimResult.reason ? postTrimResult.reason : 'trim-failed',
           splitCount,
-          trim: trimResult || null
+          preTrim: preTrimResult,
+          merge: mergeResult,
+          trim: postTrimResult || null
         };
       }
 
+      const silentCleanupResult = await cleanupAutoSegmentSilentRows().catch((error) =>
+        createAutoSegmentCleanupFailureResult(error)
+      );
+      const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups).catch((error) =>
+        createAutoSegmentRedistributionFailureResult(error)
+      );
+      const finalPhaseOk =
+        Boolean(silentCleanupResult && silentCleanupResult.ok) &&
+        Boolean(redistributionResult && redistributionResult.ok);
       const result = {
-        ok: true,
-        changed: splitCount > 0 || Boolean(trimResult && trimResult.changedCount),
+        ok: finalPhaseOk,
+        reason: finalPhaseOk ? null : 'finalize-failed',
+        changed: splitCount > 0 || Boolean(postTrimResult && postTrimResult.changedCount) || Boolean(mergeResult && mergeResult.mergeCount) || Boolean(silentCleanupResult && silentCleanupResult.deleteCount) || Boolean(redistributionResult && redistributionResult.changedCount),
         splitCount,
-        trim: trimResult
+        preTrim: preTrimResult,
+        merge: mergeResult,
+        trim: postTrimResult,
+        cleanup: silentCleanupResult,
+        redistribution: redistributionResult,
+        textBaselineGroupCount: textBaselineGroups.length
       };
       emitAutoSegmentDebug({
         phase: 'complete',
-        ok: true,
+        ok: result.ok,
+        reason: result.reason || null,
         changed: result.changed,
         targetCount: targets.length,
         splitPlanCount: splitPlans.length,
         splitCount,
-        trim: trimResult
+        preTrim: preTrimResult,
+        merge: mergeResult,
+        trim: postTrimResult,
+        cleanup: silentCleanupResult,
+        redistribution: redistributionResult,
+        textBaselineGroupCount: textBaselineGroups.length
       });
       return result;
     } finally {
+      await disposeAutoSegmentTextRedistributionSession(autoSegmentTextRedistributionSession);
+      autoSegmentTextRedistributionSession = null;
       helper.state.autoSegmentationPending = false;
       dismissLongTaskProgress();
     }
   };
 
-  async function trimSegmentTarget(target) {
+  async function trimSegmentTarget(target, options) {
     if (!target || !target.entry) {
       return { ok: false, reason: 'missing-target' };
     }
@@ -3263,7 +4056,7 @@ export function registerTimelineSelectionService(helper: any) {
       helper.state.currentTimelineTarget.endText = labels.endText;
     }
 
-    const trimResult = await requestTrimTargets(liveTarget, labels, speakerKey);
+    const trimResult = await requestTrimTargets(liveTarget, labels, speakerKey, options);
     if (!trimResult || !trimResult.ok) {
       return { ok: false, reason: 'bridge-failed', bridge: trimResult || null };
     }
@@ -3304,7 +4097,7 @@ export function registerTimelineSelectionService(helper: any) {
 
     labels = getCurrentMoveLabels(row, labels);
     liveTarget.entry = labels;
-    const extendResult = await requestExtendTargets(liveTarget, labels, speakerKey);
+    const extendResult = await requestExtendTargets(liveTarget, labels, speakerKey, options);
     if (!extendResult || !extendResult.ok) {
       return {
         ok: true,
@@ -3354,7 +4147,7 @@ export function registerTimelineSelectionService(helper: any) {
     let finalTrimResult = null;
     if (changed) {
       await helper.sleep(32);
-      finalTrimResult = await requestTrimTargetsForRow(row, speakerKey);
+      finalTrimResult = await requestTrimTargetsForRow(row, speakerKey, options);
       if (finalTrimResult && finalTrimResult.ok && finalTrimResult.foundAudio) {
         const finalInwardMove = await applyInwardTrimToRow(row, speakerKey, finalTrimResult);
         if (!finalInwardMove || !finalInwardMove.ok) {
@@ -3376,16 +4169,17 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio() {
+  helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio(options) {
     const target = findCurrentSegmentTarget();
     if (!target) {
       return { ok: false, reason: 'missing-current-segment' };
     }
 
-    return trimSegmentTarget(target);
+    return trimSegmentTarget(target, options);
   };
 
-  helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio() {
+  helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio(options) {
+    const progressLabel = getTrimProgressLabel(options);
     const targets = collectAllSegmentTargets();
     if (!targets.length) {
       return {
@@ -3397,7 +4191,7 @@ export function registerTimelineSelectionService(helper: any) {
 
     let changedCount = 0;
     updateLongTaskProgress({
-      label: 'Trimming visible segments',
+      label: progressLabel,
       current: 0,
       total: targets.length
     });
@@ -3406,12 +4200,12 @@ export function registerTimelineSelectionService(helper: any) {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
         updateLongTaskProgress({
-          label: 'Trimming visible segments',
+          label: progressLabel,
           current: index,
           total: targets.length
         });
 
-        const result = await trimSegmentTarget(target);
+        const result = await trimSegmentTarget(target, options);
         if (!result || !result.ok) {
           return {
             ok: false,
@@ -3423,7 +4217,7 @@ export function registerTimelineSelectionService(helper: any) {
           changedCount += 1;
         }
         updateLongTaskProgress({
-          label: 'Trimming visible segments',
+          label: progressLabel,
           current: index + 1,
           total: targets.length
         });
