@@ -36,6 +36,106 @@ test('auto-segmentation hotkey is distinct from current and all-segment trim hot
   assert.doesNotMatch(windowCaptureBlock, /event\.shiftKey &&[\s\S]*\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]*event\.code === 'KeyR'/);
 });
 
+test('current segment transcription hotkey uses Alt+Shift+G without touching trim shortcuts', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const lifecycleSource = read('../src/core/lifecycle.ts');
+
+  assert.match(source, /\['Alt \+ Shift \+ G', 'Transcribe current empty segment with local Prompt API'\]/);
+
+  const transcribeCall = source.indexOf('void helper.transcribeCurrentSegmentWithPromptApi()');
+  const transcribeHotkeyStart = source.lastIndexOf('if (', transcribeCall);
+  const transcribeHotkeyBlock = source.slice(transcribeHotkeyStart, transcribeCall);
+  assert.ok(transcribeCall >= 0 && transcribeHotkeyStart >= 0, 'expected current-segment transcription hotkey block');
+  assert.match(transcribeHotkeyBlock, /event\.altKey/);
+  assert.match(transcribeHotkeyBlock, /event\.shiftKey/);
+  assert.match(transcribeHotkeyBlock, /!event\.ctrlKey/);
+  assert.match(transcribeHotkeyBlock, /!event\.metaKey/);
+  assert.match(transcribeHotkeyBlock, /event\.code === 'KeyG'/);
+  assert.doesNotMatch(transcribeHotkeyBlock, /trimCurrentSegmentToAudio|autoSegmentVisibleSilences/);
+  assert.match(source, /analyticsData: \{\s*scope: 'segment-transcription'\s*\}/);
+
+  const windowCaptureStart = lifecycleSource.indexOf('function handleNativeArrowSuppress');
+  const windowCaptureEnd = lifecycleSource.indexOf('if (isRightShiftSegmentNavigationShortcut', windowCaptureStart);
+  const windowCaptureBlock = lifecycleSource.slice(windowCaptureStart, windowCaptureEnd);
+  assert.match(windowCaptureBlock, /event\.shiftKey &&[\s\S]*!event\.ctrlKey &&[\s\S]*!event\.metaKey &&[\s\S]*\(event\.code === 'KeyS' \|\| event\.code === 'KeyG'\)/);
+});
+
+test('current segment transcription refuses non-empty rows and writes only the Prompt API text', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const start = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
+  const end = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', start);
+  const block = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'expected current-segment transcription service method');
+  assert.match(block, /const target = findCurrentSegmentTarget\(\)/);
+  assert.match(block, /const textarea = helper\.getRowTextarea\(target\.row\)/);
+  assert.match(block, /normalizeAutoSegmentRedistributionText\(helper\.getRowTextValue\(target\.row\)\)/);
+  assert.match(block, /reason: 'segment-not-empty'/);
+  assert.match(block, /callSelectionBridge\([\s\S]*'transcribe-segment-audio'/);
+  assert.match(block, /speakerKey: target\.speakerKey/);
+  assert.match(block, /startSeconds: range\.startSeconds/);
+  assert.match(block, /endSeconds: range\.endSeconds/);
+  assert.match(block, /timeoutMs: 300000/);
+  assert.match(block, /const text = normalizeAutoSegmentRedistributionText\(bridgeResult\.text\)/);
+  assert.match(block, /reason: 'segment-no-longer-empty'/);
+  assert.match(block, /helper\.setEditableValue\(textarea, text\)/);
+});
+
+test('current segment transcription updates simple progress from streamed bridge packets', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const bridgeCallStart = source.indexOf('async function callSelectionBridge(operation, payload, options)');
+  const bridgeCallEnd = source.indexOf('function getWaveformHostFromContainer', bridgeCallStart);
+  const bridgeCallBlock = source.slice(bridgeCallStart, bridgeCallEnd);
+  const transcribeStart = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
+  const transcribeEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', transcribeStart);
+  const transcribeBlock = source.slice(transcribeStart, transcribeEnd);
+  const progressStart = source.indexOf('function updateCurrentSegmentTranscriptionProgress(progress, range)');
+  const progressEnd = source.indexOf('function parseSecondsLabel', progressStart);
+  const progressBlock = source.slice(progressStart, progressEnd);
+
+  assert.ok(bridgeCallStart >= 0 && bridgeCallEnd > bridgeCallStart, 'expected selection bridge helper');
+  assert.match(bridgeCallBlock, /const onProgress = options && typeof options\.onProgress === 'function' \? options\.onProgress : null/);
+  assert.match(bridgeCallBlock, /if \(detail\.progress\)/);
+  assert.match(bridgeCallBlock, /if \(onProgress\)/);
+  assert.match(bridgeCallBlock, /onProgress\(detail\.progress\)/);
+
+  assert.match(source, /function updateCurrentSegmentTranscriptionProgress\(progress, range\)/);
+  assert.match(progressBlock, /generatedCharCount/);
+  assert.match(progressBlock, /estimatedCharCount/);
+  assert.match(progressBlock, /percent,/);
+  assert.match(progressBlock, /detail/);
+  assert.match(transcribeBlock, /callSelectionBridge\([\s\S]*'transcribe-segment-audio'[\s\S]*onProgress: \(progress\) => updateCurrentSegmentTranscriptionProgress\(progress, range\)/);
+  assert.match(transcribeBlock, /const text = normalizeAutoSegmentRedistributionText\(bridgeResult\.text\)/);
+  assert.match(transcribeBlock, /helper\.setEditableValue\(textarea, text\)/);
+});
+
+test('current segment transcription bridge streams full speaker segment audio and asks for Russian text', () => {
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+  const start = bridgeSource.indexOf('async function transcribeSegmentAudio(payload, onProgress)');
+  const end = bridgeSource.indexOf('function indexToSeconds', start);
+  const block = bridgeSource.slice(start, end);
+
+  assert.match(bridgeSource, /const AUTO_SEGMENT_TRANSCRIBE_SESSION_OPTIONS = \{/);
+  assert.doesNotMatch(bridgeSource, /AUTO_SEGMENT_TRANSCRIBE_MAX_AUDIO_SECONDS/);
+  assert.match(bridgeSource, /maxAudioSeconds === null\s*\?\s*Infinity/);
+  assert.match(bridgeSource, /Напиши точный текст, сказанный в аудио/);
+  assert.ok(start >= 0 && end > start, 'expected bridge transcription function');
+  assert.match(block, /const model = await getPromptApiLanguageModel\(AUTO_SEGMENT_TRANSCRIBE_SESSION_OPTIONS\)/);
+  assert.match(block, /resolveWaveForVisibleSpeaker\(speakerKey\)/);
+  assert.match(block, /getDecodedAudioChannelsForTrim\(wave\)/);
+  assert.match(block, /createAutoSegmentPromptAudioBuffer\(decoded, segment, null\)/);
+  assert.match(block, /typeof session\.promptStreaming === 'function'/);
+  assert.match(block, /const stream = session\.promptStreaming\(buildSegmentTranscriptionPromptMessages\(audioBuffer\)\)/);
+  assert.match(block, /for await \(const chunk of stream\)/);
+  assert.match(block, /appendPromptStreamChunk\(text, chunk\)/);
+  assert.match(block, /emitSegmentTranscriptionProgress\(onProgress, \{/);
+  assert.match(block, /generatedCharCount: normalizeAutoSegmentPromptText\(text\)\.length/);
+  assert.match(block, /estimatedCharCount/);
+  assert.match(block, /session\.destroy\(\)/);
+  assert.match(bridgeSource, /function respondProgress\(id, progress\)/);
+  assert.match(bridgeSource, /operation === 'transcribe-segment-audio'/);
+});
+
 test('auto-segmentation asks the bridge for silence runs over one second', () => {
   const serviceSource = read('../src/services/timeline-selection-service.ts');
   const bridgeSource = read('../src/content/magnifier-bridge.ts');
@@ -63,7 +163,7 @@ test('auto-segmentation pre-trims, merges one-second same-speaker gaps, splits, 
   const autoEnd = source.indexOf('async function trimSegmentTarget', autoStart);
   const autoBlock = source.slice(autoStart, autoEnd);
   const preTrimIndex = autoBlock.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio');
-  const mergeIndex = autoBlock.indexOf('const mergeResult = await mergeAutoSegmentCloseRows()');
+  const mergeIndex = autoBlock.indexOf('const mergeResult = await mergeAutoSegmentCloseRows');
   const collectIndex = autoBlock.indexOf('const targets = collectAutoSegmentTargets()');
   const splitIndex = autoBlock.indexOf('const splitPlans = collectAutoSegmentSplitPlans(targets, silenceResults)');
   const postTrimIndex = autoBlock.indexOf('const postTrimResult = await helper.trimAllSegmentsToAudio');
@@ -78,7 +178,7 @@ test('auto-segmentation pre-trims, merges one-second same-speaker gaps, splits, 
   assert.match(autoBlock, /amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD/);
   assert.doesNotMatch(autoBlock, /const trimResult = await helper\.trimAllSegmentsToAudio\(\)/);
 
-  assert.match(source, /async function mergeAutoSegmentCloseRows\(\)/);
+  assert.match(source, /async function mergeAutoSegmentCloseRows\(options\)/);
   assert.match(source, /const rowsBySpeaker = new Map\(\)/);
   assert.match(source, /gapSeconds > AUTO_SEGMENT_MERGE_GAP_SECONDS/);
   assert.match(source, /helper\.mergeSegmentWithNativeAction\(\{/);
@@ -103,10 +203,46 @@ test('auto-segmentation pre-trims, merges one-second same-speaker gaps, splits, 
   assert.match(timestampBridgeSource, /operation === 'split-segment-at-time'/);
 });
 
+test('auto-segmentation keeps one staged interactive progress bar across all phases', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const autoStart = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');
+  const autoEnd = source.indexOf('async function trimSegmentTarget', autoStart);
+  const autoBlock = source.slice(autoStart, autoEnd);
+  const trimStart = source.indexOf('helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio');
+  const trimEnd = source.indexOf('function getRegionBounds', trimStart);
+  const trimBlock = source.slice(trimStart, trimEnd);
+
+  assert.match(source, /function updateAutoSegmentProgress\(\{/);
+  assert.match(source, /AUTO_SEGMENT_PROGRESS_PHASES/);
+  assert.match(source, /percentBase/);
+  assert.match(source, /percentSpan/);
+  assert.match(source, /detail/);
+
+  assert.match(autoBlock, /updateAutoSegmentProgress\(\{\s*phase: 'prepare'/);
+  assert.match(autoBlock, /prepareAutoSegmentTextRedistributionSession\(\)/);
+  assert.match(autoBlock, /progressLabel: 'Pre-trimming visible segments'/);
+  assert.match(autoBlock, /keepProgress: true/);
+  assert.match(autoBlock, /progressPhase: 'preTrim'/);
+  assert.match(autoBlock, /const mergeResult = await mergeAutoSegmentCloseRows\(\{\s*progressPhase: 'merge'/);
+  assert.match(autoBlock, /updateAutoSegmentProgress\(\{\s*phase: 'silence'/);
+  assert.match(autoBlock, /detail: 'Detected ' \+ silenceRunCount \+ ' silence runs'/);
+  assert.match(autoBlock, /updateAutoSegmentProgress\(\{\s*phase: 'split'/);
+  assert.match(autoBlock, /detail: 'Created ' \+ splitCount \+ ' splits'/);
+  assert.match(autoBlock, /progressLabel: 'Post-trimming segmented draft'/);
+  assert.match(autoBlock, /progressPhase: 'postTrim'/);
+  assert.match(autoBlock, /const silentCleanupResult = await cleanupAutoSegmentSilentRows\(\{\s*progressPhase: 'cleanup'/);
+  assert.match(autoBlock, /const redistributionResult = await redistributeAutoSegmentTextWithPromptApi\(textBaselineGroups, \{\s*progressPhase: 'alignText'/);
+  assert.match(autoBlock, /updateAutoSegmentProgress\(\{\s*phase: 'complete'/);
+
+  assert.match(trimBlock, /const keepProgress = Boolean\(options && options\.keepProgress\)/);
+  assert.match(trimBlock, /updateAutoSegmentProgress\(\{\s*phase: progressPhase/);
+  assert.match(trimBlock, /if \(!keepProgress\) \{\s*dismissLongTaskProgress\(\)/);
+});
+
 test('auto-segmentation merge pass compares consecutive rows per speaker lane', () => {
   const source = read('../src/services/timeline-selection-service.ts');
   const start = source.indexOf('function collectAutoSegmentMergePlans()');
-  const end = source.indexOf('async function mergeAutoSegmentCloseRows()', start);
+  const end = source.indexOf('async function mergeAutoSegmentCloseRows', start);
   const block = source.slice(start, end);
 
   assert.ok(start >= 0 && end > start, 'expected merge plan collector');
@@ -142,7 +278,7 @@ test('auto-segmentation removes fully silent same-speaker rows after final trim'
   const autoEnd = source.indexOf('async function trimSegmentTarget', autoStart);
   const autoBlock = source.slice(autoStart, autoEnd);
 
-  assert.match(source, /async function cleanupAutoSegmentSilentRows\(\)/);
+  assert.match(source, /async function cleanupAutoSegmentSilentRows\(options\)/);
   assert.match(source, /function findNearestSameSpeakerAutoSegmentRow\(silent/);
   assert.match(source, /candidateSpeakerKey !== speakerKey/);
   assert.match(source, /requestTrimTargets\(target, labels, target\.speakerKey, \{/);
@@ -154,7 +290,7 @@ test('auto-segmentation removes fully silent same-speaker rows after final trim'
   assert.match(source, /helper\.deleteSegmentWithNativeAction\(\{/);
   assert.match(source, /silentCleanupResult && silentCleanupResult\.deleteCount/);
 
-  const cleanupIndex = autoBlock.indexOf('const silentCleanupResult = await cleanupAutoSegmentSilentRows()');
+  const cleanupIndex = autoBlock.indexOf('const silentCleanupResult = await cleanupAutoSegmentSilentRows');
   const postTrimIndex = autoBlock.indexOf('const postTrimResult = await helper.trimAllSegmentsToAudio');
   assert.ok(cleanupIndex > postTrimIndex, 'expected silent cleanup after post-trim');
   assert.match(autoBlock, /cleanup: silentCleanupResult/);
@@ -169,7 +305,7 @@ test('auto-segmentation redistributes text with Prompt API after silent cleanup 
 
   assert.match(source, /function collectAutoSegmentTextBaselineGroups\(\)/);
   assert.match(source, /function collectAutoSegmentTextRedistributionGroups\(baselineGroups\)/);
-  assert.match(source, /async function redistributeAutoSegmentTextWithPromptApi\(baselineGroups\)/);
+  assert.match(source, /async function redistributeAutoSegmentTextWithPromptApi\(baselineGroups, options\)/);
   assert.match(source, /createAutoSegmentTextRedistributionDraft\(group\)/);
   assert.match(source, /applyAutoSegmentTextReview\(group, draftResult\.allocations, bridgeResult\.review\)/);
   assert.match(source, /validateAutoSegmentTextAllocationsPreserveText\(group, allocations\)/);
@@ -182,9 +318,9 @@ test('auto-segmentation redistributes text with Prompt API after silent cleanup 
   assert.match(source, /segment\.speakerKey === baseline\.speakerKey/);
   assert.doesNotMatch(source, /nextText\.length >= originalText\.length \* 0\.35/);
 
-  const cleanupIndex = autoBlock.indexOf('const silentCleanupResult = await cleanupAutoSegmentSilentRows()');
+  const cleanupIndex = autoBlock.indexOf('const silentCleanupResult = await cleanupAutoSegmentSilentRows');
   const baselineIndex = autoBlock.indexOf('const textBaselineGroups = collectAutoSegmentTextBaselineGroups()');
-  const redistributionIndex = autoBlock.indexOf('const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups)');
+  const redistributionIndex = autoBlock.indexOf('const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups');
   assert.ok(baselineIndex >= 0, 'expected pre-split text baseline capture');
   assert.ok(cleanupIndex >= 0, 'expected silent cleanup in auto-segmentation flow');
   assert.ok(baselineIndex < cleanupIndex, 'expected text baseline before splitting/final cleanup');
@@ -201,8 +337,8 @@ test('auto-segmentation final cleanup and text alignment cannot abort complete d
 
   assert.match(source, /function createAutoSegmentCleanupFailureResult\(error\)/);
   assert.match(source, /function createAutoSegmentRedistributionFailureResult\(error\)/);
-  assert.match(autoBlock, /const silentCleanupResult = await cleanupAutoSegmentSilentRows\(\)\.catch\(\(error\) =>\s*createAutoSegmentCleanupFailureResult\(error\)\s*\)/);
-  assert.match(autoBlock, /const redistributionResult = await redistributeAutoSegmentTextWithPromptApi\(textBaselineGroups\)\.catch\(\(error\) =>\s*createAutoSegmentRedistributionFailureResult\(error\)\s*\)/);
+  assert.match(autoBlock, /const silentCleanupResult = await cleanupAutoSegmentSilentRows\(\{[\s\S]*?progressPhase: 'cleanup'[\s\S]*?\}\)\.catch\(\(error\) =>\s*createAutoSegmentCleanupFailureResult\(error\)\s*\)/);
+  assert.match(autoBlock, /const redistributionResult = await redistributeAutoSegmentTextWithPromptApi\(textBaselineGroups, \{[\s\S]*?progressPhase: 'alignText'[\s\S]*?\}\)\.catch\(\(error\) =>\s*createAutoSegmentRedistributionFailureResult\(error\)\s*\)/);
   assert.match(autoBlock, /const finalPhaseOk =[\s\S]*silentCleanupResult[\s\S]*redistributionResult/);
   assert.match(autoBlock, /reason: finalPhaseOk \? null : 'finalize-failed'/);
   assert.match(autoBlock, /phase: 'complete'[\s\S]*ok: result\.ok[\s\S]*reason: result\.reason \|\| null/);

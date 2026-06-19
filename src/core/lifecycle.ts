@@ -362,7 +362,7 @@ export function registerLifecycle(helper: any) {
           event.shiftKey &&
           !event.ctrlKey &&
           !event.metaKey &&
-          event.code === 'KeyS'
+          (event.code === 'KeyS' || event.code === 'KeyG')
         )
       )
     ) {

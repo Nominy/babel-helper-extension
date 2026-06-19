@@ -46,6 +46,17 @@ export function registerTimelineSelectionService(helper: any) {
   const AUTO_SEGMENT_MERGE_GAP_SECONDS = 1;
   const AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS = 0.05;
   const AUTO_SEGMENT_SPLIT_SETTLE_MS = 220;
+  const AUTO_SEGMENT_PROGRESS_PHASES = {
+    prepare: { label: 'Preparing auto segmentation', percentBase: 0, percentSpan: 4 },
+    preTrim: { label: 'Pre-trimming visible segments', percentBase: 4, percentSpan: 18 },
+    merge: { label: 'Merging close segments', percentBase: 22, percentSpan: 8 },
+    silence: { label: 'Finding silence runs', percentBase: 30, percentSpan: 18 },
+    split: { label: 'Splitting on silence', percentBase: 48, percentSpan: 14 },
+    postTrim: { label: 'Post-trimming segmented draft', percentBase: 62, percentSpan: 16 },
+    cleanup: { label: 'Cleaning silent rows', percentBase: 78, percentSpan: 8 },
+    alignText: { label: 'Aligning segmented text', percentBase: 86, percentSpan: 12 },
+    complete: { label: 'Finishing auto segmentation', percentBase: 98, percentSpan: 2 }
+  };
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
 
   helper.state.cutDraft = null;
@@ -59,6 +70,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.longTaskProgress = null;
   helper.state.autoSegmentationPending = false;
   if (isFeatureEnabled('timelineSelection')) {
+    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + G', 'Transcribe current empty segment with local Prompt API']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + S', 'Split visible segments on silence runs over 1000ms, then trim all']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
@@ -266,15 +278,24 @@ export function registerTimelineSelectionService(helper: any) {
     return progress;
   }
 
-  function updateLongTaskProgress({ label, current, total }) {
+  function updateLongTaskProgress({ label, current, total, detail, percent }) {
     const progress = ensureLongTaskProgress();
     const safeTotal = Math.max(0, Number(total) || 0);
     const safeCurrent = clamp(Number(current) || 0, 0, safeTotal || 1);
-    const percent = safeTotal > 0 ? Math.round((safeCurrent / safeTotal) * 100) : 0;
+    const safePercent = Number.isFinite(Number(percent))
+      ? clamp(Math.round(Number(percent)), 0, 100)
+      : safeTotal > 0
+        ? Math.round((safeCurrent / safeTotal) * 100)
+        : 0;
 
     progress.label.textContent = label || 'Working...';
-    progress.detail.textContent = safeTotal > 0 ? `${safeCurrent} / ${safeTotal} segments` : 'Preparing...';
-    progress.fill.style.width = `${percent}%`;
+    progress.detail.textContent =
+      typeof detail === 'string' && detail
+        ? detail
+        : safeTotal > 0
+          ? `${safeCurrent} / ${safeTotal} segments`
+          : 'Preparing...';
+    progress.fill.style.width = `${safePercent}%`;
   }
 
   function dismissLongTaskProgress() {
@@ -283,6 +304,72 @@ export function registerTimelineSelectionService(helper: any) {
     if (progress && progress.root instanceof HTMLElement) {
       progress.root.remove();
     }
+  }
+
+  function updateAutoSegmentProgress({ phase, current, total, detail, label }) {
+    const config = AUTO_SEGMENT_PROGRESS_PHASES[phase] || AUTO_SEGMENT_PROGRESS_PHASES.prepare;
+    const safeTotal = Math.max(0, Number(total) || 0);
+    const safeCurrent = clamp(Number(current) || 0, 0, safeTotal || 1);
+    const percentBase = Number(config.percentBase) || 0;
+    const percentSpan = Number(config.percentSpan) || 0;
+    const fraction = safeTotal > 0 ? safeCurrent / safeTotal : 0;
+    updateLongTaskProgress({
+      label: label || config.label,
+      current: safeCurrent,
+      total: safeTotal || 100,
+      detail,
+      percent: percentBase + Math.round(fraction * percentSpan)
+    });
+  }
+
+  function formatProgressDuration(seconds) {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    if (safeSeconds >= 60) {
+      const minutes = Math.floor(safeSeconds / 60);
+      const remainder = Math.round(safeSeconds % 60);
+      return `${minutes}:${String(remainder).padStart(2, '0')}`;
+    }
+
+    return `${Math.round(safeSeconds)}s`;
+  }
+
+  function updateCurrentSegmentTranscriptionProgress(progress, range) {
+    const phase = progress && typeof progress.phase === 'string' ? progress.phase : '';
+    const audioDurationSeconds =
+      progress && Number.isFinite(Number(progress.audioDurationSeconds))
+        ? Number(progress.audioDurationSeconds)
+        : range && Number.isFinite(Number(range.endSeconds - range.startSeconds))
+          ? range.endSeconds - range.startSeconds
+          : 0;
+    const generatedCharCount = Math.max(0, Math.round(Number(progress && progress.generatedCharCount) || 0));
+    const estimatedCharCount = Math.max(0, Math.round(Number(progress && progress.estimatedCharCount) || 0));
+    const fallbackPercent =
+      phase === 'transcribing' && estimatedCharCount > 0
+        ? Math.min(95, 20 + Math.round((generatedCharCount / estimatedCharCount) * 75))
+        : phase === 'starting-model'
+          ? 15
+          : phase === 'applying'
+            ? 98
+            : 5;
+    const percent = Number.isFinite(Number(progress && progress.percent))
+      ? Number(progress.percent)
+      : fallbackPercent;
+    const detail =
+      phase === 'transcribing'
+        ? `Generating text... ${generatedCharCount}${estimatedCharCount ? ` / ~${estimatedCharCount}` : ''} chars`
+        : phase === 'starting-model'
+          ? 'Starting local model...'
+          : phase === 'applying'
+            ? 'Applying text...'
+            : `Preparing ${formatProgressDuration(audioDurationSeconds)} audio...`;
+
+    updateLongTaskProgress({
+      label: 'Transcribing current segment',
+      current: percent,
+      total: 100,
+      percent,
+      detail
+    });
   }
 
   function parseSecondsLabel(value) {
@@ -1230,11 +1317,12 @@ export function registerTimelineSelectionService(helper: any) {
     return bridgeLoadPromise;
   }
 
-  async function callSelectionBridge(operation, payload) {
+  async function callSelectionBridge(operation, payload, options) {
     const ready = await injectSelectionBridge();
     if (!ready) {
       return null;
     }
+    const onProgress = options && typeof options.onProgress === 'function' ? options.onProgress : null;
 
     return new Promise((resolve) => {
       bridgeRequestId += 1;
@@ -1254,6 +1342,13 @@ export function registerTimelineSelectionService(helper: any) {
       const handleResponse = (event) => {
         const detail = event.detail || {};
         if (detail.id !== id) {
+          return;
+        }
+
+        if (detail.progress) {
+          if (onProgress) {
+            onProgress(detail.progress);
+          }
           return;
         }
 
@@ -3036,15 +3131,34 @@ export function registerTimelineSelectionService(helper: any) {
     return plans;
   }
 
-  async function mergeAutoSegmentCloseRows() {
+  async function mergeAutoSegmentCloseRows(options) {
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const skipped = new Set();
     let mergeCount = 0;
     let skippedCount = 0;
+
+    if (progressPhase) {
+      updateAutoSegmentProgress({
+        phase: progressPhase,
+        current: 0,
+        total: 1,
+        detail: 'Looking for close rows...'
+      });
+    }
 
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const plan = collectAutoSegmentMergePlans().find((candidate) => !skipped.has(candidate.key));
       if (!plan) {
         break;
+      }
+
+      if (progressPhase) {
+        updateAutoSegmentProgress({
+          phase: progressPhase,
+          current: Math.min(attempt, 199),
+          total: 200,
+          detail: 'Merged ' + mergeCount + ' rows'
+        });
       }
 
       const result = await helper.mergeSegmentWithNativeAction({
@@ -3062,6 +3176,14 @@ export function registerTimelineSelectionService(helper: any) {
 
       if (result && result.ok) {
         mergeCount += 1;
+        if (progressPhase) {
+          updateAutoSegmentProgress({
+            phase: progressPhase,
+            current: Math.min(attempt + 1, 200),
+            total: 200,
+            detail: 'Merged ' + mergeCount + ' rows'
+          });
+        }
         skipped.clear();
         await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
         continue;
@@ -3069,6 +3191,15 @@ export function registerTimelineSelectionService(helper: any) {
 
       skipped.add(plan.key);
       skippedCount += 1;
+    }
+
+    if (progressPhase) {
+      updateAutoSegmentProgress({
+        phase: progressPhase,
+        current: 1,
+        total: 1,
+        detail: 'Merged ' + mergeCount + ' rows'
+      });
     }
 
     return {
@@ -3162,10 +3293,20 @@ export function registerTimelineSelectionService(helper: any) {
     return { ok: true, changed: true };
   }
 
-  async function collectAutoSegmentSilentRowPlans() {
+  async function collectAutoSegmentSilentRowPlans(options) {
     const targets = collectAutoSegmentTargets();
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const silentRows = [];
-    for (const target of targets) {
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      if (progressPhase) {
+        updateAutoSegmentProgress({
+          phase: progressPhase,
+          current: index,
+          total: targets.length,
+          detail: 'Checking silent rows ' + index + ' / ' + targets.length
+        });
+      }
       const labels =
         target && target.entry && target.entry.startText && target.entry.endText
           ? target.entry
@@ -3183,6 +3324,15 @@ export function registerTimelineSelectionService(helper: any) {
           probe
         });
       }
+    }
+
+    if (progressPhase) {
+      updateAutoSegmentProgress({
+        phase: progressPhase,
+        current: targets.length,
+        total: targets.length,
+        detail: 'Found ' + silentRows.length + ' silent rows'
+      });
     }
 
     return silentRows;
@@ -3225,10 +3375,11 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  async function cleanupAutoSegmentSilentRows() {
+  async function cleanupAutoSegmentSilentRows(options) {
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     let silentRows = [];
     try {
-      silentRows = await collectAutoSegmentSilentRowPlans();
+      silentRows = await collectAutoSegmentSilentRowPlans(options);
     } catch (error) {
       return {
         ok: false,
@@ -3265,8 +3416,18 @@ export function registerTimelineSelectionService(helper: any) {
       };
     }
 
-    for (const silent of silentRows.reverse()) {
+    const rowsToDelete = silentRows.reverse();
+    for (let index = 0; index < rowsToDelete.length; index += 1) {
+      const silent = rowsToDelete[index];
       try {
+        if (progressPhase) {
+          updateAutoSegmentProgress({
+            phase: progressPhase,
+            current: index,
+            total: rowsToDelete.length,
+            detail: 'Removed ' + deleteCount + ' silent rows'
+          });
+        }
         if (!(silent.row instanceof HTMLTableRowElement) || !silent.row.isConnected) {
           continue;
         }
@@ -3311,6 +3472,15 @@ export function registerTimelineSelectionService(helper: any) {
         skippedCount += 1;
         lastErrorMessage = getAutoSegmentErrorMessage(error);
       }
+    }
+
+    if (progressPhase) {
+      updateAutoSegmentProgress({
+        phase: progressPhase,
+        current: rowsToDelete.length,
+        total: rowsToDelete.length,
+        detail: 'Removed ' + deleteCount + ' silent rows'
+      });
     }
 
     const result = {
@@ -3522,7 +3692,8 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  async function redistributeAutoSegmentTextWithPromptApi(baselineGroups) {
+  async function redistributeAutoSegmentTextWithPromptApi(baselineGroups, options) {
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const sessionResult = autoSegmentTextRedistributionSession;
     const hasPromptSession = Boolean(sessionResult && sessionResult.ok && sessionResult.sessionId);
     const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
@@ -3549,11 +3720,22 @@ export function registerTimelineSelectionService(helper: any) {
 
     for (let index = 0; index < groups.length; index += 1) {
       const group = groups[index];
-      updateLongTaskProgress({
-        label: 'Aligning segmented text',
-        current: index,
-        total: groups.length
-      });
+      const detail = 'Aligned ' + appliedGroupCount + ' / ' + groups.length + ' text groups';
+      if (progressPhase) {
+        updateAutoSegmentProgress({
+          phase: progressPhase,
+          current: index,
+          total: groups.length,
+          detail
+        });
+      } else {
+        updateLongTaskProgress({
+          label: 'Aligning segmented text',
+          current: index,
+          total: groups.length,
+          detail
+        });
+      }
 
       const draftResult = createAutoSegmentTextRedistributionDraft(group);
       if (!draftResult || !draftResult.ok) {
@@ -3619,11 +3801,22 @@ export function registerTimelineSelectionService(helper: any) {
       }
     }
 
-    updateLongTaskProgress({
-      label: 'Aligning segmented text',
-      current: groups.length,
-      total: groups.length
-    });
+    const finalDetail = 'Aligned ' + appliedGroupCount + ' / ' + groups.length + ' text groups';
+    if (progressPhase) {
+      updateAutoSegmentProgress({
+        phase: progressPhase,
+        current: groups.length,
+        total: groups.length,
+        detail: finalDetail
+      });
+    } else {
+      updateLongTaskProgress({
+        label: 'Aligning segmented text',
+        current: groups.length,
+        total: groups.length,
+        detail: finalDetail
+      });
+    }
 
     const result = {
       ok: true,
@@ -3792,10 +3985,24 @@ export function registerTimelineSelectionService(helper: any) {
     autoSegmentTextRedistributionSession = null;
 
     try {
+      updateAutoSegmentProgress({
+        phase: 'prepare',
+        current: 0,
+        total: 1,
+        detail: 'Starting local text reviewer...'
+      });
       autoSegmentTextRedistributionSession = await prepareAutoSegmentTextRedistributionSession();
+      updateAutoSegmentProgress({
+        phase: 'prepare',
+        current: 1,
+        total: 1,
+        detail: 'Local text reviewer ready'
+      });
       const preTrimResult = await helper.trimAllSegmentsToAudio({
         amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
-        progressLabel: 'Pre-trimming visible segments'
+        progressLabel: 'Pre-trimming visible segments',
+        keepProgress: true,
+        progressPhase: 'preTrim'
       });
       if (!(preTrimResult && preTrimResult.ok)) {
         emitAutoSegmentDebug({
@@ -3815,7 +4022,9 @@ export function registerTimelineSelectionService(helper: any) {
         };
       }
 
-      const mergeResult = await mergeAutoSegmentCloseRows();
+      const mergeResult = await mergeAutoSegmentCloseRows({
+        progressPhase: 'merge'
+      });
       if (!mergeResult || !mergeResult.ok) {
         emitAutoSegmentDebug({
           phase: 'complete',
@@ -3860,21 +4069,32 @@ export function registerTimelineSelectionService(helper: any) {
         };
       }
 
-      updateLongTaskProgress({
-        label: 'Finding silence runs',
+      updateAutoSegmentProgress({
+        phase: 'silence',
         current: 0,
-        total: targets.length
+        total: targets.length,
+        detail: 'Detected 0 silence runs'
       });
 
       let splitCount = 0;
+      let silenceRunCount = 0;
       const silenceResults = [];
       for (let index = 0; index < targets.length; index += 1) {
-        updateLongTaskProgress({
-          label: 'Finding silence runs',
+        updateAutoSegmentProgress({
+          phase: 'silence',
           current: index,
-          total: targets.length
+          total: targets.length,
+          detail: 'Detected ' + silenceRunCount + ' silence runs'
         });
-        silenceResults.push(await requestAutoSegmentSilenceRuns(targets[index]));
+        const silenceResult = await requestAutoSegmentSilenceRuns(targets[index]);
+        silenceResults.push(silenceResult);
+        silenceRunCount += silenceResult && Array.isArray(silenceResult.runs) ? silenceResult.runs.length : 0;
+        updateAutoSegmentProgress({
+          phase: 'silence',
+          current: index + 1,
+          total: targets.length,
+          detail: 'Detected ' + silenceRunCount + ' silence runs'
+        });
       }
 
       const splitPlans = collectAutoSegmentSplitPlans(targets, silenceResults);
@@ -3893,10 +4113,11 @@ export function registerTimelineSelectionService(helper: any) {
       });
 
       for (let index = 0; index < splitPlans.length; index += 1) {
-        updateLongTaskProgress({
-          label: 'Splitting on silence',
+        updateAutoSegmentProgress({
+          phase: 'split',
           current: index,
-          total: splitPlans.length
+          total: splitPlans.length,
+          detail: 'Created ' + splitCount + ' splits'
         });
 
         const plan = splitPlans[index];
@@ -3925,20 +4146,29 @@ export function registerTimelineSelectionService(helper: any) {
         }
 
         splitCount += 1;
+        updateAutoSegmentProgress({
+          phase: 'split',
+          current: index + 1,
+          total: splitPlans.length,
+          detail: 'Created ' + splitCount + ' splits'
+        });
         if (smartSplitPlan) {
           await applySmartSplit(smartSplitPlan);
         }
         await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
       }
 
-      updateLongTaskProgress({
-        label: 'Trimming segmented draft',
-        current: splitPlans.length,
-        total: splitPlans.length
+      updateAutoSegmentProgress({
+        phase: 'postTrim',
+        current: 0,
+        total: 1,
+        detail: 'Preparing post-trim pass'
       });
       const postTrimResult = await helper.trimAllSegmentsToAudio({
         amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
-        progressLabel: 'Post-trimming segmented draft'
+        progressLabel: 'Post-trimming segmented draft',
+        keepProgress: true,
+        progressPhase: 'postTrim'
       });
       if (!(postTrimResult && postTrimResult.ok)) {
         emitAutoSegmentDebug({
@@ -3962,10 +4192,14 @@ export function registerTimelineSelectionService(helper: any) {
         };
       }
 
-      const silentCleanupResult = await cleanupAutoSegmentSilentRows().catch((error) =>
+      const silentCleanupResult = await cleanupAutoSegmentSilentRows({
+        progressPhase: 'cleanup'
+      }).catch((error) =>
         createAutoSegmentCleanupFailureResult(error)
       );
-      const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups).catch((error) =>
+      const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups, {
+        progressPhase: 'alignText'
+      }).catch((error) =>
         createAutoSegmentRedistributionFailureResult(error)
       );
       const finalPhaseOk =
@@ -3983,6 +4217,12 @@ export function registerTimelineSelectionService(helper: any) {
         redistribution: redistributionResult,
         textBaselineGroupCount: textBaselineGroups.length
       };
+      updateAutoSegmentProgress({
+        phase: 'complete',
+        current: 1,
+        total: 1,
+        detail: result.ok ? 'Complete' : 'Finished with issues'
+      });
       emitAutoSegmentDebug({
         phase: 'complete',
         ok: result.ok,
@@ -4169,6 +4409,94 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
+  helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi() {
+    const target = findCurrentSegmentTarget();
+    if (!target) {
+      return { ok: false, reason: 'missing-current-segment' };
+    }
+
+    const textarea = helper.getRowTextarea(target.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return { ok: false, reason: 'missing-current-textarea' };
+    }
+
+    if (normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row))) {
+      return { ok: false, reason: 'segment-not-empty' };
+    }
+
+    const range = getRowTimeRange(target.row);
+    if (!range) {
+      return { ok: false, reason: 'missing-current-range' };
+    }
+
+    const targetSpeakerKey =
+      target.speakerKey ||
+      getSpeakerKeyForContainer(target.container) ||
+      helper.getRowSpeakerKey(target.row);
+    if (!targetSpeakerKey) {
+      return { ok: false, reason: 'missing-current-speaker' };
+    }
+
+    const hostMarker = ensureSelectionHostMarker(target.container);
+    updateCurrentSegmentTranscriptionProgress({ phase: 'preparing-audio', percent: 5 }, range);
+
+    try {
+      const bridgeResult = await callSelectionBridge(
+        'transcribe-segment-audio',
+        {
+          hostMarker,
+          speakerKey: target.speakerKey || targetSpeakerKey,
+          startSeconds: range.startSeconds,
+          endSeconds: range.endSeconds,
+          timeoutMs: 300000
+        },
+        {
+          onProgress: (progress) => updateCurrentSegmentTranscriptionProgress(progress, range)
+        }
+      );
+      if (!bridgeResult || !bridgeResult.ok) {
+        return {
+          ok: false,
+          reason: bridgeResult && bridgeResult.reason ? bridgeResult.reason : 'transcription-failed',
+          bridge: bridgeResult
+        };
+      }
+
+      const text = normalizeAutoSegmentRedistributionText(bridgeResult.text);
+      if (!text) {
+        return {
+          ok: false,
+          reason: 'empty-transcription',
+          bridge: bridgeResult
+        };
+      }
+
+      if (
+        normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row)) ||
+        normalizeAutoSegmentRedistributionText(textarea.value || '')
+      ) {
+        return { ok: false, reason: 'segment-no-longer-empty' };
+      }
+
+      if (!helper.setEditableValue(textarea, text)) {
+        return { ok: false, reason: 'transcription-write-failed' };
+      }
+
+      updateCurrentSegmentTranscriptionProgress({ phase: 'applying', percent: 100 }, range);
+      return {
+        ok: true,
+        changed: true,
+        textLength: text.length,
+        audioDurationSeconds:
+          bridgeResult && Number.isFinite(Number(bridgeResult.audioDurationSeconds))
+            ? Number(bridgeResult.audioDurationSeconds)
+            : null
+      };
+    } finally {
+      dismissLongTaskProgress();
+    }
+  };
+
   helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio(options) {
     const target = findCurrentSegmentTarget();
     if (!target) {
@@ -4180,6 +4508,8 @@ export function registerTimelineSelectionService(helper: any) {
 
   helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio(options) {
     const progressLabel = getTrimProgressLabel(options);
+    const keepProgress = Boolean(options && options.keepProgress);
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const targets = collectAllSegmentTargets();
     if (!targets.length) {
       return {
@@ -4190,20 +4520,32 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     let changedCount = 0;
-    updateLongTaskProgress({
-      label: progressLabel,
-      current: 0,
-      total: targets.length
-    });
+    const updateTrimProgress = (current) => {
+      const detail = `${current} / ${targets.length} segments`;
+      if (progressPhase) {
+        updateAutoSegmentProgress({
+          phase: progressPhase,
+          current,
+          total: targets.length,
+          label: progressLabel,
+          detail
+        });
+        return;
+      }
+
+      updateLongTaskProgress({
+        label: progressLabel,
+        current,
+        total: targets.length,
+        detail
+      });
+    };
+    updateTrimProgress(0);
 
     try {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
-        updateLongTaskProgress({
-          label: progressLabel,
-          current: index,
-          total: targets.length
-        });
+        updateTrimProgress(index);
 
         const result = await trimSegmentTarget(target, options);
         if (!result || !result.ok) {
@@ -4216,11 +4558,7 @@ export function registerTimelineSelectionService(helper: any) {
         if (result.changed) {
           changedCount += 1;
         }
-        updateLongTaskProgress({
-          label: progressLabel,
-          current: index + 1,
-          total: targets.length
-        });
+        updateTrimProgress(index + 1);
         await helper.sleep(16);
       }
 
@@ -4229,7 +4567,9 @@ export function registerTimelineSelectionService(helper: any) {
         changedCount
       };
     } finally {
-      dismissLongTaskProgress();
+      if (!keepProgress) {
+        dismissLongTaskProgress();
+      }
     }
   };
 
@@ -5091,6 +5431,25 @@ export function registerTimelineSelectionService(helper: any) {
         analyticsType: 'hotkey:trim',
         analyticsData: {
           scope: 'auto-segmentation'
+        }
+      };
+    }
+
+    if (
+      event.altKey &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      event.code === 'KeyG'
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void helper.transcribeCurrentSegmentWithPromptApi();
+      return {
+        handled: true,
+        analyticsType: 'hotkey:trim',
+        analyticsData: {
+          scope: 'segment-transcription'
         }
       };
     }

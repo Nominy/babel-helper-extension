@@ -30,6 +30,17 @@ export function initMagnifierBridge() {
       }
     ]
   };
+  const AUTO_SEGMENT_TRANSCRIBE_SESSION_OPTIONS = {
+    expectedInputs: [{ type: 'text' }, { type: 'audio' }],
+    expectedOutputs: [{ type: 'text' }],
+    initialPrompts: [
+      {
+        role: 'system',
+        content:
+          'Ты расшифровываешь русскую речь. Верни только точный текст из аудио без пояснений, переводов, исправлений и markdown.'
+      }
+    ]
+  };
   const AUTO_SEGMENT_PROMPT_MAX_AUDIO_SAMPLES = 4;
   const AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS = 12;
   const waveformScaleState = {
@@ -74,6 +85,17 @@ export function initMagnifierBridge() {
         detail: {
           id,
           result
+        }
+      })
+    );
+  }
+
+  function respondProgress(id, progress) {
+    window.dispatchEvent(
+      new CustomEvent(RESPONSE_EVENT, {
+        detail: {
+          id,
+          progress
         }
       })
     );
@@ -1328,7 +1350,8 @@ export function initMagnifierBridge() {
     return channels.length ? { audio, channels } : null;
   }
 
-  async function getPromptApiLanguageModel() {
+  async function getPromptApiLanguageModel(options) {
+    const sessionOptions = options || AUTO_SEGMENT_PROMPT_SESSION_OPTIONS;
     const LanguageModel = safe(() => globalThis.LanguageModel, null);
     if (
       typeof LanguageModel !== 'function' ||
@@ -1343,7 +1366,7 @@ export function initMagnifierBridge() {
 
     let availability = 'unavailable';
     try {
-      availability = await LanguageModel.availability(AUTO_SEGMENT_PROMPT_SESSION_OPTIONS);
+      availability = await LanguageModel.availability(sessionOptions);
     } catch (error) {
       return {
         ok: false,
@@ -1362,7 +1385,7 @@ export function initMagnifierBridge() {
     }
 
     try {
-      const session = await LanguageModel.create(AUTO_SEGMENT_PROMPT_SESSION_OPTIONS);
+      const session = await LanguageModel.create(sessionOptions);
       return {
         ok: true,
         availability,
@@ -1554,7 +1577,7 @@ export function initMagnifierBridge() {
     return Array.from(indexes).sort((left, right) => left - right);
   }
 
-  function createAutoSegmentPromptAudioBuffer(decoded, segment) {
+  function createAutoSegmentPromptAudioBuffer(decoded, segment, maxAudioSeconds = AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS) {
     if (!decoded || !decoded.audio || !Array.isArray(decoded.channels) || !decoded.channels.length) {
       return null;
     }
@@ -1577,11 +1600,17 @@ export function initMagnifierBridge() {
       return null;
     }
 
-    if (endSeconds - startSeconds > AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS) {
+    const safeMaxAudioSeconds =
+      maxAudioSeconds === null
+        ? Infinity
+        : Number.isFinite(Number(maxAudioSeconds)) && Number(maxAudioSeconds) > 0
+          ? Number(maxAudioSeconds)
+          : AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS;
+    if (Number.isFinite(safeMaxAudioSeconds) && endSeconds - startSeconds > safeMaxAudioSeconds) {
       const centerSeconds = (startSeconds + endSeconds) / 2;
-      startSeconds = clamp(centerSeconds - AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS / 2, 0, sourceDuration);
-      endSeconds = clamp(startSeconds + AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS, 0, sourceDuration);
-      startSeconds = clamp(endSeconds - AUTO_SEGMENT_PROMPT_MAX_AUDIO_SECONDS, 0, sourceDuration);
+      startSeconds = clamp(centerSeconds - safeMaxAudioSeconds / 2, 0, sourceDuration);
+      endSeconds = clamp(startSeconds + safeMaxAudioSeconds, 0, sourceDuration);
+      startSeconds = clamp(endSeconds - safeMaxAudioSeconds, 0, sourceDuration);
     }
 
     const startIndex = clamp(Math.floor((startSeconds / sourceDuration) * sourceLength), 0, sourceLength - 1);
@@ -1782,6 +1811,227 @@ export function initMagnifierBridge() {
     } finally {
       if (shouldDestroy) {
         destroyPromptSessionRecord(record);
+      }
+    }
+  }
+
+  function getSegmentTranscriptionPromptSchema() {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['text'],
+      properties: {
+        text: { type: 'string' }
+      }
+    };
+  }
+
+  function buildSegmentTranscriptionPromptMessages(audioBuffer) {
+    return [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            value: 'Напиши точный текст, сказанный в аудио. Верни только расшифровку без пояснений.'
+          },
+          {
+            type: 'audio',
+            value: audioBuffer
+          }
+        ]
+      }
+    ];
+  }
+
+  function parseSegmentTranscriptionPromptResponse(response) {
+    if (response && typeof response === 'object' && typeof response.text === 'string') {
+      return response.text;
+    }
+
+    if (typeof response !== 'string') {
+      return '';
+    }
+
+    try {
+      const parsed = JSON.parse(response);
+      if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+        return parsed.text;
+      }
+    } catch (_error) {
+      // Plain text responses are acceptable for this one-shot transcription helper.
+    }
+
+    return response;
+  }
+
+  function appendPromptStreamChunk(text, chunk) {
+    const current = typeof text === 'string' ? text : '';
+    const next = typeof chunk === 'string' ? chunk : chunk == null ? '' : String(chunk);
+    if (!next) {
+      return current;
+    }
+    if (next.indexOf(current) === 0) {
+      return next;
+    }
+    return current + next;
+  }
+
+  function estimateSegmentTranscriptionCharCount(audioDurationSeconds) {
+    const duration = Math.max(1, Number(audioDurationSeconds) || 1);
+    return Math.max(80, Math.round(duration * 12));
+  }
+
+  function emitSegmentTranscriptionProgress(onProgress, progress) {
+    if (typeof onProgress !== 'function') {
+      return;
+    }
+
+    try {
+      onProgress(progress);
+    } catch (_error) {
+      // Progress updates are best-effort; the final bridge response still matters.
+    }
+  }
+
+  async function transcribeSegmentAudio(payload, onProgress) {
+    const speakerKey = payload && typeof payload.speakerKey === 'string' ? payload.speakerKey.trim() : '';
+    const hostMarker = payload && typeof payload.hostMarker === 'string' ? payload.hostMarker : '';
+    const startSeconds = Number(payload && payload.startSeconds);
+    const endSeconds = Number(payload && payload.endSeconds);
+    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return {
+        ok: false,
+        reason: 'invalid-segment-range'
+      };
+    }
+
+    let resolved = resolveWaveForHost(hostMarker);
+    if (
+      !resolved.wave ||
+      !isUsableWaveCandidate(resolved.wave, resolved.host) ||
+      !hostMatchesSpeaker(resolved.host, speakerKey)
+    ) {
+      resolved = resolveWaveForVisibleSpeaker(speakerKey);
+    }
+
+    const wave = resolved.wave;
+    if (!wave || !isUsableWaveCandidate(wave, resolved.host)) {
+      return {
+        ok: false,
+        reason: 'missing-speaker-audio'
+      };
+    }
+
+    const decoded = getDecodedAudioChannelsForTrim(wave);
+    if (!decoded) {
+      return {
+        ok: false,
+        reason: 'missing-decoded-audio'
+      };
+    }
+
+    const segment = {
+      startSeconds,
+      endSeconds
+    };
+    emitSegmentTranscriptionProgress(onProgress, {
+      phase: 'preparing-audio',
+      percent: 5,
+      audioDurationSeconds: endSeconds - startSeconds
+    });
+    const audioBuffer = createAutoSegmentPromptAudioBuffer(decoded, segment, null);
+    if (!audioBuffer) {
+      return {
+        ok: false,
+        reason: 'missing-audio-sample'
+      };
+    }
+
+    const audioDurationSeconds = Number(audioBuffer.duration) || endSeconds - startSeconds;
+    const estimatedCharCount = estimateSegmentTranscriptionCharCount(audioDurationSeconds);
+    emitSegmentTranscriptionProgress(onProgress, {
+      phase: 'starting-model',
+      percent: 15,
+      audioDurationSeconds,
+      generatedCharCount: 0,
+      estimatedCharCount
+    });
+
+    const model = await getPromptApiLanguageModel(AUTO_SEGMENT_TRANSCRIBE_SESSION_OPTIONS);
+    if (!model || !model.ok || !model.session) {
+      return model || { ok: false, reason: 'prompt-api-unavailable' };
+    }
+
+    const session = model.session;
+    try {
+      let text = '';
+      if (typeof session.promptStreaming === 'function') {
+        emitSegmentTranscriptionProgress(onProgress, {
+          phase: 'transcribing',
+          percent: 20,
+          audioDurationSeconds,
+          generatedCharCount: 0,
+          estimatedCharCount
+        });
+        const stream = session.promptStreaming(buildSegmentTranscriptionPromptMessages(audioBuffer));
+        for await (const chunk of stream) {
+          text = appendPromptStreamChunk(text, chunk);
+          const generatedCharCount = normalizeAutoSegmentPromptText(text).length;
+          const percent = Math.min(
+            95,
+            20 + Math.round((generatedCharCount / Math.max(estimatedCharCount, 1)) * 75)
+          );
+          emitSegmentTranscriptionProgress(onProgress, {
+            phase: 'transcribing',
+            percent,
+            audioDurationSeconds,
+            generatedCharCount: normalizeAutoSegmentPromptText(text).length,
+            estimatedCharCount
+          });
+        }
+      } else {
+        const responseConstraint = getSegmentTranscriptionPromptSchema();
+        const response = await session.prompt(buildSegmentTranscriptionPromptMessages(audioBuffer), {
+          responseConstraint
+        });
+        text = parseSegmentTranscriptionPromptResponse(response);
+        emitSegmentTranscriptionProgress(onProgress, {
+          phase: 'transcribing',
+          percent: 95,
+          audioDurationSeconds,
+          generatedCharCount: normalizeAutoSegmentPromptText(text).length,
+          estimatedCharCount
+        });
+      }
+
+      text = normalizeAutoSegmentPromptText(text);
+      if (!text) {
+        return {
+          ok: false,
+          reason: 'empty-transcription'
+        };
+      }
+
+      return {
+        ok: true,
+        text,
+        speakerKey,
+        startSeconds,
+        endSeconds,
+        audioDurationSeconds,
+        availability: model.availability
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'prompt-api-transcription-failed',
+        errorName: error && error.name ? error.name : '',
+        errorMessage: error && error.message ? error.message : ''
+      };
+    } finally {
+      if (session && typeof session.destroy === 'function') {
+        session.destroy();
       }
     }
   }
@@ -3826,6 +4076,20 @@ export function initMagnifierBridge() {
           respond(id, {
             ok: false,
             reason: 'prompt-api-redistribution-failed',
+            errorName: error && error.name ? error.name : '',
+            errorMessage: error && error.message ? error.message : ''
+          })
+        );
+      return;
+    }
+
+    if (operation === 'transcribe-segment-audio') {
+      Promise.resolve(transcribeSegmentAudio(payload, (progress) => respondProgress(id, progress)))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            reason: 'prompt-api-transcription-failed',
             errorName: error && error.name ? error.name : '',
             errorMessage: error && error.message ? error.message : ''
           })
