@@ -81,6 +81,214 @@ test('current segment transcription refuses non-empty rows and writes only the P
   assert.match(block, /helper\.setEditableValue\(textarea, text\)/);
 });
 
+test('automatic segment insertion hotkey uses Alt+C from the playback caret', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const lifecycleSource = read('../src/core/lifecycle.ts');
+  const backgroundSource = read('../src/background/commands.ts');
+  const esbuildSource = read('../esbuild.config.mjs');
+
+  assert.match(source, /\['Alt \+ C', 'Create empty segment around nearest uncovered speech near caret'\]/);
+  assert.match(backgroundSource, /AUTO_INSERT_SEGMENT_COMMAND = 'auto-insert-segment'/);
+  assert.match(backgroundSource, /chrome\.commands\.onCommand\.addListener/);
+  assert.match(backgroundSource, /chrome\.tabs\.sendMessage/);
+  assert.match(esbuildSource, /entryPoints: \['src\/background\/commands\.ts'\]/);
+
+  const autoInsertCall = source.indexOf('void helper.autoInsertSegmentAtCaret()');
+  const autoInsertHotkeyStart = source.lastIndexOf('if (', autoInsertCall);
+  const autoInsertHotkeyBlock = source.slice(autoInsertHotkeyStart, autoInsertCall);
+  assert.ok(autoInsertCall >= 0 && autoInsertHotkeyStart >= 0, 'expected automatic segment insertion hotkey block');
+  assert.match(autoInsertHotkeyBlock, /event\.altKey/);
+  assert.match(autoInsertHotkeyBlock, /!event\.shiftKey/);
+  assert.match(autoInsertHotkeyBlock, /!event\.ctrlKey/);
+  assert.match(autoInsertHotkeyBlock, /!event\.metaKey/);
+  assert.match(autoInsertHotkeyBlock, /event\.code === 'KeyC'/);
+  assert.doesNotMatch(autoInsertHotkeyBlock, /autoSegmentVisibleSilences|trimCurrentSegmentToAudio/);
+  assert.match(source, /analyticsData: \{\s*scope: 'auto-insert-segment'\s*\}/);
+
+  const windowCaptureStart = lifecycleSource.indexOf('function handleNativeArrowSuppress');
+  const windowCaptureEnd = lifecycleSource.indexOf('if (isRightShiftSegmentNavigationShortcut', windowCaptureStart);
+  const windowCaptureBlock = lifecycleSource.slice(windowCaptureStart, windowCaptureEnd);
+  assert.match(windowCaptureBlock, /event\.altKey &&[\s\S]*!event\.shiftKey &&[\s\S]*event\.code === 'KeyC'/);
+
+  assert.match(source, /helper\.handleCutPreviewKeyup = function handleCutPreviewKeyup\(event\)/);
+  assert.match(source, /helper\.state\.autoInsertSegmentHotkeyHandledAt = Date\.now\(\)/);
+  assert.match(source, /Date\.now\(\) - lastHandledAt < 700/);
+  assert.match(lifecycleSource, /function handleGlobalKeyup\(event\)/);
+  assert.match(lifecycleSource, /helper\.handleCutPreviewKeyup\(event\)/);
+  assert.match(lifecycleSource, /function handleExtensionCommandMessage\(message, _sender, sendResponse\)/);
+  assert.match(lifecycleSource, /message\.command !== 'auto-insert-segment'/);
+  assert.match(lifecycleSource, /helper\.runtime\.ensureSessionRuntime\('command:auto-insert-segment'\)/);
+  assert.match(lifecycleSource, /helper\.autoInsertSegmentAtCaret\(\)/);
+});
+
+test('automatic segment insertion scans visible lanes within one second and trims created rows', () => {
+  const serviceSource = read('../src/services/timeline-selection-service.ts');
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+
+  assert.match(serviceSource, /AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS = 1\b/);
+  assert.match(serviceSource, /AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0\.35\b/);
+  assert.doesNotMatch(serviceSource, /function getDomSpeakerKeyFromLaneRow/);
+  assert.doesNotMatch(serviceSource, /function getDomSpeakerKeyForContainer/);
+  assert.doesNotMatch(serviceSource, /getSingleSpeakerKeyFromText/);
+  assert.doesNotMatch(serviceSource, /textContent\.replace\([\s\S]*Speaker\\s\+\\d/);
+  assert.match(serviceSource, /async function collectAutoInsertSegmentLaneTargets\(\)/);
+  assert.match(serviceSource, /for \(const container of discoverWaveformContainers\(\)\)/);
+  assert.match(serviceSource, /callSelectionBridge\('resolve-visible-lane-targets'/);
+  assert.match(serviceSource, /const processedRecordingId =[\s\S]*resolvedLane\.processedRecordingId/);
+  assert.match(serviceSource, /callSelectionBridge\('find-nearest-speech-island'/);
+  assert.match(serviceSource, /scanWindowSeconds: AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS/);
+  assert.match(serviceSource, /paddingSeconds: AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS/);
+  const islandRequestStart = serviceSource.indexOf('async function requestNearestSpeechIslandForLane');
+  const islandRequestEnd = serviceSource.indexOf('function findAutoInsertCreatedRow', islandRequestStart);
+  const islandRequestBlock = serviceSource.slice(islandRequestStart, islandRequestEnd);
+  assert.ok(islandRequestStart >= 0 && islandRequestEnd > islandRequestStart, 'expected auto-insert island request block');
+  assert.doesNotMatch(islandRequestBlock, /paddingSeconds: AUDIO_TRIM_PADDING_SECONDS/);
+  assert.match(bridgeSource, /function resolveVisibleLaneTargets\(lanes\)/);
+  assert.match(bridgeSource, /function normalizeNearestSpeechIslandRange/);
+  assert.match(bridgeSource, /clamp\(Number\(paddingSeconds\) \|\| 0, 0, 1\)/);
+  assert.match(bridgeSource, /const trackProps = getTrackPropsForHost\(host\)/);
+  assert.match(bridgeSource, /track\.processedRecordingId != null/);
+  assert.match(bridgeSource, /operation === 'resolve-visible-lane-targets'/);
+  assert.match(serviceSource, /helper\.autoInsertSegmentAtCaret = async function autoInsertSegmentAtCaret\(\)/);
+  assert.match(serviceSource, /helper\.createSegmentWithNativeAction\(\{/);
+  assert.match(serviceSource, /processedRecordingId: target\.trackId/);
+  assert.match(serviceSource, /createResult\.verification/);
+  const createdRowStart = serviceSource.indexOf('function findAutoInsertCreatedRow');
+  const createdRowEnd = serviceSource.indexOf('function buildAutoInsertTrimTarget', createdRowStart);
+  const createdRowBlock = serviceSource.slice(createdRowStart, createdRowEnd);
+  assert.ok(createdRowStart >= 0 && createdRowEnd > createdRowStart, 'expected created row lookup helper');
+  assert.match(createdRowBlock, /target\.trackLabel/);
+  assert.match(createdRowBlock, /target\.speakerKey/);
+  assert.ok(
+    createdRowBlock.indexOf('target.trackLabel') < createdRowBlock.indexOf('target.speakerKey'),
+    'created row lookup should prefer the visible lane label used by transcript rows'
+  );
+  const autoInsertStart = serviceSource.indexOf('helper.autoInsertSegmentAtCaret = async function autoInsertSegmentAtCaret()');
+  const autoInsertEnd = serviceSource.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()', autoInsertStart);
+  const autoInsertBlock = serviceSource.slice(autoInsertStart, autoInsertEnd);
+  assert.match(autoInsertBlock, /trimSegmentTarget\(trimTarget, trimOptions\)/);
+  assert.match(autoInsertBlock, /progressLabel: 'Trimming inserted segment'/);
+  assert.match(autoInsertBlock, /if \(trimResult && trimResult\.ok\)/);
+  assert.doesNotMatch(autoInsertBlock, /followupTrimResult/);
+  assert.doesNotMatch(autoInsertBlock, /followupTrimTarget/);
+  assert.doesNotMatch(autoInsertBlock, /amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD/);
+
+  const trimTargetStart = serviceSource.indexOf('function buildAutoInsertTrimTarget');
+  const trimTargetEnd = serviceSource.indexOf('function getAutoSegmentRowActionSnapshot', trimTargetStart);
+  const trimTargetBlock = serviceSource.slice(trimTargetStart, trimTargetEnd);
+  assert.ok(trimTargetStart >= 0 && trimTargetEnd > trimTargetStart, 'expected auto-insert trim target builder');
+  assert.match(trimTargetBlock, /const rowSpeakerKey = helper\.getRowSpeakerKey\(row\)/);
+  assert.match(trimTargetBlock, /speakerKey: rowSpeakerKey/);
+  assert.match(trimTargetBlock, /rememberTimelineSegmentTarget\(row, trimTarget\.container, trimTarget\.entry, rowSpeakerKey\)/);
+  assert.doesNotMatch(trimTargetBlock, /target\.trackId \|\| target\.speakerKey/);
+});
+
+test('automatic segment insertion has no temporary floating button or debug event plumbing', () => {
+  const serviceSource = read('../src/services/timeline-selection-service.ts');
+  const start = serviceSource.indexOf('helper.autoInsertSegmentAtCaret = async function autoInsertSegmentAtCaret()');
+  const end = serviceSource.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()', start);
+  const block = serviceSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'expected automatic segment insertion method');
+  assert.doesNotMatch(serviceSource, /AUTO_INSERT_SEGMENT_BUTTON_ID/);
+  assert.doesNotMatch(serviceSource, /autoInsertSegmentButton/);
+  assert.doesNotMatch(serviceSource, /ensureAutoInsertSegmentButton/);
+  assert.doesNotMatch(serviceSource, /handleAutoInsertSegmentButtonClick/);
+  assert.doesNotMatch(serviceSource, /babel-helper-auto-insert-segment-debug/);
+  assert.doesNotMatch(serviceSource, /emitAutoInsertSegmentDebug/);
+  assert.doesNotMatch(block, /laneDiagnostics/);
+  assert.match(block, /return \{\s*ok: false,\s*reason: 'auto-segmentation-pending'/);
+  assert.match(block, /return \{\s*ok: false,\s*reason: 'missing-create-action'/);
+  assert.match(block, /return \{\s*ok: false,\s*reason: 'missing-visible-lanes'/);
+});
+
+test('automatic segment insertion bridge finds nearest uncovered speech island from rendered peaks first', () => {
+  const bridgeSource = read('../src/content/magnifier-bridge.ts');
+  const start = bridgeSource.indexOf('function findNearestSpeechIslandForResolvedWave');
+  const end = bridgeSource.indexOf('function findTrimTargetsForResolvedWave', start);
+  const block = bridgeSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'expected nearest speech island bridge function');
+  assert.ok(
+    block.indexOf('const rawPeaks = getRawExportPeaks(wave)') <
+      block.indexOf('const decoded = getDecodedAudioChannelsForTrim(wave)'),
+    'rendered/exported peaks must be checked before decoded full audio'
+  );
+  assert.match(block, /hasRegionCoveringTime\(regions, caretSeconds\)/);
+  assert.match(block, /reason: 'covered-at-caret'/);
+  assert.match(block, /hasRegionOverlap\(regions, targetStartSeconds, targetEndSeconds\)/);
+  assert.match(block, /reason: 'covered-candidate'/);
+  assert.match(bridgeSource, /leftDistance <= rightDistance/);
+  assert.match(bridgeSource, /operation === 'find-nearest-speech-island'/);
+  assert.match(bridgeSource, /const hostResolved = resolveWaveForHost\(hostMarker\)/);
+  assert.match(bridgeSource, /if \(hostResolved\.wave && isUsableWaveCandidate\(hostResolved\.wave, hostResolved\.host\)\)/);
+  assert.match(bridgeSource, /typeof existingBridge\.findNearestSpeechIsland === 'function'/);
+  assert.match(bridgeSource, /findNearestSpeechIsland: findNearestSpeechIslandForResolvedWave/);
+  assert.match(bridgeSource, /track\.processedRecordingId != null/);
+});
+
+test('automatic segment insertion creates native empty transcription segments through React onCreateAnnotation', () => {
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+  const timestampBridgeSource = read('../src/content/timestamp-bridge.ts');
+
+  assert.match(timestampServiceSource, /helper\.createSegmentWithNativeAction = async function createSegmentWithNativeAction/);
+  assert.match(timestampServiceSource, /callTimestampBridge\('create-segment'/);
+  assert.match(timestampServiceSource, /processedRecordingId: settings\.processedRecordingId/);
+
+  assert.match(timestampBridgeSource, /function resolveCreateAnnotationBinding/);
+  assert.match(timestampBridgeSource, /typeof props\.onCreateAnnotation === 'function'/);
+  assert.match(timestampBridgeSource, /onCreateAnnotation\(\{/);
+  assert.match(timestampBridgeSource, /type: 'transcription'/);
+  assert.match(timestampBridgeSource, /content: ''/);
+  assert.match(timestampBridgeSource, /processedRecordingId/);
+  assert.match(timestampBridgeSource, /startTimeInSeconds/);
+  assert.match(timestampBridgeSource, /endTimeInSeconds/);
+  assert.match(timestampBridgeSource, /operation === 'create-segment'/);
+  assert.match(timestampBridgeSource, /typeof existingBridge\.createSegment === 'function'/);
+});
+
+test('automatic segment insertion trim moves created annotation boundaries by row identity', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+
+  const moveStart = timelineSource.indexOf('async function moveSegmentBoundary');
+  const moveEnd = timelineSource.indexOf('function getCurrentMoveLabels', moveStart);
+  const moveBlock = timelineSource.slice(moveStart, moveEnd);
+  assert.ok(moveStart >= 0 && moveEnd > moveStart, 'expected segment boundary move helper');
+  assert.match(moveBlock, /async function moveSegmentBoundary\(side, labels, speakerKey, targetSeconds, row\)/);
+  assert.match(moveBlock, /const rowIdentity =[\s\S]*helper\.getRowIdentity\(row\)/);
+  assert.match(moveBlock, /annotationId:[\s\S]*rowIdentity\.annotationId/);
+  assert.match(moveBlock, /rowIdentity/);
+  assert.match(moveBlock, /startSeconds: parseTimeValue\(labels\.startText\)/);
+  assert.match(moveBlock, /endSeconds: parseTimeValue\(labels\.endText\)/);
+
+  const inwardStart = timelineSource.indexOf('async function applyInwardTrimToRow');
+  const inwardEnd = timelineSource.indexOf('async function requestTrimTargetsForRow', inwardStart);
+  const inwardBlock = timelineSource.slice(inwardStart, inwardEnd);
+  assert.match(inwardBlock, /moveSegmentBoundary\('right', labels, speakerKey, nextEndSeconds, row\)/);
+  assert.match(inwardBlock, /moveSegmentBoundary\('left', getCurrentMoveLabels\(row, labels\), speakerKey, nextStartSeconds, row\)/);
+
+  const trimStart = timelineSource.indexOf('async function trimSegmentTarget');
+  const trimEnd = timelineSource.indexOf('helper.transcribeCurrentSegmentWithPromptApi', trimStart);
+  const trimBlock = timelineSource.slice(trimStart, trimEnd);
+  assert.match(trimBlock, /moveSegmentBoundary\('right', labels, speakerKey, cappedExtendEndSeconds, row\)/);
+  assert.match(trimBlock, /moveSegmentBoundary\('left', getCurrentMoveLabels\(row, labels\), speakerKey, cappedExtendStartSeconds, row\)/);
+
+  const setBoundaryStart = timestampServiceSource.indexOf('helper.setSegmentBoundaryTime = async function setSegmentBoundaryTime');
+  const setBoundaryEnd = timestampServiceSource.indexOf('helper.splitSegmentAtTime = async function splitSegmentAtTime', setBoundaryStart);
+  const setBoundaryBlock = timestampServiceSource.slice(setBoundaryStart, setBoundaryEnd);
+  assert.ok(setBoundaryStart >= 0 && setBoundaryEnd > setBoundaryStart, 'expected timestamp boundary setter');
+  assert.match(setBoundaryBlock, /helper\.findRowByIdentity[\s\S]*settings\.rowIdentity/);
+  assert.ok(
+    setBoundaryBlock.indexOf('helper.findRowByIdentity') < setBoundaryBlock.indexOf('findRowByTimeLabels'),
+    'row identity lookup must run before label lookup'
+  );
+  assert.match(setBoundaryBlock, /annotationId:[\s\S]*settings\.annotationId[\s\S]*rowIdentity\.annotationId/);
+  assert.match(setBoundaryBlock, /rowIdentity/);
+  assert.match(setBoundaryBlock, /startSeconds: settings\.startSeconds/);
+  assert.match(setBoundaryBlock, /endSeconds: settings\.endSeconds/);
+});
+
 test('current segment transcription updates simple progress from streamed bridge packets', () => {
   const source = read('../src/services/timeline-selection-service.ts');
   const bridgeCallStart = source.indexOf('async function callSelectionBridge(operation, payload, options)');

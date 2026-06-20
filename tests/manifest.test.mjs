@@ -11,6 +11,8 @@ test('manifest targets bundled dist assets', () => {
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/lazy-session.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/timestamp-bridge.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/linter-bridge.js'), true);
+  assert.equal(manifest.background.service_worker, 'dist/background/commands.js');
+  assert.equal(manifest.commands['auto-insert-segment'].suggested_key.default, 'Alt+C');
   assert.equal(manifest.options_page, 'options.html');
   assert.equal(manifest.permissions.includes('storage'), true);
 });

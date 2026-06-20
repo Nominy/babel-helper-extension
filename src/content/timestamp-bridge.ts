@@ -1,13 +1,22 @@
 // @ts-nocheck
 
 export function initTimestampBridge() {
-  if (window.__babelHelperTimestampBridge) {
-    return;
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+  const existingBridge = window.__babelHelperTimestampBridge;
+  if (existingBridge) {
+    if (typeof existingBridge.createSegment === 'function') {
+      return;
+    }
+
+    if (typeof existingBridge.dispose === 'function') {
+      existingBridge.dispose();
+    } else {
+      delete window.__babelHelperTimestampBridge;
+    }
   }
 
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
-  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
 
   function safe(callback, fallbackValue) {
@@ -472,6 +481,49 @@ export function initTimestampBridge() {
     };
   }
 
+  function createAnnotationId() {
+    const randomId =
+      typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : '';
+    return randomId || 'babel-helper-created-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
+
+  function resolveCreateAnnotationBinding() {
+    const seeds = [];
+    for (const row of getTranscriptRows()) {
+      seeds.push(row);
+      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+      if (textarea instanceof HTMLElement) {
+        seeds.push(textarea);
+      }
+    }
+
+    for (const seed of seeds) {
+      let current = getReactFiber(seed);
+      let depth = 0;
+      while (current && typeof current === 'object' && depth < 90) {
+        const props = current.memoizedProps;
+        const onCreateAnnotation =
+          props && typeof props === 'object' && typeof props.onCreateAnnotation === 'function'
+            ? props.onCreateAnnotation
+            : null;
+        if (onCreateAnnotation) {
+          return {
+            onCreateAnnotation,
+            annotations: Array.isArray(props.annotations) ? props.annotations : [],
+            tracks: Array.isArray(props.tracks) ? props.tracks : []
+          };
+        }
+
+        current = current.return;
+        depth += 1;
+      }
+    }
+
+    return null;
+  }
+
   function findRowsAroundSplit(annotationId, splitSeconds, options) {
     const settings = options || {};
     const speakerKey =
@@ -532,6 +584,91 @@ export function initTimestampBridge() {
       row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
     }
     return row instanceof HTMLTableRowElement ? row : null;
+  }
+
+  async function createSegment(payload) {
+    const processedRecordingId =
+      typeof payload?.processedRecordingId === 'string' ? payload.processedRecordingId : '';
+    const speakerKey = typeof payload?.speakerKey === 'string' ? payload.speakerKey : processedRecordingId;
+    const startSeconds = Number(payload?.startSeconds);
+    const endSeconds = Number(payload?.endSeconds);
+    if (!processedRecordingId || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return {
+        ok: false,
+        backend: 'page-react-create-annotation',
+        reason: 'invalid-segment'
+      };
+    }
+
+    const binding = resolveCreateAnnotationBinding();
+    if (!binding || typeof binding.onCreateAnnotation !== 'function') {
+      return {
+        ok: false,
+        backend: 'page-react-create-annotation',
+        reason: 'binding-not-found'
+      };
+    }
+
+    const annotationId =
+      typeof payload?.annotationId === 'string' && payload.annotationId
+        ? payload.annotationId
+        : createAnnotationId();
+    const rowCountBefore = getTranscriptRows().length;
+    try {
+      binding.onCreateAnnotation({
+        id: annotationId,
+        type: 'transcription',
+        content: '',
+        processedRecordingId,
+        startTimeInSeconds: startSeconds,
+        endTimeInSeconds: endSeconds,
+        intensity: null
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        backend: 'page-react-create-annotation',
+        reason: 'apply-threw',
+        message: error instanceof Error ? error.message : String(error || '')
+      };
+    }
+
+    const createdRow = await waitFor(() => {
+      const byId = findRowByAnnotationId(annotationId);
+      if (byId instanceof HTMLTableRowElement) {
+        return byId;
+      }
+
+      return findRowByTimeRange(startSeconds, endSeconds, {
+        speakerKey: speakerKey || processedRecordingId
+      });
+    }, 1600, 40);
+
+    if (!(createdRow instanceof HTMLTableRowElement)) {
+      return {
+        ok: false,
+        backend: 'page-react-create-annotation',
+        reason: 'verify-timeout',
+        annotationId
+      };
+    }
+
+    const labels = getRowTimeLabels(createdRow);
+    const range = getRowTimeRange(createdRow);
+    const timeBinding = resolveRowTimeChangeBinding(createdRow);
+    return {
+      ok: true,
+      backend: 'page-react-create-annotation',
+      annotationId: timeBinding?.annotationId || annotationId,
+      processedRecordingId,
+      speakerKey,
+      startText: labels?.startText || '',
+      endText: labels?.endText || '',
+      startSeconds: range?.startSeconds ?? startSeconds,
+      endSeconds: range?.endSeconds ?? endSeconds,
+      rowCountBefore,
+      rowCountAfter: getTranscriptRows().length
+    };
   }
 
   async function mergeSegment(payload) {
@@ -968,6 +1105,17 @@ export function initTimestampBridge() {
             message: error instanceof Error ? error.message : String(error || '')
           })
         );
+    } else if (operation === 'create-segment') {
+      Promise.resolve(createSegment(payload))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            backend: 'page-react-create-annotation',
+            reason: 'bridge-error',
+            message: error instanceof Error ? error.message : String(error || '')
+          })
+        );
     } else if (operation === 'delete-segment') {
       Promise.resolve(deleteSegment(payload))
         .then((result) => respond(id, result))
@@ -992,6 +1140,7 @@ export function initTimestampBridge() {
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperTimestampBridge = {
+    createSegment,
     deleteSegment,
     mergeSegment,
     setBoundaryTime,

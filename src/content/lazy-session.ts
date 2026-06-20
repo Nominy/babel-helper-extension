@@ -136,6 +136,7 @@ export async function stopSessionRuntime(ctx: FeatureContext) {
   await deactivateSessionFeatures(ctx, 'stop');
   await runFeatures(ctx, 'stop', 'stop');
   runtime.started = false;
+  runtime.servicesRegistered = false;
   runtime.features = [];
   runtime.activeFeatures.clear();
 }

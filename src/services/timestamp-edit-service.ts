@@ -358,21 +358,27 @@ export function registerTimestampEditService(helper: any) {
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const row =
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
         findRowByTimeLabels(settings.startText, settings.endText, {
           speakerKey: settings.speakerKey
         }) ||
         findRowNearBoundary(side, targetSeconds, {
           speakerKey: settings.speakerKey
         });
-      const rowIdentity = row ? helper.getRowIdentity(row) : null;
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
       const bridgeResult = await callTimestampBridge('set-boundary-time', {
         side,
         startText: settings.startText,
         endText: settings.endText,
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.endSeconds,
         speakerKey: settings.speakerKey,
         targetSeconds,
         annotationId:
-          rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : '',
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
         rowIdentity
       });
 
@@ -517,6 +523,60 @@ export function registerTimestampEditService(helper: any) {
       ok: false,
       attempts,
       backend: 'page-react-row-action',
+      verification: null
+    };
+  };
+
+  helper.createSegmentWithNativeAction = async function createSegmentWithNativeAction(options) {
+    const settings = options || {};
+    const startSeconds = Number(settings.startSeconds);
+    const endSeconds = Number(settings.endSeconds);
+    const processedRecordingId =
+      typeof settings.processedRecordingId === 'string' ? settings.processedRecordingId : '';
+    if (!processedRecordingId || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+      return {
+        ok: false,
+        backend: 'page-react-create-annotation',
+        reason: 'invalid-segment'
+      };
+    }
+
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const bridgeResult = await callTimestampBridge('create-segment', {
+        annotationId:
+          typeof settings.annotationId === 'string' && settings.annotationId
+            ? settings.annotationId
+            : '',
+        processedRecordingId: settings.processedRecordingId,
+        speakerKey: settings.speakerKey,
+        startSeconds,
+        endSeconds
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-create-annotation',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-create-annotation',
       verification: null
     };
   };

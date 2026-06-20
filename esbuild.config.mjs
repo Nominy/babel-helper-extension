@@ -40,6 +40,11 @@ const tasks = [
     outfile: 'dist/content/entry.js'
   },
   {
+    ...shared,
+    entryPoints: ['src/background/commands.ts'],
+    outfile: 'dist/background/commands.js'
+  },
+  {
     ...sharedModule,
     entryPoints: ['src/content/lazy-session.ts'],
     outfile: 'dist/content/lazy-session.js'

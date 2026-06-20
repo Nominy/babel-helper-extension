@@ -1,12 +1,21 @@
 ﻿// @ts-nocheck
 export function initMagnifierBridge() {
-  if (window.__babelHelperMagnifierBridge) {
-    return;
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+  const existingBridge = window.__babelHelperMagnifierBridge;
+  if (existingBridge) {
+    if (typeof existingBridge.findNearestSpeechIsland === 'function') {
+      return;
+    }
+
+    if (typeof existingBridge.dispose === 'function') {
+      existingBridge.dispose();
+    } else {
+      delete window.__babelHelperMagnifierBridge;
+    }
   }
 
   const REQUEST_EVENT = 'babel-helper-magnifier-request';
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const HOST_ATTR = 'data-babel-helper-magnifier-host';
   const MINIMAP_HOST_ATTR = 'data-babel-helper-minimap-host';
   const MOUNT_ATTR = 'data-babel-helper-magnifier-mount';
@@ -961,11 +970,43 @@ export function initMagnifierBridge() {
       return null;
     }
 
-    const anchor = host.parentElement instanceof HTMLElement ? host.parentElement : host;
-    const fiber = getReactFiber(anchor);
-    const trackFiber = findTrackFiber(fiber);
-    const props = safe(() => trackFiber.memoizedProps, null);
-    return props && typeof props === 'object' ? props : null;
+    for (const seed of getElementSearchSeeds(host)) {
+      const fiber = getReactFiber(seed.value);
+      const trackFiber = findTrackFiber(fiber);
+      const props = safe(() => trackFiber.memoizedProps, null);
+      if (props && typeof props === 'object') {
+        return props;
+      }
+    }
+
+    return null;
+  }
+
+  function getTrackIdFromTrack(track) {
+    if (!track || typeof track !== 'object') {
+      return null;
+    }
+
+    if (track.processedRecordingId != null) {
+      return String(track.processedRecordingId);
+    }
+
+    return track.id != null ? String(track.id) : null;
+  }
+
+  function getTrackLabelFromTrack(track) {
+    if (!track || typeof track !== 'object') {
+      return '';
+    }
+
+    for (const key of ['label', 'trackLabel', 'name', 'speakerName', 'title']) {
+      const value = track[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+
+    return '';
   }
 
   function getSourceCanvasMetrics(wave) {
@@ -2298,6 +2339,350 @@ export function initMagnifierBridge() {
     return runs;
   }
 
+  function hasRegionCoveringTime(regions, caretSeconds) {
+    if (!Array.isArray(regions) || !Number.isFinite(caretSeconds)) {
+      return false;
+    }
+
+    return regions.some((region) => region.start <= caretSeconds && region.end >= caretSeconds);
+  }
+
+  function hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds) {
+    if (!Array.isArray(regions) || !Number.isFinite(targetStartSeconds) || !Number.isFinite(targetEndSeconds)) {
+      return false;
+    }
+
+    return regions.some(
+      (region) =>
+        Math.min(region.end, targetEndSeconds) - Math.max(region.start, targetStartSeconds) > 0.01
+    );
+  }
+
+  function normalizeNearestSpeechIslandRange(detectedStartSeconds, detectedEndSeconds, centerSeconds, searchStart, searchEnd, paddingSeconds) {
+    const padding = clamp(Number(paddingSeconds) || 0, 0, 1);
+    const minimumDuration = 0.03;
+    let targetStartSeconds = clamp(detectedStartSeconds - padding, searchStart, searchEnd);
+    let targetEndSeconds = clamp(detectedEndSeconds + padding, searchStart, searchEnd);
+    const center = clamp(Number(centerSeconds) || detectedStartSeconds, searchStart, searchEnd);
+
+    if (!(targetEndSeconds > targetStartSeconds)) {
+      targetStartSeconds = clamp(center - minimumDuration / 2, searchStart, searchEnd);
+      targetEndSeconds = clamp(center + minimumDuration / 2, searchStart, searchEnd);
+    }
+
+    if (targetEndSeconds - targetStartSeconds < minimumDuration) {
+      const half = minimumDuration / 2;
+      targetStartSeconds = clamp(center - half, searchStart, searchEnd);
+      targetEndSeconds = clamp(center + half, searchStart, searchEnd);
+      if (targetStartSeconds <= searchStart) {
+        targetEndSeconds = clamp(targetStartSeconds + minimumDuration, searchStart, searchEnd);
+      } else if (targetEndSeconds >= searchEnd) {
+        targetStartSeconds = clamp(targetEndSeconds - minimumDuration, searchStart, searchEnd);
+      }
+    }
+
+    if (!(targetEndSeconds > targetStartSeconds)) {
+      return null;
+    }
+
+    return {
+      targetStartSeconds,
+      targetEndSeconds
+    };
+  }
+
+  function findNearestSpeechIslandInArray(values, searchStart, searchEnd, caretSeconds, duration, threshold, paddingSeconds) {
+    if (!values || values.length <= 1 || !(duration > 0)) {
+      return null;
+    }
+
+    const searchStartIndex = (searchStart / duration) * (values.length - 1);
+    const caretIndex = (caretSeconds / duration) * (values.length - 1);
+    const searchEndIndexExclusive = (searchEnd / duration) * (values.length - 1) + 1;
+    const leftIndex = findLastAboveThresholdInArray(values, searchStartIndex, caretIndex + 1, threshold);
+    const rightIndex = findFirstAboveThresholdInArray(values, caretIndex, searchEndIndexExclusive, threshold);
+    if (leftIndex < 0 && rightIndex < 0) {
+      return null;
+    }
+
+    const leftDistance = leftIndex >= 0 ? Math.abs(indexToSeconds(leftIndex, values.length, duration) - caretSeconds) : Infinity;
+    const rightDistance = rightIndex >= 0 ? Math.abs(indexToSeconds(rightIndex, values.length, duration) - caretSeconds) : Infinity;
+    const foundIndex = leftDistance <= rightDistance ? leftIndex : rightIndex;
+    if (foundIndex < 0) {
+      return null;
+    }
+
+    const startLimit = clamp(Math.floor(searchStartIndex), 0, values.length - 1);
+    const endLimit = clamp(Math.ceil(searchEndIndexExclusive) - 1, 0, values.length - 1);
+    let leftBoundary = foundIndex;
+    while (
+      leftBoundary > startLimit &&
+      Math.abs(Number(values[leftBoundary - 1]) || 0) >= threshold
+    ) {
+      leftBoundary -= 1;
+    }
+
+    let rightBoundary = foundIndex;
+    while (
+      rightBoundary < endLimit &&
+      Math.abs(Number(values[rightBoundary + 1]) || 0) >= threshold
+    ) {
+      rightBoundary += 1;
+    }
+
+    const detectedStartSeconds = clamp(indexToSeconds(leftBoundary, values.length, duration), searchStart, searchEnd);
+    const detectedEndSeconds = clamp(indexToSeconds(rightBoundary, values.length, duration), searchStart, searchEnd);
+    const range = normalizeNearestSpeechIslandRange(
+      detectedStartSeconds,
+      detectedEndSeconds,
+      indexToSeconds(foundIndex, values.length, duration),
+      searchStart,
+      searchEnd,
+      paddingSeconds
+    );
+    if (!range) {
+      return null;
+    }
+
+    return {
+      foundIndex,
+      detectedStartSeconds,
+      detectedEndSeconds,
+      ...range
+    };
+  }
+
+  function findNearestSpeechIslandInChannels(channels, sampleLength, sampleRate, searchStart, searchEnd, caretSeconds, threshold, paddingSeconds) {
+    if (!Array.isArray(channels) || !channels.length || !(sampleLength > 1) || !(sampleRate > 0)) {
+      return null;
+    }
+
+    const searchStartIndex = searchStart * sampleRate;
+    const caretIndex = caretSeconds * sampleRate;
+    const searchEndIndexExclusive = searchEnd * sampleRate;
+    const leftIndex = findLastAboveThresholdInChannels(channels, searchStartIndex, caretIndex + 1, threshold);
+    const rightIndex = findFirstAboveThresholdInChannels(channels, caretIndex, searchEndIndexExclusive, threshold);
+    if (leftIndex < 0 && rightIndex < 0) {
+      return null;
+    }
+
+    const leftDistance = leftIndex >= 0 ? Math.abs(leftIndex / sampleRate - caretSeconds) : Infinity;
+    const rightDistance = rightIndex >= 0 ? Math.abs(rightIndex / sampleRate - caretSeconds) : Infinity;
+    const foundIndex = leftDistance <= rightDistance ? leftIndex : rightIndex;
+    if (foundIndex < 0) {
+      return null;
+    }
+
+    const startLimit = clamp(Math.floor(searchStartIndex), 0, sampleLength - 1);
+    const endLimit = clamp(Math.ceil(searchEndIndexExclusive) - 1, 0, sampleLength - 1);
+    let leftBoundary = foundIndex;
+    while (leftBoundary > startLimit && !isSilentInChannels(channels, leftBoundary - 1, threshold)) {
+      leftBoundary -= 1;
+    }
+
+    let rightBoundary = foundIndex;
+    while (rightBoundary < endLimit && !isSilentInChannels(channels, rightBoundary + 1, threshold)) {
+      rightBoundary += 1;
+    }
+
+    const detectedStartSeconds = clamp(leftBoundary / sampleRate, searchStart, searchEnd);
+    const detectedEndSeconds = clamp(rightBoundary / sampleRate, searchStart, searchEnd);
+    const range = normalizeNearestSpeechIslandRange(
+      detectedStartSeconds,
+      detectedEndSeconds,
+      foundIndex / sampleRate,
+      searchStart,
+      searchEnd,
+      paddingSeconds
+    );
+    if (!range) {
+      return null;
+    }
+
+    return {
+      foundIndex,
+      detectedStartSeconds,
+      detectedEndSeconds,
+      ...range
+    };
+  }
+
+  function createNearestSpeechIslandResponse(base, source, nearest, regions) {
+    const targetStartSeconds = nearest.targetStartSeconds;
+    const targetEndSeconds = nearest.targetEndSeconds;
+    if (hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds)) {
+      return {
+        ...base,
+        ok: true,
+        foundAudio: false,
+        skipped: true,
+        reason: 'covered-candidate',
+        source,
+        detectedStartSeconds: nearest.detectedStartSeconds,
+        detectedEndSeconds: nearest.detectedEndSeconds,
+        targetStartSeconds,
+        targetEndSeconds
+      };
+    }
+
+    return {
+      ...base,
+      ok: true,
+      foundAudio: true,
+      skipped: false,
+      source,
+      detectedStartSeconds: nearest.detectedStartSeconds,
+      detectedEndSeconds: nearest.detectedEndSeconds,
+      targetStartSeconds,
+      targetEndSeconds
+    };
+  }
+
+  function findNearestSpeechIslandForResolvedWave(host, wave, caretSecondsInput, scanWindowSeconds, amplitudeThreshold, paddingSeconds) {
+    if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
+      return {
+        ok: false,
+        reason: 'missing-wave'
+      };
+    }
+
+    const duration = getDuration(wave);
+    if (!(duration > 0)) {
+      return {
+        ok: false,
+        reason: 'missing-duration'
+      };
+    }
+
+    const rawCaretSeconds = Number(caretSecondsInput);
+    const waveCurrentSeconds = Number(safe(() => wave.getCurrentTime(), 0));
+    const caretSeconds = clamp(
+      Number.isFinite(rawCaretSeconds) ? rawCaretSeconds : Number(waveCurrentSeconds) || 0,
+      0,
+      duration
+    );
+    const scanWindow = clamp(Number(scanWindowSeconds) || 1, 0.05, 5);
+    const searchStart = clamp(caretSeconds - scanWindow, 0, duration);
+    const searchEnd = clamp(caretSeconds + scanWindow, 0, duration);
+    const base = {
+      duration,
+      caretSeconds,
+      searchStartSeconds: searchStart,
+      searchEndSeconds: searchEnd
+    };
+    if (!(searchEnd > searchStart)) {
+      return {
+        ...base,
+        ok: false,
+        reason: 'invalid-range'
+      };
+    }
+
+    const regions = getSourceRegionEntries(wave);
+    if (hasRegionCoveringTime(regions, caretSeconds)) {
+      return {
+        ...base,
+        ok: true,
+        foundAudio: false,
+        skipped: true,
+        reason: 'covered-at-caret'
+      };
+    }
+
+    const threshold = Math.max(0, Number(amplitudeThreshold) || 0);
+    const rawPeaks = getRawExportPeaks(wave);
+    if (rawPeaks && rawPeaks.length > 1) {
+      const nearest = findNearestSpeechIslandInArray(
+        rawPeaks,
+        searchStart,
+        searchEnd,
+        caretSeconds,
+        duration,
+        threshold,
+        paddingSeconds
+      );
+      if (nearest) {
+        const targetStartSeconds = nearest.targetStartSeconds;
+        const targetEndSeconds = nearest.targetEndSeconds;
+        if (hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds)) {
+          return {
+            ...base,
+            ok: true,
+            foundAudio: false,
+            skipped: true,
+            reason: 'covered-candidate',
+            source: 'export-peaks',
+            detectedStartSeconds: nearest.detectedStartSeconds,
+            detectedEndSeconds: nearest.detectedEndSeconds,
+            targetStartSeconds,
+            targetEndSeconds
+          };
+        }
+
+        return createNearestSpeechIslandResponse(base, 'export-peaks', nearest, regions);
+      }
+
+      return {
+        ...base,
+        ok: true,
+        foundAudio: false,
+        source: 'export-peaks'
+      };
+    }
+
+    const decoded = getDecodedAudioChannelsForTrim(wave);
+    if (decoded && decoded.audio.length > 1 && decoded.audio.duration > 0) {
+      const sampleLength = decoded.audio.length;
+      const sampleRate = Number(decoded.audio.sampleRate) || 1;
+      const decodedSearchStart = clamp(searchStart, 0, decoded.audio.duration);
+      const decodedSearchEnd = clamp(searchEnd, 0, decoded.audio.duration);
+      const decodedCaret = clamp(caretSeconds, decodedSearchStart, decodedSearchEnd);
+      const nearest = findNearestSpeechIslandInChannels(
+        decoded.channels,
+        sampleLength,
+        sampleRate,
+        decodedSearchStart,
+        decodedSearchEnd,
+        decodedCaret,
+        threshold,
+        paddingSeconds
+      );
+      if (nearest) {
+        const targetStartSeconds = nearest.targetStartSeconds;
+        const targetEndSeconds = nearest.targetEndSeconds;
+        if (hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds)) {
+          return {
+            ...base,
+            ok: true,
+            foundAudio: false,
+            skipped: true,
+            reason: 'covered-candidate',
+            source: 'decoded-audio',
+            detectedStartSeconds: nearest.detectedStartSeconds,
+            detectedEndSeconds: nearest.detectedEndSeconds,
+            targetStartSeconds,
+            targetEndSeconds
+          };
+        }
+
+        return createNearestSpeechIslandResponse(base, 'decoded-audio', nearest, regions);
+      }
+
+      return {
+        ...base,
+        ok: true,
+        foundAudio: false,
+        source: 'decoded-audio'
+      };
+    }
+
+    return {
+      ...base,
+      ok: false,
+      reason: 'missing-audio-data'
+    };
+  }
+
   function findSegmentSilenceRunsForResolvedWave(host, wave, startSeconds, endSeconds, amplitudeThreshold, minimumSilenceSeconds) {
     if (!(host instanceof HTMLElement) || !wave || !isUsableWaveCandidate(wave, host)) {
       return {
@@ -2551,8 +2936,9 @@ export function initMagnifierBridge() {
       keys.push(track.label);
     }
 
-    if (track && track.id != null) {
-      keys.push(String(track.id));
+    const trackId = getTrackIdFromTrack(track);
+    if (trackId) {
+      keys.push(trackId);
     }
 
     return Array.from(new Set(keys.map(normalizeSpeakerKey).filter(Boolean)));
@@ -2631,6 +3017,30 @@ export function initMagnifierBridge() {
       endSeconds,
       amplitudeThreshold,
       minimumSilenceSeconds
+    );
+  }
+
+  function findNearestSpeechIsland(hostMarker, speakerKey, caretSeconds, scanWindowSeconds, amplitudeThreshold, paddingSeconds) {
+    const hostResolved = resolveWaveForHost(hostMarker);
+    if (hostResolved.wave && isUsableWaveCandidate(hostResolved.wave, hostResolved.host)) {
+      return findNearestSpeechIslandForResolvedWave(
+        hostResolved.host,
+        hostResolved.wave,
+        caretSeconds,
+        scanWindowSeconds,
+        amplitudeThreshold,
+        paddingSeconds
+      );
+    }
+
+    const resolved = resolveWaveForVisibleSpeaker(speakerKey);
+    return findNearestSpeechIslandForResolvedWave(
+      resolved.host,
+      resolved.wave,
+      caretSeconds,
+      scanWindowSeconds,
+      amplitudeThreshold,
+      paddingSeconds
     );
   }
 
@@ -2830,6 +3240,62 @@ export function initMagnifierBridge() {
     return {
       host,
       wave: selection && selection.value ? selection.value : null
+    };
+  }
+
+  function resolveVisibleLaneTargets(lanes) {
+    const requestedLanes = Array.isArray(lanes) ? lanes : [];
+    const targets = [];
+
+    for (let index = 0; index < requestedLanes.length; index += 1) {
+      const lane = requestedLanes[index] || {};
+      const hostMarker =
+        typeof lane.hostMarker === 'string' && lane.hostMarker ? lane.hostMarker : '';
+      const resolved = resolveWaveForHost(hostMarker);
+      const host = resolved.host;
+      if (!(host instanceof HTMLElement)) {
+        targets.push({
+          ok: false,
+          index,
+          hostMarker,
+          processedRecordingId: '',
+          trackId: '',
+          speakerKey: '',
+          trackLabel: '',
+          hasWave: false,
+          source: 'react-track-props',
+          reason: 'missing-host'
+        });
+        continue;
+      }
+
+      const trackProps = getTrackPropsForHost(host);
+      const track =
+        trackProps &&
+        typeof trackProps === 'object' &&
+        trackProps.track &&
+        typeof trackProps.track === 'object'
+          ? trackProps.track
+          : null;
+      const processedRecordingId = getTrackIdFromTrack(track) || '';
+      const trackLabel = getTrackLabelFromTrack(track);
+      targets.push({
+        ok: Boolean(processedRecordingId),
+        index,
+        hostMarker,
+        processedRecordingId,
+        trackId: processedRecordingId,
+        speakerKey: processedRecordingId || trackLabel,
+        trackLabel,
+        hasWave: Boolean(resolved.wave && isUsableWaveCandidate(resolved.wave, host)),
+        source: 'react-track-props',
+        reason: processedRecordingId ? null : 'missing-react-track-id'
+      });
+    }
+
+    return {
+      ok: true,
+      targets
     };
   }
 
@@ -3191,11 +3657,8 @@ export function initMagnifierBridge() {
 
     const trackProps = getTrackPropsForHost(host);
     const trackId =
-      trackProps &&
-      trackProps.track &&
-      typeof trackProps.track === 'object' &&
-      trackProps.track.id != null
-        ? String(trackProps.track.id)
+      trackProps && trackProps.track && typeof trackProps.track === 'object'
+        ? getTrackIdFromTrack(trackProps.track)
         : null;
     const registryMatches = collectRegistryCandidates(host);
     let wrapperMatch = null;
@@ -4055,6 +4518,26 @@ export function initMagnifierBridge() {
       return;
     }
 
+    if (operation === 'find-nearest-speech-island') {
+      respond(
+        id,
+        findNearestSpeechIsland(
+          payload.hostMarker,
+          payload.speakerKey,
+          payload.caretSeconds,
+          payload.scanWindowSeconds,
+          payload.amplitudeThreshold,
+          payload.paddingSeconds
+        )
+      );
+      return;
+    }
+
+    if (operation === 'resolve-visible-lane-targets') {
+      respond(id, resolveVisibleLaneTargets(payload.lanes));
+      return;
+    }
+
     if (operation === 'prepare-auto-segment-text-redistribution') {
       Promise.resolve(prepareAutoSegmentTextRedistributionSession(payload))
         .then((result) => respond(id, result))
@@ -4209,6 +4692,7 @@ export function initMagnifierBridge() {
     instances,
     loops,
     findTrimTargetsForSpeaker,
+    findNearestSpeechIsland: findNearestSpeechIslandForResolvedWave,
     dispose
   };
 }

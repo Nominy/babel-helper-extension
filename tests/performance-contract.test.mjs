@@ -27,6 +27,15 @@ test('custom linter and quick autocomplete bridges do not inject during feature 
   assert.doesNotMatch(quickSource, /async start\(ctx: FeatureContext\) {\s*if \(!startPromise\)/);
 });
 
+test('lazy session runtime re-registers services after kernel restart', () => {
+  const source = read('../src/content/lazy-session.ts');
+  const stopStart = source.indexOf('export async function stopSessionRuntime');
+  const stopBlock = source.slice(stopStart);
+
+  assert.ok(stopStart >= 0, 'expected stopSessionRuntime export');
+  assert.match(stopBlock, /runtime\.servicesRegistered = false/);
+});
+
 test('playback row sync is adaptive and row lookup is cached', () => {
   const lifecycleSource = read('../src/core/lifecycle.ts');
   const rowSource = read('../src/services/row-service.ts');
