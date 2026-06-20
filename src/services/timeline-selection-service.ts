@@ -47,7 +47,8 @@ export function registerTimelineSelectionService(helper: any) {
   const AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS = 0.05;
   const AUTO_SEGMENT_SPLIT_SETTLE_MS = 220;
   const AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS = 1;
-  const AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0.35;
+  const AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0.05;
+  const AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS = 1;
   const AUTO_INSERT_SEGMENT_SETTLE_MS = AUTO_SEGMENT_SPLIT_SETTLE_MS;
   const AUTO_SEGMENT_PROGRESS_PHASES = {
     prepare: { label: 'Preparing auto segmentation', percentBase: 0, percentSpan: 4 },
@@ -3287,6 +3288,271 @@ export function registerTimelineSelectionService(helper: any) {
     return settled || initial;
   }
 
+  function findAutoInsertAdjacentMergePlan(row, direction) {
+    const current = getAutoSegmentRowActionSnapshot(row);
+    if (!current || !current.speakerKey) {
+      return null;
+    }
+
+    const sameSpeakerRows = helper
+      .getTranscriptRows()
+      .map((candidateRow) => getAutoSegmentRowActionSnapshot(candidateRow))
+      .filter((candidate) => candidate && candidate.speakerKey === current.speakerKey)
+      .sort((left, right) => left.startSeconds - right.startSeconds);
+    const currentIndex = sameSpeakerRows.findIndex((candidate) => candidate.row === current.row);
+    if (currentIndex < 0) {
+      return null;
+    }
+
+    if (direction === 'above') {
+      const neighbor = sameSpeakerRows[currentIndex - 1];
+      const leftGapSeconds = neighbor ? current.startSeconds - neighbor.endSeconds : Infinity;
+      const isLeftWithinWindow =
+        Number.isFinite(leftGapSeconds) &&
+        leftGapSeconds <= AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS;
+      if (!neighbor || !isLeftWithinWindow) {
+        return null;
+      }
+
+      return {
+        direction: 'above',
+        current,
+        neighbor,
+        gapSeconds: leftGapSeconds,
+        mergedStartSeconds: Math.min(neighbor.startSeconds, current.startSeconds),
+        mergedEndSeconds: Math.max(neighbor.endSeconds, current.endSeconds)
+      };
+    }
+
+    const neighbor = sameSpeakerRows[currentIndex + 1];
+    const rightGapSeconds = neighbor ? neighbor.startSeconds - current.endSeconds : Infinity;
+    const isRightWithinWindow =
+      Number.isFinite(rightGapSeconds) &&
+      rightGapSeconds <= AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS;
+    if (!neighbor || !isRightWithinWindow) {
+      return null;
+    }
+
+    return {
+      direction: 'below',
+      current,
+      neighbor,
+      gapSeconds: rightGapSeconds,
+      mergedStartSeconds: Math.min(current.startSeconds, neighbor.startSeconds),
+      mergedEndSeconds: Math.max(current.endSeconds, neighbor.endSeconds)
+    };
+  }
+
+  function findAutoInsertMergedRow(plan) {
+    if (!plan || !plan.current || !plan.current.speakerKey) {
+      return null;
+    }
+
+    return findRowByTimeRange(plan.mergedStartSeconds, plan.mergedEndSeconds, {
+      speakerKey: plan.current.speakerKey
+    });
+  }
+
+  async function applyAutoInsertAdjacentMerge(row, direction) {
+    const plan = findAutoInsertAdjacentMergePlan(row, direction);
+    if (!plan) {
+      return {
+        ok: true,
+        changed: false,
+        direction,
+        reason: 'no-adjacent-segment'
+      };
+    }
+
+    const neighborText = helper.getRowTextValue(plan.neighbor.row) || '';
+    const currentText = helper.getRowTextValue(plan.current.row) || '';
+    const result = await helper.mergeSegmentWithNativeAction({
+      direction: plan.direction,
+      annotationId: plan.current.annotationId,
+      rowIdentity: plan.current.rowIdentity,
+      startText: plan.current.startText,
+      endText: plan.current.endText,
+      startSeconds: plan.current.startSeconds,
+      endSeconds: plan.current.endSeconds,
+      speakerKey: plan.current.speakerKey,
+      attempts: 2,
+      retryDelayMs: 80
+    });
+    if (!result || !result.ok) {
+      return {
+        ok: false,
+        changed: false,
+        direction,
+        gapSeconds: plan.gapSeconds,
+        merge: result || null
+      };
+    }
+
+    await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
+    return {
+      ok: true,
+      changed: true,
+      direction,
+      gapSeconds: plan.gapSeconds,
+      merge: result,
+      neighborTextLength: neighborText.length,
+      currentTextLength: currentText.length,
+      row: findAutoInsertMergedRow(plan) || row
+    };
+  }
+
+  async function mergeAutoInsertAdjacentRows(row) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return {
+        ok: false,
+        changed: false,
+        reason: 'missing-row',
+        mergeCount: 0
+      };
+    }
+
+    if (typeof helper.mergeSegmentWithNativeAction !== 'function') {
+      return {
+        ok: false,
+        changed: false,
+        reason: 'missing-merge-action',
+        mergeCount: 0
+      };
+    }
+
+    let currentRow = row;
+    let mergeCount = 0;
+    let caretPosition = 'start';
+    let caretOffset = 0;
+    let leftTextLength = 0;
+    const results = [];
+
+    const leftResult = await applyAutoInsertAdjacentMerge(currentRow, 'above');
+    results.push(leftResult);
+    if (leftResult && leftResult.ok && leftResult.changed) {
+      mergeCount += 1;
+      caretPosition = 'end';
+      leftTextLength = Number(leftResult.neighborTextLength) || 0;
+      caretOffset = leftTextLength;
+      if (leftResult.row instanceof HTMLTableRowElement) {
+        currentRow = leftResult.row;
+      }
+    }
+
+    const rightResult = await applyAutoInsertAdjacentMerge(currentRow, 'below');
+    results.push(rightResult);
+    if (rightResult && rightResult.ok && rightResult.changed) {
+      mergeCount += 1;
+      if (leftResult && leftResult.ok && leftResult.changed) {
+        caretPosition = 'offset';
+        caretOffset = leftTextLength;
+      } else {
+        caretPosition = 'start';
+        caretOffset = 0;
+      }
+      if (rightResult.row instanceof HTMLTableRowElement) {
+        currentRow = rightResult.row;
+      }
+    }
+
+    return {
+      ok: results.every((result) => result && result.ok),
+      changed: mergeCount > 0,
+      mergeCount,
+      caretPosition,
+      caretOffset,
+      row: currentRow,
+      rowIdentity: typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(currentRow) : null,
+      results
+    };
+  }
+
+  function getAutoInsertFocusedRow(fallbackRow, mergeResult) {
+    const rowIdentity =
+      mergeResult && mergeResult.rowIdentity && typeof mergeResult.rowIdentity === 'object'
+        ? mergeResult.rowIdentity
+        : null;
+    const byIdentity =
+      rowIdentity && typeof helper.findRowByIdentity === 'function'
+        ? helper.findRowByIdentity(rowIdentity)
+        : null;
+    if (byIdentity instanceof HTMLTableRowElement) {
+      return byIdentity;
+    }
+
+    const row = mergeResult && mergeResult.row instanceof HTMLTableRowElement ? mergeResult.row : null;
+    if (row && row.isConnected) {
+      return row;
+    }
+
+    return fallbackRow instanceof HTMLTableRowElement ? fallbackRow : null;
+  }
+
+  function getAutoInsertRowTextLength(row) {
+    const textarea = helper.getRowTextarea(row);
+    return textarea instanceof HTMLTextAreaElement ? (textarea.value || '').length : 0;
+  }
+
+  function getAutoInsertCaretOffset(row, mergeResult) {
+    const textLength = getAutoInsertRowTextLength(row);
+    if (mergeResult && mergeResult.caretPosition === 'end') {
+      return textLength;
+    }
+
+    if (
+      mergeResult &&
+      mergeResult.caretPosition === 'offset' &&
+      Number.isFinite(Number(mergeResult.caretOffset))
+    ) {
+      return clamp(Number(mergeResult.caretOffset), 0, textLength);
+    }
+
+    return 0;
+  }
+
+  function focusAutoInsertResultRow(fallbackRow, mergeResult) {
+    const row = getAutoInsertFocusedRow(fallbackRow, mergeResult);
+    if (!(row instanceof HTMLTableRowElement) || typeof helper.focusRow !== 'function') {
+      return {
+        ok: false,
+        reason: 'missing-row'
+      };
+    }
+
+    const caretOffset = getAutoInsertCaretOffset(row, mergeResult);
+    const focused = helper.focusRow(row, {
+      activateRow: false,
+      selectionStart: caretOffset,
+      selectionEnd: caretOffset
+    });
+    return {
+      ok: Boolean(focused),
+      caretOffset,
+      rowIdentity: typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null
+    };
+  }
+
+  function serializeAutoInsertMergeResult(mergeResult) {
+    if (!mergeResult || typeof mergeResult !== 'object') {
+      return mergeResult || null;
+    }
+
+    const { row: _row, results, ...rest } = mergeResult;
+    return {
+      ...rest,
+      results: Array.isArray(results)
+        ? results.map((result) => {
+            if (!result || typeof result !== 'object') {
+              return result;
+            }
+
+            const { row: _resultRow, ...serializableResult } = result;
+            return serializableResult;
+          })
+        : results
+    };
+  }
+
   function getAutoSegmentRowActionSnapshot(row) {
     if (!(row instanceof HTMLTableRowElement)) {
       return null;
@@ -4252,6 +4518,7 @@ export function registerTimelineSelectionService(helper: any) {
 
       let createCount = 0;
       let trimCount = 0;
+      let mergeCount = 0;
       let skippedCount = 0;
       const results = [];
 
@@ -4326,17 +4593,30 @@ export function registerTimelineSelectionService(helper: any) {
         const trimResult = trimTarget
           ? await trimSegmentTarget(trimTarget, trimOptions)
           : null;
+        const mergeResult =
+          trimTarget && trimResult && trimResult.ok
+            ? await mergeAutoInsertAdjacentRows(trimTarget.row)
+            : null;
+        const focusResult =
+          trimTarget && trimResult && trimResult.ok
+            ? focusAutoInsertResultRow(trimTarget.row, mergeResult)
+            : null;
         if (trimResult && trimResult.ok) {
           trimCount += 1;
         }
+        if (mergeResult && mergeResult.ok && Number.isFinite(Number(mergeResult.mergeCount))) {
+          mergeCount += Number(mergeResult.mergeCount);
+        }
 
         results.push({
-          ok: Boolean(trimResult && trimResult.ok),
+          ok: Boolean(trimResult && trimResult.ok && (!mergeResult || mergeResult.ok)),
           changed: true,
           trackId: target.trackId,
           island: islandResult,
           create: createResult,
-          trim: trimResult || { ok: false, reason: 'created-row-not-found' }
+          trim: trimResult || { ok: false, reason: 'created-row-not-found' },
+          merge: serializeAutoInsertMergeResult(mergeResult),
+          focus: focusResult
         });
         updateLongTaskProgress({
           label: 'Creating segment near caret',
@@ -4355,6 +4635,7 @@ export function registerTimelineSelectionService(helper: any) {
         laneCount: targets.length,
         createCount,
         trimCount,
+        mergeCount,
         skippedCount,
         results
       };

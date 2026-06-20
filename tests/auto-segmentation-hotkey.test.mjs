@@ -126,7 +126,8 @@ test('automatic segment insertion scans visible lanes within one second and trim
   const bridgeSource = read('../src/content/magnifier-bridge.ts');
 
   assert.match(serviceSource, /AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS = 1\b/);
-  assert.match(serviceSource, /AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0\.35\b/);
+  assert.match(serviceSource, /AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0\.05\b/);
+  assert.match(serviceSource, /AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS = 1\b/);
   assert.doesNotMatch(serviceSource, /function getDomSpeakerKeyFromLaneRow/);
   assert.doesNotMatch(serviceSource, /function getDomSpeakerKeyForContainer/);
   assert.doesNotMatch(serviceSource, /getSingleSpeakerKeyFromText/);
@@ -168,6 +169,7 @@ test('automatic segment insertion scans visible lanes within one second and trim
   const autoInsertBlock = serviceSource.slice(autoInsertStart, autoInsertEnd);
   assert.match(autoInsertBlock, /trimSegmentTarget\(trimTarget, trimOptions\)/);
   assert.match(autoInsertBlock, /progressLabel: 'Trimming inserted segment'/);
+  assert.match(autoInsertBlock, /mergeAutoInsertAdjacentRows\(trimTarget\.row\)/);
   assert.match(autoInsertBlock, /if \(trimResult && trimResult\.ok\)/);
   assert.doesNotMatch(autoInsertBlock, /followupTrimResult/);
   assert.doesNotMatch(autoInsertBlock, /followupTrimTarget/);
@@ -181,6 +183,50 @@ test('automatic segment insertion scans visible lanes within one second and trim
   assert.match(trimTargetBlock, /speakerKey: rowSpeakerKey/);
   assert.match(trimTargetBlock, /rememberTimelineSegmentTarget\(row, trimTarget\.container, trimTarget\.entry, rowSpeakerKey\)/);
   assert.doesNotMatch(trimTargetBlock, /target\.trackId \|\| target\.speakerKey/);
+});
+
+test('automatic segment insertion merges adjacent same-speaker rows within one second after trim', () => {
+  const serviceSource = read('../src/services/timeline-selection-service.ts');
+  const start = serviceSource.indexOf('function findAutoInsertAdjacentMergePlan');
+  const end = serviceSource.indexOf('function getAutoSegmentRowActionSnapshot', start);
+  const block = serviceSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, 'expected auto-insert adjacent merge helper');
+  assert.match(block, /AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS/);
+  assert.match(block, /getAutoSegmentRowActionSnapshot\(row\)/);
+  assert.match(block, /helper\s*\.\s*getTranscriptRows\(\)/);
+  assert.match(block, /candidate\.speakerKey === current\.speakerKey/);
+  assert.match(block, /leftGapSeconds <= AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS/);
+  assert.match(block, /rightGapSeconds <= AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS/);
+  assert.match(block, /direction: 'above'/);
+  assert.match(block, /direction: 'below'/);
+  assert.match(block, /helper\.mergeSegmentWithNativeAction\(\{/);
+});
+
+test('automatic segment insertion focuses the final row at the inserted text boundary', () => {
+  const serviceSource = read('../src/services/timeline-selection-service.ts');
+  const autoInsertStart = serviceSource.indexOf('helper.autoInsertSegmentAtCaret = async function autoInsertSegmentAtCaret()');
+  const autoInsertEnd = serviceSource.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()', autoInsertStart);
+  const autoInsertBlock = serviceSource.slice(autoInsertStart, autoInsertEnd);
+  const mergeStart = serviceSource.indexOf('async function mergeAutoInsertAdjacentRows');
+  const mergeEnd = serviceSource.indexOf('function getAutoSegmentRowActionSnapshot', mergeStart);
+  const mergeBlock = serviceSource.slice(mergeStart, mergeEnd);
+  const focusStart = serviceSource.indexOf('function focusAutoInsertResultRow');
+  const focusEnd = serviceSource.indexOf('function getAutoSegmentRowActionSnapshot', focusStart);
+  const focusBlock = serviceSource.slice(focusStart, focusEnd);
+
+  assert.ok(autoInsertStart >= 0 && autoInsertEnd > autoInsertStart, 'expected auto-insert method');
+  assert.ok(mergeStart >= 0 && mergeEnd > mergeStart, 'expected auto-insert merge helper');
+  assert.ok(focusStart >= 0 && focusEnd > focusStart, 'expected auto-insert focus helper');
+  assert.match(autoInsertBlock, /focusAutoInsertResultRow\(trimTarget\.row, mergeResult\)/);
+  assert.match(mergeBlock, /caretPosition = 'start'/);
+  assert.match(mergeBlock, /caretPosition = 'end'/);
+  assert.match(mergeBlock, /caretPosition = 'offset'/);
+  assert.match(mergeBlock, /caretOffset = leftTextLength/);
+  assert.match(focusBlock, /helper\.focusRow\(row, \{/);
+  assert.match(focusBlock, /activateRow: false/);
+  assert.match(focusBlock, /selectionStart: caretOffset/);
+  assert.match(focusBlock, /selectionEnd: caretOffset/);
 });
 
 test('automatic segment insertion has no temporary floating button or debug event plumbing', () => {
