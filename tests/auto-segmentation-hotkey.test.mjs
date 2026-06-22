@@ -262,8 +262,16 @@ test('automatic segment insertion bridge finds nearest uncovered speech island f
   );
   assert.match(block, /hasRegionCoveringTime\(regions, caretSeconds\)/);
   assert.match(block, /reason: 'covered-at-caret'/);
-  assert.match(block, /hasRegionOverlap\(regions, targetStartSeconds, targetEndSeconds\)/);
-  assert.match(block, /reason: 'covered-candidate'/);
+  assert.match(bridgeSource, /function getDirectionalNearestSpeechIslandScanLimits\(regions, searchStart, searchEnd, caretSeconds\)/);
+  assert.match(block, /const scanLimits = getDirectionalNearestSpeechIslandScanLimits\(regions, searchStart, searchEnd, caretSeconds\)/);
+  assert.match(bridgeSource, /leftSearchStartSeconds: leftStopSeconds/);
+  assert.match(bridgeSource, /rightSearchEndSeconds: rightStopSeconds/);
+  assert.match(bridgeSource, /function chooseNearestDirectionalSpeechIsland\(leftCandidate, rightCandidate, caretSeconds\)/);
+  assert.match(bridgeSource, /paddingSeconds,\s*'left'\s*\)/);
+  assert.match(bridgeSource, /paddingSeconds,\s*'right'\s*\)/);
+  assert.match(bridgeSource, /scanLimits\.leftSearchStartSeconds/);
+  assert.match(bridgeSource, /scanLimits\.rightSearchEndSeconds/);
+  assert.doesNotMatch(block, /reason: 'covered-candidate'/);
   assert.match(bridgeSource, /leftDistance <= rightDistance/);
   assert.match(bridgeSource, /operation === 'find-nearest-speech-island'/);
   assert.match(bridgeSource, /const hostResolved = resolveWaveForHost\(hostMarker\)/);
@@ -361,6 +369,66 @@ test('current segment transcription updates simple progress from streamed bridge
   assert.match(transcribeBlock, /callSelectionBridge\([\s\S]*'transcribe-segment-audio'[\s\S]*onProgress: \(progress\) => updateCurrentSegmentTranscriptionProgress\(progress, range\)/);
   assert.match(transcribeBlock, /const text = normalizeAutoSegmentRedistributionText\(bridgeResult\.text\)/);
   assert.match(transcribeBlock, /helper\.setEditableValue\(textarea, text\)/);
+});
+
+test('Gemini Nano failures include troubleshooting help and the native error text', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const helpStart = source.indexOf('function createPromptApiTroubleshooting(result, contextLabel)');
+  const helpEnd = source.indexOf('function showPromptApiTroubleshootingFailure(troubleshooting)', helpStart);
+  const helpBlock = source.slice(helpStart, helpEnd);
+
+  assert.ok(helpStart >= 0 && helpEnd > helpStart, 'expected shared Prompt API troubleshooting helper');
+  assert.match(source, /PROMPT_API_TROUBLESHOOTING_DISMISS_MS = 18000/);
+  assert.match(source, /function formatPromptApiNativeError\(result\)/);
+  assert.match(helpBlock, /prompt-api-missing/);
+  assert.match(helpBlock, /prompt-api-downloadable/);
+  assert.match(helpBlock, /prompt-api-downloading/);
+  assert.match(helpBlock, /prompt-api-create-failed/);
+  assert.match(helpBlock, /prompt-api-transcription-failed/);
+  assert.match(helpBlock, /chrome:\/\/on-device-internals/);
+  assert.match(helpBlock, /free Chrome profile storage/);
+  assert.match(helpBlock, /Audio input needs a supported GPU/);
+  assert.match(helpBlock, /nativeError: formatPromptApiNativeError\(result\)/);
+  assert.match(helpBlock, /errorName/);
+  assert.match(helpBlock, /errorMessage/);
+  assert.match(helpBlock, /availability/);
+  assert.match(helpBlock, /reason/);
+  assert.match(source, /delete progress\.root\.dataset\.babelHelperPromptApiTroubleshooting/);
+  assert.match(source, /babelHelperPromptApiTroubleshootingToken/);
+  assert.match(source, /progress\.root\.dataset\.babelHelperPromptApiTroubleshootingToken === dismissToken/);
+});
+
+test('Gemini Nano troubleshooting is surfaced for transcription and auto-segmentation Prompt API failures', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const transcribeStart = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
+  const transcribeEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', transcribeStart);
+  const transcribeBlock = source.slice(transcribeStart, transcribeEnd);
+  const redistributeStart = source.indexOf('async function redistributeAutoSegmentTextWithPromptApi(baselineGroups, options)');
+  const redistributeEnd = source.indexOf('function emitAutoSegmentDebug', redistributeStart);
+  const redistributeBlock = source.slice(redistributeStart, redistributeEnd);
+  const autoStart = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');
+  const autoEnd = source.indexOf('async function trimSegmentTarget', autoStart);
+  const autoBlock = source.slice(autoStart, autoEnd);
+
+  assert.ok(transcribeStart >= 0 && transcribeEnd > transcribeStart, 'expected transcription method');
+  assert.ok(redistributeStart >= 0 && redistributeEnd > redistributeStart, 'expected redistribution helper');
+  assert.ok(autoStart >= 0 && autoEnd > autoStart, 'expected auto-segmentation method');
+
+  assert.match(transcribeBlock, /let keepTroubleshootingProgress = false/);
+  assert.match(transcribeBlock, /const troubleshooting = createPromptApiTroubleshooting\(bridgeResult, 'Gemini Nano segment transcription'\)/);
+  assert.match(transcribeBlock, /showPromptApiTroubleshootingFailure\(troubleshooting\)/);
+  assert.match(transcribeBlock, /troubleshooting/);
+  assert.match(transcribeBlock, /if \(!keepTroubleshootingProgress\) \{\s*dismissLongTaskProgress\(\)/);
+
+  assert.match(redistributeBlock, /let lastPromptTroubleshooting = hasPromptSession\s*\?\s*null\s*:\s*createPromptApiTroubleshooting\(sessionResult, 'Gemini Nano text alignment'\)/);
+  assert.match(redistributeBlock, /lastPromptTroubleshooting = createPromptApiTroubleshooting\(bridgeResult, 'Gemini Nano text alignment'\)/);
+  assert.match(redistributeBlock, /result\.troubleshooting = lastPromptTroubleshooting/);
+
+  assert.match(autoBlock, /let keepTroubleshootingProgress = false/);
+  assert.match(autoBlock, /const prepareTroubleshooting = createPromptApiTroubleshooting\(autoSegmentTextRedistributionSession, 'Gemini Nano text alignment'\)/);
+  assert.match(autoBlock, /showPromptApiTroubleshootingFailure\(redistributionResult\.troubleshooting\)/);
+  assert.match(autoBlock, /keepTroubleshootingProgress = true/);
+  assert.match(autoBlock, /if \(!keepTroubleshootingProgress\) \{\s*dismissLongTaskProgress\(\)/);
 });
 
 test('current segment transcription bridge streams full speaker segment audio and asks for Russian text', () => {

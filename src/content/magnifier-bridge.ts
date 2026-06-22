@@ -2358,6 +2358,50 @@ export function initMagnifierBridge() {
     );
   }
 
+  function getDirectionalNearestSpeechIslandScanLimits(regions, searchStart, searchEnd, caretSeconds) {
+    let leftStopSeconds = searchStart;
+    let rightStopSeconds = searchEnd;
+
+    if (Array.isArray(regions) && Number.isFinite(caretSeconds)) {
+      for (const region of regions) {
+        const regionStart = Number(region && region.start);
+        const regionEnd = Number(region && region.end);
+        if (!Number.isFinite(regionStart) || !Number.isFinite(regionEnd) || regionEnd <= regionStart) {
+          continue;
+        }
+
+        if (regionEnd <= caretSeconds && regionEnd > leftStopSeconds && regionStart < caretSeconds) {
+          leftStopSeconds = clamp(regionEnd, searchStart, caretSeconds);
+        }
+
+        if (regionStart >= caretSeconds && regionStart < rightStopSeconds && regionEnd > caretSeconds) {
+          rightStopSeconds = clamp(regionStart, caretSeconds, searchEnd);
+        }
+      }
+    }
+
+    return {
+      leftSearchStartSeconds: leftStopSeconds,
+      rightSearchEndSeconds: rightStopSeconds
+    };
+  }
+
+  function chooseNearestDirectionalSpeechIsland(leftCandidate, rightCandidate, caretSeconds) {
+    if (!leftCandidate) {
+      return rightCandidate || null;
+    }
+
+    if (!rightCandidate) {
+      return leftCandidate;
+    }
+
+    const leftSeconds = Number(leftCandidate.foundSeconds);
+    const rightSeconds = Number(rightCandidate.foundSeconds);
+    const leftDistance = Number.isFinite(leftSeconds) ? Math.abs(leftSeconds - caretSeconds) : Infinity;
+    const rightDistance = Number.isFinite(rightSeconds) ? Math.abs(rightSeconds - caretSeconds) : Infinity;
+    return leftDistance <= rightDistance ? leftCandidate : rightCandidate;
+  }
+
   function normalizeNearestSpeechIslandRange(detectedStartSeconds, detectedEndSeconds, centerSeconds, searchStart, searchEnd, paddingSeconds) {
     const padding = clamp(Number(paddingSeconds) || 0, 0, 1);
     const minimumDuration = 0.03;
@@ -2391,29 +2435,9 @@ export function initMagnifierBridge() {
     };
   }
 
-  function findNearestSpeechIslandInArray(values, searchStart, searchEnd, caretSeconds, duration, threshold, paddingSeconds) {
-    if (!values || values.length <= 1 || !(duration > 0)) {
-      return null;
-    }
-
-    const searchStartIndex = (searchStart / duration) * (values.length - 1);
-    const caretIndex = (caretSeconds / duration) * (values.length - 1);
-    const searchEndIndexExclusive = (searchEnd / duration) * (values.length - 1) + 1;
-    const leftIndex = findLastAboveThresholdInArray(values, searchStartIndex, caretIndex + 1, threshold);
-    const rightIndex = findFirstAboveThresholdInArray(values, caretIndex, searchEndIndexExclusive, threshold);
-    if (leftIndex < 0 && rightIndex < 0) {
-      return null;
-    }
-
-    const leftDistance = leftIndex >= 0 ? Math.abs(indexToSeconds(leftIndex, values.length, duration) - caretSeconds) : Infinity;
-    const rightDistance = rightIndex >= 0 ? Math.abs(indexToSeconds(rightIndex, values.length, duration) - caretSeconds) : Infinity;
-    const foundIndex = leftDistance <= rightDistance ? leftIndex : rightIndex;
-    if (foundIndex < 0) {
-      return null;
-    }
-
-    const startLimit = clamp(Math.floor(searchStartIndex), 0, values.length - 1);
-    const endLimit = clamp(Math.ceil(searchEndIndexExclusive) - 1, 0, values.length - 1);
+  function buildNearestSpeechIslandInArrayCandidate(values, foundIndex, searchStart, searchEnd, duration, threshold, paddingSeconds, direction) {
+    const startLimit = clamp(Math.floor((searchStart / duration) * (values.length - 1)), 0, values.length - 1);
+    const endLimit = clamp(Math.ceil((searchEnd / duration) * (values.length - 1) + 1) - 1, 0, values.length - 1);
     let leftBoundary = foundIndex;
     while (
       leftBoundary > startLimit &&
@@ -2432,10 +2456,11 @@ export function initMagnifierBridge() {
 
     const detectedStartSeconds = clamp(indexToSeconds(leftBoundary, values.length, duration), searchStart, searchEnd);
     const detectedEndSeconds = clamp(indexToSeconds(rightBoundary, values.length, duration), searchStart, searchEnd);
+    const foundSeconds = indexToSeconds(foundIndex, values.length, duration);
     const range = normalizeNearestSpeechIslandRange(
       detectedStartSeconds,
       detectedEndSeconds,
-      indexToSeconds(foundIndex, values.length, duration),
+      foundSeconds,
       searchStart,
       searchEnd,
       paddingSeconds
@@ -2445,36 +2470,77 @@ export function initMagnifierBridge() {
     }
 
     return {
+      direction,
       foundIndex,
+      foundSeconds,
       detectedStartSeconds,
       detectedEndSeconds,
       ...range
     };
   }
 
-  function findNearestSpeechIslandInChannels(channels, sampleLength, sampleRate, searchStart, searchEnd, caretSeconds, threshold, paddingSeconds) {
-    if (!Array.isArray(channels) || !channels.length || !(sampleLength > 1) || !(sampleRate > 0)) {
+  function findNearestSpeechIslandInArray(values, searchStart, searchEnd, caretSeconds, duration, threshold, paddingSeconds, scanLimits) {
+    if (!values || values.length <= 1 || !(duration > 0)) {
       return null;
     }
 
-    const searchStartIndex = searchStart * sampleRate;
-    const caretIndex = caretSeconds * sampleRate;
-    const searchEndIndexExclusive = searchEnd * sampleRate;
-    const leftIndex = findLastAboveThresholdInChannels(channels, searchStartIndex, caretIndex + 1, threshold);
-    const rightIndex = findFirstAboveThresholdInChannels(channels, caretIndex, searchEndIndexExclusive, threshold);
-    if (leftIndex < 0 && rightIndex < 0) {
+    const leftSearchStartSeconds =
+      scanLimits && Number.isFinite(Number(scanLimits.leftSearchStartSeconds))
+        ? clamp(Number(scanLimits.leftSearchStartSeconds), searchStart, caretSeconds)
+        : searchStart;
+    const rightSearchEndSeconds =
+      scanLimits && Number.isFinite(Number(scanLimits.rightSearchEndSeconds))
+        ? clamp(Number(scanLimits.rightSearchEndSeconds), caretSeconds, searchEnd)
+        : searchEnd;
+    const openSearchStart = clamp(leftSearchStartSeconds, searchStart, caretSeconds);
+    const openSearchEnd = clamp(rightSearchEndSeconds, caretSeconds, searchEnd);
+    if (!(openSearchEnd > openSearchStart)) {
       return null;
     }
 
-    const leftDistance = leftIndex >= 0 ? Math.abs(leftIndex / sampleRate - caretSeconds) : Infinity;
-    const rightDistance = rightIndex >= 0 ? Math.abs(rightIndex / sampleRate - caretSeconds) : Infinity;
-    const foundIndex = leftDistance <= rightDistance ? leftIndex : rightIndex;
-    if (foundIndex < 0) {
-      return null;
-    }
+    const caretIndex = (caretSeconds / duration) * (values.length - 1);
+    const leftStartIndex = (openSearchStart / duration) * (values.length - 1);
+    const rightEndIndexExclusive = (openSearchEnd / duration) * (values.length - 1) + 1;
+    const leftIndex =
+      openSearchStart < caretSeconds
+        ? findLastAboveThresholdInArray(values, leftStartIndex, caretIndex + 1, threshold)
+        : -1;
+    const rightIndex =
+      openSearchEnd > caretSeconds
+        ? findFirstAboveThresholdInArray(values, caretIndex, rightEndIndexExclusive, threshold)
+        : -1;
+    const leftCandidate =
+      leftIndex >= 0
+        ? buildNearestSpeechIslandInArrayCandidate(
+            values,
+            leftIndex,
+            openSearchStart,
+            openSearchEnd,
+            duration,
+            threshold,
+            paddingSeconds,
+            'left'
+          )
+        : null;
+    const rightCandidate =
+      rightIndex >= 0
+        ? buildNearestSpeechIslandInArrayCandidate(
+            values,
+            rightIndex,
+            openSearchStart,
+            openSearchEnd,
+            duration,
+            threshold,
+            paddingSeconds,
+            'right'
+          )
+        : null;
+    return chooseNearestDirectionalSpeechIsland(leftCandidate, rightCandidate, caretSeconds);
+  }
 
-    const startLimit = clamp(Math.floor(searchStartIndex), 0, sampleLength - 1);
-    const endLimit = clamp(Math.ceil(searchEndIndexExclusive) - 1, 0, sampleLength - 1);
+  function buildNearestSpeechIslandInChannelsCandidate(channels, foundIndex, sampleLength, sampleRate, searchStart, searchEnd, threshold, paddingSeconds, direction) {
+    const startLimit = clamp(Math.floor(searchStart * sampleRate), 0, sampleLength - 1);
+    const endLimit = clamp(Math.ceil(searchEnd * sampleRate) - 1, 0, sampleLength - 1);
     let leftBoundary = foundIndex;
     while (leftBoundary > startLimit && !isSilentInChannels(channels, leftBoundary - 1, threshold)) {
       leftBoundary -= 1;
@@ -2487,10 +2553,11 @@ export function initMagnifierBridge() {
 
     const detectedStartSeconds = clamp(leftBoundary / sampleRate, searchStart, searchEnd);
     const detectedEndSeconds = clamp(rightBoundary / sampleRate, searchStart, searchEnd);
+    const foundSeconds = foundIndex / sampleRate;
     const range = normalizeNearestSpeechIslandRange(
       detectedStartSeconds,
       detectedEndSeconds,
-      foundIndex / sampleRate,
+      foundSeconds,
       searchStart,
       searchEnd,
       paddingSeconds
@@ -2500,11 +2567,74 @@ export function initMagnifierBridge() {
     }
 
     return {
+      direction,
       foundIndex,
+      foundSeconds,
       detectedStartSeconds,
       detectedEndSeconds,
       ...range
     };
+  }
+
+  function findNearestSpeechIslandInChannels(channels, sampleLength, sampleRate, searchStart, searchEnd, caretSeconds, threshold, paddingSeconds, scanLimits) {
+    if (!Array.isArray(channels) || !channels.length || !(sampleLength > 1) || !(sampleRate > 0)) {
+      return null;
+    }
+
+    const leftSearchStartSeconds =
+      scanLimits && Number.isFinite(Number(scanLimits.leftSearchStartSeconds))
+        ? clamp(Number(scanLimits.leftSearchStartSeconds), searchStart, caretSeconds)
+        : searchStart;
+    const rightSearchEndSeconds =
+      scanLimits && Number.isFinite(Number(scanLimits.rightSearchEndSeconds))
+        ? clamp(Number(scanLimits.rightSearchEndSeconds), caretSeconds, searchEnd)
+        : searchEnd;
+    const openSearchStart = clamp(leftSearchStartSeconds, searchStart, caretSeconds);
+    const openSearchEnd = clamp(rightSearchEndSeconds, caretSeconds, searchEnd);
+    if (!(openSearchEnd > openSearchStart)) {
+      return null;
+    }
+
+    const caretIndex = caretSeconds * sampleRate;
+    const leftStartIndex = openSearchStart * sampleRate;
+    const rightEndIndexExclusive = openSearchEnd * sampleRate;
+    const leftIndex =
+      openSearchStart < caretSeconds
+        ? findLastAboveThresholdInChannels(channels, leftStartIndex, caretIndex + 1, threshold)
+        : -1;
+    const rightIndex =
+      openSearchEnd > caretSeconds
+        ? findFirstAboveThresholdInChannels(channels, caretIndex, rightEndIndexExclusive, threshold)
+        : -1;
+    const leftCandidate =
+      leftIndex >= 0
+        ? buildNearestSpeechIslandInChannelsCandidate(
+            channels,
+            leftIndex,
+            sampleLength,
+            sampleRate,
+            openSearchStart,
+            openSearchEnd,
+            threshold,
+            paddingSeconds,
+            'left'
+          )
+        : null;
+    const rightCandidate =
+      rightIndex >= 0
+        ? buildNearestSpeechIslandInChannelsCandidate(
+            channels,
+            rightIndex,
+            sampleLength,
+            sampleRate,
+            openSearchStart,
+            openSearchEnd,
+            threshold,
+            paddingSeconds,
+            'right'
+          )
+        : null;
+    return chooseNearestDirectionalSpeechIsland(leftCandidate, rightCandidate, caretSeconds);
   }
 
   function createNearestSpeechIslandResponse(base, source, nearest, regions) {
@@ -2588,6 +2718,7 @@ export function initMagnifierBridge() {
         reason: 'covered-at-caret'
       };
     }
+    const scanLimits = getDirectionalNearestSpeechIslandScanLimits(regions, searchStart, searchEnd, caretSeconds);
 
     const threshold = Math.max(0, Number(amplitudeThreshold) || 0);
     const rawPeaks = getRawExportPeaks(wave);
@@ -2599,26 +2730,10 @@ export function initMagnifierBridge() {
         caretSeconds,
         duration,
         threshold,
-        paddingSeconds
+        paddingSeconds,
+        scanLimits
       );
       if (nearest) {
-        const targetStartSeconds = nearest.targetStartSeconds;
-        const targetEndSeconds = nearest.targetEndSeconds;
-        if (hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds)) {
-          return {
-            ...base,
-            ok: true,
-            foundAudio: false,
-            skipped: true,
-            reason: 'covered-candidate',
-            source: 'export-peaks',
-            detectedStartSeconds: nearest.detectedStartSeconds,
-            detectedEndSeconds: nearest.detectedEndSeconds,
-            targetStartSeconds,
-            targetEndSeconds
-          };
-        }
-
         return createNearestSpeechIslandResponse(base, 'export-peaks', nearest, regions);
       }
 
@@ -2645,26 +2760,10 @@ export function initMagnifierBridge() {
         decodedSearchEnd,
         decodedCaret,
         threshold,
-        paddingSeconds
+        paddingSeconds,
+        scanLimits
       );
       if (nearest) {
-        const targetStartSeconds = nearest.targetStartSeconds;
-        const targetEndSeconds = nearest.targetEndSeconds;
-        if (hasRegionOverlap(regions, targetStartSeconds, targetEndSeconds)) {
-          return {
-            ...base,
-            ok: true,
-            foundAudio: false,
-            skipped: true,
-            reason: 'covered-candidate',
-            source: 'decoded-audio',
-            detectedStartSeconds: nearest.detectedStartSeconds,
-            detectedEndSeconds: nearest.detectedEndSeconds,
-            targetStartSeconds,
-            targetEndSeconds
-          };
-        }
-
         return createNearestSpeechIslandResponse(base, 'decoded-audio', nearest, regions);
       }
 

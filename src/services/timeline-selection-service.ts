@@ -62,6 +62,7 @@ export function registerTimelineSelectionService(helper: any) {
     complete: { label: 'Finishing auto segmentation', percentBase: 98, percentSpan: 2 }
   };
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
+  const PROMPT_API_TROUBLESHOOTING_DISMISS_MS = 18000;
 
   helper.state.cutDraft = null;
   helper.state.cutPreview = null;
@@ -301,7 +302,123 @@ export function registerTimelineSelectionService(helper: any) {
         : safeTotal > 0
           ? `${safeCurrent} / ${safeTotal} segments`
           : 'Preparing...';
+    delete progress.root.dataset.babelHelperPromptApiTroubleshooting;
+    delete progress.root.dataset.babelHelperPromptApiTroubleshootingToken;
+    progress.fill.style.background = '#2563eb';
     progress.fill.style.width = `${safePercent}%`;
+  }
+
+  function formatPromptApiNativeError(result) {
+    const errorName = result && typeof result.errorName === 'string' ? result.errorName.trim() : '';
+    const errorMessage = result && typeof result.errorMessage === 'string' ? result.errorMessage.trim() : '';
+    if (errorName && errorMessage) {
+      return errorName + ': ' + errorMessage;
+    }
+
+    return errorName || errorMessage || '';
+  }
+
+  function createPromptApiTroubleshooting(result, contextLabel) {
+    const reason = result && typeof result.reason === 'string' ? result.reason : '';
+    if (reason.indexOf('prompt-api-') !== 0) {
+      return null;
+    }
+
+    const availability = result && typeof result.availability === 'string' ? result.availability : '';
+    const errorName = result && typeof result.errorName === 'string' ? result.errorName.trim() : '';
+    const errorMessage = result && typeof result.errorMessage === 'string' ? result.errorMessage.trim() : '';
+    const nativeError = formatPromptApiNativeError(result);
+    let summary = 'Gemini Nano could not be used for this AI feature.';
+    let action =
+      'Check chrome://on-device-internals for the model status, keep free Chrome profile storage available, and reload Babel after the model finishes downloading.';
+
+    if (reason === 'prompt-api-missing') {
+      summary = 'This Chrome profile does not expose the local Gemini Nano Prompt API.';
+      action =
+        'Use a Chrome build/profile with built-in AI enabled, then check chrome://on-device-internals for model status.';
+    } else if (reason === 'prompt-api-downloadable') {
+      summary = 'Gemini Nano is available to download, but the local model is not installed yet.';
+      action =
+        'Start the model download from Chrome built-in AI, keep free Chrome profile storage available, then reload Babel.';
+    } else if (reason === 'prompt-api-downloading') {
+      summary = 'Gemini Nano is still downloading in Chrome.';
+      action = 'Keep Chrome open until the download finishes, confirm it in chrome://on-device-internals, then reload Babel.';
+    } else if (reason === 'prompt-api-unavailable') {
+      summary = 'Gemini Nano is unavailable in this Chrome profile or on this device.';
+      action =
+        'Confirm built-in AI eligibility in Chrome, check chrome://on-device-internals, and make sure the profile has enough free storage.';
+    } else if (reason === 'prompt-api-availability-failed') {
+      summary = 'Chrome failed while checking Gemini Nano availability.';
+    } else if (reason === 'prompt-api-create-failed') {
+      summary = 'Chrome found Gemini Nano but could not start a local model session.';
+    } else if (
+      reason === 'prompt-api-prompt-failed' ||
+      reason === 'prompt-api-transcription-failed' ||
+      reason === 'prompt-api-redistribution-failed' ||
+      reason === 'prompt-api-prepare-failed'
+    ) {
+      summary = 'Gemini Nano started, but the local model request failed.';
+      action =
+        'Try a shorter segment, reload Babel, then check chrome://on-device-internals if the error repeats. Audio input needs a supported GPU.';
+    }
+
+    const specificError = nativeError || reason;
+    const availabilityDetail = availability ? ' Availability: ' + availability + '.' : '';
+    const hardwareNote = 'Audio input needs a supported GPU.';
+    const messageParts = [
+      summary + availabilityDetail,
+      'Specific error: ' + specificError + '.',
+      action
+    ];
+    if (action.indexOf(hardwareNote) < 0) {
+      messageParts.push(hardwareNote);
+    }
+    const message = messageParts.join(' ');
+
+    return {
+      title: contextLabel || 'Gemini Nano troubleshooting',
+      message,
+      summary,
+      action,
+      reason,
+      availability,
+      errorName,
+      errorMessage,
+      nativeError: formatPromptApiNativeError(result)
+    };
+  }
+
+  function showPromptApiTroubleshootingFailure(troubleshooting) {
+    if (!troubleshooting || typeof troubleshooting !== 'object') {
+      return;
+    }
+
+    updateLongTaskProgress({
+      label: troubleshooting.title || 'Gemini Nano unavailable',
+      current: 100,
+      total: 100,
+      percent: 100,
+      detail: troubleshooting.message || 'Gemini Nano failed. Check chrome://on-device-internals.'
+    });
+
+    const progress = helper.state.longTaskProgress;
+    if (progress && progress.fill instanceof HTMLElement) {
+      progress.fill.style.background = '#dc2626';
+    }
+    if (progress && progress.root instanceof HTMLElement) {
+      const dismissToken = Date.now() + '-' + Math.random().toString(36).slice(2);
+      progress.root.dataset.babelHelperPromptApiTroubleshooting = 'true';
+      progress.root.dataset.babelHelperPromptApiTroubleshootingToken = dismissToken;
+      window.setTimeout(() => {
+        if (
+          helper.state.longTaskProgress === progress &&
+          progress.root instanceof HTMLElement &&
+          progress.root.dataset.babelHelperPromptApiTroubleshootingToken === dismissToken
+        ) {
+          dismissLongTaskProgress();
+        }
+      }, PROMPT_API_TROUBLESHOOTING_DISMISS_MS);
+    }
   }
 
   function dismissLongTaskProgress() {
@@ -4219,6 +4336,9 @@ export function registerTimelineSelectionService(helper: any) {
     let promptReviewCount = 0;
     let rejectedPromptReviewCount = 0;
     let lastErrorMessage = '';
+    let lastPromptTroubleshooting = hasPromptSession
+      ? null
+      : createPromptApiTroubleshooting(sessionResult, 'Gemini Nano text alignment');
 
     for (let index = 0; index < groups.length; index += 1) {
       const group = groups[index];
@@ -4279,6 +4399,10 @@ export function registerTimelineSelectionService(helper: any) {
           audioSampleCount += Number(bridgeResult.audioSampleCount) || 0;
         } else if (bridgeResult && !bridgeResult.ok) {
           rejectedPromptReviewCount += 1;
+          lastPromptTroubleshooting = createPromptApiTroubleshooting(bridgeResult, 'Gemini Nano text alignment');
+          if (lastPromptTroubleshooting && lastPromptTroubleshooting.nativeError) {
+            lastErrorMessage = lastPromptTroubleshooting.nativeError;
+          }
         }
       }
 
@@ -4335,6 +4459,9 @@ export function registerTimelineSelectionService(helper: any) {
     if (errorCount) {
       result.errorCount = errorCount;
       result.errorMessage = lastErrorMessage;
+    }
+    if (lastPromptTroubleshooting) {
+      result.troubleshooting = lastPromptTroubleshooting;
     }
     return result;
   }
@@ -4657,6 +4784,7 @@ export function registerTimelineSelectionService(helper: any) {
 
     helper.state.autoSegmentationPending = true;
     autoSegmentTextRedistributionSession = null;
+    let keepTroubleshootingProgress = false;
 
     try {
       updateAutoSegmentProgress({
@@ -4666,11 +4794,15 @@ export function registerTimelineSelectionService(helper: any) {
         detail: 'Starting local text reviewer...'
       });
       autoSegmentTextRedistributionSession = await prepareAutoSegmentTextRedistributionSession();
+      const prepareTroubleshooting = createPromptApiTroubleshooting(autoSegmentTextRedistributionSession, 'Gemini Nano text alignment');
+      if (autoSegmentTextRedistributionSession && prepareTroubleshooting) {
+        autoSegmentTextRedistributionSession.troubleshooting = prepareTroubleshooting;
+      }
       updateAutoSegmentProgress({
         phase: 'prepare',
         current: 1,
         total: 1,
-        detail: 'Local text reviewer ready'
+        detail: prepareTroubleshooting ? prepareTroubleshooting.message : 'Local text reviewer ready'
       });
       const preTrimResult = await helper.trimAllSegmentsToAudio({
         amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
@@ -4897,6 +5029,10 @@ export function registerTimelineSelectionService(helper: any) {
         total: 1,
         detail: result.ok ? 'Complete' : 'Finished with issues'
       });
+      if (redistributionResult && redistributionResult.troubleshooting) {
+        showPromptApiTroubleshootingFailure(redistributionResult.troubleshooting);
+        keepTroubleshootingProgress = true;
+      }
       emitAutoSegmentDebug({
         phase: 'complete',
         ok: result.ok,
@@ -4917,7 +5053,9 @@ export function registerTimelineSelectionService(helper: any) {
       await disposeAutoSegmentTextRedistributionSession(autoSegmentTextRedistributionSession);
       autoSegmentTextRedistributionSession = null;
       helper.state.autoSegmentationPending = false;
-      dismissLongTaskProgress();
+      if (!keepTroubleshootingProgress) {
+        dismissLongTaskProgress();
+      }
     }
   };
 
@@ -5114,6 +5252,7 @@ export function registerTimelineSelectionService(helper: any) {
     const hostMarker = ensureSelectionHostMarker(target.container);
     updateCurrentSegmentTranscriptionProgress({ phase: 'preparing-audio', percent: 5 }, range);
 
+    let keepTroubleshootingProgress = false;
     try {
       const bridgeResult = await callSelectionBridge(
         'transcribe-segment-audio',
@@ -5129,10 +5268,16 @@ export function registerTimelineSelectionService(helper: any) {
         }
       );
       if (!bridgeResult || !bridgeResult.ok) {
+        const troubleshooting = createPromptApiTroubleshooting(bridgeResult, 'Gemini Nano segment transcription');
+        if (troubleshooting) {
+          showPromptApiTroubleshootingFailure(troubleshooting);
+          keepTroubleshootingProgress = true;
+        }
         return {
           ok: false,
           reason: bridgeResult && bridgeResult.reason ? bridgeResult.reason : 'transcription-failed',
-          bridge: bridgeResult
+          bridge: bridgeResult,
+          troubleshooting
         };
       }
 
@@ -5167,7 +5312,9 @@ export function registerTimelineSelectionService(helper: any) {
             : null
       };
     } finally {
-      dismissLongTaskProgress();
+      if (!keepTroubleshootingProgress) {
+        dismissLongTaskProgress();
+      }
     }
   };
 
