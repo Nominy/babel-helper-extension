@@ -420,12 +420,13 @@ test('Gemini Nano troubleshooting is surfaced for transcription and auto-segment
   assert.match(transcribeBlock, /troubleshooting/);
   assert.match(transcribeBlock, /if \(!keepTroubleshootingProgress\) \{\s*dismissLongTaskProgress\(\)/);
 
-  assert.match(redistributeBlock, /let lastPromptTroubleshooting = hasPromptSession\s*\?\s*null\s*:\s*createPromptApiTroubleshooting\(sessionResult, 'Gemini Nano text alignment'\)/);
+  assert.match(redistributeBlock, /let lastPromptTroubleshooting = null/);
+  assert.match(redistributeBlock, /createPromptApiTroubleshooting\(sessionResult, 'Gemini Nano text alignment'\)/);
   assert.match(redistributeBlock, /lastPromptTroubleshooting = createPromptApiTroubleshooting\(bridgeResult, 'Gemini Nano text alignment'\)/);
   assert.match(redistributeBlock, /result\.troubleshooting = lastPromptTroubleshooting/);
 
   assert.match(autoBlock, /let keepTroubleshootingProgress = false/);
-  assert.match(autoBlock, /const prepareTroubleshooting = createPromptApiTroubleshooting\(autoSegmentTextRedistributionSession, 'Gemini Nano text alignment'\)/);
+  assert.doesNotMatch(autoBlock, /createPromptApiTroubleshooting\(autoSegmentTextRedistributionSession, 'Gemini Nano text alignment'\)/);
   assert.match(autoBlock, /showPromptApiTroubleshootingFailure\(redistributionResult\.troubleshooting\)/);
   assert.match(autoBlock, /keepTroubleshootingProgress = true/);
   assert.match(autoBlock, /if \(!keepTroubleshootingProgress\) \{\s*dismissLongTaskProgress\(\)/);
@@ -541,7 +542,8 @@ test('auto-segmentation keeps one staged interactive progress bar across all pha
   assert.match(source, /detail/);
 
   assert.match(autoBlock, /updateAutoSegmentProgress\(\{\s*phase: 'prepare'/);
-  assert.match(autoBlock, /prepareAutoSegmentTextRedistributionSession\(\)/);
+  assert.doesNotMatch(autoBlock, /prepareAutoSegmentTextRedistributionSession\(\)/);
+  assert.match(autoBlock, /detail: 'Preparing AI text reviewer'/);
   assert.match(autoBlock, /progressLabel: 'Pre-trimming visible segments'/);
   assert.match(autoBlock, /keepProgress: true/);
   assert.match(autoBlock, /progressPhase: 'preTrim'/);
@@ -672,7 +674,8 @@ test('auto-segmentation Prompt API bridge uses local LanguageModel with structur
   assert.match(bridgeSource, /function getPromptApiLanguageModel/);
   assert.match(bridgeSource, /LanguageModel\.availability/);
   assert.match(bridgeSource, /LanguageModel\.create/);
-  assert.match(bridgeSource, /expectedInputs: \[\{ type: 'text' \}, \{ type: 'audio' \}\]/);
+  assert.match(bridgeSource, /expectedInputs: \[\{ type: 'text', languages: \['en'\] \}, \{ type: 'audio' \}\]/);
+  assert.match(bridgeSource, /expectedOutputs: \[\{ type: 'text', languages: \['en'\] \}\]/);
   assert.match(bridgeSource, /responseConstraint/);
   assert.match(bridgeSource, /session\.prompt\(/);
   assert.match(bridgeSource, /session\.destroy\(\)/);

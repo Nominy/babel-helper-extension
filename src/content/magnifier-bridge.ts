@@ -29,8 +29,8 @@ export function initMagnifierBridge() {
   const WAVEFORM_SCALE_DEFAULT_MAX = 20;
   const WAVEFORM_SCALE_DEFAULT_STEP = 0.001;
   const AUTO_SEGMENT_PROMPT_SESSION_OPTIONS = {
-    expectedInputs: [{ type: 'text' }, { type: 'audio' }],
-    expectedOutputs: [{ type: 'text' }],
+    expectedInputs: [{ type: 'text', languages: ['en'] }, { type: 'audio' }],
+    expectedOutputs: [{ type: 'text', languages: ['en'] }],
     initialPrompts: [
       {
         role: 'system',
