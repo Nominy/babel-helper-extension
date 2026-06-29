@@ -14,7 +14,7 @@ async function boot() {
   window.dispatchEvent(new CustomEvent('babel-helper-bridge-teardown'));
   document
     .querySelectorAll(
-      'script[data-babel-helper-linter-bridge="true"], script[data-babel-helper-quick-region-autocomplete-bridge="true"]'
+      'script[data-babel-helper-linter-bridge="true"], script[data-babel-helper-quick-region-autocomplete-bridge="true"], script[data-babel-helper-recovered-editor-bridge="true"]'
     )
     .forEach((script) => script.remove());
   const linterBridgePreload = preloadCustomLinterBridge();

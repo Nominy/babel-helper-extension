@@ -32,6 +32,12 @@ export type TooltipEntry = {
 
 type RegistryOptions = {
   createTextContext?: (text: string) => TranscriptTextContext;
+  onRuleError?: (
+    error: unknown,
+    rule: LinterRule,
+    entry: AnnotationEntry,
+    context: LinterRuleContext
+  ) => void;
 };
 
 function createRuleContext(
@@ -66,9 +72,26 @@ export function buildRegistryIssues<TIssue>(
 
     const context = createRuleContext(entry, annotationEntries, index, options);
     for (const rule of rules) {
-      const matches = rule.getMatches(entry, context);
-      if (matches.length) {
+      let matches: TextRange[];
+      try {
+        const result = rule.getMatches(entry, context);
+        if (!Array.isArray(result)) {
+          throw new TypeError(`Custom linter rule "${rule.id}" returned a non-array match result.`);
+        }
+        matches = result;
+      } catch (error) {
+        options.onRuleError?.(error, rule, entry, context);
+        continue;
+      }
+
+      if (!matches.length) {
+        continue;
+      }
+
+      try {
         issues.push(makeIssue(entry, rule, matches));
+      } catch (error) {
+        options.onRuleError?.(error, rule, entry, context);
       }
     }
   }

@@ -1,6 +1,7 @@
 import type { FeatureSettings } from './settings';
 import { DEFAULT_FEATURE_SETTINGS } from './settings';
 import { getRegisteredHotkeysHelpRows, PLAYBACK_REWIND_SHORTCUTS } from '../features/registry';
+import { BABEL_ROW_ACTION_LABELS, BABEL_ROW_TEXTAREA_SELECTOR } from './babel-editor-contract';
 
 function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, string]> {
   return getRegisteredHotkeysHelpRows(featureSettings);
@@ -11,7 +12,7 @@ export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_
     features: {
       ...featureSettings
     },
-    rowTextareaSelector: 'textarea[placeholder^="What was said"]',
+    rowTextareaSelector: BABEL_ROW_TEXTAREA_SELECTOR,
     actionTriggerSelector: 'button[aria-haspopup="menu"]',
     hotkeysHelpMarker: 'data-babel-helper-hotkeys',
     hotkeysDialogPatterns: [
@@ -23,19 +24,8 @@ export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_
     playbackRewindShortcuts: PLAYBACK_REWIND_SHORTCUTS.map((shortcut) => ({
       ...shortcut
     })),
-    actionPatterns: {
-      deleteSegment: [/\bdelete(?:\s+segment)?\b/i, /\bremove(?:\s+segment)?\b/i],
-      mergePrevious: [
-        /\bmerge\b.*\b(previous|prev|above|before|up)\b/i,
-        /\b(previous|prev|above|before|up)\b.*\b(merge|combine|join)\b/i,
-        /\b(combine|join)\b.*\b(previous|prev|above|before|up)\b/i
-      ],
-      mergeNext: [
-        /\bmerge\b.*\b(next|below|after|following|down)\b/i,
-        /\b(next|below|after|following|down)\b.*\b(merge|combine|join)\b/i,
-        /\b(combine|join)\b.*\b(next|below|after|following|down)\b/i
-      ],
-      mergeFallback: [/\bmerge\b/i, /\bcombine\b/i, /\bjoin\b/i]
+    actionLabels: {
+      ...BABEL_ROW_ACTION_LABELS
     }
   };
 }

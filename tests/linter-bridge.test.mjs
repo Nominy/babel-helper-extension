@@ -2194,6 +2194,9 @@ test('linter bridge plugs helper rules into Babel native client linter', () => {
   assert.match(bridgeSource, /function patchNativeLinterModuleFactory/);
   assert.match(bridgeSource, /function augmentNativeLintIssues/);
   assert.match(bridgeSource, /function mergeNativeAndHelperIssues/);
+  assert.match(bridgeSource, /function augmentNativeLintDispatchValue/);
+  assert.match(bridgeSource, /function patchNativeLintDispatch/);
+  assert.match(bridgeSource, /__babelHelperNativeLintDispatchPatched/);
   assert.match(bridgeSource, /function findNativeReviewFiber/);
   assert.match(bridgeSource, /function syncNativeLintState/);
   assert.match(bridgeSource, /lintHook\.hook\.queue\.dispatch/);
@@ -2210,6 +2213,68 @@ test('linter bridge plugs helper rules into Babel native client linter', () => {
   assert.doesNotMatch(bridgeSource, /CLIENT_LINT_STATUS_ATTR/);
   assert.doesNotMatch(bridgeSource, /data-babel-helper-client-lint-status/);
   assert.doesNotMatch(bridgeSource, /renderClientLintStatusIndicators/);
+});
+
+test('linter bridge guards native lint state dispatches from dropping helper issues', () => {
+  const augmentStart = bridgeSource.indexOf('function augmentNativeLintDispatchValue');
+  const augmentEnd = bridgeSource.indexOf('function patchNativeLintDispatch', augmentStart);
+  assert.notEqual(augmentStart, -1);
+  assert.notEqual(augmentEnd, -1);
+  const augmentBody = bridgeSource.slice(augmentStart, augmentEnd);
+  assert.match(augmentBody, /extractAnnotationEntries/);
+  assert.match(augmentBody, /buildCustomIssues/);
+  assert.match(augmentBody, /mergeNativeAndHelperIssues\(value,\s*helperIssues\)/);
+  assert.match(augmentBody, /setCurrentNativeHelperIssues/);
+
+  const patchStart = bridgeSource.indexOf('function patchNativeLintDispatch');
+  const patchEnd = bridgeSource.indexOf('function getNativeAnnotationEntriesFromState', patchStart);
+  assert.notEqual(patchStart, -1);
+  assert.notEqual(patchEnd, -1);
+  const patchBody = bridgeSource.slice(patchStart, patchEnd);
+  assert.match(patchBody, /queue\.dispatch/);
+  assert.match(patchBody, /__babelHelperNativeLintDispatchOriginal/);
+  assert.match(patchBody, /typeof action === "function"/);
+  assert.match(patchBody, /const nextValue = action\(previousValue\)/);
+  assert.match(patchBody, /augmentNativeLintDispatchValue\(\s*nextValue,/);
+  assert.match(patchBody, /augmentNativeLintDispatchValue\(\s*action,/);
+
+  const syncStart = bridgeSource.indexOf('function syncNativeLintState');
+  const syncEnd = bridgeSource.indexOf('function scheduleNativeLintStateSync', syncStart);
+  assert.notEqual(syncStart, -1);
+  assert.notEqual(syncEnd, -1);
+  const syncBody = bridgeSource.slice(syncStart, syncEnd);
+  const patchCall = syncBody.indexOf('patchNativeLintDispatch(hooks, reason)');
+  const dispatchCall = syncBody.indexOf('hooks.lintHook.hook.queue.dispatch');
+  assert.ok(patchCall >= 0);
+  assert.ok(dispatchCall > patchCall);
+});
+
+test('linter bridge does not clear helper issues when a lint refresh has no annotation entries', () => {
+  const augmentStart = bridgeSource.indexOf('async function maybeAugmentLintResponse');
+  const augmentEnd = bridgeSource.indexOf('async function maybeAugmentHighlightedWordClearanceResponse', augmentStart);
+  assert.notEqual(augmentStart, -1);
+  assert.notEqual(augmentEnd, -1);
+  const augmentBody = bridgeSource.slice(augmentStart, augmentEnd);
+
+  assert.match(augmentBody, /if \(!annotationEntries\.length\)/);
+  assert.match(augmentBody, /reason:\s*"no-annotation-entries"/);
+  const noEntryGuard = augmentBody.indexOf('if (!annotationEntries.length)');
+  const noCustomIssueClear = augmentBody.indexOf('"legacy-lint-response-no-custom-issues"');
+  assert.ok(noEntryGuard >= 0);
+  assert.ok(noCustomIssueClear > noEntryGuard);
+});
+
+test('linter bridge falls back to native React annotation state before augmenting lint responses', () => {
+  assert.match(bridgeSource, /function getNativeAnnotationEntriesFromState/);
+
+  const fetchStart = bridgeSource.indexOf('async function babelHelperLinterPatchedFetch');
+  const fetchEnd = bridgeSource.indexOf('function installFetchPatch', fetchStart);
+  assert.notEqual(fetchStart, -1);
+  assert.notEqual(fetchEnd, -1);
+  const fetchBody = bridgeSource.slice(fetchStart, fetchEnd);
+
+  assert.match(fetchBody, /const requestAnnotationEntries = await getAnnotationEntriesFromRequest/);
+  assert.match(fetchBody, /requestAnnotationEntries\.length\s*\?\s*requestAnnotationEntries\s*:\s*getNativeAnnotationEntriesFromState\(\)/);
 });
 
 test('does not flag decimal comma numbers', () => {

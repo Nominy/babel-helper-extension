@@ -11,6 +11,7 @@
     "build:watch": "node esbuild.config.mjs --watch",
     "build:zip": "node scripts/pack.mjs",
     "sync:unpacked": "node scripts/sync-unpacked.mjs",
+    "verify:recovered-app": "node scripts/verify-recovered-app-harness.mjs",
     "version:patch": "node scripts/increment-version.mjs",
     "publish:cws": "node scripts/publish-cws.mjs",
     "setup:github-secrets": "node scripts/setup-github-secrets.mjs",

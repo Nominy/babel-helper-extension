@@ -15,6 +15,7 @@ import type { FeatureContext, ServiceRegistry } from './types';
 import { createAnalyticsStore } from './analytics-store';
 import { createPerfRuntime } from './perf';
 import { registerExtendedDiffViewService } from '../services/extended-diff-view-service';
+import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
 
 function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
   return normalizeExtensionSettings(settings);
@@ -168,6 +169,7 @@ export function createHelperKernel() {
 
       perf.setPhase('route-ready', { reason: 'kernel-start' });
       registerLifecycle(helper);
+      registerRecoveredEditorSnapshotService(helper);
       if (helper.isFeatureEnabled('extendedDiffView')) {
         registerExtendedDiffViewService(helper);
       }

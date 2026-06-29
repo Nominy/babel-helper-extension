@@ -106,6 +106,62 @@ test('linter rule registry builds issues, filters visible tooltip entries, and a
   assert.equal(applyRuleFixes(' hello', rules), 'hello.');
 });
 
+test('linter rule registry keeps later custom issues when one rule throws', async () => {
+  const { buildRegistryIssues } = await importBundledTs(
+    'src/features/custom-linter/linter/rule-registry.ts'
+  );
+  const ruleErrors = [];
+  const rules = [
+    {
+      id: 'broken-rule',
+      reason: 'Broken rule',
+      severity: 'error',
+      markers: ['Broken rule'],
+      getMatches() {
+        throw new Error('bad row shape');
+      }
+    },
+    {
+      id: 'working-rule',
+      reason: 'Working rule',
+      severity: 'warning',
+      markers: ['Working rule'],
+      getMatches(entry) {
+        return [{ start: 0, end: 1, text: entry.text.slice(0, 1) }];
+      }
+    }
+  ];
+
+  const issues = buildRegistryIssues(
+    [{ annotationId: 'a1', text: 'hello' }],
+    rules,
+    (entry, rule, matches) => ({
+      annotationId: entry.annotationId,
+      reason: rule.reason,
+      severity: rule.severity,
+      matches
+    }),
+    {
+      onRuleError(error, rule, entry) {
+        ruleErrors.push({
+          message: error.message,
+          ruleId: rule.id,
+          annotationId: entry.annotationId
+        });
+      }
+    }
+  );
+
+  assert.deepEqual(issues.map((issue) => issue.reason), ['Working rule']);
+  assert.deepEqual(ruleErrors, [
+    {
+      message: 'bad row shape',
+      ruleId: 'broken-rule',
+      annotationId: 'a1'
+    }
+  ]);
+});
+
 test('linter bridge delegates rule loops to the registry module', async () => {
   const bridgeSource = await fs.readFile('src/content/linter-bridge.ts', 'utf8');
 
@@ -120,6 +176,19 @@ test('linter bridge delegates rule loops to the registry module', async () => {
   const buildCustomIssuesEnd = bridgeSource.indexOf('function isLintIssueLike', buildCustomIssuesStart);
   const buildCustomIssuesBody = bridgeSource.slice(buildCustomIssuesStart, buildCustomIssuesEnd);
   assert.doesNotMatch(buildCustomIssuesBody, /if \(has[A-Z]/);
+  assert.match(buildCustomIssuesBody, /onRuleError/);
+  assert.match(buildCustomIssuesBody, /recordCustomLinterRuleError/);
+
+  const errorRecorderStart = bridgeSource.indexOf('function recordCustomLinterRuleError');
+  const errorRecorderEnd = bridgeSource.indexOf('function buildCustomIssues', errorRecorderStart);
+  assert.notEqual(errorRecorderStart, -1);
+  assert.notEqual(errorRecorderEnd, -1);
+  const errorRecorderBody = bridgeSource.slice(errorRecorderStart, errorRecorderEnd);
+  assert.match(errorRecorderBody, /console\.error/);
+  assert.match(errorRecorderBody, /Custom linter rule failed/);
+  assert.match(errorRecorderBody, /ruleId/);
+  assert.match(errorRecorderBody, /annotationId/);
+  assert.match(errorRecorderBody, /\berror\b/);
 
   const tooltipStart = bridgeSource.indexOf('function getNativeTooltipHighlightEntries');
   const tooltipEnd = bridgeSource.indexOf('function findReasonTextNode', tooltipStart);

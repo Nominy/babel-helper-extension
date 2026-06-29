@@ -3,6 +3,7 @@ import { createFeatureModules } from '../features';
 import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
 import { registerMagnifierService } from '../services/magnifier-service';
 import { registerMinimapService } from '../services/minimap-service';
+import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
 import { registerRowService } from '../services/row-service';
 import { registerTimelineSelectionService } from '../services/timeline-selection-service';
 import { registerTimestampEditService } from '../services/timestamp-edit-service';
@@ -46,6 +47,7 @@ function registerSessionServices(ctx: FeatureContext) {
   }
 
   const { helper } = ctx;
+  registerRecoveredEditorSnapshotService(helper);
   registerRowService(helper);
   registerTimestampEditService(helper);
 

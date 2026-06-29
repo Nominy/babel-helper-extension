@@ -85,6 +85,9 @@ type TimestampAnchor = {
 type LoadedDiff = {
   url: string;
   source: 'native' | 'generated';
+  referenceReviewActionId: string;
+  currentReviewActionId: string;
+  selectedCompareActionId: string;
   referenceLevel: number | null;
   currentLevel: number | null;
   pageLevel: number | null;
@@ -99,26 +102,6 @@ type DiffUrlEntry = {
   source: 'native' | 'generated';
 };
 
-type TranscriptRow = {
-  row: HTMLTableRowElement;
-  speaker: string;
-  startSeconds: number | null;
-  endSeconds: number | null;
-  textCell: HTMLElement;
-};
-
-type RectBounds = {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-};
-
-type ClippedCellRect = {
-  rect: DOMRect;
-  clip: RectBounds;
-};
-
 type WaveformLane = {
   speakerLabel: string;
   speakerKeys: string[];
@@ -128,11 +111,10 @@ type WaveformLane = {
 };
 
 type ExtendedDiffState = {
+  helper: any;
   timer: number;
   retryTimers: number[];
   observerDebounceTimer: number;
-  textOverlayRaf: number;
-  viewportEventHandler: (() => void) | null;
   mutationObserver: MutationObserver | null;
   performanceObserver: PerformanceObserver | null;
   routeKey: string;
@@ -146,7 +128,8 @@ type ExtendedDiffState = {
   loadedReviewActionUrls: Set<string>;
   generatedDiffUrls: Set<string>;
   activeNativeUrl: string | null;
-  lastRenderedDiffKey: string;
+  appliedRecoveredDiffActionId: string;
+  pendingRecoveredDiffActionId: string;
   overlayMode: 'reference' | 'current' | 'fusion';
   diffs: LoadedDiff[];
 };
@@ -154,7 +137,6 @@ type ExtendedDiffState = {
 const NORMAL_POLL_INTERVAL_MS = 2500;
 const DIFF_TOGGLE_RETRY_DELAYS_MS = [120, 450, 1100];
 const OBSERVER_TICK_DEBOUNCE_MS = 180;
-const TEXT_OVERLAY_CLIP_INSET_PX = 1;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -357,10 +339,6 @@ function buildTokenDiff(before: string, after: string): DiffToken[] {
     j += 1;
   }
   return tokens;
-}
-
-function countChangedTokens(tokens: DiffToken[]): number {
-  return tokens.filter((token) => token.status !== 'same').length;
 }
 
 function getTimestampDetails(payload: DiffPayload): TimestampDetail[] {
@@ -721,14 +699,16 @@ function buildLoadedDiff(url: string, payload: DiffPayload, source: LoadedDiff['
   const textPatches: TextPatch[] = [];
   const overlays: OverlayItem[] = [];
   const timestampAnchors: TimestampAnchor[] = [];
+  const referenceReviewActionId = asString(payload.referenceReviewActionId);
+  const currentReviewActionId = asString(payload.currentReviewActionId);
   const referenceLevel = asNumber(payload.referenceLevel);
   const currentLevel = asNumber(payload.currentLevel);
   const levelLabel = `L${referenceLevel ?? '?'}->L${currentLevel ?? '?'}`;
   const pageReviewActionId = getCurrentReviewActionId();
-  const anchorSide = asString(payload.currentReviewActionId) === pageReviewActionId ? 'current' : 'reference';
+  const anchorSide = currentReviewActionId === pageReviewActionId ? 'current' : 'reference';
   const pageLevel = anchorSide === 'current' ? currentLevel : referenceLevel;
   const compareLevel = anchorSide === 'current' ? referenceLevel : currentLevel;
-  const comparisonKey = `${asString(payload.referenceReviewActionId).slice(0, 8)}-${asString(payload.currentReviewActionId).slice(0, 8)}`;
+  const comparisonKey = `${referenceReviewActionId.slice(0, 8)}-${currentReviewActionId.slice(0, 8)}`;
 
   (asArray(payload.speakerDiffs) as SpeakerDiff[]).forEach((speaker, speakerIndex) => {
     const speakerLabel = speakerIdToLabel(speaker.processedRecordingId, speakerIndex);
@@ -846,7 +826,19 @@ function buildLoadedDiff(url: string, payload: DiffPayload, source: LoadedDiff['
     });
   });
 
-  return { url, source, referenceLevel, currentLevel, pageLevel, compareLevel, textPatches, overlays };
+  return {
+    url,
+    source,
+    referenceReviewActionId: asString(payload.referenceReviewActionId),
+    currentReviewActionId: asString(payload.currentReviewActionId),
+    selectedCompareActionId: anchorSide === 'current' ? referenceReviewActionId : currentReviewActionId,
+    referenceLevel,
+    currentLevel,
+    pageLevel,
+    compareLevel,
+    textPatches,
+    overlays
+  };
 }
 
 function injectStyles() {
@@ -854,14 +846,6 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = 'babel-helper-extended-diff-style';
   style.textContent = `
-    .bh-native-diff-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 5.5rem; border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 10px; background: #eff6ff; color: #1d4ed8; font-size: 12px; font-weight: 700; flex-shrink: 0; }
-    .bh-native-diff-text { font-size: 12px; line-height: 1.625; }
-    .bh-native-diff-same { color: hsl(var(--foreground)); }
-    .bh-native-diff-added { color: #15803d; background: #dcfce7; border-radius: 3px; padding: 0 2px; }
-    .bh-native-diff-removed { color: #b91c1c; background: #fee2e2; text-decoration: line-through; border-radius: 3px; padding: 0 2px; }
-    .bh-native-diff-overlay-root { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; overflow: hidden; }
-    .bh-native-diff-overlay-mask { position: absolute; overflow: hidden; box-sizing: border-box; pointer-events: none; }
-    .bh-native-diff-overlay-item { position: absolute; display: flex; align-items: flex-start; gap: 8px; box-sizing: border-box; overflow: hidden; padding: 2px 4px; background: rgba(255, 255, 255, 0.96); border-radius: 4px; }
     .bh-segmentation-mode-controls { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; padding: 2px; border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 6px; background: rgba(255, 255, 255, 0.88); }
     .bh-segmentation-mode-controls button { border: 0; border-radius: 4px; padding: 2px 7px; background: transparent; color: #334155; font-size: 11px; font-weight: 700; cursor: pointer; }
     .bh-segmentation-mode-controls button[data-active="true"] { background: #0f172a; color: #f8fafc; }
@@ -873,18 +857,8 @@ function removeSegmentationModeControls() {
   document.querySelectorAll('#bh-segmentation-mode-controls, .bh-segmentation-mode-controls').forEach((node) => node.remove());
 }
 
-function removeNativeDiffOverlayRoot() {
-  document.querySelectorAll('#bh-native-diff-overlay-root, .bh-native-diff-overlay-root').forEach((node) => node.remove());
-}
-
 function removeInjectedStyles() {
   document.getElementById('babel-helper-extended-diff-style')?.remove();
-}
-
-function cancelTextOverlayRender(state: ExtendedDiffState) {
-  if (!state.textOverlayRaf) return;
-  window.cancelAnimationFrame(state.textOverlayRaf);
-  state.textOverlayRaf = 0;
 }
 
 function renderSegmentationModeControls(state: ExtendedDiffState) {
@@ -898,6 +872,7 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
     return;
   }
 
+  injectStyles();
   const switchElement = document.querySelector('[role="switch"]');
   const anchor = switchElement?.parentElement || switchElement;
   if (!(anchor instanceof HTMLElement)) return;
@@ -960,37 +935,6 @@ function getRenderableDiffs(state: ExtendedDiffState): LoadedDiff[] {
   return compareLevels.size === 1 ? generated : [];
 }
 
-function getRenderableDiffKey(state: ExtendedDiffState): string {
-  return getRenderableDiffs(state)
-    .map((diff) => diff.url)
-    .join('|');
-}
-
-function getTranscriptRows(): TranscriptRow[] {
-  return Array.from(document.querySelectorAll('tbody tr'))
-    .filter((row): row is HTMLTableRowElement => row instanceof HTMLTableRowElement)
-    .map((row) => {
-      const cells = Array.from(row.children) as HTMLElement[];
-      if (cells.length < 5) return null;
-      return {
-        row,
-        speaker: normalizeText(cells[1].innerText || ''),
-        startSeconds: parseDisplayedTime(cells[2].innerText || ''),
-        endSeconds: parseDisplayedTime(cells[3].innerText || ''),
-        textCell: cells[4]
-      };
-    })
-    .filter((row): row is TranscriptRow => Boolean(row && row.speaker && row.startSeconds != null));
-}
-
-function rowMatchesSegment(row: TranscriptRow, patch: TextPatch, segment: SegmentRecord): boolean {
-  return (
-    row.speaker === patch.speakerLabel &&
-    secondsClose(row.startSeconds, segment.startTimeInSeconds) &&
-    secondsClose(row.endSeconds, segment.endTimeInSeconds)
-  );
-}
-
 function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -998,219 +942,88 @@ function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?
   return element;
 }
 
-function getNativeDiffOverlayRoot(): HTMLElement {
-  let root = document.getElementById('bh-native-diff-overlay-root') as HTMLElement | null;
-  if (!root) {
-    root = createElement('div', 'bh-native-diff-overlay-root');
-    root.id = 'bh-native-diff-overlay-root';
-    (document.body || document.documentElement).appendChild(root);
+function clearRecoveredEditorTextDiffState(state: ExtendedDiffState) {
+  const helper = state.helper;
+  const shouldClearRecoveredDiff = Boolean(state.appliedRecoveredDiffActionId);
+  state.appliedRecoveredDiffActionId = '';
+  state.pendingRecoveredDiffActionId = '';
+  if (shouldClearRecoveredDiff && typeof helper?.clearRecoveredEditorDiffState === 'function') {
+    void helper.clearRecoveredEditorDiffState('extended-diff-text-state');
   }
-  return root;
-}
-
-function toRectBounds(rect: DOMRect): RectBounds {
-  return {
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-    left: rect.left
-  };
-}
-
-function intersectRects(leftRect: RectBounds, rightRect: RectBounds): RectBounds | null {
-  const rect = {
-    top: Math.max(leftRect.top, rightRect.top),
-    right: Math.min(leftRect.right, rightRect.right),
-    bottom: Math.min(leftRect.bottom, rightRect.bottom),
-    left: Math.max(leftRect.left, rightRect.left)
-  };
-  return rect.right > rect.left && rect.bottom > rect.top ? rect : null;
-}
-
-function isOverflowClippingElement(element: HTMLElement): boolean {
-  const style = getComputedStyle(element);
-  return [style.overflow, style.overflowX, style.overflowY].some((value) => ['auto', 'scroll', 'hidden', 'clip'].includes(value));
-}
-
-function isTableStructureElement(element: HTMLElement): boolean {
-  return ['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'COLGROUP', 'COL'].includes(element.tagName);
-}
-
-function isScrollableViewportElement(element: HTMLElement): boolean {
-  return (
-    element.clientWidth > 0 &&
-    element.clientHeight > 0 &&
-    (element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1)
-  );
-}
-
-function isKnownScrollViewportElement(element: HTMLElement): boolean {
-  const className = typeof element.className === 'string' ? element.className : '';
-  return (
-    element.hasAttribute('data-radix-scroll-area-viewport') ||
-    element.hasAttribute('data-scroll-area-viewport') ||
-    /\b(?:overflow|scroll|viewport)\b/i.test(className)
-  );
-}
-
-function isTextOverlayClippingElement(element: HTMLElement): boolean {
-  if (isTableStructureElement(element)) return false;
-  return isOverflowClippingElement(element) || isScrollableViewportElement(element) || isKnownScrollViewportElement(element);
-}
-
-function insetRect(rect: RectBounds, insetPx: number): RectBounds | null {
-  const inset = {
-    top: rect.top + insetPx,
-    right: rect.right - insetPx,
-    bottom: rect.bottom - insetPx,
-    left: rect.left + insetPx
-  };
-  return inset.right > inset.left && inset.bottom > inset.top ? inset : null;
-}
-
-function findTableHeaderRow(table: HTMLElement): HTMLTableRowElement | null {
-  const explicitHeader = table.querySelector('thead tr');
-  if (explicitHeader instanceof HTMLTableRowElement) return explicitHeader;
-  return (
-    Array.from(table.querySelectorAll('tr')).find(
-      (row): row is HTMLTableRowElement => row instanceof HTMLTableRowElement && Boolean(row.querySelector('th'))
-    ) || null
-  );
-}
-
-function getTableHeaderOcclusionClip(cell: HTMLElement, rect: DOMRect): RectBounds | null {
-  const table = cell.closest('table');
-  if (!(table instanceof HTMLElement)) return null;
-
-  const headerRow = findTableHeaderRow(table);
-  if (!headerRow || headerRow.contains(cell)) return null;
-
-  const headerRect = headerRow.getBoundingClientRect();
-  if (headerRect.width <= 0 || headerRect.height <= 0) return null;
-  if (headerRect.bottom <= 0 || headerRect.top >= window.innerHeight || headerRect.bottom <= rect.top) return null;
-
-  return {
-    top: Math.min(headerRect.bottom, window.innerHeight),
-    right: window.innerWidth,
-    bottom: window.innerHeight,
-    left: 0
-  };
-}
-
-function getClippedCellRect(cell: HTMLElement): ClippedCellRect | null {
-  const rect = cell.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-
-  let clip = intersectRects(toRectBounds(rect), {
-    top: 0,
-    right: window.innerWidth,
-    bottom: window.innerHeight,
-    left: 0
-  });
-  if (!clip) return null;
-
-  let ancestor = cell.parentElement;
-  while (ancestor && ancestor !== document.documentElement) {
-    if (isTextOverlayClippingElement(ancestor)) {
-      clip = intersectRects(clip, toRectBounds(ancestor.getBoundingClientRect()));
-      if (!clip) return null;
-    }
-    ancestor = ancestor.parentElement;
-  }
-
-  const headerClip = getTableHeaderOcclusionClip(cell, rect);
-  if (headerClip) {
-    clip = intersectRects(clip, headerClip);
-    if (!clip) return null;
-  }
-
-  clip = insetRect(clip, TEXT_OVERLAY_CLIP_INSET_PX);
-  if (!clip) return null;
-
-  return { rect, clip };
-}
-
-function renderPatchIntoOverlay(root: HTMLElement, cell: HTMLElement, patch: TextPatch) {
-  const clipped = getClippedCellRect(cell);
-  if (!clipped) return;
-  const { rect, clip } = clipped;
-
-  const mask = createElement('div', 'bh-native-diff-overlay-mask');
-  mask.style.left = `${clip.left}px`;
-  mask.style.top = `${clip.top}px`;
-  mask.style.width = `${clip.right - clip.left}px`;
-  mask.style.height = `${clip.bottom - clip.top}px`;
-
-  const item = createElement('div', 'bh-native-diff-overlay-item');
-  item.dataset.patchId = patch.id;
-  item.style.left = `${rect.left - clip.left}px`;
-  item.style.top = `${rect.top - clip.top}px`;
-  item.style.width = `${rect.width}px`;
-  item.style.height = `${rect.height}px`;
-  item.title = patch.relationship;
-
-  const changedCount = countChangedTokens(patch.tokens);
-  item.appendChild(createElement('div', 'bh-native-diff-badge', changedCount === 1 ? '1 change' : `${changedCount} changes`));
-  const text = createElement('span', 'bh-native-diff-text');
-  for (const token of patch.tokens) {
-    const span = createElement(
-      'span',
-      token.status === 'added'
-        ? 'bh-native-diff-added'
-        : token.status === 'removed'
-          ? 'bh-native-diff-removed'
-          : 'bh-native-diff-same',
-      token.text
-    );
-    text.appendChild(span);
-  }
-  item.appendChild(text);
-  mask.appendChild(item);
-  root.appendChild(mask);
-}
-
-function renderTextDiffOverlay(state: ExtendedDiffState) {
-  const root = getNativeDiffOverlayRoot();
-  root.replaceChildren();
-
-  const rows = getTranscriptRows();
-  const patches = getRenderableDiffs(state).flatMap((diff) => diff.textPatches);
-  const usedCells = new Set<HTMLElement>();
-
-  for (const patch of patches) {
-    const row = rows.find((candidate) => patch.anchorSegments.some((segment) => rowMatchesSegment(candidate, patch, segment)));
-    if (!row || usedCells.has(row.textCell)) continue;
-    usedCells.add(row.textCell);
-    renderPatchIntoOverlay(root, row.textCell, patch);
-  }
-
-  if (!root.childElementCount) {
-    removeNativeDiffOverlayRoot();
+  if (helper?.state && typeof helper.state === 'object') {
+    delete helper.state.extendedDiffTextState;
   }
 }
 
-function scheduleTextDiffOverlayRender(state: ExtendedDiffState) {
-  if (state.disposed || state.textOverlayRaf) return;
-  state.textOverlayRaf = window.requestAnimationFrame(() => {
-    state.textOverlayRaf = 0;
-    if (state.disposed || !isFeedbackRoute() || !isDiffViewEnabled() || !state.diffs.length) {
-      removeNativeDiffOverlayRoot();
-      return;
-    }
-    renderTextDiffOverlay(state);
-  });
-}
-
-function applyTextDiffs(state: ExtendedDiffState) {
+function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   if (!isFeedbackRoute() || !isDiffViewEnabled()) {
-    removeNativeDiffOverlayRoot();
-    state.lastRenderedDiffKey = '';
-    return;
+    clearRecoveredEditorTextDiffState(state);
+    return null;
   }
-  injectStyles();
-  const diffKey = getRenderableDiffKey(state);
-  state.lastRenderedDiffKey = diffKey;
-  renderTextDiffOverlay(state);
+
+  const helper = state.helper;
+  const snapshot = typeof helper?.getEditorSnapshot === 'function' ? helper.getEditorSnapshot() : null;
+  if (!snapshot && typeof helper?.refreshEditorSnapshot === 'function') {
+      void helper.refreshEditorSnapshot('extended-diff-text-state');
+  }
+
+  const renderableDiffs = getRenderableDiffs(state);
+  const recoveredDiff = renderableDiffs.find((diff) => diff.selectedCompareActionId);
+  if (recoveredDiff && typeof helper?.applyRecoveredEditorDiffState === 'function') {
+    const actionId = recoveredDiff.selectedCompareActionId;
+    if (state.appliedRecoveredDiffActionId !== actionId && state.pendingRecoveredDiffActionId !== actionId) {
+      state.pendingRecoveredDiffActionId = actionId;
+      void helper.applyRecoveredEditorDiffState({
+        routeKey: getRouteKey(),
+        selectedCompareActionId: actionId,
+        compareLevel: recoveredDiff.compareLevel,
+        referenceReviewActionId: recoveredDiff.referenceReviewActionId,
+        currentReviewActionId: recoveredDiff.currentReviewActionId,
+        source: recoveredDiff.source
+      }).then((result: any) => {
+        if (state.pendingRecoveredDiffActionId !== actionId) return;
+        state.pendingRecoveredDiffActionId = '';
+        if (result?.ok) {
+          state.appliedRecoveredDiffActionId = actionId;
+        } else {
+          state.appliedRecoveredDiffActionId = '';
+        }
+        if (helper?.state && typeof helper.state === 'object') {
+          helper.state.extendedDiffTextApplyResult = result || null;
+        }
+      }).catch((error: unknown) => {
+        if (state.pendingRecoveredDiffActionId !== actionId) return;
+        state.pendingRecoveredDiffActionId = '';
+        state.appliedRecoveredDiffActionId = '';
+        if (helper?.state && typeof helper.state === 'object') {
+          helper.state.extendedDiffTextApplyResult = {
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error)
+          };
+        }
+      });
+    }
+  } else if (state.appliedRecoveredDiffActionId && typeof helper?.clearRecoveredEditorDiffState === 'function') {
+    state.appliedRecoveredDiffActionId = '';
+    state.pendingRecoveredDiffActionId = '';
+    void helper.clearRecoveredEditorDiffState('extended-diff-text-state');
+  } else {
+    state.pendingRecoveredDiffActionId = '';
+  }
+
+  const textState = {
+    textDiffMode: 'babel-native-state',
+    selectedCompareActionId: recoveredDiff?.selectedCompareActionId || null,
+    snapshotRows: Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0,
+    snapshotCapturedAt: Number.isFinite(Number(snapshot?.capturedAt)) ? Number(snapshot.capturedAt) : null,
+    tagCount: renderableDiffs.reduce((total, diff) => total + diff.textPatches.length, 0),
+    patchCount: renderableDiffs.reduce((total, diff) => total + diff.textPatches.length, 0)
+  };
+
+  if (helper?.state && typeof helper.state === 'object') {
+    helper.state.extendedDiffTextState = textState;
+  }
+  return textState;
 }
 
 function getWaveformOverlayContainer(root: ShadowRoot): HTMLElement | null {
@@ -1478,10 +1291,11 @@ function applyWaveformOverlays(state: ExtendedDiffState) {
 }
 
 function renderDiffAugmentations(state: ExtendedDiffState) {
-  applyTextDiffs(state);
+  const textDiff = reconcileRecoveredEditorTextDiffState(state);
   applyWaveformOverlays(state);
   renderSegmentationModeControls(state);
   document.documentElement.dataset.bhExtendedDiffDebug = JSON.stringify({
+    textDiff,
     visibleCompareLevel: getVisibleCompareLevel(),
     activeNativeUrl: state.activeNativeUrl,
     loadedUrlCount: state.loadedUrls.size,
@@ -1546,18 +1360,16 @@ async function loadAvailableDiffs(state: ExtendedDiffState) {
 }
 
 function resetForRoute(state: ExtendedDiffState) {
-  cancelTextOverlayRender(state);
   state.loadGeneration += 1;
   state.loadedUrls.clear();
   state.loadedReviewActionUrls.clear();
   state.generatedDiffUrls.clear();
   state.activeNativeUrl = null;
-  state.lastRenderedDiffKey = '';
   state.lastLoadError = '';
   state.diffs = [];
   state.loading = false;
   state.lifecycle = 'inactive';
-  removeNativeDiffOverlayRoot();
+  clearRecoveredEditorTextDiffState(state);
   clearWaveformOverlays();
   removeSegmentationModeControls();
   removeInjectedStyles();
@@ -1577,7 +1389,7 @@ function tick(state: ExtendedDiffState) {
   state.lastDiffViewEnabled = diffViewEnabled;
 
   if (!feedbackRoute || !diffViewEnabled) {
-    if (state.lifecycle !== 'inactive' || state.diffs.length || state.loadedUrls.size || state.lastRenderedDiffKey) {
+    if (state.lifecycle !== 'inactive' || state.diffs.length || state.loadedUrls.size) {
       resetForRoute(state);
     }
     state.lifecycle = feedbackRoute ? 'waiting' : 'inactive';
@@ -1694,37 +1506,14 @@ function bindPerformanceObserver(state: ExtendedDiffState) {
   }
 }
 
-function bindViewportListeners(state: ExtendedDiffState) {
-  if (state.viewportEventHandler) return;
-  state.viewportEventHandler = () => scheduleTextDiffOverlayRender(state);
-  window.addEventListener('scroll', state.viewportEventHandler, { capture: true, passive: true });
-  document.addEventListener('scroll', state.viewportEventHandler, { capture: true, passive: true });
-  window.addEventListener('resize', state.viewportEventHandler);
-  window.addEventListener('wheel', state.viewportEventHandler, { capture: true, passive: true });
-  window.addEventListener('touchmove', state.viewportEventHandler, { capture: true, passive: true });
-  window.addEventListener('keydown', state.viewportEventHandler, true);
-}
-
-function unbindViewportListeners(state: ExtendedDiffState) {
-  if (!state.viewportEventHandler) return;
-  window.removeEventListener('scroll', state.viewportEventHandler, true);
-  document.removeEventListener('scroll', state.viewportEventHandler, true);
-  window.removeEventListener('resize', state.viewportEventHandler);
-  window.removeEventListener('wheel', state.viewportEventHandler, true);
-  window.removeEventListener('touchmove', state.viewportEventHandler, true);
-  window.removeEventListener('keydown', state.viewportEventHandler, true);
-  state.viewportEventHandler = null;
-}
-
 export function registerExtendedDiffViewService(helper: any) {
   if (!helper || helper.__extendedDiffViewRegistered) return;
   helper.__extendedDiffViewRegistered = true;
   const state: ExtendedDiffState = {
+    helper,
     timer: 0,
     retryTimers: [],
     observerDebounceTimer: 0,
-    textOverlayRaf: 0,
-    viewportEventHandler: null,
     mutationObserver: null,
     performanceObserver: null,
     routeKey: '',
@@ -1738,14 +1527,14 @@ export function registerExtendedDiffViewService(helper: any) {
     loadedReviewActionUrls: new Set<string>(),
     generatedDiffUrls: new Set<string>(),
     activeNativeUrl: null,
-    lastRenderedDiffKey: '',
+    appliedRecoveredDiffActionId: '',
+    pendingRecoveredDiffActionId: '',
     overlayMode: 'fusion',
     diffs: []
   };
 
   bindMutationObserver(state);
   bindPerformanceObserver(state);
-  bindViewportListeners(state);
   tick(state);
   state.timer = window.setInterval(() => tick(state), NORMAL_POLL_INTERVAL_MS);
   helper.unbindExtendedDiffView = function unbindExtendedDiffView() {
@@ -1759,12 +1548,10 @@ export function registerExtendedDiffViewService(helper: any) {
       window.clearTimeout(state.observerDebounceTimer);
       state.observerDebounceTimer = 0;
     }
-    cancelTextOverlayRender(state);
     state.mutationObserver?.disconnect();
     state.mutationObserver = null;
     state.performanceObserver?.disconnect();
     state.performanceObserver = null;
-    unbindViewportListeners(state);
     resetForRoute(state);
     delete helper.unbindExtendedDiffView;
     helper.__extendedDiffViewRegistered = false;

@@ -50,6 +50,8 @@
     playbackRowSyncInFlight: false,
     lastPlaybackRow: null,
     lastPlaybackRowIdentity: null,
+    editorSnapshot: null,
+    editorSnapshotCapturedAt: 0,
     sessionBindPromise: null,
     onLoadedCalled: false
   };

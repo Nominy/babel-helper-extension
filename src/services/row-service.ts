@@ -1,4 +1,9 @@
 ﻿// @ts-nocheck
+import {
+  getBabelRowActionLabel,
+  isBabelActiveRowClassList
+} from '../core/babel-editor-contract';
+
 export function registerRowService(helper: any) {
   if (!helper || helper.__rowsRegistered) {
     return;
@@ -2019,15 +2024,42 @@ export function registerRowService(helper: any) {
           return false;
         }
 
-        const classes = row.classList;
-        return (
-          classes.contains('bg-neutral-100') &&
-          classes.contains('ring-1') &&
-          classes.contains('ring-neutral-300')
-        );
+        return isBabelActiveRowClassList(row.classList);
       }) || null
     );
   };
+
+  function getActiveRowFromEditorSnapshot() {
+    if (typeof helper.findRowFromEditorSnapshot !== 'function') {
+      return null;
+    }
+
+    const snapshot = typeof helper.getEditorSnapshot === 'function'
+      ? helper.getEditorSnapshot()
+      : null;
+    if (!snapshot || typeof snapshot !== 'object') {
+      return null;
+    }
+
+    if (typeof snapshot.activeRowId === 'string' && snapshot.activeRowId) {
+      const activeRow = helper.findRowFromEditorSnapshot(snapshot.activeRowId);
+      if (activeRow instanceof HTMLElement) {
+        return activeRow;
+      }
+    }
+
+    const activeSnapshot = Array.isArray(snapshot.rows)
+      ? snapshot.rows.find((row) => row && row.isActive)
+      : null;
+    if (activeSnapshot) {
+      const activeRow = helper.findRowFromEditorSnapshot(activeSnapshot);
+      if (activeRow instanceof HTMLElement) {
+        return activeRow;
+      }
+    }
+
+    return null;
+  }
 
   helper.rowMatchesIdentity = function rowMatchesIdentity(row, identity) {
     if (!(row instanceof HTMLElement) || !identity || typeof identity !== 'object') {
@@ -2116,6 +2148,12 @@ export function registerRowService(helper: any) {
       }
     }
 
+    const snapshotRow = getActiveRowFromEditorSnapshot();
+    if (snapshotRow) {
+      helper.setCurrentRow(snapshotRow);
+      return snapshotRow;
+    }
+
     const playbackRow = getLastPlaybackRow();
     if (playbackRow) {
       helper.setCurrentRow(playbackRow);
@@ -2179,6 +2217,12 @@ export function registerRowService(helper: any) {
         helper.setCurrentRow(timelineRow);
         return timelineRow;
       }
+    }
+
+    const snapshotRow = getActiveRowFromEditorSnapshot();
+    if (snapshotRow) {
+      helper.setCurrentRow(snapshotRow);
+      return snapshotRow;
     }
 
     const playbackRow = getLastPlaybackRow();
@@ -2289,24 +2333,10 @@ export function registerRowService(helper: any) {
     const candidates = helper
       .collectMenuCandidates()
       .filter((candidate) => !(exclude && exclude.has(candidate)));
-    const patterns = helper.config.actionPatterns[actionName] || [];
-    for (const pattern of patterns) {
-      const found = candidates.find((candidate) => pattern.test(helper.normalizeText(candidate)));
-      if (found) {
-        return found;
-      }
-    }
-
-    if (actionName === 'mergePrevious' || actionName === 'mergeNext') {
-      for (const pattern of helper.config.actionPatterns.mergeFallback) {
-        const found = candidates.find((candidate) => pattern.test(helper.normalizeText(candidate)));
-        if (found) {
-          return found;
-        }
-      }
-    }
-
-    return null;
+    const actionLabel = getBabelRowActionLabel(actionName);
+    return actionLabel
+      ? candidates.find((candidate) => helper.normalizeText(candidate) === actionLabel) || null
+      : null;
   };
 
   function getMergeActionPlan(actionName, row, rows, originalIndex) {
@@ -2441,8 +2471,152 @@ export function registerRowService(helper: any) {
     return true;
   }
 
+  function getNativeRowActionPayload(row) {
+    if (!(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const rowIdentity = helper.getRowIdentity(row) || {};
+    const timeRange = getRowTimeRange(row) || {};
+    const startText =
+      typeof rowIdentity.startText === 'string' && rowIdentity.startText
+        ? rowIdentity.startText
+        : row.children[2] instanceof HTMLElement
+          ? helper.normalizeText(row.children[2])
+          : '';
+    const endText =
+      typeof rowIdentity.endText === 'string' && rowIdentity.endText
+        ? rowIdentity.endText
+        : row.children[3] instanceof HTMLElement
+          ? helper.normalizeText(row.children[3])
+          : '';
+
+    return {
+      annotationId:
+        typeof rowIdentity.annotationId === 'string' && rowIdentity.annotationId
+          ? rowIdentity.annotationId
+          : '',
+      rowIdentity,
+      speakerKey:
+        typeof rowIdentity.speakerKey === 'string' && rowIdentity.speakerKey
+          ? rowIdentity.speakerKey
+          : getRowSpeakerKeySafe(row),
+      startText,
+      endText,
+      startSeconds:
+        typeof timeRange.startSeconds === 'number'
+          ? timeRange.startSeconds
+          : parseSegmentTimeValue(startText),
+      endSeconds:
+        typeof timeRange.endSeconds === 'number'
+          ? timeRange.endSeconds
+          : parseSegmentTimeValue(endText),
+      attempts: 1,
+      retryDelayMs: 0
+    };
+  }
+
+  async function runNativeRowAction(actionName, row, settings) {
+    if (settings && settings.preferNative === false) {
+      return null;
+    }
+
+    const payload = getNativeRowActionPayload(row);
+    if (!payload) {
+      return null;
+    }
+
+    if (actionName === 'deleteSegment' && typeof helper.deleteSegmentWithNativeAction === 'function') {
+      return helper.deleteSegmentWithNativeAction(payload);
+    }
+
+    if (
+      (actionName === 'mergePrevious' || actionName === 'mergeNext') &&
+      typeof helper.mergeSegmentWithNativeAction === 'function'
+    ) {
+      return helper.mergeSegmentWithNativeAction({
+        ...payload,
+        direction: actionName === 'mergeNext' ? 'below' : 'above'
+      });
+    }
+
+    return null;
+  }
+
+  function recordRowActionAnalytics(actionName, originalIndex, mergePlan) {
+    if (!helper.analytics) {
+      return;
+    }
+
+    if (actionName === 'mergePrevious') {
+      helper.analytics.record('text:merge-previous', {
+        rowIndex: originalIndex,
+        hasMergePlan: Boolean(mergePlan)
+      });
+    } else if (actionName === 'mergeNext') {
+      helper.analytics.record('text:merge-next', {
+        rowIndex: originalIndex,
+        hasMergePlan: Boolean(mergePlan)
+      });
+    }
+  }
+
+  async function restoreAfterMergeAction(mergePlan) {
+    if (!mergePlan) {
+      return false;
+    }
+
+    const mergedRow = await helper.waitFor(() => {
+      const updatedRows = helper.getTranscriptRows();
+      const candidate = findMergedRow(mergePlan, updatedRows);
+      if (!(candidate instanceof HTMLTableRowElement)) {
+        return null;
+      }
+
+      const text = helper.getRowTextValue(candidate);
+      const rowCountSettled = updatedRows.length <= mergePlan.expectedRowCount;
+      const textSettled =
+        text === mergePlan.mergedText ||
+        (text !== mergePlan.survivingText &&
+          text.includes(mergePlan.survivingText) &&
+          (!mergePlan.adjacentText || text.includes(mergePlan.adjacentText)));
+      const adjacentRemoved =
+        !(mergePlan.adjacentRow instanceof HTMLTableRowElement) || !mergePlan.adjacentRow.isConnected;
+
+      return rowCountSettled || textSettled || adjacentRemoved ? candidate : null;
+    }, 1200, 40);
+
+    const resolvedRow =
+      (mergedRow instanceof HTMLTableRowElement && mergedRow) ||
+      findMergedRow(mergePlan, helper.getTranscriptRows());
+    if (resolvedRow) {
+      helper.setCurrentRow(resolvedRow);
+      restoreMergeSelection(resolvedRow, mergePlan.caretOffset);
+      return true;
+    }
+
+    return false;
+  }
+
+  function rememberRowAfterAction(originalIndex) {
+    window.setTimeout(() => {
+      const updatedRows = helper.getTranscriptRows();
+      if (!updatedRows.length) {
+        helper.setCurrentRow(null);
+        return;
+      }
+
+      const fallbackIndex = originalIndex >= 0 ? Math.min(originalIndex, updatedRows.length - 1) : 0;
+      helper.setCurrentRow(updatedRows[fallbackIndex]);
+    }, 180);
+  }
+
   helper.runRowAction = async function runRowAction(actionName, options) {
     const settings = options || {};
+    if (typeof helper.refreshEditorSnapshot === 'function') {
+      await helper.refreshEditorSnapshot('row-action').catch(() => null);
+    }
+
     const row =
       settings.row instanceof HTMLElement
         ? settings.row
@@ -2466,6 +2640,16 @@ export function registerRowService(helper: any) {
     const originalIndex = rows.indexOf(row);
     const mergePlan = getMergeActionPlan(actionName, row, rows, originalIndex);
     helper.setCurrentRow(row);
+
+    const nativeResult = await runNativeRowAction(actionName, row, settings);
+    if (nativeResult && nativeResult.ok) {
+      recordRowActionAnalytics(actionName, originalIndex, mergePlan);
+      if (mergePlan && await restoreAfterMergeAction(mergePlan)) {
+        return true;
+      }
+      rememberRowAfterAction(originalIndex);
+      return true;
+    }
 
     const previousCandidates = new Set(helper.collectMenuCandidates());
     helper.dispatchClick(actionTrigger);
@@ -2493,62 +2677,13 @@ export function registerRowService(helper: any) {
 
     helper.dispatchClick(actionItem);
 
-    if (helper.analytics) {
-      if (actionName === 'mergePrevious') {
-        helper.analytics.record('text:merge-previous', {
-          rowIndex: originalIndex,
-          hasMergePlan: Boolean(mergePlan)
-        });
-      } else if (actionName === 'mergeNext') {
-        helper.analytics.record('text:merge-next', {
-          rowIndex: originalIndex,
-          hasMergePlan: Boolean(mergePlan)
-        });
-      }
+    recordRowActionAnalytics(actionName, originalIndex, mergePlan);
+
+    if (mergePlan && await restoreAfterMergeAction(mergePlan)) {
+      return true;
     }
 
-    if (mergePlan) {
-      const mergedRow = await helper.waitFor(() => {
-        const updatedRows = helper.getTranscriptRows();
-        const candidate = findMergedRow(mergePlan, updatedRows);
-        if (!(candidate instanceof HTMLTableRowElement)) {
-          return null;
-        }
-
-        const text = helper.getRowTextValue(candidate);
-        const rowCountSettled = updatedRows.length <= mergePlan.expectedRowCount;
-        const textSettled =
-          text === mergePlan.mergedText ||
-          (text !== mergePlan.survivingText &&
-            text.includes(mergePlan.survivingText) &&
-            (!mergePlan.adjacentText || text.includes(mergePlan.adjacentText)));
-        const adjacentRemoved =
-          !(mergePlan.adjacentRow instanceof HTMLTableRowElement) || !mergePlan.adjacentRow.isConnected;
-
-        return rowCountSettled || textSettled || adjacentRemoved ? candidate : null;
-      }, 1200, 40);
-
-      const resolvedRow =
-        (mergedRow instanceof HTMLTableRowElement && mergedRow) ||
-        findMergedRow(mergePlan, helper.getTranscriptRows());
-      if (resolvedRow) {
-        helper.setCurrentRow(resolvedRow);
-        restoreMergeSelection(resolvedRow, mergePlan.caretOffset);
-        return true;
-      }
-    }
-
-    window.setTimeout(() => {
-      const updatedRows = helper.getTranscriptRows();
-      if (!updatedRows.length) {
-        helper.setCurrentRow(null);
-        return;
-      }
-
-      const fallbackIndex = originalIndex >= 0 ? Math.min(originalIndex, updatedRows.length - 1) : 0;
-      helper.setCurrentRow(updatedRows[fallbackIndex]);
-    }, 180);
-
+    rememberRowAfterAction(originalIndex);
     return true;
   };
 

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
 
 export function initTimestampBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -17,7 +18,7 @@ export function initTimestampBridge() {
 
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
-  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
 
   function safe(callback, fallbackValue) {
     try {

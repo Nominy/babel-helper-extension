@@ -61,6 +61,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/content/recovered-editor-bridge.ts'],
+    outfile: 'dist/content/recovered-editor-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/content/timestamp-bridge.ts'],
     outfile: 'dist/content/timestamp-bridge.js'
   },

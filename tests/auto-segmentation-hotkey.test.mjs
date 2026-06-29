@@ -718,6 +718,21 @@ test('auto-segmentation silence detection uses rendered lane peaks before decode
   assert.match(block, /source: 'decoded-audio'/);
 });
 
+test('all-segment trim skips zero-duration rows before bridge work', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const collectStart = source.indexOf('function collectAllSegmentTargets');
+  const collectEnd = source.indexOf('function getAudioTrimAmplitudeThreshold', collectStart);
+  const block = source.slice(collectStart, collectEnd);
+
+  assert.ok(collectStart >= 0 && collectEnd > collectStart, 'expected all-segment target collector');
+  assert.match(block, /const rowRange = getRowTimeRange\(row\)/);
+  assert.match(block, /if \(!rowRange\) \{\s*continue;\s*\}/);
+  assert.ok(
+    block.indexOf('const rowRange = getRowTimeRange(row)') < block.indexOf('targets.push({'),
+    'zero-duration rows must be filtered before trim targets are queued'
+  );
+});
+
 test('auto-segmentation does not bind speaker rows to unlabeled waveform hosts', () => {
   const source = read('../src/services/timeline-selection-service.ts');
   const bridgeSource = read('../src/content/magnifier-bridge.ts');

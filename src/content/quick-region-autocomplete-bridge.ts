@@ -2,6 +2,7 @@ import {
   getAngleTagPartBackspaceEdit,
   shouldHandleAngleTagPartBackspaceEvent
 } from './tag-part-backspace';
+import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
 
 (function quickRegionAutocompleteBridge() {
   if ((window as any).__babelHelperQuickRegionAutocompleteBridge) {
@@ -11,7 +12,7 @@ import {
   const TOGGLE_EVENT = 'babel-helper-quick-region-autocomplete-toggle';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const QUICK_TEXTAREA_SELECTOR = 'textarea[placeholder^="Enter text for this region"]';
-  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
   const LISTBOX_ATTR = 'data-babel-helper-quick-region-listbox';
   const DISMISS_DELAY_MS = 150;
   const MAX_SUGGESTIONS = 100;

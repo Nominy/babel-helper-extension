@@ -2878,6 +2878,11 @@ export function registerTimelineSelectionService(helper: any) {
         continue;
       }
 
+      const rowRange = getRowTimeRange(row);
+      if (!rowRange) {
+        continue;
+      }
+
       const container =
         containers.find((candidate) => {
           const candidateSpeakerKey = getSpeakerKeyForContainer(candidate);

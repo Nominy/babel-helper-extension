@@ -14,6 +14,7 @@ import {
   isRangeInsideGenericTag as isContextRangeInsideGenericTag,
 } from "../features/custom-linter/linter/text-context";
 import { createCustomLinterRules } from "../features/custom-linter/linter/rules";
+import { BABEL_ROW_TEXTAREA_SELECTOR } from "../core/babel-editor-contract";
 
 export function initLinterBridge() {
   if (window.__babelHelperLinterBridge) {
@@ -84,7 +85,7 @@ export function initLinterBridge() {
     "babel-helper-highlighted-word-clearances:v1";
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 100;
-  const ROW_TEXTAREA_SELECTOR = 'textarea[placeholder^="What was said"]';
+  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
   const UNICODE_DOUBLE_QUOTE_PATTERN =
     /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
   const UNICODE_DASH_PATTERN =
@@ -122,6 +123,8 @@ export function initLinterBridge() {
     last: null,
     autoLint: null,
     nativeLint: null,
+    nativeLintDispatch: null,
+    customRuleErrors: [],
   };
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
@@ -2444,12 +2447,39 @@ export function initLinterBridge() {
     };
   }
 
+  function recordCustomLinterRuleError(error, rule, entry) {
+    const errors = Array.isArray(debugState.customRuleErrors)
+      ? debugState.customRuleErrors
+      : [];
+    const details = {
+      ruleId: rule && typeof rule.id === "string" ? rule.id : "",
+      reason: rule && typeof rule.reason === "string" ? rule.reason : "",
+      annotationId:
+        entry && typeof entry.annotationId === "string"
+          ? entry.annotationId
+          : "",
+      message: String(error && error.message ? error.message : error),
+      recordedAt: Date.now(),
+    };
+    errors.push(details);
+    debugState.customRuleErrors = errors.slice(-20);
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Babel Helper] Custom linter rule failed", {
+        ...details,
+        error,
+      });
+    }
+  }
+
   function buildCustomIssues(annotationEntries) {
     return buildRegistryIssues(
       annotationEntries,
       getCustomLintRules(),
       makeCustomIssue,
-      { createTextContext: createTranscriptTextContext },
+      {
+        createTextContext: createTranscriptTextContext,
+        onRuleError: recordCustomLinterRuleError,
+      },
     );
   }
 
@@ -2769,6 +2799,119 @@ export function initLinterBridge() {
     return null;
   }
 
+  function augmentNativeLintDispatchValue(value, hooks, reason) {
+    if (!Array.isArray(value) || !hooks || !hooks.annotationHook) {
+      return value;
+    }
+
+    const annotations = hooks.annotationHook.hook.memoizedState;
+    const annotationEntries = extractAnnotationEntries(annotations);
+    if (!annotationEntries.length) {
+      return value;
+    }
+
+    const helperIssues = buildCustomIssues(annotationEntries);
+    const mergedIssues = mergeNativeAndHelperIssues(value, helperIssues);
+    setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason);
+    debugState.nativeLintDispatch = {
+      changed: !areLintIssueArraysEqual(value, mergedIssues),
+      reason,
+      route: getRouteKey(),
+      nativeIssueCount: value.length,
+      helperIssueCount: helperIssues.length,
+      mergedIssueCount: mergedIssues.length,
+      syncedAt: Date.now(),
+    };
+    return areLintIssueArraysEqual(value, mergedIssues) ? value : mergedIssues;
+  }
+
+  function recordNativeLintDispatchError(error, reason) {
+    debugState.nativeLintDispatch = {
+      changed: false,
+      reason,
+      route: getRouteKey(),
+      error: String(error && error.message ? error.message : error),
+      syncedAt: Date.now(),
+    };
+    if (typeof console !== "undefined" && typeof console.error === "function") {
+      console.error("[Babel Helper] Native lint dispatch augmentation failed", {
+        reason,
+        error,
+      });
+    }
+  }
+
+  function patchNativeLintDispatch(hooks, reason) {
+    const queue = hooks && hooks.lintHook && hooks.lintHook.hook.queue;
+    if (!queue || typeof queue.dispatch !== "function") {
+      return false;
+    }
+
+    if (queue.dispatch.__babelHelperNativeLintDispatchPatched) {
+      return true;
+    }
+
+    const originalDispatch =
+      queue.dispatch.__babelHelperNativeLintDispatchOriginal || queue.dispatch;
+    const patchedDispatch = function babelHelperNativeLintDispatch(action) {
+      const resolveHooks = () =>
+        getNativeReviewHooks(findNativeReviewFiber()) || hooks;
+
+      if (typeof action === "function") {
+        return originalDispatch.call(
+          this,
+          function babelHelperNativeLintDispatchUpdater(previousValue) {
+            const nextValue = action(previousValue);
+            try {
+              return augmentNativeLintDispatchValue(
+                nextValue,
+                resolveHooks(),
+                "native-lint-dispatch-updater",
+              );
+            } catch (error) {
+              recordNativeLintDispatchError(
+                error,
+                "native-lint-dispatch-updater",
+              );
+              return nextValue;
+            }
+          },
+        );
+      }
+
+      let nextAction = action;
+      try {
+        nextAction = augmentNativeLintDispatchValue(
+          action,
+          resolveHooks(),
+          "native-lint-dispatch",
+        );
+      } catch (error) {
+        recordNativeLintDispatchError(error, "native-lint-dispatch");
+      }
+      return originalDispatch.call(this, nextAction);
+    };
+    patchedDispatch.__babelHelperNativeLintDispatchPatched = true;
+    patchedDispatch.__babelHelperNativeLintDispatchOriginal = originalDispatch;
+    queue.dispatch = patchedDispatch;
+    debugState.nativeLintDispatch = {
+      changed: false,
+      reason: `${reason}-dispatch-patched`,
+      route: getRouteKey(),
+      patchedAt: Date.now(),
+    };
+    return true;
+  }
+
+  function getNativeAnnotationEntriesFromState() {
+    const hooks = getNativeReviewHooks(findNativeReviewFiber());
+    if (!hooks || !hooks.annotationHook || !hooks.annotationHook.hook) {
+      return [];
+    }
+
+    return extractAnnotationEntries(hooks.annotationHook.hook.memoizedState);
+  }
+
   function syncNativeLintState(reason) {
     if (!enabled) {
       return false;
@@ -2787,6 +2930,7 @@ export function initLinterBridge() {
       return false;
     }
 
+    const dispatchPatched = patchNativeLintDispatch(hooks, reason);
     const annotations = hooks.annotationHook.hook.memoizedState;
     const nativeIssues = Array.isArray(
       hooks.lintHook.hook.queue.lastRenderedState,
@@ -2807,6 +2951,7 @@ export function initLinterBridge() {
       debugState.nativeLint.mergedIssueCount = mergedIssues.length;
       debugState.nativeLint.annotationHookIndex = hooks.annotationHook.index;
       debugState.nativeLint.lintHookIndex = hooks.lintHook.index;
+      debugState.nativeLint.dispatchPatched = dispatchPatched;
       return true;
     }
 
@@ -2817,6 +2962,7 @@ export function initLinterBridge() {
     debugState.nativeLint.mergedIssueCount = mergedIssues.length;
     debugState.nativeLint.annotationHookIndex = hooks.annotationHook.index;
     debugState.nativeLint.lintHookIndex = hooks.lintHook.index;
+    debugState.nativeLint.dispatchPatched = dispatchPatched;
     return false;
   }
 
@@ -4682,6 +4828,15 @@ export function initLinterBridge() {
       return response;
     }
 
+    if (!annotationEntries.length) {
+      debugState.last = {
+        changed: false,
+        reason: "no-annotation-entries",
+        issueCount: currentHighlightIssues.length,
+      };
+      return response;
+    }
+
     const additionalIssues = buildCustomIssues(annotationEntries);
     const suppressionIds =
       getDoubleDashOutsideQuoteOrTagSuppressionIds(annotationEntries);
@@ -4947,10 +5102,13 @@ export function initLinterBridge() {
     }
 
     const routeKey = getRouteKey();
-    const annotationEntries = await getAnnotationEntriesFromRequest(
+    const requestAnnotationEntries = await getAnnotationEntriesFromRequest(
       input,
       init,
     );
+    const annotationEntries = requestAnnotationEntries.length
+      ? requestAnnotationEntries
+      : getNativeAnnotationEntriesFromState();
     const sanitized = await sanitizeHelperAssertedWarningsRequest(input, init, {
       recordClearance: true,
     });
