@@ -1,4 +1,5 @@
 import {
+  CUSTOM_LINTER_RULE_SETTINGS,
   DEFAULT_EXTENSION_SETTINGS,
   FEATURE_KEYS,
   FEATURE_META,
@@ -10,6 +11,7 @@ import {
 import { formatHighlightedWordsForTextarea, normalizeHighlightedWords } from '../core/highlighted-words';
 
 type InputMap = Record<FeatureSettingKey, HTMLInputElement>;
+type RuleInputMap = Record<string, HTMLInputElement>;
 
 function requireElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector(selector);
@@ -60,6 +62,20 @@ function renderFeatureCards(list: HTMLElement) {
 
     details.appendChild(title);
     details.appendChild(description);
+
+    if (key === 'customLinter') {
+      const actions = document.createElement('div');
+      actions.className = 'feature-actions';
+
+      const manageRulesButton = document.createElement('button');
+      manageRulesButton.type = 'button';
+      manageRulesButton.className = 'link-btn';
+      manageRulesButton.dataset.role = 'manage-custom-linter-rules';
+      manageRulesButton.textContent = 'Manage rules';
+      actions.appendChild(manageRulesButton);
+      details.appendChild(actions);
+    }
+
     card.appendChild(input);
     card.appendChild(details);
     fragment.appendChild(card);
@@ -68,14 +84,60 @@ function renderFeatureCards(list: HTMLElement) {
   list.replaceChildren(fragment);
 }
 
+function renderCustomLinterRuleCards(list: HTMLElement): RuleInputMap {
+  const inputs: RuleInputMap = {};
+  const fragment = document.createDocumentFragment();
+
+  for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
+    const card = document.createElement('label');
+    card.className = 'rule-card';
+
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.name = `custom-linter-rule-${rule.id}`;
+    input.className = 'rule-toggle';
+    input.dataset.ruleId = rule.id;
+
+    const details = document.createElement('span');
+
+    const title = document.createElement('span');
+    title.className = 'rule-title';
+    title.textContent = rule.label;
+
+    const description = document.createElement('span');
+    description.className = 'rule-description';
+    description.textContent = rule.description;
+
+    details.appendChild(title);
+    details.appendChild(description);
+    card.appendChild(input);
+    card.appendChild(details);
+    fragment.appendChild(card);
+    inputs[rule.id] = input;
+  }
+
+  list.replaceChildren(fragment);
+  return inputs;
+}
+
 function applySettingsToInputs(
   settings: ExtensionSettings,
   inputs: InputMap,
+  ruleInputs?: RuleInputMap,
   highlightedWordsInput?: HTMLTextAreaElement,
   highlightedWordsEnabledInput?: HTMLInputElement
 ) {
   for (const key of FEATURE_KEYS) {
     inputs[key].checked = Boolean(settings.features[key]);
+  }
+
+  if (ruleInputs) {
+    const disabledRuleIds = new Set(settings.disabledCustomLinterRuleIds);
+    for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
+      if (ruleInputs[rule.id]) {
+        ruleInputs[rule.id].checked = !disabledRuleIds.has(rule.id);
+      }
+    }
   }
 
   if (highlightedWordsEnabledInput) {
@@ -89,6 +151,7 @@ function applySettingsToInputs(
 
 function readSettingsFromInputs(
   inputs: InputMap,
+  ruleInputs: RuleInputMap,
   highlightedWordsInput: HTMLTextAreaElement,
   highlightedWordsEnabledInput: HTMLInputElement
 ): ExtensionSettings {
@@ -100,7 +163,10 @@ function readSettingsFromInputs(
   return {
     features,
     highlightedWordsEnabled: highlightedWordsEnabledInput.checked,
-    highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value)
+    highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value),
+    disabledCustomLinterRuleIds: CUSTOM_LINTER_RULE_SETTINGS
+      .filter((rule) => ruleInputs[rule.id] && !ruleInputs[rule.id].checked)
+      .map((rule) => rule.id)
   };
 }
 
@@ -141,13 +207,25 @@ async function boot() {
   const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
   const highlightedWordsEnabledInput = requireElement<HTMLInputElement>('[data-role="highlighted-words-enabled"]');
   const highlightedWordsInput = requireElement<HTMLTextAreaElement>('[data-role="highlighted-words"]');
+  const settingsHome = requireElement<HTMLElement>('[data-role="settings-home"]');
+  const customLinterRulePage = requireElement<HTMLElement>('[data-role="custom-linter-rule-page"]');
+  const customLinterRuleList = requireElement<HTMLElement>('[data-role="custom-linter-rule-list"]');
+  const backToSettingsButton = requireElement<HTMLButtonElement>('[data-role="back-to-settings"]');
 
   renderFeatureCards(featureList);
   const inputs = getFeatureInputs();
+  const ruleInputs = renderCustomLinterRuleCards(customLinterRuleList);
+  const manageRulesButton = requireElement<HTMLButtonElement>('[data-role="manage-custom-linter-rules"]');
 
   try {
     const settings = await loadExtensionSettings();
-    applySettingsToInputs(settings, inputs, highlightedWordsInput, highlightedWordsEnabledInput);
+    applySettingsToInputs(
+      settings,
+      inputs,
+      ruleInputs,
+      highlightedWordsInput,
+      highlightedWordsEnabledInput
+    );
     setStatus(statusElement, 'Loaded');
   } catch (_error) {
     setStatus(statusElement, 'Could not load settings.');
@@ -156,9 +234,20 @@ async function boot() {
   const save = async () => {
     setStatus(statusElement, 'Saving...');
     try {
-      const next = readSettingsFromInputs(inputs, highlightedWordsInput, highlightedWordsEnabledInput);
+      const next = readSettingsFromInputs(
+        inputs,
+        ruleInputs,
+        highlightedWordsInput,
+        highlightedWordsEnabledInput
+      );
       const persisted = await saveExtensionSettings(next);
-      applySettingsToInputs(persisted, inputs, highlightedWordsInput, highlightedWordsEnabledInput);
+      applySettingsToInputs(
+        persisted,
+        inputs,
+        ruleInputs,
+        highlightedWordsInput,
+        highlightedWordsEnabledInput
+      );
       setStatus(statusElement, 'Saved. Reload dashboard tabs to apply changes.');
     } catch (_error) {
       setStatus(statusElement, 'Could not save settings.');
@@ -167,6 +256,12 @@ async function boot() {
 
   for (const key of FEATURE_KEYS) {
     inputs[key].addEventListener('change', () => {
+      void save();
+    });
+  }
+
+  for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
+    ruleInputs[rule.id]?.addEventListener('change', () => {
       void save();
     });
   }
@@ -183,9 +278,27 @@ async function boot() {
     for (const key of FEATURE_KEYS) {
       inputs[key].checked = DEFAULT_EXTENSION_SETTINGS.features[key];
     }
+    const disabledRuleIds = new Set(DEFAULT_EXTENSION_SETTINGS.disabledCustomLinterRuleIds);
+    for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
+      if (ruleInputs[rule.id]) {
+        ruleInputs[rule.id].checked = !disabledRuleIds.has(rule.id);
+      }
+    }
     highlightedWordsEnabledInput.checked = DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled;
     highlightedWordsInput.value = formatHighlightedWordsForTextarea(DEFAULT_EXTENSION_SETTINGS.highlightedWords);
     void save();
+  });
+
+  manageRulesButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    settingsHome.hidden = true;
+    customLinterRulePage.hidden = false;
+  });
+
+  backToSettingsButton.addEventListener('click', () => {
+    customLinterRulePage.hidden = true;
+    settingsHome.hidden = false;
   });
 
   downloadButton.addEventListener('click', () => {

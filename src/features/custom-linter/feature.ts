@@ -28,7 +28,10 @@ function setBridgeConfig(ctx: Pick<FeatureContext, 'helper'>): void {
     new CustomEvent(CONFIG_EVENT, {
       detail: {
         highlightedWordsEnabled: ctx.helper?.settings?.highlightedWordsEnabled !== false,
-        highlightedWords: normalizeHighlightedWords(ctx.helper?.settings?.highlightedWords)
+        highlightedWords: normalizeHighlightedWords(ctx.helper?.settings?.highlightedWords),
+        disabledCustomLinterRuleIds: Array.isArray(ctx.helper?.settings?.disabledCustomLinterRuleIds)
+          ? ctx.helper.settings.disabledCustomLinterRuleIds
+          : []
       }
     })
   );

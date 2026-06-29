@@ -104,6 +104,87 @@
         line-height: 1.45;
       }
 
+      .feature-actions {
+        margin-top: 10px;
+      }
+
+      .link-btn {
+        appearance: none;
+        border: 1px solid var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 700;
+        font-size: 12px;
+        border-radius: 10px;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+
+      .link-btn:hover {
+        background: #d9eee8;
+      }
+
+      .custom-linter-rule-page[hidden],
+      .settings-home[hidden] {
+        display: none;
+      }
+
+      .rule-page-header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+
+      .rule-page-title {
+        margin: 0;
+        font-size: 20px;
+        line-height: 1.2;
+      }
+
+      .rule-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .rule-card {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid #dce3ed;
+        border-radius: 12px;
+        background: #fff;
+        cursor: pointer;
+      }
+
+      .rule-card:hover {
+        border-color: #bbc8db;
+      }
+
+      .rule-toggle {
+        width: 18px;
+        height: 18px;
+        margin-top: 2px;
+        accent-color: var(--accent);
+      }
+
+      .rule-title {
+        display: block;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .rule-description {
+        display: block;
+        margin-top: 3px;
+        font-size: 13px;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+
       .dictionary-settings {
         margin-top: 16px;
         padding-top: 16px;
@@ -232,18 +313,27 @@
       </section>
 
       <section class="panel">
-        <div class="feature-list" data-role="feature-list"></div>
-        <div class="dictionary-settings">
-          <label for="highlighted-words" class="dictionary-title">Highlighted Words</label>
-          <label class="dictionary-toggle">
-            <input type="checkbox" data-role="highlighted-words-enabled" />
-            <span>
-              <span class="dictionary-toggle-title">Enable highlighted-word warnings</span>
-              <span class="dictionary-toggle-description">When disabled, the custom linter leaves this dictionary out of Babel warnings.</span>
-            </span>
-          </label>
-          <p class="dictionary-description">Rows containing these words are raised by the custom linter for clearance review. Use one word or phrase per line.</p>
-          <textarea id="highlighted-words" class="dictionary-textarea" data-role="highlighted-words" spellcheck="false"></textarea>
+        <div class="settings-home" data-role="settings-home">
+          <div class="feature-list" data-role="feature-list"></div>
+          <div class="dictionary-settings">
+            <label for="highlighted-words" class="dictionary-title">Highlighted Words</label>
+            <label class="dictionary-toggle">
+              <input type="checkbox" data-role="highlighted-words-enabled" />
+              <span>
+                <span class="dictionary-toggle-title">Enable highlighted-word warnings</span>
+                <span class="dictionary-toggle-description">When disabled, the custom linter leaves this dictionary out of Babel warnings.</span>
+              </span>
+            </label>
+            <p class="dictionary-description">Rows containing these words are raised by the custom linter for clearance review. Use one word or phrase per line.</p>
+            <textarea id="highlighted-words" class="dictionary-textarea" data-role="highlighted-words" spellcheck="false"></textarea>
+          </div>
+        </div>
+        <div class="custom-linter-rule-page" data-role="custom-linter-rule-page" hidden>
+          <div class="rule-page-header">
+            <h2 class="rule-page-title">Custom Linter Rules</h2>
+            <button class="reset-btn" type="button" data-role="back-to-settings">Back</button>
+          </div>
+          <div class="rule-list" data-role="custom-linter-rule-list"></div>
         </div>
         <div class="footer">
           <button class="reset-btn" type="button" data-role="reset">Reset to Defaults</button>

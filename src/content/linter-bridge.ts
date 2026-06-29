@@ -128,6 +128,7 @@ export function initLinterBridge() {
   };
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
+  let disabledCustomLinterRuleIds = [];
   const INTERJECTION_CORRECTION_SPECS = [
     { canonical: "а", variants: ["аа", "а-а", "а-а-а"] },
     { canonical: "ага", variants: ["ага-а", "агаа"] },
@@ -2434,6 +2435,26 @@ export function initLinterBridge() {
     });
   }
 
+  function normalizeDisabledCustomLinterRuleIds(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const availableRuleIds = new Set(getCustomLintRules().map((rule) => rule.id));
+    const disabledRuleIds = [];
+    const seen = new Set();
+    for (const id of value) {
+      if (typeof id !== "string" || !availableRuleIds.has(id) || seen.has(id)) {
+        continue;
+      }
+
+      seen.add(id);
+      disabledRuleIds.push(id);
+    }
+
+    return disabledRuleIds;
+  }
+
   function makeCustomIssue(entry, rule, matches) {
     return {
       annotationId: entry.annotationId,
@@ -2478,6 +2499,7 @@ export function initLinterBridge() {
       makeCustomIssue,
       {
         createTextContext: createTranscriptTextContext,
+        disabledRuleIds: disabledCustomLinterRuleIds,
         onRuleError: recordCustomLinterRuleError,
       },
     );
@@ -3667,6 +3689,7 @@ export function initLinterBridge() {
     const bodyText = document.body.innerText || "";
     return getVisibleTooltipEntries(rowText, bodyText, getCustomLintRules(), {
       createTextContext: createTranscriptTextContext,
+      disabledRuleIds: disabledCustomLinterRuleIds,
     });
   }
 
@@ -5169,6 +5192,9 @@ export function initLinterBridge() {
     const detail = event && event.detail ? event.detail : {};
     highlightedWordsEnabled = detail.highlightedWordsEnabled !== false;
     highlightedWords = normalizeHighlightedWords(detail.highlightedWords);
+    disabledCustomLinterRuleIds = normalizeDisabledCustomLinterRuleIds(
+      detail.disabledCustomLinterRuleIds,
+    );
     if (!highlightedWordsEnabled) {
       removeCurrentHighlightedWordIssues();
     }
@@ -5730,7 +5756,9 @@ export function initLinterBridge() {
         rule.id !== "polite-pronoun-case" &&
         rule.id !== "segment-start-capitalization",
     );
-    return applyRuleFixes(text, broadTextRules);
+    return applyRuleFixes(text, broadTextRules, {}, {
+      disabledRuleIds: disabledCustomLinterRuleIds,
+    });
   }
 
   function getRowSpeakerKey(row) {

@@ -32,6 +32,7 @@ export type TooltipEntry = {
 
 type RegistryOptions = {
   createTextContext?: (text: string) => TranscriptTextContext;
+  disabledRuleIds?: string[];
   onRuleError?: (
     error: unknown,
     rule: LinterRule,
@@ -39,6 +40,14 @@ type RegistryOptions = {
     context: LinterRuleContext
   ) => void;
 };
+
+function isRuleEnabled(rule: LinterRule, options: RegistryOptions): boolean {
+  if (!Array.isArray(options.disabledRuleIds) || !rule || typeof rule.id !== 'string') {
+    return true;
+  }
+
+  return !options.disabledRuleIds.includes(rule.id);
+}
 
 function createRuleContext(
   entry: AnnotationEntry,
@@ -72,6 +81,10 @@ export function buildRegistryIssues<TIssue>(
 
     const context = createRuleContext(entry, annotationEntries, index, options);
     for (const rule of rules) {
+      if (!isRuleEnabled(rule, options)) {
+        continue;
+      }
+
       let matches: TextRange[];
       try {
         const result = rule.getMatches(entry, context);
@@ -118,6 +131,10 @@ export function getVisibleTooltipEntries(
   const entries: TooltipEntry[] = [];
 
   for (const rule of rules) {
+    if (!isRuleEnabled(rule, options)) {
+      continue;
+    }
+
     if (!rule.markers.some((marker) => bodyText.includes(marker))) {
       continue;
     }
@@ -138,7 +155,8 @@ export function getVisibleTooltipEntries(
 export function applyRuleFixes(
   text: string,
   rules: LinterRule[],
-  context: Partial<LinterRuleContext> = {}
+  context: Partial<LinterRuleContext> = {},
+  options: RegistryOptions = {}
 ): string {
   if (typeof text !== 'string' || !Array.isArray(rules)) {
     return text;
@@ -146,6 +164,10 @@ export function applyRuleFixes(
 
   let result = text;
   for (const rule of rules) {
+    if (!isRuleEnabled(rule, options)) {
+      continue;
+    }
+
     if (typeof rule.fix === 'function') {
       result = rule.fix(result, context);
     }

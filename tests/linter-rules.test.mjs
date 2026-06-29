@@ -162,6 +162,61 @@ test('linter rule registry keeps later custom issues when one rule throws', asyn
   ]);
 });
 
+test('linter rule registry skips disabled rule ids for issues, tooltips, and fixes', async () => {
+  const {
+    applyRuleFixes,
+    buildRegistryIssues,
+    getVisibleTooltipEntries
+  } = await importBundledTs('src/features/custom-linter/linter/rule-registry.ts');
+
+  const rules = [
+    {
+      id: 'trim-start',
+      reason: 'Trim start',
+      severity: 'error',
+      markers: ['Trim start'],
+      getMatches(entry) {
+        return entry.text.startsWith(' ')
+          ? [{ start: 0, end: 1, text: ' ' }]
+          : [];
+      },
+      fix(text) {
+        return text.trimStart();
+      }
+    },
+    {
+      id: 'terminal-period',
+      reason: 'Needs period',
+      severity: 'warning',
+      markers: ['Needs period'],
+      getMatches(entry) {
+        return entry.text.endsWith('.')
+          ? []
+          : [{ start: Math.max(0, entry.text.length - 1), end: entry.text.length, text: entry.text.slice(-1) }];
+      },
+      fix(text) {
+        return text.endsWith('.') ? text : `${text}.`;
+      }
+    }
+  ];
+  const disabledRuleIds = ['terminal-period'];
+
+  const issues = buildRegistryIssues(
+    [{ annotationId: 'a1', text: ' hello' }],
+    rules,
+    (entry, rule, matches) => ({
+      annotationId: entry.annotationId,
+      reason: rule.reason,
+      matches
+    }),
+    { disabledRuleIds }
+  );
+
+  assert.deepEqual(issues.map((issue) => issue.reason), ['Trim start']);
+  assert.deepEqual(getVisibleTooltipEntries(' hello', 'Needs period', rules, { disabledRuleIds }), []);
+  assert.equal(applyRuleFixes(' hello', rules, {}, { disabledRuleIds }), 'hello');
+});
+
 test('linter bridge delegates rule loops to the registry module', async () => {
   const bridgeSource = await fs.readFile('src/content/linter-bridge.ts', 'utf8');
 
