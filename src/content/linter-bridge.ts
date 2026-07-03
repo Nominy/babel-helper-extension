@@ -65,7 +65,8 @@ export function initLinterBridge() {
   const POLITE_PRONOUN_CASE_RULE_REASON =
     'Russian polite pronouns like "вы" / "ваш" must be lowercase mid-sentence.';
   const TERMINAL_PUNCTUATION_RULE_REASON =
-    'Segments must end with one of: ?, ..., !, -, --, ", or .';
+    'Segments must end with one of: ?, ..., !, -, --, ", ., or [неразборчиво].';
+  const TERMINAL_INDECIPHERABLE_TAG_PATTERN = /\[неразборчиво\]\s*$/u;
   const SEGMENT_START_CAPITALIZATION_RULE_REASON =
     "Segments must start with uppercase unless they continue the same speaker after --/...; segments starting with ... must continue with lowercase.";
   const HIGHLIGHTED_WORD_RULE_REASON =
@@ -888,6 +889,10 @@ export function initLinterBridge() {
 
   function hasTerminalPunctuationViolation(text) {
     if (typeof text !== "string") {
+      return false;
+    }
+
+    if (TERMINAL_INDECIPHERABLE_TAG_PATTERN.test(text)) {
       return false;
     }
 
@@ -5633,6 +5638,10 @@ export function initLinterBridge() {
 
   function fixTerminalPunctuation(text) {
     if (typeof text !== "string") {
+      return text;
+    }
+
+    if (TERMINAL_INDECIPHERABLE_TAG_PATTERN.test(text)) {
       return text;
     }
 

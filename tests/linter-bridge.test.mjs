@@ -9,6 +9,7 @@ const languageRulesPath = path.resolve('src/features/custom-linter/linter/rules/
 const languageRulesSource = fs.readFileSync(languageRulesPath, 'utf8');
 const DEFAULT_HIGHLIGHTED_WORDS = ['все', 'всё', 'всем', 'всём', 'нем', 'нём', 'берет', 'берёт', 'угу', 'м-м'];
 const HIGHLIGHTED_WORD_RULE_REASON = 'Highlighted word requires clearance before use.';
+const TERMINAL_INDECIPHERABLE_TAG_PATTERN = /\[неразборчиво\]\s*$/u;
 
 function hasCommaSpacingViolation(text) {
   if (typeof text !== 'string' || text.indexOf(',') === -1) {
@@ -936,6 +937,10 @@ function hasTerminalPunctuationViolation(text) {
     return false;
   }
 
+  if (TERMINAL_INDECIPHERABLE_TAG_PATTERN.test(text)) {
+    return false;
+  }
+
   const trimmed = normalizeUnicodeDoubleQuoteVariants(stripTrailingTagTokens(text));
   if (!trimmed) {
     return false;
@@ -1780,6 +1785,10 @@ function fixTerminalPunctuation(text) {
     return text;
   }
 
+  if (TERMINAL_INDECIPHERABLE_TAG_PATTERN.test(text)) {
+    return text;
+  }
+
   const trimmed = stripTrailingTagTokens(text);
   if (!trimmed || /(?:\.\.\.|--|[.,?!:;"-])$/.test(trimmed)) {
     return text;
@@ -2430,6 +2439,7 @@ test('flags missing terminal punctuation and accepts allowed endings', () => {
   assert.equal(hasTerminalPunctuationViolation('hello world.</i>'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world</i>'), true);
   assert.equal(hasTerminalPunctuationViolation('hello world [laughs]'), true);
+  assert.equal(hasTerminalPunctuationViolation('hello world [неразборчиво]'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world. [laughs]'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world" [laughs]'), false);
   assert.equal(hasTerminalPunctuationViolation('hello world {TAG: X}'), true);
@@ -2606,6 +2616,10 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   assert.equal(
     applyAllFixes('hello world [laughs]'),
     'hello world. [laughs]'
+  );
+  assert.equal(
+    applyAllFixes('hello world [неразборчиво]'),
+    'hello world [неразборчиво]'
   );
   assert.equal(
     applyAllFixes('hello. world'),
