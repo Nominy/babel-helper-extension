@@ -130,6 +130,8 @@ type ExtendedDiffState = {
   activeNativeUrl: string | null;
   appliedRecoveredDiffActionId: string;
   pendingRecoveredDiffActionId: string;
+  appliedRecoveredDiffSignature: string;
+  pendingRecoveredDiffSignature: string;
   overlayMode: 'reference' | 'current' | 'fusion';
   diffs: LoadedDiff[];
 };
@@ -888,17 +890,17 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
     {
       mode: 'reference',
       label: `L${activeDiff.referenceLevel ?? '?'}`,
-      title: 'Show only the reference-side segmentation for the active Babel comparison'
+      title: 'Show only the reference-side text and segmentation for the active Babel comparison'
     },
     {
       mode: 'current',
       label: `L${activeDiff.currentLevel ?? '?'}`,
-      title: 'Show only the current-side segmentation for the active Babel comparison'
+      title: 'Show only the current-side text and segmentation for the active Babel comparison'
     },
     {
       mode: 'fusion',
       label: 'Fusion',
-      title: 'Show reference segmentation above current segmentation'
+      title: 'Show text additions/removals and reference segmentation above current segmentation'
     }
   ];
 
@@ -911,8 +913,7 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
       button.dataset.active = String(state.overlayMode === option.mode);
       button.addEventListener('click', () => {
         state.overlayMode = option.mode;
-        applyWaveformOverlays(state);
-        renderSegmentationModeControls(state);
+        renderDiffAugmentations(state);
       });
       return button;
     })
@@ -947,6 +948,8 @@ function clearRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   const shouldClearRecoveredDiff = Boolean(state.appliedRecoveredDiffActionId);
   state.appliedRecoveredDiffActionId = '';
   state.pendingRecoveredDiffActionId = '';
+  state.appliedRecoveredDiffSignature = '';
+  state.pendingRecoveredDiffSignature = '';
   if (shouldClearRecoveredDiff && typeof helper?.clearRecoveredEditorDiffState === 'function') {
     void helper.clearRecoveredEditorDiffState('extended-diff-text-state');
   }
@@ -971,30 +974,41 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   const recoveredDiff = renderableDiffs.find((diff) => diff.selectedCompareActionId);
   if (recoveredDiff && typeof helper?.applyRecoveredEditorDiffState === 'function') {
     const actionId = recoveredDiff.selectedCompareActionId;
-    if (state.appliedRecoveredDiffActionId !== actionId && state.pendingRecoveredDiffActionId !== actionId) {
+    const textDiffSignature = `${actionId}:${state.overlayMode}`;
+    if (
+      state.appliedRecoveredDiffSignature !== textDiffSignature &&
+      state.pendingRecoveredDiffSignature !== textDiffSignature
+    ) {
       state.pendingRecoveredDiffActionId = actionId;
+      state.pendingRecoveredDiffSignature = textDiffSignature;
       void helper.applyRecoveredEditorDiffState({
         routeKey: getRouteKey(),
         selectedCompareActionId: actionId,
         compareLevel: recoveredDiff.compareLevel,
         referenceReviewActionId: recoveredDiff.referenceReviewActionId,
         currentReviewActionId: recoveredDiff.currentReviewActionId,
-        source: recoveredDiff.source
+        source: recoveredDiff.source,
+        textMode: state.overlayMode
       }).then((result: any) => {
-        if (state.pendingRecoveredDiffActionId !== actionId) return;
+        if (state.pendingRecoveredDiffSignature !== textDiffSignature) return;
         state.pendingRecoveredDiffActionId = '';
+        state.pendingRecoveredDiffSignature = '';
         if (result?.ok) {
           state.appliedRecoveredDiffActionId = actionId;
+          state.appliedRecoveredDiffSignature = textDiffSignature;
         } else {
           state.appliedRecoveredDiffActionId = '';
+          state.appliedRecoveredDiffSignature = '';
         }
         if (helper?.state && typeof helper.state === 'object') {
           helper.state.extendedDiffTextApplyResult = result || null;
         }
       }).catch((error: unknown) => {
-        if (state.pendingRecoveredDiffActionId !== actionId) return;
+        if (state.pendingRecoveredDiffSignature !== textDiffSignature) return;
         state.pendingRecoveredDiffActionId = '';
+        state.pendingRecoveredDiffSignature = '';
         state.appliedRecoveredDiffActionId = '';
+        state.appliedRecoveredDiffSignature = '';
         if (helper?.state && typeof helper.state === 'object') {
           helper.state.extendedDiffTextApplyResult = {
             ok: false,
@@ -1006,13 +1020,17 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   } else if (state.appliedRecoveredDiffActionId && typeof helper?.clearRecoveredEditorDiffState === 'function') {
     state.appliedRecoveredDiffActionId = '';
     state.pendingRecoveredDiffActionId = '';
+    state.appliedRecoveredDiffSignature = '';
+    state.pendingRecoveredDiffSignature = '';
     void helper.clearRecoveredEditorDiffState('extended-diff-text-state');
   } else {
     state.pendingRecoveredDiffActionId = '';
+    state.pendingRecoveredDiffSignature = '';
   }
 
   const textState = {
     textDiffMode: 'babel-native-state',
+    textMode: state.overlayMode,
     selectedCompareActionId: recoveredDiff?.selectedCompareActionId || null,
     snapshotRows: Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0,
     snapshotCapturedAt: Number.isFinite(Number(snapshot?.capturedAt)) ? Number(snapshot.capturedAt) : null,
@@ -1296,6 +1314,7 @@ function renderDiffAugmentations(state: ExtendedDiffState) {
   renderSegmentationModeControls(state);
   document.documentElement.dataset.bhExtendedDiffDebug = JSON.stringify({
     textDiff,
+    textMode: state.overlayMode,
     visibleCompareLevel: getVisibleCompareLevel(),
     activeNativeUrl: state.activeNativeUrl,
     loadedUrlCount: state.loadedUrls.size,
@@ -1529,6 +1548,8 @@ export function registerExtendedDiffViewService(helper: any) {
     activeNativeUrl: null,
     appliedRecoveredDiffActionId: '',
     pendingRecoveredDiffActionId: '',
+    appliedRecoveredDiffSignature: '',
+    pendingRecoveredDiffSignature: '',
     overlayMode: 'fusion',
     diffs: []
   };

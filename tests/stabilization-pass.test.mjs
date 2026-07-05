@@ -105,6 +105,19 @@ test('extended diff delegates text presentation to recovered Babel state instead
   assert.doesNotMatch(source, /cell\.innerHTML\s*=/);
 });
 
+test('extended diff mode controls reapply recovered text presentation mode', () => {
+  const source = read('../src/services/extended-diff-view-service.ts');
+
+  assert.match(source, /appliedRecoveredDiffSignature/);
+  assert.match(source, /pendingRecoveredDiffSignature/);
+  assert.match(source, /const textDiffSignature = `\$\{actionId\}:\$\{state\.overlayMode\}`;/);
+  assert.match(source, /textMode: state\.overlayMode/);
+  assert.match(source, /button\.addEventListener\('click', \(\) => \{[\s\S]*state\.overlayMode = option\.mode;[\s\S]*renderDiffAugmentations\(state\);/);
+  assert.match(source, /textMode: state\.overlayMode/);
+  assert.match(source, /title: 'Show only the reference-side text and segmentation/);
+  assert.match(source, /title: 'Show only the current-side text and segmentation/);
+});
+
 test('speaker workflow uses robust control driving and always releases pending guard', () => {
   const source = read('../src/services/row-service.ts');
 

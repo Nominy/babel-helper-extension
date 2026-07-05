@@ -77,7 +77,7 @@ test("recovered editor bridge applies and restores native diff selection for ext
   assert.match(bridgeSource, /function splitFullDiffTokens/);
   assert.match(bridgeSource, /String\(text \|\| ''\)\.match\(\/\\S\+\/g\)/);
   assert.match(bridgeSource, /setExtendedDiffValue\(mapping, 'wordDiffs', wordDiffs, restorable\)/);
-  assert.match(bridgeSource, /patchCurrentDiffResult\(toolbarProps\)/);
+  assert.match(bridgeSource, /patchCurrentDiffResult\(toolbarProps, textMode\)/);
   assert.match(bridgeSource, /patchTranscriptionDiffResponseText/);
   assert.match(bridgeSource, /restoreExtendedDiffMutations\(\)/);
   assert.match(bridgeSource, /onSelectCompareAction\(null\)/);
@@ -85,6 +85,31 @@ test("recovered editor bridge applies and restores native diff selection for ext
 
   assert.match(serviceSource, /callRecoveredEditorBridge\('apply-extended-diff-state'/);
   assert.match(serviceSource, /callRecoveredEditorBridge\('clear-extended-diff-state'/);
+});
+
+test("recovered editor bridge patches extended diff text as reference, current, or fusion", () => {
+  const bridgeSource = read("../src/content/recovered-editor-bridge.ts");
+
+  assert.match(bridgeSource, /function normalizeExtendedDiffTextMode/);
+  assert.match(bridgeSource, /function buildPlainWordDiffs/);
+  assert.match(bridgeSource, /textMode === 'reference' \? referenceText : textMode === 'current' \? hypothesisText : null/);
+  assert.match(bridgeSource, /const editCounts = textMode === 'fusion'[\s\S]*countFullWordDiffEdits\(wordDiffs\)[\s\S]*: \{ substitutions: 0, insertions: 0, deletions: 0 \};/);
+  assert.match(bridgeSource, /function patchTranscriptionDiffPayload\(payload, restorable = false, textMode = 'fusion'\)/);
+  assert.match(bridgeSource, /const textMode = normalizeExtendedDiffTextMode\(extendedDiffPatch\?\.textMode\);[\s\S]*patchTranscriptionDiffResponseText\(text, textMode\)/);
+  assert.match(bridgeSource, /patchCurrentDiffResult\(toolbarProps, textMode\)/);
+  assert.match(bridgeSource, /extendedDiffPatch\.textMode = textMode/);
+  assert.match(bridgeSource, /textMode,/);
+});
+
+test("recovered editor bridge refetches native diff query after text mode changes", () => {
+  const bridgeSource = read("../src/content/recovered-editor-bridge.ts");
+
+  assert.match(bridgeSource, /function findCurrentTranscriptionDiffQueryResult/);
+  assert.match(bridgeSource, /Array\.isArray\(memoizedState\.data\?\.speakerDiffs\)/);
+  assert.match(bridgeSource, /typeof memoizedState\.refetch === 'function'/);
+  assert.match(bridgeSource, /function scheduleCurrentTranscriptionDiffRefetch/);
+  assert.match(bridgeSource, /scheduleCurrentTranscriptionDiffRefetch\(action\)/);
+  assert.match(bridgeSource, /refetchScheduled,/);
 });
 
 test("row actions prefer recovered snapshot and exact recovered labels over fuzzy fallbacks", () => {

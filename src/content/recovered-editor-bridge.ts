@@ -105,6 +105,80 @@ export function initRecoveredEditorBridge() {
     );
   }
 
+  function matchesCurrentTranscriptionDiffResult(data, action) {
+    if (!data || typeof data !== 'object' || !Array.isArray(data.speakerDiffs)) {
+      return false;
+    }
+
+    const actionId = getString(action?.id);
+    if (!actionId) {
+      return true;
+    }
+
+    return data.referenceReviewActionId === actionId || data.currentReviewActionId === actionId;
+  }
+
+  function findCurrentTranscriptionDiffQueryResult(action) {
+    const root = getRootFiber();
+    if (!root) {
+      return null;
+    }
+
+    const stack = [root];
+    const seenFibers = new Set();
+    while (stack.length) {
+      const fiber = stack.pop();
+      if (!fiber || seenFibers.has(fiber)) {
+        continue;
+      }
+      seenFibers.add(fiber);
+
+      let hook = fiber.memoizedState;
+      const seenHooks = new Set();
+      let depth = 0;
+      while (hook && typeof hook === 'object' && !seenHooks.has(hook) && depth < 700) {
+        seenHooks.add(hook);
+        const memoizedState = hook.memoizedState;
+        if (
+          memoizedState &&
+          typeof memoizedState === 'object' &&
+          Array.isArray(memoizedState.data?.speakerDiffs) &&
+          typeof memoizedState.refetch === 'function' &&
+          matchesCurrentTranscriptionDiffResult(memoizedState.data, action)
+        ) {
+          return memoizedState;
+        }
+
+        hook = hook.next;
+        depth += 1;
+      }
+
+      if (fiber.child) stack.push(fiber.child);
+      if (fiber.sibling) stack.push(fiber.sibling);
+    }
+
+    return null;
+  }
+
+  function scheduleCurrentTranscriptionDiffRefetch(action) {
+    window.setTimeout(() => {
+      const queryResult = findCurrentTranscriptionDiffQueryResult(action);
+      if (!queryResult) {
+        return;
+      }
+
+      try {
+        const result = queryResult.refetch();
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => {});
+        }
+      } catch (_error) {
+        // Best-effort repaint trigger; fetch patching remains active for native refreshes.
+      }
+    }, 50);
+    return true;
+  }
+
   function getRouteKey() {
     return `${window.location.pathname || ''}${window.location.search || ''}`;
   }
@@ -116,6 +190,10 @@ export function initRecoveredEditorBridge() {
   function getNumber(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
+  }
+
+  function normalizeExtendedDiffTextMode(value) {
+    return value === 'reference' || value === 'current' ? value : 'fusion';
   }
 
   function recordExtendedDiffMutation(target, key, value) {
@@ -176,6 +254,10 @@ export function initRecoveredEditorBridge() {
 
   function splitFullDiffTokens(text) {
     return String(text || '').match(/\S+/g) || [];
+  }
+
+  function buildPlainWordDiffs(text) {
+    return splitFullDiffTokens(text).map((value) => ({ status: 'unchanged', value }));
   }
 
   function buildFullWordDiffs(beforeText, afterText) {
@@ -263,7 +345,8 @@ export function initRecoveredEditorBridge() {
     }
   }
 
-  function patchTranscriptionDiffPayload(payload, restorable = false) {
+  function patchTranscriptionDiffPayload(payload, restorable = false, textMode = 'fusion') {
+    textMode = normalizeExtendedDiffTextMode(textMode);
     if (!payload || typeof payload !== 'object' || !Array.isArray(payload.speakerDiffs)) {
       return false;
     }
@@ -284,11 +367,17 @@ export function initRecoveredEditorBridge() {
 
         const referenceText = getString(mapping.referenceText);
         const hypothesisText = getString(mapping.hypothesisText);
-        const wordDiffs = buildFullWordDiffs(referenceText, hypothesisText);
-        const editCounts = countFullWordDiffEdits(wordDiffs);
+        const sideText = textMode === 'reference' ? referenceText : textMode === 'current' ? hypothesisText : null;
+        const wordDiffs = sideText == null ? buildFullWordDiffs(referenceText, hypothesisText) : buildPlainWordDiffs(sideText);
+        const editCounts = textMode === 'fusion'
+          ? countFullWordDiffEdits(wordDiffs)
+          : { substitutions: 0, insertions: 0, deletions: 0 };
+        const referenceWordCount = splitFullDiffTokens(referenceText).length;
+        const hypothesisWordCount = splitFullDiffTokens(hypothesisText).length;
+        const sideWordCount = sideText == null ? null : splitFullDiffTokens(sideText).length;
 
-        totalReferenceWords += splitFullDiffTokens(referenceText).length;
-        totalHypothesisWords += splitFullDiffTokens(hypothesisText).length;
+        totalReferenceWords += sideWordCount ?? referenceWordCount;
+        totalHypothesisWords += sideWordCount ?? hypothesisWordCount;
         totalSubstitutions += editCounts.substitutions;
         totalInsertions += editCounts.insertions;
         totalDeletions += editCounts.deletions;
@@ -323,7 +412,8 @@ export function initRecoveredEditorBridge() {
     return patched;
   }
 
-  function patchTranscriptionDiffJson(root, restorable = false) {
+  function patchTranscriptionDiffJson(root, restorable = false, textMode = 'fusion') {
+    textMode = normalizeExtendedDiffTextMode(textMode);
     let patched = false;
     const stack = [root];
     const seen = new Set();
@@ -336,7 +426,7 @@ export function initRecoveredEditorBridge() {
       seen.add(value);
 
       if (Array.isArray(value.speakerDiffs)) {
-        patched = patchTranscriptionDiffPayload(value, restorable) || patched;
+        patched = patchTranscriptionDiffPayload(value, restorable, textMode) || patched;
       }
 
       if (Array.isArray(value)) {
@@ -349,10 +439,11 @@ export function initRecoveredEditorBridge() {
     return patched;
   }
 
-  function patchTranscriptionDiffResponseText(text) {
+  function patchTranscriptionDiffResponseText(text, textMode = 'fusion') {
+    textMode = normalizeExtendedDiffTextMode(textMode);
     try {
       const json = JSON.parse(text);
-      return patchTranscriptionDiffJson(json, false) ? JSON.stringify(json) : text;
+      return patchTranscriptionDiffJson(json, false, textMode) ? JSON.stringify(json) : text;
     } catch (_error) {
       const lines = text.split(/\r?\n/);
       let patched = false;
@@ -363,7 +454,7 @@ export function initRecoveredEditorBridge() {
 
         try {
           const json = JSON.parse(line);
-          if (patchTranscriptionDiffJson(json, false)) {
+          if (patchTranscriptionDiffJson(json, false, textMode)) {
             patched = true;
             return JSON.stringify(json);
           }
@@ -402,7 +493,8 @@ export function initRecoveredEditorBridge() {
 
     try {
       const text = await response.clone().text();
-      const patchedText = patchTranscriptionDiffResponseText(text);
+      const textMode = normalizeExtendedDiffTextMode(extendedDiffPatch?.textMode);
+      const patchedText = patchTranscriptionDiffResponseText(text, textMode);
       if (patchedText === text) {
         return response;
       }
@@ -448,8 +540,8 @@ export function initRecoveredEditorBridge() {
     extendedDiffFetchPatch = null;
   }
 
-  function patchCurrentDiffResult(toolbarProps) {
-    return patchTranscriptionDiffPayload(toolbarProps?.diffResult, true);
+  function patchCurrentDiffResult(toolbarProps, textMode) {
+    return patchTranscriptionDiffPayload(toolbarProps?.diffResult, true, textMode);
   }
 
   function findExtendedDiffReviewAction(toolbarProps, payload) {
@@ -733,6 +825,7 @@ export function initRecoveredEditorBridge() {
       typeof toolbarProps.selectedCompareActionId === 'string' ? toolbarProps.selectedCompareActionId : null;
     const currentIsDiffMode = toolbarProps.isDiffMode === true;
     const routeKey = getString(payload?.routeKey) || getRouteKey();
+    const textMode = normalizeExtendedDiffTextMode(payload?.textMode);
 
     if (!extendedDiffPatch || extendedDiffPatch.routeKey !== routeKey) {
       extendedDiffPatch = {
@@ -740,7 +833,8 @@ export function initRecoveredEditorBridge() {
         previousIsDiffMode: currentIsDiffMode,
         previousSelectedCompareActionId: currentSelectedCompareActionId,
         syntheticExtendedDiffActionId: ensuredAction.syntheticExtendedDiffActionId,
-        lastAppliedActionId: action.id
+        lastAppliedActionId: action.id,
+        textMode
       };
     } else {
       if (
@@ -751,10 +845,11 @@ export function initRecoveredEditorBridge() {
       }
       extendedDiffPatch.syntheticExtendedDiffActionId = ensuredAction.syntheticExtendedDiffActionId;
       extendedDiffPatch.lastAppliedActionId = action.id;
+      extendedDiffPatch.textMode = textMode;
     }
 
     const fetchPatchInstalled = installExtendedDiffFetchPatch();
-    const patchedCurrentDiffResult = patchCurrentDiffResult(toolbarProps);
+    const patchedCurrentDiffResult = patchCurrentDiffResult(toolbarProps, textMode);
     const shouldRefreshSelection = currentIsDiffMode && currentSelectedCompareActionId === action.id;
 
     toolbarProps.onToggleDiffMode(true);
@@ -767,6 +862,7 @@ export function initRecoveredEditorBridge() {
     } else {
       toolbarProps.onSelectCompareAction(action.id);
     }
+    const refetchScheduled = scheduleCurrentTranscriptionDiffRefetch(action);
 
     return {
       ok: true,
@@ -776,6 +872,8 @@ export function initRecoveredEditorBridge() {
       fetchPatchInstalled,
       patchedCurrentDiffResult,
       refreshedSelection: shouldRefreshSelection,
+      refetchScheduled,
+      textMode,
       previousIsDiffMode: extendedDiffPatch.previousIsDiffMode,
       previousSelectedCompareActionId: extendedDiffPatch.previousSelectedCompareActionId
     };
