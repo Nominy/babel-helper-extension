@@ -294,6 +294,29 @@
         background: var(--accent-soft);
       }
 
+      .support-footer {
+        margin: 14px 0 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+        text-align: center;
+      }
+
+      .support-link {
+        color: var(--accent);
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .support-link:hover {
+        text-decoration: underline;
+      }
+
       @media (max-width: 560px) {
         .page {
           padding: 20px 14px 18px;
@@ -341,6 +364,10 @@
           <div class="status" data-role="status">Loading...</div>
         </div>
       </section>
+      <p class="support-footer">
+        These Babel tools are maintained by Naftsan.
+        <a class="support-link" href="https://ko-fi.com/naftsan" target="_blank" rel="noopener noreferrer">Support on Ko-fi</a>
+      </p>
     </main>
     <script src="dist/options/options.js"></script>
   </body>

@@ -31,10 +31,31 @@ export function registerHotkeysHelpService(helper: any) {
     wrapper.style.borderTop = '1px solid rgba(148, 163, 184, 0.35)';
 
     const title = document.createElement('div');
-    title.textContent = 'Babel Helper';
     title.style.fontWeight = '700';
     title.style.fontSize = '14px';
     title.style.marginBottom = '8px';
+    title.style.display = 'flex';
+    title.style.alignItems = 'center';
+    title.style.gap = '8px';
+    title.style.flexWrap = 'wrap';
+
+    const titleText = document.createElement('span');
+    titleText.textContent = 'Babel Helper';
+
+    const supportLink = document.createElement('a');
+    supportLink.className = 'babel-helper-support-link';
+    supportLink.href = 'https://ko-fi.com/naftsan';
+    supportLink.target = '_blank';
+    supportLink.rel = 'noopener noreferrer';
+    supportLink.textContent = 'Support on Ko-fi';
+    supportLink.style.color = 'rgb(15, 122, 103)';
+    supportLink.style.fontSize = '11px';
+    supportLink.style.fontWeight = '700';
+    supportLink.style.textDecoration = 'none';
+    supportLink.addEventListener('click', (event) => event.stopPropagation());
+
+    title.appendChild(titleText);
+    title.appendChild(supportLink);
     wrapper.appendChild(title);
 
     for (const [shortcut, description] of helper.config.hotkeysHelpRows) {
