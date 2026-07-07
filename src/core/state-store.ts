@@ -26,6 +26,7 @@
     cutPreview: null,
     cutCommitPending: false,
     cutLastContainer: null,
+    timelineEdgeClickDraft: null,
     smartSplitClickDraft: null,
     smartSplitClickContext: null,
     selectionLoop: null,

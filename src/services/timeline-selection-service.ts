@@ -69,6 +69,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.cutPreview = null;
   helper.state.cutCommitPending = false;
   helper.state.cutLastContainer = null;
+  helper.state.timelineEdgeClickDraft = null;
   helper.state.currentTimelineTarget = null;
   helper.state.smartSplitClickDraft = null;
   helper.state.smartSplitClickContext = null;
@@ -710,6 +711,10 @@ export function registerTimelineSelectionService(helper: any) {
   }
 
   function isNativeTimelineDoubleClickTarget(event) {
+    if (isAltTimelineEdgeClickEvent(event) && getTimelineLaneFromEvent(event)) {
+      return true;
+    }
+
     const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
     for (const node of path) {
       if (!(node instanceof HTMLElement)) {
@@ -1599,24 +1604,50 @@ export function registerTimelineSelectionService(helper: any) {
     return root instanceof ShadowRoot && root.host instanceof HTMLElement ? root.host : null;
   }
 
+  function isVisibleWaveformHost(host) {
+    if (
+      !(host instanceof HTMLElement) ||
+      !host.isConnected ||
+      !helper.isVisible(host) ||
+      !(host.shadowRoot instanceof ShadowRoot)
+    ) {
+      return false;
+    }
+
+    const wrapper = host.shadowRoot.querySelector('[part="wrapper"]');
+    const scroll = host.shadowRoot.querySelector('[part="scroll"]');
+    return Boolean(
+      wrapper instanceof HTMLElement &&
+        scroll instanceof HTMLElement &&
+        helper.isVisible(scroll)
+    );
+  }
+
+  function isVisibleWaveformContainer(container) {
+    if (!(container instanceof HTMLElement) || !container.isConnected) {
+      return false;
+    }
+
+    const host = getWaveformHostFromContainer(container);
+    return host instanceof HTMLElement && isVisibleWaveformHost(host);
+  }
+
+
   function discoverWaveformContainers() {
     const containers = [];
     const seen = new Set();
 
-    if (
-      helper.state.cutLastContainer instanceof HTMLElement &&
-      helper.state.cutLastContainer.isConnected
-    ) {
-      seen.add(helper.state.cutLastContainer);
-      containers.push(helper.state.cutLastContainer);
+    if (helper.state.cutLastContainer instanceof HTMLElement) {
+      if (isVisibleWaveformContainer(helper.state.cutLastContainer)) {
+        seen.add(helper.state.cutLastContainer);
+        containers.push(helper.state.cutLastContainer);
+      } else if (helper.state.cutLastContainer.isConnected) {
+        helper.state.cutLastContainer = null;
+      }
     }
 
     for (const node of Array.from(document.querySelectorAll('div'))) {
-      if (
-        !(node instanceof HTMLDivElement) ||
-        !(node.shadowRoot instanceof ShadowRoot) ||
-        !helper.isVisible(node)
-      ) {
+      if (!(node instanceof HTMLDivElement) || !isVisibleWaveformHost(node)) {
         continue;
       }
 
@@ -1629,7 +1660,7 @@ export function registerTimelineSelectionService(helper: any) {
       if (
         !(container instanceof HTMLElement) ||
         seen.has(container) ||
-        !container.isConnected
+        !isVisibleWaveformContainer(container)
       ) {
         continue;
       }
@@ -1735,6 +1766,79 @@ export function registerTimelineSelectionService(helper: any) {
 
     return getTrackIdForHost(host) || '';
   }
+
+  function normalizeSpeakerLaneLabel(value) {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    const match = text.match(/\bspeaker\s*([12])\b/i);
+    return match ? 'Speaker ' + match[1] : '';
+  }
+
+  function getSpeakerLaneVisibilityForLabel(label) {
+    const normalizedTarget = normalizeSpeakerLaneLabel(label);
+    if (!normalizedTarget) {
+      return '';
+    }
+
+    const targetLower = normalizedTarget.toLowerCase();
+    for (const heading of Array.from(document.querySelectorAll('h3'))) {
+      if (!(heading instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (helper.normalizeText(heading).toLowerCase() !== targetLower) {
+        continue;
+      }
+
+      const header = heading.parentElement;
+      if (!(header instanceof HTMLElement)) {
+        continue;
+      }
+
+      const visibilityButton = header.querySelector(
+        'button[aria-label="Show track"], button[aria-label="Hide track"]'
+      );
+      if (!(visibilityButton instanceof HTMLElement)) {
+        continue;
+      }
+
+      const semantic = (visibilityButton.getAttribute('aria-label') || '').trim().toLowerCase();
+      const text = helper.normalizeText(visibilityButton).toLowerCase();
+      if (semantic === 'show track' || text === 'show track') {
+        return 'hidden';
+      }
+      if (semantic === 'hide track' || text === 'hide track') {
+        return 'visible';
+      }
+    }
+
+    return '';
+  }
+
+  function isAutoInsertLaneSemanticallyVisible(target) {
+    const labels = [
+      target && target.trackLabel,
+      target && target.speakerKey
+    ]
+      .map(normalizeSpeakerLaneLabel)
+      .filter(Boolean);
+    const uniqueLabels = Array.from(new Set(labels));
+    if (!uniqueLabels.length) {
+      return true;
+    }
+
+    for (const label of uniqueLabels) {
+      const state = getSpeakerLaneVisibilityForLabel(label);
+      if (state === 'hidden') {
+        return false;
+      }
+      if (state === 'visible') {
+        return true;
+      }
+    }
+
+    return true;
+  }
+
 
   function getWaveformEntryForContainer(container) {
     const host = getWaveformHostFromContainer(container);
@@ -2020,6 +2124,7 @@ export function registerTimelineSelectionService(helper: any) {
 
     helper.state.cutPreview = null;
     helper.state.cutCommitPending = false;
+    helper.state.timelineEdgeClickDraft = null;
     clearCutDraft();
   };
 
@@ -2027,6 +2132,7 @@ export function registerTimelineSelectionService(helper: any) {
     helper.state.smartSplitClickDraft = null;
     helper.state.smartSplitClickContext = null;
     helper.state.cutDraft = null;
+    helper.state.timelineEdgeClickDraft = null;
     helper.state.cutLastContainer = null;
     helper.clearCutPreview();
   };
@@ -2523,6 +2629,125 @@ export function registerTimelineSelectionService(helper: any) {
     event.preventDefault();
     event.stopPropagation();
     return true;
+  }
+
+  function isAltTimelineEdgeClickEvent(event) {
+    return Boolean(
+      event &&
+        event.button === 0 &&
+        event.altKey &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+    );
+  }
+
+  function getTimelineLaneFromEvent(event) {
+    if (!event) {
+      return null;
+    }
+
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    let sourceRegion = null;
+    let container = null;
+
+    for (const node of path) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (node.hasAttribute(CUT_PREVIEW_ATTR)) {
+        return null;
+      }
+
+      if (!sourceRegion && isRegionHandle(node)) {
+        sourceRegion = getOwningRegionBody(node);
+      }
+
+      if (!sourceRegion && isRegionBody(node)) {
+        sourceRegion = node;
+      }
+
+      if (!container && sourceRegion instanceof HTMLElement && sourceRegion.parentElement instanceof HTMLElement) {
+        container = sourceRegion.parentElement;
+      }
+
+      if (!container && getRegionElements(node).length) {
+        container = node;
+      }
+
+      if (
+        !container &&
+        node.parentElement instanceof HTMLElement &&
+        getRegionElements(node.parentElement).length
+      ) {
+        container = node.parentElement;
+      }
+    }
+
+    if (container instanceof HTMLElement) {
+      return {
+        container,
+        sourceRegion: sourceRegion instanceof HTMLElement ? sourceRegion : null
+      };
+    }
+
+    for (const candidate of discoverWaveformContainers()) {
+      const rect = candidate.getBoundingClientRect();
+      if (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.left <= event.clientX &&
+        event.clientX <= rect.right &&
+        rect.top <= event.clientY &&
+        event.clientY <= rect.bottom
+      ) {
+        return {
+          container: candidate,
+          sourceRegion: null
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function getAltClickTimelineEdgeDraft(event) {
+    if (!isAltTimelineEdgeClickEvent(event)) {
+      return null;
+    }
+
+    const plainAlt = event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
+    if (!plainAlt) {
+      return null;
+    }
+
+    const lane = getTimelineLaneFromEvent(event);
+    if (!lane || !(lane.container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const containerRect = lane.container.getBoundingClientRect();
+    if (containerRect.width <= 0 || containerRect.height <= 0) {
+      return null;
+    }
+
+    rememberCutContainer(lane.container);
+
+    return {
+      pointerId: typeof event.pointerId === 'number' ? event.pointerId : 1,
+      sourceRegion: lane.sourceRegion,
+      container: lane.container,
+      containerRect,
+      startClientX: clamp(event.clientX, containerRect.left, containerRect.right),
+      startClientY: clamp(event.clientY, containerRect.top, containerRect.bottom)
+    };
+  }
+
+  function suppressAltTimelineEdgeEvent(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
   }
 
   function getRegionDraft(event) {
@@ -3340,6 +3565,8 @@ export function registerTimelineSelectionService(helper: any) {
     const seen = new Set();
     for (const candidate of candidates) {
       const resolvedLane = resolvedByMarker.get(candidate.hostMarker) || {};
+      const resolvedOk = resolvedLane.ok !== false;
+      const resolvedHasWave = resolvedLane.hasWave === true;
       const processedRecordingId =
         typeof resolvedLane.processedRecordingId === 'string'
           ? resolvedLane.processedRecordingId
@@ -3357,7 +3584,13 @@ export function registerTimelineSelectionService(helper: any) {
         trackLabel: typeof resolvedLane.trackLabel === 'string' ? resolvedLane.trackLabel : ''
       };
       const key = target.trackId || target.speakerKey || candidate.hostMarker;
-      if (!target.trackId || seen.has(key)) {
+      if (
+        !target.trackId ||
+        !resolvedOk ||
+        !resolvedHasWave ||
+        !isAutoInsertLaneSemanticallyVisible(target) ||
+        seen.has(key)
+      ) {
         continue;
       }
 
@@ -3376,6 +3609,7 @@ export function registerTimelineSelectionService(helper: any) {
     return callSelectionBridge('find-nearest-speech-island', {
       hostMarker: target.hostMarker,
       speakerKey: target.speakerKey,
+      strictHost: true,
       scanWindowSeconds: AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS,
       amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
       paddingSeconds: AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS
@@ -5489,6 +5723,237 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
+  async function resolveAltClickTimelinePointSeconds(draft, event) {
+    const lane =
+      draft && draft.container instanceof HTMLElement && draft.container.isConnected
+        ? {
+            container: draft.container
+          }
+        : getTimelineLaneFromEvent(event);
+    if (!lane || !(lane.container instanceof HTMLElement) || !isVisibleWaveformContainer(lane.container)) {
+      return null;
+    }
+
+    const containerRect = lane.container.getBoundingClientRect();
+    if (containerRect.width <= 0) {
+      return null;
+    }
+
+    const hostMarker = ensureSelectionHostMarker(lane.container);
+    if (!hostMarker) {
+      return null;
+    }
+
+    const localX = clamp(event.clientX - containerRect.left, 0, containerRect.width);
+    const result = await callSelectionBridge('selection-time-range', {
+      hostMarker,
+      leftPx: localX,
+      rightPx: localX + 1
+    });
+
+    const startSeconds = Number(result && result.startSeconds);
+    return result && result.ok && Number.isFinite(startSeconds) ? Math.max(0, startSeconds) : null;
+  }
+
+  function getAltClickTargetSeconds(candidate, localX, laneTargetSeconds) {
+    const bridgeTargetSeconds =
+      candidate && Number.isFinite(candidate.bridgeTargetSeconds)
+        ? candidate.bridgeTargetSeconds
+        : null;
+    if (Number.isFinite(bridgeTargetSeconds)) {
+      return Math.max(0, bridgeTargetSeconds);
+    }
+
+    if (Number.isFinite(laneTargetSeconds)) {
+      return Math.max(0, laneTargetSeconds);
+    }
+
+    if (!candidate || !candidate.entry || !candidate.rowRange) {
+      return null;
+    }
+
+    const width = candidate.entry.rightPx - candidate.entry.leftPx;
+    const duration = candidate.rowRange.endSeconds - candidate.rowRange.startSeconds;
+    if (!(width > 0) || !(duration > 0)) {
+      return candidate.side === 'left'
+        ? candidate.rowRange.startSeconds
+        : candidate.rowRange.endSeconds;
+    }
+
+    const ratio = (localX - candidate.entry.leftPx) / width;
+    return Math.max(0, candidate.rowRange.startSeconds + ratio * duration);
+  }
+
+  function chooseNearestAltClickTimelineBoundary(draft, event) {
+    const lane =
+      draft && draft.container instanceof HTMLElement && draft.container.isConnected
+        ? {
+            container: draft.container,
+            sourceRegion: draft.sourceRegion instanceof HTMLElement ? draft.sourceRegion : null
+          }
+        : getTimelineLaneFromEvent(event);
+    if (!lane || !(lane.container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const container = lane.container;
+    if (!isVisibleWaveformContainer(container)) {
+      return null;
+    }
+
+    const speakerKey = getSpeakerKeyForContainer(container);
+    const containerRect = container.getBoundingClientRect();
+    if (containerRect.width <= 0) {
+      return null;
+    }
+
+    const localX = clamp(event.clientX - containerRect.left, 0, containerRect.width);
+    const laneScale = getLaneTimeScale(container);
+    const laneTargetSeconds =
+      laneScale && Number.isFinite(laneScale.secondsPerPx) && laneScale.secondsPerPx > 0
+        ? laneScale.offsetSeconds + localX * laneScale.secondsPerPx
+        : null;
+    const snapshot = collectRegionSnapshot(container);
+    if (!snapshot) {
+      return null;
+    }
+
+    const sourceEntry =
+      lane.sourceRegion instanceof HTMLElement
+        ? snapshot.bounds.find((entry) => entry.region === lane.sourceRegion) || null
+        : null;
+    const entries = sourceEntry ? [sourceEntry] : snapshot.bounds;
+    let candidate = null;
+    let bestDistance = Infinity;
+
+    for (const entry of entries) {
+      if (!entry || !entry.startText || !entry.endText) {
+        continue;
+      }
+
+      const row = findRowByTimeLabels(entry.startText, entry.endText, {
+        speakerKey
+      });
+      if (!(row instanceof HTMLTableRowElement)) {
+        continue;
+      }
+
+      const rowRange = getRowTimeRange(row);
+      const labels = getRowTimeLabels(row);
+      if (!rowRange || !labels) {
+        continue;
+      }
+
+      const leftDistance = Math.abs(localX - entry.leftPx);
+      const rightDistance = Math.abs(localX - entry.rightPx);
+      const side = leftDistance <= rightDistance ? 'left' : 'right';
+      const distance = side === 'left' ? leftDistance : rightDistance;
+      if (distance < bestDistance) {
+        candidate = {
+          row,
+          rowRange,
+          labels,
+          entry,
+          side,
+          bridgeTargetSeconds:
+            draft && Number.isFinite(draft.bridgeTargetSeconds)
+              ? draft.bridgeTargetSeconds
+              : null
+        };
+        bestDistance = distance;
+      }
+    }
+
+    if (!candidate) {
+      return null;
+    }
+
+    let targetSeconds = getAltClickTargetSeconds(candidate, localX, laneTargetSeconds);
+    if (!Number.isFinite(targetSeconds)) {
+      return null;
+    }
+
+    targetSeconds = capOutwardBoundaryTarget(candidate.row, candidate.side, speakerKey, targetSeconds);
+    const rowRange = candidate.rowRange;
+    if (
+      candidate.side === 'right' &&
+      targetSeconds <= rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS
+    ) {
+      return null;
+    }
+
+    if (
+      candidate.side === 'left' &&
+      targetSeconds >= rowRange.endSeconds - AUDIO_TRIM_EPSILON_SECONDS
+    ) {
+      return null;
+    }
+
+    const currentBoundarySeconds =
+      candidate.side === 'left' ? rowRange.startSeconds : rowRange.endSeconds;
+    if (Math.abs(targetSeconds - currentBoundarySeconds) <= AUDIO_TRIM_EPSILON_SECONDS) {
+      return null;
+    }
+
+    return {
+      row: candidate.row,
+      labels: candidate.labels,
+      speakerKey,
+      container,
+      entry: candidate.entry,
+      side: candidate.side,
+      targetSeconds
+    };
+  }
+
+  helper.adjustNearestTimelineSegmentEdgeFromAltClick = async function adjustNearestTimelineSegmentEdgeFromAltClick(draft, event) {
+    const bridgeTargetSeconds = await resolveAltClickTimelinePointSeconds(draft, event);
+    if (draft && typeof draft === 'object') {
+      if (Number.isFinite(bridgeTargetSeconds)) {
+        draft.bridgeTargetSeconds = bridgeTargetSeconds;
+      } else {
+        delete draft.bridgeTargetSeconds;
+      }
+    }
+
+    const move = chooseNearestAltClickTimelineBoundary(draft, event);
+    if (!move) {
+      return {
+        ok: false,
+        reason: 'missing-alt-click-boundary'
+      };
+    }
+
+    helper.state.cutCommitPending = true;
+    try {
+      rememberTimelineSegmentTarget(move.row, move.container, move.entry, move.speakerKey);
+      const result = await moveSegmentBoundary(move.side, move.labels, move.speakerKey, move.targetSeconds, move.row);
+      if (!result || !result.ok) {
+        return {
+          ok: false,
+          reason: 'alt-click-boundary-move-failed',
+          verification: result || null
+        };
+      }
+
+      const labels = getCurrentMoveLabels(move.row, move.labels);
+      if (helper.state.currentTimelineTarget && helper.state.currentTimelineTarget.row === move.row) {
+        helper.state.currentTimelineTarget.startText = labels.startText;
+        helper.state.currentTimelineTarget.endText = labels.endText;
+      }
+
+      return {
+        ok: true,
+        changed: true,
+        side: move.side,
+        targetSeconds: move.targetSeconds,
+        verification: result
+      };
+    } finally {
+      helper.state.cutCommitPending = false;
+    }
+  };
+
   helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi() {
     const target = findCurrentSegmentTarget();
     if (!target) {
@@ -6757,6 +7222,14 @@ export function registerTimelineSelectionService(helper: any) {
     captureTimelineSegmentTarget(event);
     captureSmartSplitClickDraft(event);
 
+    const timelineEdgeClickDraft = getAltClickTimelineEdgeDraft(event);
+    if (timelineEdgeClickDraft) {
+      helper.state.timelineEdgeClickDraft = timelineEdgeClickDraft;
+      suppressAltTimelineEdgeEvent(event);
+    } else {
+      helper.state.timelineEdgeClickDraft = null;
+    }
+
     if (beginPreviewDrag(event)) {
       return;
     }
@@ -6790,8 +7263,31 @@ export function registerTimelineSelectionService(helper: any) {
       return;
     }
 
-    const draft = helper.state.cutDraft;
     const pointerId = typeof event.pointerId === 'number' ? event.pointerId : 1;
+    const timelineEdgeClickDraft = helper.state.timelineEdgeClickDraft;
+    if (timelineEdgeClickDraft && timelineEdgeClickDraft.pointerId === pointerId) {
+      const currentX = clamp(
+        event.clientX,
+        timelineEdgeClickDraft.containerRect.left,
+        timelineEdgeClickDraft.containerRect.right
+      );
+      const currentY = clamp(
+        event.clientY,
+        timelineEdgeClickDraft.containerRect.top,
+        timelineEdgeClickDraft.containerRect.bottom
+      );
+      const movedEnoughForTimelineEdgeClick =
+        Math.abs(currentX - timelineEdgeClickDraft.startClientX) >= CUT_PREVIEW_DRAG_THRESHOLD ||
+        Math.abs(currentY - timelineEdgeClickDraft.startClientY) >= CUT_PREVIEW_DRAG_THRESHOLD;
+      if (!movedEnoughForTimelineEdgeClick) {
+        suppressAltTimelineEdgeEvent(event);
+        return;
+      }
+
+      helper.state.timelineEdgeClickDraft = null;
+    }
+
+    const draft = helper.state.cutDraft;
     if (!draft || draft.pointerId !== pointerId) {
       return;
     }
@@ -6821,12 +7317,36 @@ export function registerTimelineSelectionService(helper: any) {
       return;
     }
 
-    const draft = helper.state.cutDraft;
     const pointerId = typeof event.pointerId === 'number' ? event.pointerId : 1;
+    {
+      const draft = helper.state.timelineEdgeClickDraft;
+      if (draft && draft.pointerId === pointerId) {
+        helper.state.timelineEdgeClickDraft = null;
+        const currentX = clamp(event.clientX, draft.containerRect.left, draft.containerRect.right);
+        const currentY = clamp(event.clientY, draft.containerRect.top, draft.containerRect.bottom);
+        const wasClick =
+          Math.abs(currentX - draft.startClientX) < CUT_PREVIEW_DRAG_THRESHOLD &&
+          Math.abs(currentY - draft.startClientY) < CUT_PREVIEW_DRAG_THRESHOLD;
+        if (wasClick) {
+          clearCutDraft();
+          void helper.adjustNearestTimelineSegmentEdgeFromAltClick(draft, event);
+        }
+        suppressAltTimelineEdgeEvent(event);
+        return;
+      }
+    }
+
+    const draft = helper.state.cutDraft;
     if (draft && draft.pointerId === pointerId) {
       clearCutDraft();
       event.preventDefault();
       event.stopPropagation();
+    }
+  }
+
+  function handleAltTimelineEdgeMouseEvent(event) {
+    if (isAltTimelineEdgeClickEvent(event) && getTimelineLaneFromEvent(event)) {
+      suppressAltTimelineEdgeEvent(event);
     }
   }
 
@@ -6967,6 +7487,11 @@ export function registerTimelineSelectionService(helper: any) {
       return;
     }
 
+    if (isAltTimelineEdgeClickEvent(event) && getTimelineLaneFromEvent(event)) {
+      suppressAltTimelineEdgeEvent(event);
+      return;
+    }
+
     const context = helper.state.smartSplitClickContext;
     const draft =
       (isSmartSplitClickEvent(event) ? helper.state.smartSplitClickDraft : null) ||
@@ -6993,6 +7518,8 @@ export function registerTimelineSelectionService(helper: any) {
     document.addEventListener('pointermove', handlePointerMove, true);
     document.addEventListener('pointerup', handlePointerEnd, true);
     document.addEventListener('pointercancel', handlePointerEnd, true);
+    document.addEventListener('mousedown', handleAltTimelineEdgeMouseEvent, true);
+    document.addEventListener('mouseup', handleAltTimelineEdgeMouseEvent, true);
     document.addEventListener('click', handleSmartSplitClick, true);
     helper.state.cutListenersBound = true;
   };
@@ -7006,6 +7533,8 @@ export function registerTimelineSelectionService(helper: any) {
     document.removeEventListener('pointermove', handlePointerMove, true);
     document.removeEventListener('pointerup', handlePointerEnd, true);
     document.removeEventListener('pointercancel', handlePointerEnd, true);
+    document.removeEventListener('mousedown', handleAltTimelineEdgeMouseEvent, true);
+    document.removeEventListener('mouseup', handleAltTimelineEdgeMouseEvent, true);
     document.removeEventListener('click', handleSmartSplitClick, true);
     helper.state.cutListenersBound = false;
   };

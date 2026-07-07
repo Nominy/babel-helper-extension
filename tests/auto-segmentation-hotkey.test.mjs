@@ -145,6 +145,53 @@ test('automatic segment insertion scans visible lanes within one second and trim
   assert.ok(islandRequestStart >= 0 && islandRequestEnd > islandRequestStart, 'expected auto-insert island request block');
   assert.doesNotMatch(islandRequestBlock, /paddingSeconds: AUDIO_TRIM_PADDING_SECONDS/);
   assert.match(bridgeSource, /function resolveVisibleLaneTargets\(lanes\)/);
+  const serviceVisibilityStart = serviceSource.indexOf('function isVisibleWaveformContainer');
+  const serviceVisibilityEnd = serviceSource.indexOf('function discoverWaveformContainers', serviceVisibilityStart);
+  const serviceVisibilityBlock = serviceSource.slice(serviceVisibilityStart, serviceVisibilityEnd);
+  assert.ok(
+    serviceVisibilityStart >= 0 && serviceVisibilityEnd > serviceVisibilityStart,
+    'expected service waveform container visibility guard'
+  );
+  assert.match(serviceVisibilityBlock, /getWaveformHostFromContainer\(container\)/);
+  assert.match(serviceVisibilityBlock, /container\.isConnected/);
+  assert.match(serviceVisibilityBlock, /isVisibleWaveformHost\(host\)/);
+
+  const discoveryStart = serviceSource.indexOf('function discoverWaveformContainers');
+  const discoveryEnd = serviceSource.indexOf('function getTrackDetailsForHost', discoveryStart);
+  const discoveryBlock = serviceSource.slice(discoveryStart, discoveryEnd);
+  assert.ok(discoveryStart >= 0 && discoveryEnd > discoveryStart, 'expected waveform discovery helper');
+  assert.match(discoveryBlock, /isVisibleWaveformContainer\(helper\.state\.cutLastContainer\)/);
+  assert.match(discoveryBlock, /isVisibleWaveformContainer\(container\)/);
+  assert.ok(
+    discoveryBlock.indexOf('isVisibleWaveformContainer(helper.state.cutLastContainer)') <
+      discoveryBlock.indexOf('containers.push(helper.state.cutLastContainer)'),
+    'stale cached waveform containers must pass visibility checks before being reused'
+  );
+
+  const bridgeVisibilityStart = bridgeSource.indexOf('function isVisibleElement');
+  const bridgeVisibilityEnd = bridgeSource.indexOf('function findMountElement', bridgeVisibilityStart);
+  const bridgeVisibilityBlock = bridgeSource.slice(bridgeVisibilityStart, bridgeVisibilityEnd);
+  assert.ok(
+    bridgeVisibilityStart >= 0 && bridgeVisibilityEnd > bridgeVisibilityStart,
+    'expected bridge waveform host visibility guard'
+  );
+  assert.match(bridgeVisibilityBlock, /window\.getComputedStyle\(element\)/);
+  assert.match(bridgeVisibilityBlock, /element\.getBoundingClientRect\(\)/);
+  assert.match(bridgeVisibilityBlock, /function isVisibleWave(?:form)?Host\(host\)/);
+  assert.match(bridgeVisibilityBlock, /isVisibleElement\(host\)/);
+  assert.match(bridgeVisibilityBlock, /\[part="scroll"\]/);
+  assert.match(bridgeVisibilityBlock, /isVisibleElement\(scroll\)/);
+
+  const bridgeLaneStart = bridgeSource.indexOf('function resolveVisibleLaneTargets');
+  const bridgeLaneEnd = bridgeSource.indexOf('function getViewportMetrics', bridgeLaneStart);
+  const bridgeLaneBlock = bridgeSource.slice(bridgeLaneStart, bridgeLaneEnd);
+  const bridgeHostVisibilityIndex = bridgeLaneBlock.search(/isVisibleWave(?:form)?Host\(host\)/);
+  assert.ok(bridgeLaneStart >= 0 && bridgeLaneEnd > bridgeLaneStart, 'expected visible lane resolver');
+  assert.ok(bridgeHostVisibilityIndex >= 0, 'visible lane resolver must check host visibility');
+  assert.ok(
+    bridgeHostVisibilityIndex < bridgeLaneBlock.indexOf('const trackProps = getTrackPropsForHost(host)'),
+    'bridge lane resolution must reject hidden hosts before reading stale track props'
+  );
   assert.match(bridgeSource, /function normalizeNearestSpeechIslandRange/);
   assert.match(bridgeSource, /clamp\(Number\(paddingSeconds\) \|\| 0, 0, 1\)/);
   assert.match(bridgeSource, /const trackProps = getTrackPropsForHost\(host\)/);
@@ -341,6 +388,151 @@ test('automatic segment insertion trim moves created annotation boundaries by ro
   assert.match(setBoundaryBlock, /rowIdentity/);
   assert.match(setBoundaryBlock, /startSeconds: settings\.startSeconds/);
   assert.match(setBoundaryBlock, /endSeconds: settings\.endSeconds/);
+});
+
+test('Alt-click timeline edge adjustment is click-only and reuses native boundary moves', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+
+  const pointerMoveStart = timelineSource.indexOf('function handlePointerMove');
+  const pointerMoveEnd = timelineSource.indexOf('function handlePointerEnd', pointerMoveStart);
+  const pointerMoveBlock = timelineSource.slice(pointerMoveStart, pointerMoveEnd);
+  assert.ok(pointerMoveStart >= 0 && pointerMoveEnd > pointerMoveStart, 'expected pointer move handler');
+  assert.match(pointerMoveBlock, /CUT_PREVIEW_DRAG_THRESHOLD/);
+  assert.match(pointerMoveBlock, /movedEnoughForTimelineEdgeClick/);
+  assert.match(pointerMoveBlock, /if \(!movedEnoughForTimelineEdgeClick\) \{[\s\S]*suppressAltTimelineEdgeEvent\(event\);[\s\S]*return;[\s\S]*\}[\s\S]*helper\.state\.timelineEdgeClickDraft = null;[\s\S]*const draft = helper\.state\.cutDraft/);
+  assert.match(pointerMoveBlock, /createPreviewFromDraft\(draft, currentX\)/);
+
+  const pointerEndStart = timelineSource.indexOf('function handlePointerEnd');
+  const pointerEndEnd = timelineSource.indexOf('function getSmartSplitClickDraft', pointerEndStart);
+  const pointerEndBlock = timelineSource.slice(pointerEndStart, pointerEndEnd);
+  assert.ok(pointerEndStart >= 0 && pointerEndEnd > pointerEndStart, 'expected pointer end handler');
+  assert.match(pointerEndBlock, /const wasClick =[\s\S]*CUT_PREVIEW_DRAG_THRESHOLD/);
+  assert.match(pointerEndBlock, /helper\.adjustNearestTimelineSegmentEdgeFromAltClick\(draft, event\)/);
+  assert.match(pointerEndBlock, /clearCutDraft\(\);[\s\S]*helper\.adjustNearestTimelineSegmentEdgeFromAltClick\(draft, event\)/);
+
+  const adjustStart = timelineSource.indexOf('helper.adjustNearestTimelineSegmentEdgeFromAltClick = async function adjustNearestTimelineSegmentEdgeFromAltClick');
+  const adjustEnd = timelineSource.indexOf('helper.trimCurrentSegmentToAudio', adjustStart);
+  const adjustBlock = timelineSource.slice(adjustStart, adjustEnd);
+  assert.ok(adjustStart >= 0 && adjustEnd > adjustStart, 'expected Alt-click edge adjustment helper');
+  assert.match(adjustBlock, /chooseNearestAltClickTimelineBoundary\(draft, event\)/);
+  assert.match(adjustBlock, /await resolveAltClickTimelinePointSeconds\(draft, event\)/);
+  assert.ok(
+    adjustBlock.indexOf('await resolveAltClickTimelinePointSeconds(draft, event)') <
+      adjustBlock.indexOf('moveSegmentBoundary('),
+    'Alt-click should resolve bridge point time before moving a boundary'
+  );
+  assert.match(adjustBlock, /rememberTimelineSegmentTarget\(move\.row, move\.container, move\.entry, move\.speakerKey\)/);
+  assert.match(adjustBlock, /moveSegmentBoundary\(move\.side, move\.labels, move\.speakerKey, move\.targetSeconds, move\.row\)/);
+});
+
+test('Alt-click timeline edge adjustment is lane-scoped and picks the nearest segment end', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+
+  const laneStart = timelineSource.indexOf('function getTimelineLaneFromEvent');
+  const laneEnd = timelineSource.indexOf('function getAltClickTimelineEdgeDraft', laneStart);
+  const laneBlock = timelineSource.slice(laneStart, laneEnd);
+  assert.ok(laneStart >= 0 && laneEnd > laneStart, 'expected timeline lane resolver');
+  assert.match(laneBlock, /discoverWaveformContainers\(\)/);
+  assert.match(laneBlock, /rect\.left[\s\S]*event\.clientX[\s\S]*rect\.right/);
+  assert.match(laneBlock, /rect\.top[\s\S]*event\.clientY[\s\S]*rect\.bottom/);
+
+  const draftStart = timelineSource.indexOf('function getAltClickTimelineEdgeDraft');
+  const draftEnd = timelineSource.indexOf('function getRegionDraft', draftStart);
+  const draftBlock = timelineSource.slice(draftStart, draftEnd);
+  assert.ok(draftStart >= 0 && draftEnd > draftStart, 'expected Alt-click draft resolver');
+  assert.match(draftBlock, /event\.altKey/);
+  assert.match(draftBlock, /!event\.shiftKey/);
+  assert.match(draftBlock, /!event\.ctrlKey/);
+  assert.match(draftBlock, /!event\.metaKey/);
+
+  const pointResolveStart = timelineSource.indexOf('async function resolveAltClickTimelinePointSeconds');
+  const pointResolveEnd = timelineSource.indexOf('function getAltClickTargetSeconds', pointResolveStart);
+  const pointResolveBlock = timelineSource.slice(pointResolveStart, pointResolveEnd);
+  assert.ok(pointResolveStart >= 0 && pointResolveEnd > pointResolveStart, 'expected Alt-click point-time bridge resolver');
+  assert.match(pointResolveBlock, /await callSelectionBridge\('selection-time-range'/);
+  assert.match(pointResolveBlock, /leftPx:\s*localX/);
+  assert.match(pointResolveBlock, /rightPx:\s*localX(?:\s*\+\s*1)?/);
+
+  const targetSecondsStart = timelineSource.indexOf('function getAltClickTargetSeconds');
+  const targetSecondsEnd = timelineSource.indexOf('function chooseNearestAltClickTimelineBoundary', targetSecondsStart);
+  const targetSecondsBlock = timelineSource.slice(targetSecondsStart, targetSecondsEnd);
+  assert.ok(targetSecondsStart >= 0 && targetSecondsEnd > targetSecondsStart, 'expected Alt-click target time resolver');
+  assert.match(targetSecondsBlock, /bridgeTargetSeconds/);
+  assert.match(targetSecondsBlock, /Number\.isFinite\(laneTargetSeconds\)/);
+  assert.ok(
+    targetSecondsBlock.indexOf('bridgeTargetSeconds') < targetSecondsBlock.indexOf('Number.isFinite(laneTargetSeconds)'),
+    'Alt-click target time should prefer bridge-derived point time before DOM lane-scale fallback'
+  );
+
+  const chooseStart = timelineSource.indexOf('function chooseNearestAltClickTimelineBoundary');
+  const chooseEnd = timelineSource.indexOf('helper.adjustNearestTimelineSegmentEdgeFromAltClick', chooseStart);
+  const chooseBlock = timelineSource.slice(chooseStart, chooseEnd);
+  assert.ok(chooseStart >= 0 && chooseEnd > chooseStart, 'expected nearest edge chooser');
+  assert.match(chooseBlock, /const speakerKey = getSpeakerKeyForContainer\(container\)/);
+  assert.match(chooseBlock, /collectRegionSnapshot\(container\)/);
+  assert.match(chooseBlock, /Math\.abs\(localX - entry\.leftPx\)/);
+  assert.match(chooseBlock, /Math\.abs\(localX - entry\.rightPx\)/);
+  assert.match(chooseBlock, /findRowByTimeLabels\(entry\.startText, entry\.endText, \{\s*speakerKey\s*\}\)/);
+  assert.match(chooseBlock, /bridgeTargetSeconds/);
+  assert.match(chooseBlock, /getAltClickTargetSeconds\(candidate, localX, laneTargetSeconds\)/);
+  assert.match(chooseBlock, /capOutwardBoundaryTarget\(candidate\.row, candidate\.side, speakerKey, targetSeconds\)/);
+  assert.match(chooseBlock, /targetSeconds <= rowRange\.startSeconds \+ AUDIO_TRIM_EPSILON_SECONDS/);
+  assert.match(chooseBlock, /targetSeconds >= rowRange\.endSeconds - AUDIO_TRIM_EPSILON_SECONDS/);
+});
+
+test('Alt-click timeline edge adjustment suppresses native click and double-click playback without stealing Babel Shift-click', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+
+  const suppressStart = timelineSource.indexOf('function suppressAltTimelineEdgeEvent(event)');
+  const suppressEnd = timelineSource.indexOf('function getRegionDraft', suppressStart);
+  const suppressBlock = timelineSource.slice(suppressStart, suppressEnd);
+  assert.ok(suppressStart >= 0 && suppressEnd > suppressStart, 'expected Alt-click suppressor');
+  assert.match(suppressBlock, /event\.preventDefault\(\);[\s\S]*event\.stopImmediatePropagation\(\);[\s\S]*event\.stopPropagation\(\);/);
+
+  const pointerDownStart = timelineSource.indexOf('function handlePointerDown');
+  const pointerDownEnd = timelineSource.indexOf('function handlePointerMove', pointerDownStart);
+  const pointerDownBlock = timelineSource.slice(pointerDownStart, pointerDownEnd);
+  assert.match(pointerDownBlock, /suppressAltTimelineEdgeEvent\(event\)/);
+
+  const pointerMoveStart = timelineSource.indexOf('function handlePointerMove');
+  const pointerMoveEnd = timelineSource.indexOf('function handlePointerEnd', pointerMoveStart);
+  const pointerMoveBlock = timelineSource.slice(pointerMoveStart, pointerMoveEnd);
+  assert.match(pointerMoveBlock, /suppressAltTimelineEdgeEvent\(event\)/);
+
+  const pointerEndStart = timelineSource.indexOf('function handlePointerEnd');
+  const pointerEndEnd = timelineSource.indexOf('function getSmartSplitClickDraft', pointerEndStart);
+  const pointerEndBlock = timelineSource.slice(pointerEndStart, pointerEndEnd);
+  assert.match(pointerEndBlock, /suppressAltTimelineEdgeEvent\(event\)/);
+
+  const mouseStart = timelineSource.indexOf('function handleAltTimelineEdgeMouseEvent');
+  const mouseEnd = timelineSource.indexOf('function getSmartSplitClickDraft', mouseStart);
+  const mouseBlock = timelineSource.slice(mouseStart, mouseEnd);
+  assert.ok(mouseStart >= 0 && mouseEnd > mouseStart, 'expected Alt-click mouse suppressor');
+  assert.match(mouseBlock, /isAltTimelineEdgeClickEvent\(event\) && getTimelineLaneFromEvent\(event\)/);
+  assert.match(mouseBlock, /suppressAltTimelineEdgeEvent\(event\)/);
+
+  const clickStart = timelineSource.indexOf('function handleSmartSplitClick');
+  const clickEnd = timelineSource.indexOf('helper.bindCutPreview', clickStart);
+  const clickBlock = timelineSource.slice(clickStart, clickEnd);
+  assert.match(clickBlock, /suppressAltTimelineEdgeEvent\(event\)/);
+
+  const doubleClickTargetStart = timelineSource.indexOf('function isNativeTimelineDoubleClickTarget');
+  const doubleClickTargetEnd = timelineSource.indexOf('function handleTimelineDoubleClick', doubleClickTargetStart);
+  const doubleClickTargetBlock = timelineSource.slice(doubleClickTargetStart, doubleClickTargetEnd);
+  assert.match(doubleClickTargetBlock, /isAltTimelineEdgeClickEvent\(event\) && getTimelineLaneFromEvent\(event\)/);
+  assert.doesNotMatch(doubleClickTargetBlock, /shiftKey[\s\S]*getTimelineLaneFromEvent/);
+
+  const bindStart = timelineSource.indexOf('helper.bindCutPreview = function bindCutPreview');
+  const bindEnd = timelineSource.indexOf('helper.unbindCutPreview', bindStart);
+  const bindBlock = timelineSource.slice(bindStart, bindEnd);
+  assert.match(bindBlock, /document\.addEventListener\('mousedown', handleAltTimelineEdgeMouseEvent, true\)/);
+  assert.match(bindBlock, /document\.addEventListener\('mouseup', handleAltTimelineEdgeMouseEvent, true\)/);
+
+  const unbindStart = timelineSource.indexOf('helper.unbindCutPreview = function unbindCutPreview');
+  const unbindEnd = timelineSource.indexOf('helper.bindNativeTimelineDoubleClickBlocker', unbindStart);
+  const unbindBlock = timelineSource.slice(unbindStart, unbindEnd);
+  assert.match(unbindBlock, /document\.removeEventListener\('mousedown', handleAltTimelineEdgeMouseEvent, true\)/);
+  assert.match(unbindBlock, /document\.removeEventListener\('mouseup', handleAltTimelineEdgeMouseEvent, true\)/);
 });
 
 test('current segment transcription updates simple progress from streamed bridge packets', () => {

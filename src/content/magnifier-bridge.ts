@@ -214,6 +214,35 @@ export function initMagnifierBridge() {
     return host instanceof HTMLElement ? host : null;
   }
 
+  function isVisibleElement(element) {
+    if (!(element instanceof HTMLElement) || !element.isConnected) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isVisibleWaveHost(host) {
+    if (!(host instanceof HTMLElement) || !isVisibleElement(host) || !(host.shadowRoot instanceof ShadowRoot)) {
+      return false;
+    }
+
+    const wrapper = host.shadowRoot.querySelector('[part="wrapper"]');
+    const scroll = host.shadowRoot.querySelector('[part="scroll"]');
+    return Boolean(
+      wrapper instanceof HTMLElement &&
+        scroll instanceof HTMLElement &&
+        isVisibleElement(scroll)
+    );
+  }
+
+
   function findMountElement(host, mountMarker) {
     let mount = queryMarker(document, MOUNT_ATTR, mountMarker);
     if (mount instanceof HTMLElement) {
@@ -1008,6 +1037,67 @@ export function initMagnifierBridge() {
 
     return '';
   }
+
+  function normalizeSpeakerLaneLabel(value) {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    const match = text.match(/\bspeaker\s*([12])\b/i);
+    return match ? 'Speaker ' + match[1] : '';
+  }
+
+  function getSpeakerLaneVisibilityForLabel(label) {
+    const normalizedTarget = normalizeSpeakerLaneLabel(label);
+    if (!normalizedTarget) {
+      return '';
+    }
+
+    const targetLower = normalizedTarget.toLowerCase();
+    for (const heading of Array.from(document.querySelectorAll('h3'))) {
+      if (!(heading instanceof HTMLElement)) {
+        continue;
+      }
+
+      const text = typeof heading.textContent === 'string' ? heading.textContent.replace(/\s+/g, ' ').trim() : '';
+      if (text.toLowerCase() !== targetLower) {
+        continue;
+      }
+
+      const header = heading.parentElement;
+      if (!(header instanceof HTMLElement)) {
+        continue;
+      }
+
+      const visibilityButton = header.querySelector(
+        'button[aria-label="Show track"], button[aria-label="Hide track"]'
+      );
+      if (!(visibilityButton instanceof HTMLElement)) {
+        continue;
+      }
+
+      const semantic = (visibilityButton.getAttribute('aria-label') || '').trim().toLowerCase();
+      const buttonText =
+        typeof visibilityButton.textContent === 'string'
+          ? visibilityButton.textContent.replace(/\s+/g, ' ').trim().toLowerCase()
+          : '';
+      if (semantic === 'show track' || buttonText === 'show track') {
+        return 'hidden';
+      }
+      if (semantic === 'hide track' || buttonText === 'hide track') {
+        return 'visible';
+      }
+    }
+
+    return '';
+  }
+
+  function isTrackLaneSemanticallyVisible(trackLabel) {
+    const normalized = normalizeSpeakerLaneLabel(trackLabel);
+    if (!normalized) {
+      return true;
+    }
+
+    return getSpeakerLaneVisibilityForLabel(normalized) !== 'hidden';
+  }
+
 
   function getSourceCanvasMetrics(wave) {
     const container = getCandidateContainer(wave);
@@ -3119,17 +3209,41 @@ export function initMagnifierBridge() {
     );
   }
 
-  function findNearestSpeechIsland(hostMarker, speakerKey, caretSeconds, scanWindowSeconds, amplitudeThreshold, paddingSeconds) {
+  function findNearestSpeechIsland(hostMarker, speakerKey, caretSeconds, scanWindowSeconds, amplitudeThreshold, paddingSeconds, strictHost) {
+    const marker = typeof hostMarker === 'string' && hostMarker ? hostMarker : '';
     const hostResolved = resolveWaveForHost(hostMarker);
-    if (hostResolved.wave && isUsableWaveCandidate(hostResolved.wave, hostResolved.host)) {
-      return findNearestSpeechIslandForResolvedWave(
-        hostResolved.host,
-        hostResolved.wave,
-        caretSeconds,
-        scanWindowSeconds,
-        amplitudeThreshold,
-        paddingSeconds
-      );
+    if (marker) {
+      if (!(hostResolved.host instanceof HTMLElement)) {
+        return {
+          ok: false,
+          reason: 'missing-host'
+        };
+      }
+
+      if (!isVisibleWaveHost(hostResolved.host)) {
+        return {
+          ok: false,
+          reason: 'hidden-host'
+        };
+      }
+
+      if (hostResolved.wave && isUsableWaveCandidate(hostResolved.wave, hostResolved.host)) {
+        return findNearestSpeechIslandForResolvedWave(
+          hostResolved.host,
+          hostResolved.wave,
+          caretSeconds,
+          scanWindowSeconds,
+          amplitudeThreshold,
+          paddingSeconds
+        );
+      }
+
+      if (strictHost) {
+        return {
+          ok: false,
+          reason: 'missing-wave'
+        };
+      }
     }
 
     const resolved = resolveWaveForVisibleSpeaker(speakerKey);
@@ -3352,7 +3466,7 @@ export function initMagnifierBridge() {
         typeof lane.hostMarker === 'string' && lane.hostMarker ? lane.hostMarker : '';
       const resolved = resolveWaveForHost(hostMarker);
       const host = resolved.host;
-      if (!(host instanceof HTMLElement)) {
+      if (!(host instanceof HTMLElement) || !isVisibleWaveHost(host)) {
         targets.push({
           ok: false,
           index,
@@ -3361,9 +3475,10 @@ export function initMagnifierBridge() {
           trackId: '',
           speakerKey: '',
           trackLabel: '',
+          visible: false,
           hasWave: false,
           source: 'react-track-props',
-          reason: 'missing-host'
+          reason: host instanceof HTMLElement ? 'hidden-host' : 'missing-host'
         });
         continue;
       }
@@ -3378,17 +3493,26 @@ export function initMagnifierBridge() {
           : null;
       const processedRecordingId = getTrackIdFromTrack(track) || '';
       const trackLabel = getTrackLabelFromTrack(track);
+      const visible = isTrackLaneSemanticallyVisible(trackLabel);
+      const hasWave = Boolean(resolved.wave && isUsableWaveCandidate(resolved.wave, host));
       targets.push({
-        ok: Boolean(processedRecordingId),
+        ok: Boolean(processedRecordingId && visible && hasWave),
         index,
         hostMarker,
         processedRecordingId,
         trackId: processedRecordingId,
         speakerKey: processedRecordingId || trackLabel,
         trackLabel,
-        hasWave: Boolean(resolved.wave && isUsableWaveCandidate(resolved.wave, host)),
+        visible,
+        hasWave,
         source: 'react-track-props',
-        reason: processedRecordingId ? null : 'missing-react-track-id'
+        reason: !processedRecordingId
+          ? 'missing-react-track-id'
+          : !visible
+            ? 'hidden-lane'
+            : !hasWave
+              ? 'missing-wave'
+              : null
       });
     }
 
@@ -3805,16 +3929,7 @@ export function initMagnifierBridge() {
   }
 
   function getVisibleWaveHosts() {
-    return Array.from(document.querySelectorAll('div')).filter((element) => {
-      if (!(element instanceof HTMLElement) || !element.shadowRoot) {
-        return false;
-      }
-
-      return Boolean(
-        element.shadowRoot.querySelector('[part="wrapper"]') &&
-        element.shadowRoot.querySelector('[part="scroll"]')
-      );
-    });
+    return Array.from(document.querySelectorAll('div')).filter((element) => isVisibleWaveHost(element));
   }
 
   function getNavigationWaveSet(host, primaryWave) {
@@ -4626,7 +4741,8 @@ export function initMagnifierBridge() {
           payload.caretSeconds,
           payload.scanWindowSeconds,
           payload.amplitudeThreshold,
-          payload.paddingSeconds
+          payload.paddingSeconds,
+          payload.strictHost === true
         )
       );
       return;
