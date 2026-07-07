@@ -22,3 +22,4 @@ keys/*.pem
 
 /node_modules
 /babel-helper-extension
+/docs/superpowers/
