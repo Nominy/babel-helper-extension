@@ -47,7 +47,7 @@ export function registerHotkeysHelpService(helper: any) {
     supportLink.href = 'https://ko-fi.com/naftsan';
     supportLink.target = '_blank';
     supportLink.rel = 'noopener noreferrer';
-    supportLink.textContent = 'Support on Ko-fi';
+    supportLink.textContent = 'if this extension saves you time, consider supporting development on Ko-Fi';
     supportLink.style.color = 'rgb(15, 122, 103)';
     supportLink.style.fontSize = '11px';
     supportLink.style.fontWeight = '700';
