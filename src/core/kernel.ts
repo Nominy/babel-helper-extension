@@ -97,7 +97,6 @@ export function createHelperKernel() {
     timelineSelection: helper,
     smartSplit: helper,
     timestampEdit: helper,
-    waveformScale: helper,
     magnifier: helper,
     minimap: helper,
     bridge: helper
@@ -193,9 +192,6 @@ export function createHelperKernel() {
       }
       if (typeof helper.unbindMagnifier === 'function') {
         helper.unbindMagnifier();
-      }
-      if (typeof helper.unbindWaveformScaleUnlock === 'function') {
-        helper.unbindWaveformScaleUnlock();
       }
       if (typeof helper.unbindZoomPersistence === 'function') {
         helper.unbindZoomPersistence();

@@ -62,7 +62,6 @@ test('bridge injection handles invalidated extension context', () => {
     '../src/features/quick-region-autocomplete-feature.ts',
     '../src/services/row-service.ts',
     '../src/services/timestamp-edit-service.ts',
-    '../src/services/waveform-scale-service.ts',
     '../src/services/magnifier-service.ts',
     '../src/services/minimap-service.ts',
     '../src/services/timeline-selection-service.ts'

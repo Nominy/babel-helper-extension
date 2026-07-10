@@ -50,12 +50,10 @@ test('playback row sync is adaptive and row lookup is cached', () => {
 
 test('steady-state observers are scoped away from whole body where possible', () => {
   const minimapSource = read('../src/services/minimap-service.ts');
-  const waveformSource = read('../src/services/waveform-scale-service.ts');
   const quickSource = read('../src/content/quick-region-autocomplete-bridge.ts');
   const linterSource = read('../src/content/linter-bridge.ts');
 
   assert.doesNotMatch(minimapSource, /mutationObserver\.observe\(document\.body/);
-  assert.doesNotMatch(waveformSource, /rowObserver\.observe\(document\.body/);
   assert.match(quickSource, /function bindMouseMove/);
   assert.match(quickSource, /function unbindMouseMove/);
   assert.match(linterSource, /disconnectHighlightObserver/);

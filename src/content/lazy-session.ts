@@ -7,7 +7,6 @@ import { registerRecoveredEditorSnapshotService } from '../services/recovered-ed
 import { registerRowService } from '../services/row-service';
 import { registerTimelineSelectionService } from '../services/timeline-selection-service';
 import { registerTimestampEditService } from '../services/timestamp-edit-service';
-import { registerWaveformScaleService } from '../services/waveform-scale-service';
 
 type SessionRuntime = {
   features: FeatureModule[];
@@ -56,9 +55,6 @@ function registerSessionServices(ctx: FeatureContext) {
   }
   if (isFeatureEnabled(ctx, 'timelineSelection') || isFeatureEnabled(ctx, 'disableNativeTimelineDoubleClick')) {
     registerTimelineSelectionService(helper);
-  }
-  if (isFeatureEnabled(ctx, 'waveformScaleUnlock')) {
-    registerWaveformScaleService(helper);
   }
   if (isFeatureEnabled(ctx, 'magnifier')) {
     registerMagnifierService(helper);

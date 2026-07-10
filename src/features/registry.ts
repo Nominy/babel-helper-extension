@@ -212,16 +212,6 @@ export const FEATURE_REGISTRATIONS = [
     }
   }),
   defineFeature({
-    id: 'waveform-scale-unlock',
-    setting: {
-      key: 'waveformScaleUnlock',
-      defaultEnabled: true,
-      label: 'Waveform Scale Unlock',
-      description:
-        'Raise Babel’s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders.'
-    }
-  }),
-  defineFeature({
     id: 'magnifier',
     setting: {
       key: 'magnifier',
