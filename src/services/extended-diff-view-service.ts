@@ -495,19 +495,25 @@ function getCurrentReviewActionId(): string {
   return '';
 }
 
+function getBodyText(): string {
+  const body = document.body;
+  return body instanceof HTMLElement ? body.innerText || '' : '';
+}
+
 function isFeedbackRoute(): boolean {
   const params = new URLSearchParams(window.location.search || '');
   const displayFeedback = params.get('displayFeedback');
+  const bodyText = getBodyText();
   const hasFeedbackContext =
     Boolean(params.get('reviewActionId')) ||
     Boolean(getCurrentReviewActionId()) ||
-    Boolean(document.body.innerText.match(/\bCompare:\b/));
+    Boolean(bodyText.match(/\bCompare:\b/));
   return /^\/transcription(?:\/|$)/.test(window.location.pathname || '') && hasFeedbackContext && displayFeedback !== 'false';
 }
 
 function isDiffViewEnabled(): boolean {
   const switchElement = document.querySelector('[role="switch"]');
-  return switchElement?.getAttribute('aria-checked') === 'true' || Boolean(document.body.innerText.match(/\bCompare:\b/));
+  return switchElement?.getAttribute('aria-checked') === 'true' || Boolean(getBodyText().match(/\bCompare:\b/));
 }
 
 function getVisibleCompareLevel(): number | null {

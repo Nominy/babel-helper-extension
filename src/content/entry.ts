@@ -35,8 +35,19 @@ async function boot() {
   });
 
   if (kernel.helper?.isFeatureEnabled?.('customLinter')) {
-    void linterBridgePreload.finally(() => bootstrapCustomLinterBridge({ helper: kernel.helper }));
+    void linterBridgePreload
+      .then(
+        () => bootstrapCustomLinterBridge({ helper: kernel.helper }),
+        () => bootstrapCustomLinterBridge({ helper: kernel.helper })
+      )
+      .catch(() => {});
   }
 }
 
-void boot();
+function scheduleBootRetry() {
+  window.setTimeout(() => {
+    void boot().catch(scheduleBootRetry);
+  }, 1000);
+}
+
+void boot().catch(scheduleBootRetry);

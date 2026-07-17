@@ -95,6 +95,7 @@ export function registerTimelineSelectionService(helper: any) {
   let bridgeRequestId = 0;
   let zoomPersistenceSlider = null;
   let zoomPersistenceObserver = null;
+  let zoomPersistenceRootObserver = null;
   let zoomPersistenceTimer = 0;
   let zoomPersistenceApplying = false;
   let zoomPersistenceLoaded = false;
@@ -934,6 +935,44 @@ export function registerTimelineSelectionService(helper: any) {
     }
   }
 
+  function clearZoomPersistenceRootObserver() {
+    if (zoomPersistenceRootObserver && typeof zoomPersistenceRootObserver.disconnect === 'function') {
+      zoomPersistenceRootObserver.disconnect();
+    }
+    zoomPersistenceRootObserver = null;
+  }
+
+  function scheduleZoomPersistenceRootObserver() {
+    if (zoomPersistenceRootObserver || typeof MutationObserver !== 'function') {
+      return;
+    }
+
+    const root = document.body || document.documentElement;
+    if (!(root instanceof HTMLElement)) {
+      return;
+    }
+
+    zoomPersistenceRootObserver = new MutationObserver(() => {
+      const slider = getZoomSliderElement();
+      if (!(slider instanceof HTMLElement)) {
+        return;
+      }
+
+      clearZoomPersistenceRootObserver();
+      helper.bindZoomPersistence();
+      if (typeof helper.applySavedZoomDefault === 'function') {
+        void helper.applySavedZoomDefault().catch(() => {});
+      }
+    });
+
+    zoomPersistenceRootObserver.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-valuenow', 'aria-valuemax']
+    });
+  }
+
   function getNumericZoomValueFromSlider(slider) {
     if (!(slider instanceof HTMLElement)) {
       return null;
@@ -1098,8 +1137,11 @@ export function registerTimelineSelectionService(helper: any) {
 
     const slider = getZoomSliderElement();
     if (!(slider instanceof HTMLElement) || typeof MutationObserver !== 'function') {
+      scheduleZoomPersistenceRootObserver();
       return false;
     }
+
+    clearZoomPersistenceRootObserver();
 
     if (zoomPersistenceSlider === slider && zoomPersistenceObserver) {
       return true;
@@ -1130,6 +1172,7 @@ export function registerTimelineSelectionService(helper: any) {
 
   helper.unbindZoomPersistence = function unbindZoomPersistence() {
     clearZoomPersistenceTimer();
+    clearZoomPersistenceRootObserver();
 
     if (zoomPersistenceObserver && typeof zoomPersistenceObserver.disconnect === 'function') {
       zoomPersistenceObserver.disconnect();

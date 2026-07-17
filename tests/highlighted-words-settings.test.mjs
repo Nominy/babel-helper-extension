@@ -108,5 +108,5 @@ test('custom linter bridge preloads before kernel start for native lint patching
   assert.ok(kernelStartIndex > -1, 'entry should start the kernel');
   assert.ok(bootstrapIndex > -1, 'entry should still send config and enable after settings load');
   assert.ok(preloadIndex < kernelStartIndex, 'linter bridge should preload before kernel startup');
-  assert.match(entrySource, /linterBridgePreload\.finally\(\(\) =>/);
+  assert.ok(/linterBridgePreload[\s\S]*?\.then\s*\([\s\S]*?bootstrapCustomLinterBridge[\s\S]*?,[\s\S]*?bootstrapCustomLinterBridge/s.test(entrySource), 'entry should call preload promise with fallback path');
 });

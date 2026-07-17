@@ -52,9 +52,10 @@
     lastPlaybackRow: null,
     lastPlaybackRowIdentity: null,
     editorSnapshot: null,
-    editorSnapshotCapturedAt: 0,
     sessionBindPromise: null,
-    onLoadedCalled: false
+    sessionBindRetryCount: 0,
+    onLoadedCalled: false,
+    onLoadedInFlight: false
   };
 }
 

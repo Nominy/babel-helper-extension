@@ -108,7 +108,11 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
         finish(detail.result || null);
       };
 
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
+      const timeoutId = window.setTimeout(() => {
+        bridgeInjected = false;
+        bridgeLoadPromise = null;
+        finish(null);
+      }, BRIDGE_TIMEOUT_MS);
       window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
       window.dispatchEvent(
         new CustomEvent(BRIDGE_REQUEST_EVENT, {

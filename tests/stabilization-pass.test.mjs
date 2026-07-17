@@ -48,7 +48,7 @@ test('extended diff generated fallback supports lower and higher review levels',
   assert.match(source, /reviewActionId = asString\(record\.currentReviewActionId\);/);
   assert.match(source, /const queryValue = new URLSearchParams\(window\.location\.search \|\| ''\)\.get\('reviewActionId'\) \|\| '';/);
   assert.match(source, /Boolean\(getCurrentReviewActionId\(\)\)/);
-  assert.match(source, /Boolean\(document\.body\.innerText\.match\(\/\\bCompare:\\b\/\)\)/);
+  assert.match(source, /Boolean\(getBodyText\(\)\.match\(\/\\bCompare:\\b\/\)\)/);
   assert.match(source, /displayFeedback !== 'false'/);
   assert.match(source, /function buildGeneratedDiffUrlForAction/);
   assert.match(source, /action\.level < currentLevel[\s\S]*return buildDiffUrl\(action\.id, currentReviewActionId\);/);
@@ -61,6 +61,38 @@ test('extended diff generated fallback supports lower and higher review levels',
   assert.match(source, /const entries = dedupeDiffEntries\(\[[\s\S]*\]\)\.filter\(\(entry\) => !state\.loadedUrls\.has\(entry\.url\)\);/);
   assert.match(source, /const compareLevels = new Set\(generated\.map\(\(diff\) => diff\.compareLevel\)\.filter\(\(level\) => level != null\)\);/);
   assert.match(source, /return compareLevels\.size === 1 \? generated : \[\];/);
+});
+
+test('extended diff route checks tolerate startup before document body exists', () => {
+  const source = read('../src/services/extended-diff-view-service.ts');
+
+  assert.match(source, /function getBodyText\(\): string \{\s*const body = document\.body;\s*return body instanceof HTMLElement \? body\.innerText \|\| '' : '';\s*\}/);
+  assert.match(source, /const bodyText = getBodyText\(\);[\s\S]*const hasFeedbackContext =/);
+  assert.match(source, /Boolean\(getBodyText\(\)\.match\(\/\\bCompare:\\b\/\)\)/);
+  assert.doesNotMatch(source, /document\.body\.innerText/);
+  assert.doesNotMatch(source, /document\.body\.textContent/);
+});
+
+test('lazy session isolates service registration and feature hook failures', () => {
+  const source = read('../src/content/lazy-session.ts');
+
+  assert.match(source, /function reportRuntimeError\(ctx: FeatureContext, stage: string, id: string, error: unknown\)/);
+  assert.match(source, /const register = \(id: string, fn: \(\) => void\) => \{\s*try \{\s*fn\(\);\s*\} catch \(error: unknown\) \{\s*failures \+= 1;\s*reportRuntimeError\(ctx, 'service\.register', id, error\);/);
+  assert.match(source, /register\('recovered-editor-snapshot'[\s\S]*register\('row'[\s\S]*register\('timestamp-edit'/);
+  assert.match(source, /for \(const feature of runtime\.features\) \{[\s\S]*try \{\s*await invokeFeatureHook\(ctx, feature, method, activationReason\);\s*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, `feature\.\$\{String\(method\)\}`, feature\.id, error\);/);
+  assert.match(source, /try \{\s*if \(typeof feature\.activate === 'function'\) \{[\s\S]*await feature\.activate\(ctx, reason\);[\s\S]*runtime\.activeFeatures\.add\(feature\.id\);\s*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, 'feature\.activate', feature\.id, error\);/);
+  assert.match(source, /try \{\s*if \(typeof feature\.deactivate === 'function'\) \{[\s\S]*await feature\.deactivate\(ctx, reason\);[\s\S]*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, 'feature\.deactivate', feature\.id, error\);[\s\S]*\} finally \{\s*runtime\.activeFeatures\.delete\(feature\.id\);/);
+});
+
+test('zoom default retries when controls mount after session binding', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+  const lifecycleSource = read('../src/core/lifecycle.ts');
+
+  assert.match(timelineSource, /let zoomPersistenceRootObserver = null;/);
+  assert.match(timelineSource, /function scheduleZoomPersistenceRootObserver\(\) \{[\s\S]*zoomPersistenceRootObserver = new MutationObserver\(\(\) => \{[\s\S]*helper\.bindZoomPersistence\(\);[\s\S]*void helper\.applySavedZoomDefault\(\)\.catch\(\(\) => \{\}\);/);
+  assert.match(timelineSource, /if \(!\(slider instanceof HTMLElement\) \|\| typeof MutationObserver !== 'function'\) \{\s*scheduleZoomPersistenceRootObserver\(\);\s*return false;\s*\}/);
+  assert.match(timelineSource, /getZoomSliderElement\(\) \|\|\s*\(await helper\.waitFor\(\(\) => getZoomSliderElement\(\), 1000, 50\)\)/);
+  assert.match(lifecycleSource, /helper\.bindZoomPersistence\(\);[\s\S]*void helper\.applySavedZoomDefault\(\)\.catch\(\(error\) => \{/);
 });
 
 test('extended diff delegates text presentation to recovered Babel state instead of row overlays', () => {
