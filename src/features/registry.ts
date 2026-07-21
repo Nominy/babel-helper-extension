@@ -218,7 +218,7 @@ export const FEATURE_REGISTRATIONS = [
       defaultEnabled: true,
       label: 'Waveform Scale Unlock',
       description:
-        'Raise Babel’s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders.'
+        'Raise Babel’s per-speaker waveform scale ceiling above 20x and keep the higher range patched after React re-renders. Only active on the RU-tx-gold project.'
     }
   }),
   defineFeature({

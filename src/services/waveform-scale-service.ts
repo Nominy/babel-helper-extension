@@ -39,6 +39,13 @@ export function registerWaveformScaleService(helper: any) {
     return true;
   }
 
+  // Waveform scale unlock is a project-specific research tool: only expose it while
+  // working inside the RU-tx-gold transcription project (dashboard.babel.audio/transcription/RU-tx-gold...).
+  function isRuTxGoldProject() {
+    const match = /^\/transcription\/([^/?#]+)/.exec(window.location.pathname || '');
+    return match ? match[1] === 'RU-tx-gold' : false;
+  }
+
   function getTargetMax() {
     return EXTENDED_MAX;
   }
@@ -473,7 +480,7 @@ export function registerWaveformScaleService(helper: any) {
   }
 
   helper.bindWaveformScaleUnlock = function bindWaveformScaleUnlock() {
-    if (!isFeatureEnabled('waveformScaleUnlock')) {
+    if (!isFeatureEnabled('waveformScaleUnlock') || !isRuTxGoldProject()) {
       helper.unbindWaveformScaleUnlock();
       return false;
     }
