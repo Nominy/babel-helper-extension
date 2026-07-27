@@ -51,6 +51,12 @@ const optionsHtml = fs.readFileSync(
   'utf8'
 );
 
+const TAG_TRAILING_PUNCTUATION_RULE_IDS = [
+  'curly-tag-trailing-punctuation',
+  'angle-tag-trailing-punctuation',
+  'square-bracket-tag-trailing-punctuation'
+];
+
 test('highlighted words settings are stored as a customizable dictionary', () => {
   assert.match(highlightedWordsSource, /DEFAULT_HIGHLIGHTED_WORDS/);
   assert.match(settingsSource, /highlightedWordsEnabled:\s*boolean/);
@@ -63,21 +69,69 @@ test('highlighted words settings are stored as a customizable dictionary', () =>
   assert.match(optionsHtml, /data-role="highlighted-words"/);
 });
 
-test('custom linter rule disables are persisted and managed from settings', async () => {
+test('fresh custom linter defaults disable exactly the tag punctuation rules', async () => {
   const {
-    DEFAULT_EXTENSION_SETTINGS,
+    CUSTOM_LINTER_DEFAULTS_VERSION,
     CUSTOM_LINTER_RULE_SETTINGS,
-    normalizeExtensionSettings
+    DEFAULT_EXTENSION_SETTINGS
   } = await importBundledTs('src/core/settings.ts');
 
+  assert.equal(CUSTOM_LINTER_DEFAULTS_VERSION, 1);
+  assert.equal(
+    DEFAULT_EXTENSION_SETTINGS.customLinterDefaultsVersion,
+    CUSTOM_LINTER_DEFAULTS_VERSION
+  );
+  assert.deepEqual(
+    DEFAULT_EXTENSION_SETTINGS.disabledCustomLinterRuleIds,
+    TAG_TRAILING_PUNCTUATION_RULE_IDS
+  );
+  assert.deepEqual(
+    CUSTOM_LINTER_RULE_SETTINGS.filter((rule) => !rule.enabledByDefault).map((rule) => rule.id),
+    TAG_TRAILING_PUNCTUATION_RULE_IDS
+  );
+});
+
+test('legacy custom linter settings migrate once and retain valid disables', async () => {
+  const { CUSTOM_LINTER_DEFAULTS_VERSION, normalizeExtensionSettings } =
+    await importBundledTs('src/core/settings.ts');
+
   const normalized = normalizeExtensionSettings({
-    disabledCustomLinterRuleIds: ['period-spacing', 'unknown-rule', 'period-spacing']
+    disabledCustomLinterRuleIds: [
+      'period-spacing',
+      'unknown-rule',
+      'period-spacing',
+      'curly-tag-trailing-punctuation'
+    ]
   });
 
-  assert.deepEqual(normalized.disabledCustomLinterRuleIds, ['period-spacing']);
-  assert.deepEqual(DEFAULT_EXTENSION_SETTINGS.disabledCustomLinterRuleIds, []);
-  assert.ok(
-    CUSTOM_LINTER_RULE_SETTINGS.some((rule) => rule.id === 'period-spacing' && rule.enabledByDefault === true)
+  assert.equal(normalized.customLinterDefaultsVersion, CUSTOM_LINTER_DEFAULTS_VERSION);
+  assert.deepEqual(normalized.disabledCustomLinterRuleIds, [
+    'period-spacing',
+    ...TAG_TRAILING_PUNCTUATION_RULE_IDS
+  ]);
+});
+
+test('current custom linter settings can re-enable every migrated rule', async () => {
+  const { CUSTOM_LINTER_DEFAULTS_VERSION, normalizeExtensionSettings } =
+    await importBundledTs('src/core/settings.ts');
+
+  const normalized = normalizeExtensionSettings({
+    customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
+    disabledCustomLinterRuleIds: []
+  });
+
+  assert.equal(normalized.customLinterDefaultsVersion, CUSTOM_LINTER_DEFAULTS_VERSION);
+  assert.deepEqual(normalized.disabledCustomLinterRuleIds, []);
+});
+
+test('options saves the current custom linter defaults version', () => {
+  assert.match(
+    optionsSource,
+    /import\s*\{[^}]*\bCUSTOM_LINTER_DEFAULTS_VERSION\b[^}]*\}\s*from\s*['"]\.\.\/core\/settings['"]/
+  );
+  assert.match(
+    optionsSource,
+    /customLinterDefaultsVersion:\s*CUSTOM_LINTER_DEFAULTS_VERSION/
   );
   assert.match(optionsSource, /data-role="manage-custom-linter-rules"/);
   assert.match(optionsSource, /data-role="custom-linter-rule-page"/);

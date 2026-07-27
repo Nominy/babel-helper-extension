@@ -1,4 +1,5 @@
 import {
+  CUSTOM_LINTER_DEFAULTS_VERSION,
   CUSTOM_LINTER_RULE_SETTINGS,
   DEFAULT_EXTENSION_SETTINGS,
   FEATURE_KEYS,
@@ -166,7 +167,8 @@ function readSettingsFromInputs(
     highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value),
     disabledCustomLinterRuleIds: CUSTOM_LINTER_RULE_SETTINGS
       .filter((rule) => ruleInputs[rule.id] && !ruleInputs[rule.id].checked)
-      .map((rule) => rule.id)
+      .map((rule) => rule.id),
+    customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION
   };
 }
 

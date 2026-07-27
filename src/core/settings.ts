@@ -15,6 +15,7 @@ export interface ExtensionSettings {
   features: FeatureSettings;
   highlightedWordsEnabled: boolean;
   highlightedWords: string[];
+  customLinterDefaultsVersion: number;
   disabledCustomLinterRuleIds: string[];
 }
 
@@ -24,6 +25,13 @@ export interface FeatureSettingMeta {
 }
 
 export const SETTINGS_STORAGE_KEY = 'settings';
+export const CUSTOM_LINTER_DEFAULTS_VERSION = 1;
+
+const DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS = [
+  'curly-tag-trailing-punctuation',
+  'angle-tag-trailing-punctuation',
+  'square-bracket-tag-trailing-punctuation'
+] as const;
 
 export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
   {
@@ -90,19 +98,19 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     id: 'curly-tag-trailing-punctuation',
     label: 'Curly tag punctuation',
     description: 'Moves punctuation before curly tags.',
-    enabledByDefault: true
+    enabledByDefault: false
   },
   {
     id: 'angle-tag-trailing-punctuation',
     label: 'Angle tag punctuation',
     description: 'Checks punctuation around angle tags.',
-    enabledByDefault: true
+    enabledByDefault: false
   },
   {
     id: 'square-bracket-tag-trailing-punctuation',
     label: 'Square bracket punctuation',
     description: 'Moves punctuation before square bracket tags.',
-    enabledByDefault: true
+    enabledByDefault: false
   },
   {
     id: 'comma-before-dash',
@@ -193,7 +201,8 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   features: DEFAULT_FEATURE_SETTINGS,
   highlightedWordsEnabled: true,
   highlightedWords: normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS),
-  disabledCustomLinterRuleIds: []
+  customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
+  disabledCustomLinterRuleIds: [...DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS]
 };
 
 export const FEATURE_KEYS: FeatureSettingKey[] = FEATURE_REGISTRATIONS.map(
@@ -244,6 +253,26 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
     features[key] = typeof value === 'boolean' ? value : DEFAULT_FEATURE_SETTINGS[key];
   }
 
+  const incomingCustomLinterDefaultsVersion =
+    typeof incoming.customLinterDefaultsVersion === 'number' &&
+    Number.isInteger(incoming.customLinterDefaultsVersion)
+      ? incoming.customLinterDefaultsVersion
+      : 0;
+  const disabledCustomLinterRuleIds = normalizeDisabledCustomLinterRuleIds(
+    incoming.disabledCustomLinterRuleIds
+  );
+  if (incomingCustomLinterDefaultsVersion < CUSTOM_LINTER_DEFAULTS_VERSION) {
+    const disabledRuleIds = new Set(disabledCustomLinterRuleIds);
+    for (const ruleId of DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS) {
+      if (disabledRuleIds.has(ruleId)) {
+        continue;
+      }
+
+      disabledRuleIds.add(ruleId);
+      disabledCustomLinterRuleIds.push(ruleId);
+    }
+  }
+
   return {
     features,
     highlightedWordsEnabled:
@@ -251,9 +280,8 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
         ? incoming.highlightedWordsEnabled
         : DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled,
     highlightedWords: normalizeHighlightedWords(incoming.highlightedWords),
-    disabledCustomLinterRuleIds: normalizeDisabledCustomLinterRuleIds(
-      incoming.disabledCustomLinterRuleIds
-    )
+    customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
+    disabledCustomLinterRuleIds
   };
 }
 

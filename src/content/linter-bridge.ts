@@ -2049,6 +2049,14 @@ export function initLinterBridge() {
     return typeof char === "string" && /[.,?!:;-]/.test(char);
   }
 
+  function isCurlyTagTrailingPunctuationOpeningQuote(text, index) {
+    if (typeof text !== "string" || text[index] !== '"') {
+      return false;
+    }
+    const nextChar = index + 1 < text.length ? text[index + 1] : "";
+    return /[\p{L}\p{N}{[<]/u.test(nextChar);
+  }
+
   function hasNonTagTextBeforeCurlyTag(text, openIndex) {
     if (typeof text !== "string" || openIndex <= 0) {
       return false;
@@ -2099,6 +2107,9 @@ export function initLinterBridge() {
         punctuationEnd < text.length &&
         isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
       ) {
+        if (isCurlyTagTrailingPunctuationOpeningQuote(text, punctuationEnd)) {
+          break;
+        }
         punctuationEnd += 1;
       }
 
@@ -2207,6 +2218,9 @@ export function initLinterBridge() {
         punctuationEnd < text.length &&
         isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
       ) {
+        if (isCurlyTagTrailingPunctuationOpeningQuote(text, punctuationEnd)) {
+          break;
+        }
         punctuationEnd += 1;
       }
 

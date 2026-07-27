@@ -423,6 +423,14 @@ function isSquareBracketTagTrailingPunctuationChar(char) {
   return typeof char === 'string' && /[.,?!:;-]/.test(char);
 }
 
+function isCurlyTagTrailingPunctuationOpeningQuote(text, index) {
+  if (typeof text !== 'string' || text[index] !== '"') {
+    return false;
+  }
+  const nextChar = index + 1 < text.length ? text[index + 1] : '';
+  return /[\p{L}\p{N}{[<]/u.test(nextChar);
+}
+
 function hasNonTagTextBeforeCurlyTag(text, openIndex) {
   if (typeof text !== 'string' || openIndex <= 0) {
     return false;
@@ -470,6 +478,9 @@ function getCurlyTagTrailingPunctuationParts(text) {
       punctuationEnd < text.length &&
       isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
     ) {
+      if (isCurlyTagTrailingPunctuationOpeningQuote(text, punctuationEnd)) {
+        break;
+      }
       punctuationEnd += 1;
     }
 
@@ -568,6 +579,9 @@ function getAngleTagTrailingPunctuationParts(text) {
       punctuationEnd < text.length &&
       isCurlyTagTrailingPunctuationChar(text[punctuationEnd])
     ) {
+      if (isCurlyTagTrailingPunctuationOpeningQuote(text, punctuationEnd)) {
+        break;
+      }
       punctuationEnd += 1;
     }
 
@@ -2386,7 +2400,13 @@ test('flags punctuation that appears outside closing angle tags', () => {
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>.'), true);
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>:'), true);
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>".'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>" конец'), true);
+  assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>"'), true);
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>--'), true);
+  assert.equal(
+    hasAngleTagTrailingPunctuationViolation('Он сказал "раз, затем Да </TAG> "нет".'),
+    false
+  );
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да. </TAG>'), false);
   assert.equal(hasAngleTagTrailingPunctuationViolation('<TAG> Да </TAG>'), false);
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да <TAG>.'), false);
@@ -2414,6 +2434,21 @@ test('flags punctuation that appears after a curly tag for preceding text', () =
   assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three}'), false);
   assert.equal(hasCurlyTagTrailingPunctuationViolation('{SKAZ: three}".'), false);
   assert.equal(hasCurlyTagTrailingPunctuationViolation('3 {SKAZ: three'), false);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('1 {СКАЗ: одно} "нет".'), false);
+  assert.equal(
+    hasCurlyTagTrailingPunctuationViolation('Он сказал "раз, затем 1 {СКАЗ: одно} "нет".'),
+    false
+  );
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('1 {СКАЗ: одно}   "нет". Вот.'), false);
+  assert.equal(hasCurlyTagTrailingPunctuationViolation('1 {СКАЗ: одно} "".'), true);
+  assert.equal(
+    hasCurlyTagTrailingPunctuationViolation('{ПРИМ: 5" по ширине} 1 {СКАЗ: одно} "нет".'),
+    false
+  );
+  assert.equal(
+    hasCurlyTagTrailingPunctuationViolation('1 {СКАЗ: одно} "{ЗАИКАНИЕ}слово".'),
+    false
+  );
 });
 
 test('flags punctuation that appears after square bracket tags for preceding text', () => {
@@ -2652,7 +2687,13 @@ test('moves punctuation before closing angle tags', () => {
   assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>.'), 'Да. </TAG>');
   assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>:'), 'Да: </TAG>');
   assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>".'), 'Да". </TAG>');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>" конец'), 'Да" </TAG> конец');
+  assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>"'), 'Да" </TAG>');
   assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>--'), 'Да-- </TAG>');
+  assert.equal(
+    fixAngleTagTrailingPunctuation('Он сказал "раз, затем Да </TAG> "нет".'),
+    'Он сказал "раз, затем Да </TAG> "нет".'
+  );
   assert.equal(fixAngleTagTrailingPunctuation('Да </TAG>   ?! next'), 'Да?! </TAG> next');
   assert.equal(fixAngleTagTrailingPunctuation('Да. </TAG>'), 'Да. </TAG>');
   assert.equal(fixAngleTagTrailingPunctuation('Да <TAG>.'), 'Да <TAG>.');
@@ -2686,6 +2727,22 @@ test('moves punctuation before curly tags that annotate preceding text', () => {
   assert.equal(fixCurlyTagTrailingPunctuation('3". {SKAZ: three}'), '3". {SKAZ: three}');
   assert.equal(fixCurlyTagTrailingPunctuation('{SKAZ: three}".'), '{SKAZ: three}".');
   assert.equal(fixCurlyTagTrailingPunctuation('3 {SKAZ: three'), '3 {SKAZ: three');
+  assert.equal(
+    fixCurlyTagTrailingPunctuation('1 {СКАЗ: одно} "нет".'),
+    '1 {СКАЗ: одно} "нет".'
+  );
+  assert.equal(
+    fixCurlyTagTrailingPunctuation('Он сказал "раз, затем 1 {СКАЗ: одно} "нет".'),
+    'Он сказал "раз, затем 1 {СКАЗ: одно} "нет".'
+  );
+  assert.equal(
+    fixCurlyTagTrailingPunctuation('{ПРИМ: 5" по ширине} 1 {СКАЗ: одно} "нет".'),
+    '{ПРИМ: 5" по ширине} 1 {СКАЗ: одно} "нет".'
+  );
+  assert.equal(
+    fixCurlyTagTrailingPunctuation('1 {СКАЗ: одно} "{ЗАИКАНИЕ}слово".'),
+    '1 {СКАЗ: одно} "{ЗАИКАНИЕ}слово".'
+  );
 });
 
 test('applyAllFixes moves punctuation before curly tags before terminal checks', () => {
