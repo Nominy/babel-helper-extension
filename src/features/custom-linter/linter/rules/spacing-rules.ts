@@ -37,17 +37,6 @@ export const createSpacingRules: CustomLinterRuleFactory = (deps) => [
     fix: (text) => deps.fixPeriodSpacing(text)
   },
   {
-    id: 'curly-spacing',
-    reason: deps.reasons.curlySpacing,
-    severity: deps.ruleSeverity,
-    markers: [deps.reasons.curlySpacing, 'Curly tags must be formatted'],
-    getMatches: (entry) =>
-      deps.hasCurlySpacingViolation(entry.text)
-        ? deps.getCurlySpacingMatches(entry.text)
-        : [],
-    fix: (text) => deps.fixCurlySpacing(text)
-  },
-  {
     id: 'angle-tag-spacing',
     reason: deps.reasons.angleTagSpacing,
     severity: deps.ruleSeverity,

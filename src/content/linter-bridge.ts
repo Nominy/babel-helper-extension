@@ -36,8 +36,6 @@ export function initLinterBridge() {
   const QUOTE_BALANCE_RULE_REASON = "Double quotes must be balanced.";
   const UNICODE_QUOTE_RULE_REASON =
     'Use ASCII double quote (") instead of typographic or Unicode quote variants.';
-  const CURLY_SPACING_RULE_REASON =
-    'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
   const ANGLE_TAG_SPACING_RULE_REASON =
     'Angle tags must be formatted as standalone "TEXT <TAG> OTHER" tokens.';
   const SQUARE_BRACKET_TAG_SPACING_RULE_REASON =
@@ -50,8 +48,6 @@ export function initLinterBridge() {
     "Punctuation after square bracket tags must move before the tag.";
   const UNICODE_DASH_RULE_REASON =
     'Use ASCII hyphen "-" instead of typographic or Unicode dash variants.';
-  const COMMA_BEFORE_DASH_RULE_REASON =
-    "Commas before dash separators should be removed.";
   const FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON =
     "Free-floating mid-sentence double dash must be a single dash.";
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
@@ -692,55 +688,6 @@ export function initLinterBridge() {
       ),
     }));
 
-  function hasCurlySpacingViolation(text) {
-    if (typeof text !== "string") {
-      return false;
-    }
-
-    const hasOpen = text.indexOf("{") !== -1;
-    const hasClose = text.indexOf("}") !== -1;
-    if (!hasOpen && !hasClose) {
-      return false;
-    }
-
-    if (hasOpen !== hasClose) {
-      return true;
-    }
-
-    const stack = [];
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      if (char === "{") {
-        stack.push(index);
-        continue;
-      }
-
-      if (char !== "}") {
-        continue;
-      }
-
-      if (!stack.length) {
-        return true;
-      }
-
-      const openIndex = stack.pop();
-      const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
-      const nextCharAfterOpen =
-        openIndex + 1 < text.length ? text[openIndex + 1] : "";
-      const prevCharBeforeClose = index > 0 ? text[index - 1] : "";
-      const nextChar = index + 1 < text.length ? text[index + 1] : "";
-
-      if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
-        return true;
-      }
-
-      if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
-        return true;
-      }
-    }
-
-    return stack.length > 0;
-  }
 
   function hasDoubleDashPunctuationViolation(text) {
     if (typeof text !== "string" || text.indexOf("--") === -1) {
@@ -1568,68 +1515,6 @@ export function initLinterBridge() {
     );
   }
 
-  function getCommaBeforeDashParts(
-    text,
-    textContext = createTranscriptTextContext(text),
-  ) {
-    if (
-      typeof text !== "string" ||
-      text.indexOf(",") === -1 ||
-      text.indexOf("-") === -1
-    ) {
-      return [];
-    }
-
-    const parts = [];
-    for (
-      let commaStart = text.indexOf(",");
-      commaStart !== -1;
-      commaStart = text.indexOf(",", commaStart + 1)
-    ) {
-      if (!hasNonTagTextBeforeCurlyTag(text, commaStart)) {
-        continue;
-      }
-
-      let dashStart = commaStart + 1;
-      while (dashStart < text.length && /[ \t]/.test(text[dashStart])) {
-        dashStart += 1;
-      }
-
-      if (text[dashStart] !== "-") {
-        continue;
-      }
-
-      const dashEnd =
-        text[dashStart + 1] === "-" ? dashStart + 2 : dashStart + 1;
-      if (text[dashEnd] === "-" || !/[ \t]/.test(text[dashEnd] || "")) {
-        continue;
-      }
-
-      let nextIndex = dashEnd;
-      while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
-        nextIndex += 1;
-      }
-
-      if (
-        nextIndex >= text.length ||
-        textContext.isRangeInsideGenericTag(commaStart, dashEnd)
-      ) {
-        continue;
-      }
-
-      parts.push({ commaStart, dashStart });
-    }
-
-    return parts;
-  }
-
-  function getCommaBeforeDashMatches(text, textContext) {
-    return compactMatches(
-      getCommaBeforeDashParts(text, textContext)
-        .map((part) => clampTextRange(text, part.commaStart, part.dashStart))
-        .filter(Boolean),
-    );
-  }
 
   function getIncorrectInterjectionFormMatches(text) {
     return compactMatches(
@@ -1891,59 +1776,6 @@ export function initLinterBridge() {
     );
   }
 
-  function getCurlySpacingMatches(text) {
-    if (typeof text !== "string") {
-      return [];
-    }
-
-    const matches = [];
-    const stack = [];
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      if (char === "{") {
-        stack.push(index);
-        continue;
-      }
-
-      if (char !== "}") {
-        continue;
-      }
-
-      if (!stack.length) {
-        matches.push(clampTextRange(text, index, index + 1));
-        continue;
-      }
-
-      const openIndex = stack.pop();
-      const prevChar = openIndex > 0 ? text[openIndex - 1] : "";
-      const nextCharAfterOpen =
-        openIndex + 1 < text.length ? text[openIndex + 1] : "";
-      const prevCharBeforeClose = index > 0 ? text[index - 1] : "";
-      const nextChar = index + 1 < text.length ? text[index + 1] : "";
-
-      if (/\s/.test(nextCharAfterOpen) || isWordCharacter(prevChar)) {
-        matches.push(
-          clampTextRange(text, Math.max(0, openIndex - 1), openIndex + 2),
-        );
-      }
-
-      if (/\s/.test(prevCharBeforeClose) || isWordCharacter(nextChar)) {
-        matches.push(
-          clampTextRange(
-            text,
-            Math.max(0, index - 1),
-            Math.min(text.length, index + 2),
-          ),
-        );
-      }
-    }
-
-    for (const openIndex of stack) {
-      matches.push(clampTextRange(text, openIndex, openIndex + 1));
-    }
-
-    return compactMatches(matches.filter(Boolean));
-  }
 
   function normalizeAngleTagText(text) {
     if (typeof text !== "string" || text.length < 2) {
@@ -2381,7 +2213,6 @@ export function initLinterBridge() {
         periodSpacing: PERIOD_SPACING_RULE_REASON,
         quoteBalance: QUOTE_BALANCE_RULE_REASON,
         unicodeQuote: UNICODE_QUOTE_RULE_REASON,
-        curlySpacing: CURLY_SPACING_RULE_REASON,
         angleTagSpacing: ANGLE_TAG_SPACING_RULE_REASON,
         squareBracketTagSpacing: SQUARE_BRACKET_TAG_SPACING_RULE_REASON,
         curlyTagTrailingPunctuation: CURLY_TAG_TRAILING_PUNCTUATION_RULE_REASON,
@@ -2389,7 +2220,6 @@ export function initLinterBridge() {
         squareBracketTagTrailingPunctuation:
           SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         unicodeDash: UNICODE_DASH_RULE_REASON,
-        commaBeforeDash: COMMA_BEFORE_DASH_RULE_REASON,
         freeMidSentenceDoubleDash: FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON,
         doubleDashPunctuation: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
         singleDashPunctuation: SINGLE_DASH_PUNCTUATION_RULE_REASON,
@@ -2415,9 +2245,6 @@ export function initLinterBridge() {
       getUnbalancedDoubleQuoteMatches,
       getUnicodeQuoteMatches,
       fixUnicodeQuotes,
-      hasCurlySpacingViolation,
-      getCurlySpacingMatches,
-      fixCurlySpacing,
       getAngleTagSpacingMatches,
       fixAngleTagSpacing,
       getSquareBracketTagSpacingMatches,
@@ -2430,8 +2257,6 @@ export function initLinterBridge() {
       fixSquareBracketTagTrailingPunctuation,
       getUnicodeDashMatches,
       fixUnicodeDashes,
-      getCommaBeforeDashMatches,
-      fixCommaBeforeDash,
       getFreeMidSentenceDoubleDashMatches,
       fixFreeMidSentenceDoubleDash,
       getDoubleDashPunctuationMatches,
@@ -3941,14 +3766,12 @@ export function initLinterBridge() {
       PERIOD_SPACING_RULE_REASON,
       QUOTE_BALANCE_RULE_REASON,
       UNICODE_QUOTE_RULE_REASON,
-      CURLY_SPACING_RULE_REASON,
       ANGLE_TAG_SPACING_RULE_REASON,
       SQUARE_BRACKET_TAG_SPACING_RULE_REASON,
       CURLY_TAG_TRAILING_PUNCTUATION_RULE_REASON,
       ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON,
       SQUARE_BRACKET_TAG_TRAILING_PUNCTUATION_RULE_REASON,
       UNICODE_DASH_RULE_REASON,
-      COMMA_BEFORE_DASH_RULE_REASON,
       FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON,
       DOUBLE_DASH_PUNCTUATION_RULE_REASON,
       SINGLE_DASH_PUNCTUATION_RULE_REASON,
@@ -5374,27 +5197,6 @@ export function initLinterBridge() {
     return normalizeUnicodeDoubleQuoteVariants(text);
   }
 
-  function fixCurlySpacing(text) {
-    if (typeof text !== "string") {
-      return text;
-    }
-
-    const hasOpen = text.indexOf("{") !== -1;
-    const hasClose = text.indexOf("}") !== -1;
-    if (!hasOpen || !hasClose) {
-      return text;
-    }
-
-    // Fix spacing inside curly braces: trim leading/trailing spaces inside { }
-    let result = text.replace(/\{\s+/g, "{").replace(/\s+\}/g, "}");
-
-    // Ensure space before opening brace if preceded by a word character
-    result = result.replace(/([\p{L}\p{N}])\{/gu, "$1 {");
-    // Ensure space after closing brace if followed by a word character
-    result = result.replace(/\}([\p{L}\p{N}])/gu, "} $1");
-
-    return result;
-  }
 
   function fixAngleTagSpacing(text) {
     if (typeof text !== "string" || text.indexOf("<") === -1) {
@@ -5579,29 +5381,6 @@ export function initLinterBridge() {
     return result + text.slice(cursor);
   }
 
-  function fixCommaBeforeDash(text) {
-    const parts = getCommaBeforeDashParts(text);
-    if (!parts.length) {
-      return text;
-    }
-
-    let result = "";
-    let cursor = 0;
-    for (const part of parts) {
-      if (part.commaStart < cursor) {
-        continue;
-      }
-
-      result += text.slice(cursor, part.commaStart);
-      result = result.replace(/[ \t]+$/u, "");
-      if (result.trimEnd().length > 0) {
-        result += " ";
-      }
-      cursor = part.dashStart;
-    }
-
-    return result + text.slice(cursor);
-  }
 
   function fixFreeMidSentenceDoubleDash(text) {
     const parts = getFreeMidSentenceDoubleDashParts(text);
@@ -6007,7 +5786,6 @@ export function initLinterBridge() {
     fixUnicodeDashes,
     fixAngleTagTrailingPunctuation,
     fixSquareBracketTagTrailingPunctuation,
-    fixCommaBeforeDash,
     fixFreeMidSentenceDoubleDash,
     fixDoubleDashPunctuation,
     fixSingleDashPunctuation,

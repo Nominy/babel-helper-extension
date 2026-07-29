@@ -282,54 +282,6 @@ function stripHelperAssertedWarningsFromPayload(payload) {
   return { changed, strippedReviewActionIds: Array.from(strippedReviewActionIds) };
 }
 
-function hasCurlySpacingViolation(text) {
-  if (typeof text !== 'string') {
-    return false;
-  }
-
-  const hasOpen = text.indexOf('{') !== -1;
-  const hasClose = text.indexOf('}') !== -1;
-  if (!hasOpen && !hasClose) {
-    return false;
-  }
-
-  if (hasOpen !== hasClose) {
-    return true;
-  }
-
-  const stack = [];
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (char === '{') {
-      stack.push(index);
-      continue;
-    }
-
-    if (char !== '}') {
-      continue;
-    }
-
-    if (!stack.length) {
-      return true;
-    }
-
-    const openIndex = stack.pop();
-    const prevChar = openIndex > 0 ? text[openIndex - 1] : '';
-    const nextCharAfterOpen = openIndex + 1 < text.length ? text[openIndex + 1] : '';
-    const prevCharBeforeClose = index > 0 ? text[index - 1] : '';
-    const nextChar = index + 1 < text.length ? text[index + 1] : '';
-
-    if (/\s/.test(nextCharAfterOpen) || /\s/.test(prevCharBeforeClose)) {
-      return true;
-    }
-
-    if (isWordCharacter(prevChar) || isWordCharacter(nextChar)) {
-      return true;
-    }
-  }
-
-  return stack.length > 0;
-}
 
 function normalizeAngleTagText(text) {
   if (typeof text !== 'string' || text.length < 2) {
@@ -670,61 +622,6 @@ function hasDoubleDashPunctuationViolation(text) {
   return false;
 }
 
-function getCommaBeforeDashParts(text) {
-  if (typeof text !== 'string' || text.indexOf(',') === -1 || text.indexOf('-') === -1) {
-    return [];
-  }
-
-  const parts = [];
-  for (
-    let commaStart = text.indexOf(',');
-    commaStart !== -1;
-    commaStart = text.indexOf(',', commaStart + 1)
-  ) {
-    if (!hasNonTagTextBeforeCurlyTag(text, commaStart)) {
-      continue;
-    }
-
-    let dashStart = commaStart + 1;
-    while (dashStart < text.length && /[ \t]/.test(text[dashStart])) {
-      dashStart += 1;
-    }
-
-    if (text[dashStart] !== '-') {
-      continue;
-    }
-
-    const dashEnd = text[dashStart + 1] === '-' ? dashStart + 2 : dashStart + 1;
-    if (text[dashEnd] === '-' || !/[ \t]/.test(text[dashEnd] || '')) {
-      continue;
-    }
-
-    let nextIndex = dashEnd;
-    while (nextIndex < text.length && /[ \t]/.test(text[nextIndex])) {
-      nextIndex += 1;
-    }
-
-    if (nextIndex >= text.length || isRangeInsideGenericTag(text, commaStart, dashEnd)) {
-      continue;
-    }
-
-    parts.push({ commaStart, dashStart });
-  }
-
-  return parts;
-}
-
-function getCommaBeforeDashMatches(text) {
-  return getCommaBeforeDashParts(text).map((part) => ({
-    start: part.commaStart,
-    end: part.dashStart,
-    text: text.slice(part.commaStart, part.dashStart)
-  }));
-}
-
-function hasCommaBeforeDashViolation(text) {
-  return getCommaBeforeDashMatches(text).length > 0;
-}
 
 function getFreeMidSentenceDoubleDashParts(text) {
   if (typeof text !== 'string' || text.indexOf('--') === -1) {
@@ -1528,22 +1425,6 @@ function fixUnicodeQuotes(text) {
   return normalizeUnicodeDoubleQuoteVariants(text);
 }
 
-function fixCurlySpacing(text) {
-  if (typeof text !== 'string') {
-    return text;
-  }
-
-  const hasOpen = text.indexOf('{') !== -1;
-  const hasClose = text.indexOf('}') !== -1;
-  if (!hasOpen || !hasClose) {
-    return text;
-  }
-
-  let result = text.replace(/\{\s+/g, '{').replace(/\s+\}/g, '}');
-  result = result.replace(/([\p{L}\p{N}])\{/gu, '$1 {');
-  result = result.replace(/\}([\p{L}\p{N}])/gu, '} $1');
-  return result;
-}
 
 function fixAngleTagSpacing(text) {
   if (typeof text !== 'string' || text.indexOf('<') === -1) {
@@ -1727,29 +1608,6 @@ function fixAngleTagTrailingPunctuation(text) {
   return result + text.slice(cursor);
 }
 
-function fixCommaBeforeDash(text) {
-  const parts = getCommaBeforeDashParts(text);
-  if (!parts.length) {
-    return text;
-  }
-
-  let result = '';
-  let cursor = 0;
-  for (const part of parts) {
-    if (part.commaStart < cursor) {
-      continue;
-    }
-
-    result += text.slice(cursor, part.commaStart);
-    result = result.replace(/[ \t]+$/u, '');
-    if (result.trimEnd().length > 0) {
-      result += ' ';
-    }
-    cursor = part.dashStart;
-  }
-
-  return result + text.slice(cursor);
-}
 
 function fixFreeMidSentenceDoubleDash(text) {
   const parts = getFreeMidSentenceDoubleDashParts(text);
@@ -1907,14 +1765,12 @@ function applyAllFixes(text) {
   result = fixCommaSpacing(result);
   result = fixPeriodSpacing(result);
   result = fixUnicodeQuotes(result);
-  result = fixCurlySpacing(result);
   result = fixAngleTagSpacing(result);
   result = fixSquareBracketTagSpacing(result);
   result = fixUnicodeDashes(result);
   result = fixCurlyTagTrailingPunctuation(result);
   result = fixSquareBracketTagTrailingPunctuation(result);
   result = fixAngleTagTrailingPunctuation(result);
-  result = fixCommaBeforeDash(result);
   result = fixFreeMidSentenceDoubleDash(result);
   result = fixDoubleDashPunctuation(result);
   result = fixSingleDashPunctuation(result);
@@ -2356,15 +2212,6 @@ test('flags non-ascii quote variants', () => {
   assert.equal(hasUnicodeQuoteViolation('"hello"'), false);
 });
 
-test('flags bad curly tag spacing and imbalance', () => {
-  assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER}'), false);
-  assert.equal(hasCurlySpacingViolation('TEXT{TAG: OTHER}'), true);
-  assert.equal(hasCurlySpacingViolation('TEXT { TAG: OTHER}'), true);
-  assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER }'), true);
-  assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER}suffix'), true);
-  assert.equal(hasCurlySpacingViolation('TEXT {TAG: OTHER'), true);
-  assert.equal(hasCurlySpacingViolation('TEXT TAG: OTHER}'), true);
-});
 
 test('flags and fixes spaces around angle tags as standalone transcript tags', () => {
   assert.equal(hasAngleTagSpacingViolation('TEXT <TAG> OTHER'), false);
@@ -2666,6 +2513,11 @@ test('applyAllFixes combines native and helper autofixes conservatively', () => 
   );
 });
 
+test('applyAllFixes preserves arbitrary curly-brace content and spacing', () => {
+  const text = 'Already{ \traw /:@ content\t }attached!';
+  assert.equal(applyAllFixes(text), text);
+});
+
 test('applyAllFixes normalizes unicode quote variants without changing quote spacing', () => {
   assert.equal(
     applyAllFixes('foo\u00ab bar \u00bbbaz'),
@@ -2805,28 +2657,9 @@ test('flags double dash punctuation violation', () => {
   assert.equal(hasDoubleDashPunctuationViolation('[wait--.]'), false);
 });
 
-test('flags and fixes commas before dash separators', () => {
-  assert.equal(hasCommaBeforeDashViolation('TEXT, - TEXT'), true);
-  assert.equal(hasCommaBeforeDashViolation('TEXT,  - TEXT'), true);
-  assert.equal(hasCommaBeforeDashViolation('TEXT,- TEXT'), true);
-  assert.equal(hasCommaBeforeDashViolation('TEXT, -- TEXT'), true);
-  assert.equal(hasCommaBeforeDashViolation('TEXT - TEXT'), false);
-  assert.equal(hasCommaBeforeDashViolation('TEXT, next'), false);
-  assert.equal(hasCommaBeforeDashViolation('TEXT, -2'), false);
-  assert.equal(hasCommaBeforeDashViolation('<TEXT, - TEXT>'), false);
-  assert.equal(hasCommaBeforeDashViolation('{TEXT, - TEXT}'), false);
-  assert.equal(hasCommaBeforeDashViolation('[TEXT, - TEXT]'), false);
 
-  assert.equal(fixCommaBeforeDash('TEXT, - TEXT'), 'TEXT - TEXT');
-  assert.equal(fixCommaBeforeDash('TEXT,  - TEXT'), 'TEXT - TEXT');
-  assert.equal(fixCommaBeforeDash('TEXT,- TEXT'), 'TEXT - TEXT');
-  assert.equal(fixCommaBeforeDash('TEXT, -- TEXT'), 'TEXT -- TEXT');
-  assert.equal(fixCommaBeforeDash('<TEXT, - TEXT> {TEXT, - TEXT} [TEXT, - TEXT]'), '<TEXT, - TEXT> {TEXT, - TEXT} [TEXT, - TEXT]');
-});
-
-test('applyAllFixes removes commas before dash separators', () => {
-  assert.equal(applyAllFixes('TEXT, - TEXT'), 'TEXT - TEXT.');
-  assert.equal(applyAllFixes('TEXT, -- TEXT'), 'TEXT - TEXT.');
+test('applyAllFixes allows comma-hyphen direct speech unchanged', () => {
+  assert.equal(applyAllFixes('TEXT, - TEXT.'), 'TEXT, - TEXT.');
 });
 
 test('flags and fixes free-floating mid-sentence double dashes', () => {

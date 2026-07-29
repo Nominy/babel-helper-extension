@@ -59,12 +59,6 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     enabledByDefault: true
   },
   {
-    id: 'curly-spacing',
-    label: 'Curly tag spacing',
-    description: 'Checks spacing around curly tags.',
-    enabledByDefault: true
-  },
-  {
     id: 'angle-tag-spacing',
     label: 'Angle tag spacing',
     description: 'Checks spacing around angle tags.',
@@ -111,12 +105,6 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     label: 'Square bracket punctuation',
     description: 'Moves punctuation before square bracket tags.',
     enabledByDefault: false
-  },
-  {
-    id: 'comma-before-dash',
-    label: 'Comma before dash',
-    description: 'Warns when commas appear before dash separators.',
-    enabledByDefault: true
   },
   {
     id: 'free-mid-sentence-double-dash',
