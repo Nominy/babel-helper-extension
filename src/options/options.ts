@@ -4,8 +4,11 @@ import {
   DEFAULT_EXTENSION_SETTINGS,
   FEATURE_KEYS,
   FEATURE_META,
+  decodeGhostCursorSettingsShare,
+  encodeGhostCursorSettingsShare,
   type ExtensionSettings,
   type FeatureSettingKey,
+  type GhostCursorSettings,
   loadExtensionSettings,
   saveExtensionSettings
 } from '../core/settings';
@@ -13,6 +16,15 @@ import { formatHighlightedWordsForTextarea, normalizeHighlightedWords } from '..
 
 type InputMap = Record<FeatureSettingKey, HTMLInputElement>;
 type RuleInputMap = Record<string, HTMLInputElement>;
+type GhostCursorInputMap = {
+  gradientEnabled: HTMLInputElement;
+  color: HTMLInputElement;
+  gradientColor: HTMLInputElement;
+  thickness: HTMLInputElement;
+  thicknessValue: HTMLOutputElement;
+  motion: HTMLSelectElement;
+};
+
 
 function requireElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector(selector);
@@ -36,6 +48,17 @@ function getFeatureInputs(): InputMap {
   }
 
   return inputs;
+}
+
+function getGhostCursorInputs(): GhostCursorInputMap {
+  return {
+    gradientEnabled: requireElement<HTMLInputElement>('[data-role="ghost-cursor-gradient-enabled"]'),
+    color: requireElement<HTMLInputElement>('[data-role="ghost-cursor-color"]'),
+    gradientColor: requireElement<HTMLInputElement>('[data-role="ghost-cursor-gradient-color"]'),
+    thickness: requireElement<HTMLInputElement>('[data-role="ghost-cursor-thickness"]'),
+    thicknessValue: requireElement<HTMLOutputElement>('[data-role="ghost-cursor-thickness-value"]'),
+    motion: requireElement<HTMLSelectElement>('[data-role="ghost-cursor-motion"]')
+  };
 }
 
 function renderFeatureCards(list: HTMLElement) {
@@ -64,16 +87,17 @@ function renderFeatureCards(list: HTMLElement) {
     details.appendChild(title);
     details.appendChild(description);
 
-    if (key === 'customLinter') {
+    if (key === 'customLinter' || key === 'proportionalCursorRestore') {
       const actions = document.createElement('div');
       actions.className = 'feature-actions';
 
-      const manageRulesButton = document.createElement('button');
-      manageRulesButton.type = 'button';
-      manageRulesButton.className = 'link-btn';
-      manageRulesButton.dataset.role = 'manage-custom-linter-rules';
-      manageRulesButton.textContent = 'Manage rules';
-      actions.appendChild(manageRulesButton);
+      const actionButton = document.createElement('button');
+      actionButton.type = 'button';
+      actionButton.className = 'link-btn';
+      actionButton.dataset.role =
+        key === 'customLinter' ? 'manage-custom-linter-rules' : 'customize-ghost-cursor';
+      actionButton.textContent = key === 'customLinter' ? 'Manage rules' : 'Customize ghost cursor';
+      actions.appendChild(actionButton);
       details.appendChild(actions);
     }
 
@@ -121,12 +145,36 @@ function renderCustomLinterRuleCards(list: HTMLElement): RuleInputMap {
   return inputs;
 }
 
+function applyGhostCursorSettingsToInputs(
+  settings: GhostCursorSettings,
+  inputs: GhostCursorInputMap
+) {
+  inputs.gradientEnabled.checked = settings.gradientEnabled;
+  inputs.color.value = settings.color;
+  inputs.gradientColor.value = settings.gradientColor;
+  inputs.thickness.value = String(settings.thickness);
+  inputs.thicknessValue.value = String(settings.thickness);
+  inputs.thicknessValue.textContent = `${settings.thickness} px`;
+  inputs.motion.value = settings.motion;
+}
+
+function readGhostCursorSettingsFromInputs(inputs: GhostCursorInputMap): GhostCursorSettings {
+  return {
+    gradientEnabled: inputs.gradientEnabled.checked,
+    color: inputs.color.value,
+    gradientColor: inputs.gradientColor.value,
+    thickness: Number.parseInt(inputs.thickness.value, 10),
+    motion: inputs.motion.value as GhostCursorSettings['motion']
+  };
+}
+
 function applySettingsToInputs(
   settings: ExtensionSettings,
   inputs: InputMap,
-  ruleInputs?: RuleInputMap,
-  highlightedWordsInput?: HTMLTextAreaElement,
-  highlightedWordsEnabledInput?: HTMLInputElement
+  ruleInputs: RuleInputMap | undefined,
+  highlightedWordsInput: HTMLTextAreaElement | undefined,
+  highlightedWordsEnabledInput: HTMLInputElement | undefined,
+  ghostCursorInputs: GhostCursorInputMap
 ) {
   for (const key of FEATURE_KEYS) {
     inputs[key].checked = Boolean(settings.features[key]);
@@ -148,13 +196,16 @@ function applySettingsToInputs(
   if (highlightedWordsInput) {
     highlightedWordsInput.value = formatHighlightedWordsForTextarea(settings.highlightedWords);
   }
+
+  applyGhostCursorSettingsToInputs(settings.ghostCursor, ghostCursorInputs);
 }
 
 function readSettingsFromInputs(
   inputs: InputMap,
   ruleInputs: RuleInputMap,
   highlightedWordsInput: HTMLTextAreaElement,
-  highlightedWordsEnabledInput: HTMLInputElement
+  highlightedWordsEnabledInput: HTMLInputElement,
+  ghostCursorInputs: GhostCursorInputMap
 ): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
@@ -168,7 +219,8 @@ function readSettingsFromInputs(
     disabledCustomLinterRuleIds: CUSTOM_LINTER_RULE_SETTINGS
       .filter((rule) => ruleInputs[rule.id] && !ruleInputs[rule.id].checked)
       .map((rule) => rule.id),
-    customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION
+    customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
+    ghostCursor: readGhostCursorSettingsFromInputs(ghostCursorInputs)
   };
 }
 
@@ -209,12 +261,24 @@ async function boot() {
   const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
   const highlightedWordsEnabledInput = requireElement<HTMLInputElement>('[data-role="highlighted-words-enabled"]');
   const highlightedWordsInput = requireElement<HTMLTextAreaElement>('[data-role="highlighted-words"]');
+  const ghostCursorInputs = getGhostCursorInputs();
   const settingsHome = requireElement<HTMLElement>('[data-role="settings-home"]');
   const customLinterRulePage = requireElement<HTMLElement>('[data-role="custom-linter-rule-page"]');
   const customLinterRuleList = requireElement<HTMLElement>('[data-role="custom-linter-rule-list"]');
+  const ghostCursorPage = requireElement<HTMLElement>('[data-role="ghost-cursor-page"]');
+  const backFromGhostCursorButton = requireElement<HTMLButtonElement>('[data-role="back-from-ghost-cursor"]');
+  const shareInput = requireElement<HTMLInputElement>('[data-role="ghost-cursor-share"]');
+  const importShareInput = requireElement<HTMLInputElement>('[data-role="ghost-cursor-import-share"]');
+  const copyShareButton = requireElement<HTMLButtonElement>('[data-role="ghost-cursor-copy-share"]');
+  const importShareButton = requireElement<HTMLButtonElement>('[data-role="ghost-cursor-import-share-button"]');
+  const refreshGhostCursorShare = (settings: GhostCursorSettings) => {
+    shareInput.value = encodeGhostCursorSettingsShare(settings);
+  };
+  const shareStatus = statusElement;
   const backToSettingsButton = requireElement<HTMLButtonElement>('[data-role="back-to-settings"]');
 
   renderFeatureCards(featureList);
+  const customizeGhostCursorButton = requireElement<HTMLButtonElement>('[data-role="customize-ghost-cursor"]');
   const inputs = getFeatureInputs();
   const ruleInputs = renderCustomLinterRuleCards(customLinterRuleList);
   const manageRulesButton = requireElement<HTMLButtonElement>('[data-role="manage-custom-linter-rules"]');
@@ -226,8 +290,10 @@ async function boot() {
       inputs,
       ruleInputs,
       highlightedWordsInput,
-      highlightedWordsEnabledInput
+      highlightedWordsEnabledInput,
+      ghostCursorInputs
     );
+    refreshGhostCursorShare(settings.ghostCursor);
     setStatus(statusElement, 'Loaded');
   } catch (_error) {
     setStatus(statusElement, 'Could not load settings.');
@@ -240,7 +306,8 @@ async function boot() {
         inputs,
         ruleInputs,
         highlightedWordsInput,
-        highlightedWordsEnabledInput
+        highlightedWordsEnabledInput,
+        ghostCursorInputs
       );
       const persisted = await saveExtensionSettings(next);
       applySettingsToInputs(
@@ -248,8 +315,10 @@ async function boot() {
         inputs,
         ruleInputs,
         highlightedWordsInput,
-        highlightedWordsEnabledInput
+        highlightedWordsEnabledInput,
+        ghostCursorInputs
       );
+      refreshGhostCursorShare(persisted.ghostCursor);
       setStatus(statusElement, 'Saved. Reload dashboard tabs to apply changes.');
     } catch (_error) {
       setStatus(statusElement, 'Could not save settings.');
@@ -276,6 +345,23 @@ async function boot() {
     void save();
   });
 
+  for (const input of [
+    ghostCursorInputs.gradientEnabled,
+    ghostCursorInputs.color,
+    ghostCursorInputs.gradientColor,
+    ghostCursorInputs.motion
+  ]) {
+    input.addEventListener('change', () => {
+      void save();
+    });
+  }
+  ghostCursorInputs.thickness.addEventListener('input', () => {
+    ghostCursorInputs.thicknessValue.textContent = `${ghostCursorInputs.thickness.value} px`;
+  });
+  ghostCursorInputs.thickness.addEventListener('change', () => {
+    void save();
+  });
+
   resetButton.addEventListener('click', () => {
     for (const key of FEATURE_KEYS) {
       inputs[key].checked = DEFAULT_EXTENSION_SETTINGS.features[key];
@@ -288,6 +374,7 @@ async function boot() {
     }
     highlightedWordsEnabledInput.checked = DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled;
     highlightedWordsInput.value = formatHighlightedWordsForTextarea(DEFAULT_EXTENSION_SETTINGS.highlightedWords);
+    applyGhostCursorSettingsToInputs(DEFAULT_EXTENSION_SETTINGS.ghostCursor, ghostCursorInputs);
     void save();
   });
 
@@ -301,6 +388,40 @@ async function boot() {
   backToSettingsButton.addEventListener('click', () => {
     customLinterRulePage.hidden = true;
     settingsHome.hidden = false;
+  });
+  customizeGhostCursorButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    settingsHome.hidden = true;
+    ghostCursorPage.hidden = false;
+  });
+  backFromGhostCursorButton.addEventListener('click', () => {
+    ghostCursorPage.hidden = true;
+    settingsHome.hidden = false;
+  });
+  copyShareButton.addEventListener('click', async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareInput.value);
+      } else {
+        shareInput.focus();
+        shareInput.select();
+        if (!document.execCommand('copy')) throw new Error('Copy unavailable');
+      }
+      shareStatus.textContent = 'Copied.';
+    } catch {
+      shareStatus.textContent = 'Copy unavailable; select the string to copy it.';
+    }
+  });
+  importShareButton.addEventListener('click', () => {
+    const decoded = decodeGhostCursorSettingsShare(importShareInput.value.trim());
+    if (!decoded) {
+      shareStatus.textContent = 'Invalid cursor share string.';
+      return;
+    }
+    applyGhostCursorSettingsToInputs(decoded, ghostCursorInputs);
+    shareStatus.textContent = 'Imported.';
+    void save();
   });
 
   downloadButton.addEventListener('click', () => {

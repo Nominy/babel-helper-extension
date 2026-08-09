@@ -82,6 +82,18 @@ function getGenericTagAtStart(text: string, index: number): TextRange | null {
   };
 }
 
+function isWordTokenContinuation(text: string, index: number): boolean {
+  const char = text[index];
+  return (
+    isTokenWordCharacter(char) ||
+    (
+      char === '-' &&
+      isTokenWordCharacter(text[index - 1]) &&
+      isTokenWordCharacter(text[index + 1])
+    )
+  );
+}
+
 export function tokenizeTranscriptText(text: string): TranscriptToken[] {
   if (typeof text !== 'string' || !text) {
     return [];
@@ -109,9 +121,10 @@ export function tokenizeTranscriptText(text: string): TranscriptToken[] {
       }
     } else if (isTokenWordCharacter(char)) {
       kind = 'word';
-      while (index < text.length && isTokenWordCharacter(text[index])) {
+      while (index < text.length && isWordTokenContinuation(text, index)) {
         index += 1;
       }
+
     } else if (/[.,?!:;"'()-]/u.test(char)) {
       kind = 'punctuation';
       index += 1;
@@ -135,7 +148,7 @@ function isWordToken(token: TranscriptToken | undefined): token is TranscriptTok
 }
 
 function isLetterOnlyWordToken(token: TranscriptToken | undefined): token is TranscriptToken {
-  return Boolean(isWordToken(token) && /^\p{L}+$/u.test(token.text));
+  return Boolean(token && token.kind === 'word' && /^\p{L}+(?:-\p{L}+)*$/u.test(token.text));
 }
 
 export function getNormalizedStutterMatches(text: string): TextRange[] {

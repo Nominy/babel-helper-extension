@@ -91,6 +91,122 @@ test('fresh custom linter defaults disable exactly the tag punctuation rules', a
   );
 });
 
+test('ghost cursor settings default safely and normalize every field', async () => {
+  const {
+    DEFAULT_GHOST_CURSOR_SETTINGS,
+    decodeGhostCursorSettingsShare,
+    encodeGhostCursorSettingsShare,
+    normalizeExtensionSettings,
+    normalizeGhostCursorSettings
+  } = await importBundledTs('src/core/settings.ts');
+
+  const legacy = normalizeExtensionSettings({
+    highlightedWordsEnabled: false,
+    ghostCursor: { theme: 'cyber-mint', style: 'dashed' }
+  });
+  assert.deepEqual(legacy.ghostCursor, DEFAULT_GHOST_CURSOR_SETTINGS);
+  assert.deepEqual(DEFAULT_GHOST_CURSOR_SETTINGS, {
+    color: '#f59e0b',
+    gradientColor: '#fb7185',
+    gradientEnabled: false,
+    thickness: 2,
+    motion: 'slow'
+  });
+
+  const normalized = normalizeGhostCursorSettings({
+    theme: 'cyber-mint',
+    style: 'dashed',
+    color: '#ABCDEF',
+    gradientColor: 'url(javascript:alert(1))',
+    gradientEnabled: 'yes',
+    thickness: 99,
+    motion: 'snappy'
+  });
+  assert.deepEqual(normalized, {
+    color: '#abcdef',
+    gradientColor: DEFAULT_GHOST_CURSOR_SETTINGS.gradientColor,
+    gradientEnabled: false,
+    thickness: 8,
+    motion: 'snappy'
+  });
+  assert.equal('theme' in normalized, false);
+  assert.equal('style' in normalized, false);
+
+  const share = encodeGhostCursorSettingsShare(normalized);
+  assert.match(share, /^gc1\.[A-Za-z0-9_-]+$/);
+  const sharePayload = JSON.parse(Buffer.from(share.slice('gc1.'.length), 'base64url').toString());
+  assert.deepEqual(Object.keys(sharePayload), ['c', 'g', 'e', 'w', 'm']);
+  assert.deepEqual(decodeGhostCursorSettingsShare(share), normalized);
+  assert.deepEqual(decodeGhostCursorSettingsShare('nope'), null);
+
+  const legacyShare =
+    'gc1.' +
+    Buffer.from(JSON.stringify({ t: 'cyber-mint', c: '#ABCDEF', x: 'legacy-key' })).toString('base64url');
+  assert.deepEqual(decodeGhostCursorSettingsShare(legacyShare), {
+    ...DEFAULT_GHOST_CURSOR_SETTINGS,
+    color: '#abcdef'
+  });
+  const futureShare =
+    'gc1.' +
+    Buffer.from(
+      JSON.stringify({
+        c: '#123456',
+        g: '#654321',
+        e: true,
+        w: 5,
+        m: 'balanced',
+        t: 'cyber-mint',
+        x: 'future-key'
+      })
+    ).toString('base64url');
+  assert.deepEqual(decodeGhostCursorSettingsShare(futureShare), {
+    color: '#123456',
+    gradientColor: '#654321',
+    gradientEnabled: true,
+    thickness: 5,
+    motion: 'balanced'
+  });
+
+  const unsafe = normalizeGhostCursorSettings({
+    theme: '<style>',
+    style: 'background:url(x)',
+    color: '#fff',
+    gradientColor: 'red',
+    thickness: -4,
+    motion: 'fast'
+  });
+  assert.deepEqual(unsafe, {
+    ...DEFAULT_GHOST_CURSOR_SETTINGS,
+    thickness: 1
+  });
+});
+
+test('ghost cursor options wire custom controls without themes or presets', () => {
+  for (const field of ['ghostCursor', 'ghostCursorInputs']) {
+    const pattern = new RegExp(field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    assert.match(optionsSource, pattern);
+  }
+  for (const field of [
+    'ghost-cursor-gradient-enabled',
+    'ghost-cursor-color',
+    'ghost-cursor-gradient-color',
+    'ghost-cursor-thickness',
+    'ghost-cursor-motion',
+    'ghost-cursor-page',
+    'ghost-cursor-copy-share',
+    'ghost-cursor-import-share'
+  ]) {
+    const pattern = new RegExp(field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    assert.match(optionsSource, pattern);
+    assert.match(optionsHtml, pattern);
+  }
+  assert.doesNotMatch(optionsSource, /theme|preset|style|GHOST_CURSOR_PRESETS/i);
+  assert.doesNotMatch(optionsHtml, /ghost-cursor-theme|Theme preset|Amber Pulse|Cyber Mint|data-role="ghost-cursor-style"/i);
+  assert.doesNotMatch(settingsSource, /GhostCursorTheme|GHOST_CURSOR_PRESETS|theme|style/i);
+  assert.match(optionsSource, /DEFAULT_EXTENSION_SETTINGS\.ghostCursor/);
+});
+
+
 test('legacy custom linter settings migrate once and retain valid disables', async () => {
   const { CUSTOM_LINTER_DEFAULTS_VERSION, normalizeExtensionSettings } =
     await importBundledTs('src/core/settings.ts');

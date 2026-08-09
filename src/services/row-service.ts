@@ -432,17 +432,89 @@ export function registerRowService(helper: any) {
     return { offset: final, clamped: final !== snapped };
   }
 
+  function getGhostCursorAppearance() {
+    const configured = helper.settings?.ghostCursor;
+    const isHexColor = (value) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+    const color = isHexColor(configured?.color) ? configured.color : '#f59e0b';
+    const gradientColor = isHexColor(configured?.gradientColor) ? configured.gradientColor : '#fb7185';
+    const thickness = Number.isFinite(Number(configured?.thickness))
+      ? Math.max(1, Math.min(8, Math.round(Number(configured.thickness))))
+      : 2;
+    const motion = configured?.motion === 'snappy' || configured?.motion === 'balanced'
+      ? configured.motion
+      : 'slow';
+
+    return {
+      color,
+      gradientColor,
+      gradientEnabled: configured?.gradientEnabled === true,
+      thickness,
+      transitionMs: motion === 'snappy' ? 70 : motion === 'balanced' ? 130 : 220,
+      animationDuration: motion === 'snappy' ? '0.9s' : motion === 'balanced' ? '1.8s' : '3.2s'
+    };
+  }
+
+  function ensureGhostCursorGradientAnimation() {
+    const styleAttribute = 'data-babel-helper-ghost-cursor-animation';
+    if (document.querySelector(`style[${styleAttribute}]`)) {
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.setAttribute(styleAttribute, '');
+    style.textContent = `
+      @keyframes babel-helper-ghost-cursor-gradient {
+        from { background-position: 0 0, 0 0; }
+        to { background-position: 0 100%, 0 0; }
+      }
+    `;
+    (document.head || document.documentElement || document.body)?.appendChild(style);
+  }
+
+  function applyGhostCursorAppearance(el, clamped) {
+    const appearance = getGhostCursorAppearance();
+    const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    const thickness = Math.max(1, Math.round(appearance.thickness * pixelRatio)) / pixelRatio;
+    el.style.width = `${thickness}px`;
+    el.style.borderRadius = `${Math.ceil(thickness / 2)}px`;
+    // Animate a composited layer so movement stays smooth without relaying out
+    // a narrow bar at fractional left/top positions.
+    el.style.left = '0px';
+    el.style.top = '0px';
+    el.style.transition = `transform ${appearance.transitionMs}ms linear`;
+    el.style.willChange = 'transform, background-position';
+    if (clamped) {
+      el.style.background = 'rgba(156, 163, 175, 0.6)';
+      el.style.backgroundImage = 'none';
+      el.style.backgroundSize = '';
+      el.style.animation = 'none';
+      return;
+    }
+
+    const { color, gradientColor } = appearance;
+    el.style.backgroundColor = color;
+    el.style.backgroundImage = appearance.gradientEnabled
+      ? `linear-gradient(180deg, ${color}, ${gradientColor}, ${color})`
+      : 'none';
+    el.style.backgroundSize = appearance.gradientEnabled ? '100% 220%' : '';
+    el.style.backgroundRepeat = 'no-repeat';
+    if (appearance.gradientEnabled) {
+      ensureGhostCursorGradientAnimation();
+    }
+    el.style.animation = appearance.gradientEnabled
+      ? `babel-helper-ghost-cursor-gradient ${appearance.animationDuration} ease-in-out infinite alternate`
+      : 'none';
+  }
+
   function createGhostCursorElement() {
     const el = document.createElement('div');
     el.setAttribute(GHOST_CURSOR_ATTR, '');
     el.style.position = 'fixed';
-    el.style.width = '2px';
-    el.style.background = 'rgba(245, 158, 11, 0.75)'; // amber-500
+    el.style.background = '#f59e0b';
     el.style.borderRadius = '1px';
     el.style.pointerEvents = 'none';
     el.style.zIndex = '20';
-    el.style.transition = 'left 80ms linear, top 80ms linear';
-    el.style.willChange = 'left, top';
+    applyGhostCursorAppearance(el, false);
     return el;
   }
 
@@ -840,14 +912,13 @@ export function registerRowService(helper: any) {
       helper.state.ghostCursorElement = el;
     }
 
-    el.style.background = projection.clamped
-      ? 'rgba(156, 163, 175, 0.6)'
-      : 'rgba(245, 158, 11, 0.75)';
+    applyGhostCursorAppearance(el, projection.clamped);
     const pos = getCaretPixelPosition(textarea, offset);
+    const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    const snapToDevicePixel = (value) => Math.round(value * pixelRatio) / pixelRatio;
     el.style.display = '';
-    el.style.top = `${pos.top}px`;
-    el.style.left = `${pos.left}px`;
-    el.style.height = `${pos.height}px`;
+    el.style.transform = `translate3d(${pos.left}px, ${pos.top}px, 0)`;
+    el.style.height = `${snapToDevicePixel(pos.height)}px`;
 
     helper.state.ghostCursorRow = projection.row;
     helper.state.ghostCursorRowIdentity = helper.getRowIdentity(projection.row);

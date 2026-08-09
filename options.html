@@ -125,6 +125,7 @@
       }
 
       .custom-linter-rule-page[hidden],
+      .ghost-cursor-page[hidden],
       .settings-home[hidden] {
         display: none;
       }
@@ -249,6 +250,95 @@
         border-color: var(--accent);
       }
 
+      .ghost-cursor-settings {
+        margin-top: 16px;
+        padding: 16px;
+        border: 1px solid #dce3ed;
+        border-radius: 14px;
+        background: linear-gradient(145deg, #ffffff 0%, #f7fbff 100%);
+      }
+
+      .ghost-cursor-title {
+        margin: 0;
+        font-size: 16px;
+        line-height: 1.25;
+      }
+
+      .ghost-cursor-description {
+        margin: 5px 0 14px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .ghost-cursor-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .ghost-cursor-field {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .ghost-cursor-field select,
+      .ghost-cursor-field input[type='color'] {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid #cfd8e6;
+        border-radius: 9px;
+        padding: 6px 8px;
+        color: var(--ink);
+        background: #fff;
+        font: inherit;
+      }
+
+      .ghost-cursor-field input[type='color'] {
+        padding: 3px;
+        cursor: pointer;
+      }
+
+      .ghost-cursor-field input[type='range'] {
+        width: 100%;
+        accent-color: var(--accent);
+      }
+
+      .ghost-cursor-field:focus-within select,
+      .ghost-cursor-field:focus-within input {
+        outline: 2px solid rgba(15, 122, 103, 0.22);
+        border-color: var(--accent);
+      }
+
+      .ghost-cursor-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 36px;
+        cursor: pointer;
+      }
+
+      .ghost-cursor-toggle input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+
+      .ghost-cursor-range-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .ghost-cursor-range-value {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+
       .footer {
         margin-top: 14px;
         display: flex;
@@ -325,6 +415,10 @@
         .title {
           font-size: 25px;
         }
+
+        .ghost-cursor-grid {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -357,6 +451,51 @@
             <button class="reset-btn" type="button" data-role="back-to-settings">Back</button>
           </div>
           <div class="rule-list" data-role="custom-linter-rule-list"></div>
+        </div>
+        <div class="ghost-cursor-page" data-role="ghost-cursor-page" hidden>
+          <div class="rule-page-header">
+            <h2 id="ghost-cursor-title" class="rule-page-title">Ghost Cursor</h2>
+            <button class="reset-btn" type="button" data-role="back-from-ghost-cursor">Back</button>
+          </div>
+          <p class="ghost-cursor-description">Customize the solid cursor bar used while navigating dashboard rows.</p>
+          <div class="ghost-cursor-grid" aria-labelledby="ghost-cursor-title">
+            <label class="ghost-cursor-field ghost-cursor-toggle">
+              <input type="checkbox" data-role="ghost-cursor-gradient-enabled" />
+              <span>Enable animated gradient</span>
+            </label>
+            <label class="ghost-cursor-field">
+              <span>Primary color</span>
+              <input type="color" data-role="ghost-cursor-color" value="#f59e0b" />
+            </label>
+            <label class="ghost-cursor-field">
+              <span>Gradient color</span>
+              <input type="color" data-role="ghost-cursor-gradient-color" value="#fb7185" />
+            </label>
+            <label class="ghost-cursor-field">
+              <span class="ghost-cursor-range-label"><span>Thickness</span><output class="ghost-cursor-range-value" data-role="ghost-cursor-thickness-value">2 px</output></span>
+              <input type="range" data-role="ghost-cursor-thickness" min="1" max="8" step="1" value="2" />
+            </label>
+            <label class="ghost-cursor-field">
+              <span>Gradient motion</span>
+              <select data-role="ghost-cursor-motion">
+                <option value="slow">Slow</option>
+                <option value="balanced">Balanced</option>
+                <option value="snappy">Snappy</option>
+              </select>
+            </label>
+          </div>
+          <div class="ghost-cursor-share">
+            <label class="ghost-cursor-field" for="ghost-cursor-share">
+              <span>Share settings</span>
+              <input id="ghost-cursor-share" type="text" data-role="ghost-cursor-share" readonly />
+            </label>
+            <button class="link-btn" type="button" data-role="ghost-cursor-copy-share">Copy</button>
+            <label class="ghost-cursor-field" for="ghost-cursor-import-share">
+              <span>Import settings</span>
+              <input id="ghost-cursor-import-share" type="text" data-role="ghost-cursor-import-share" placeholder="Paste a gc1. string" autocomplete="off" spellcheck="false" />
+            </label>
+            <button class="link-btn" type="button" data-role="ghost-cursor-import-share-button">Import</button>
+          </div>
         </div>
         <div class="footer">
           <button class="reset-btn" type="button" data-role="reset">Reset to Defaults</button>

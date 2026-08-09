@@ -11,13 +11,32 @@ export type CustomLinterRuleSetting = {
   enabledByDefault: boolean;
 };
 
+export type GhostCursorMotion = 'slow' | 'balanced' | 'snappy';
+
+export interface GhostCursorSettings {
+  color: string;
+  gradientColor: string;
+  gradientEnabled: boolean;
+  thickness: number;
+  motion: GhostCursorMotion;
+}
+
 export interface ExtensionSettings {
   features: FeatureSettings;
   highlightedWordsEnabled: boolean;
   highlightedWords: string[];
   customLinterDefaultsVersion: number;
   disabledCustomLinterRuleIds: string[];
+  ghostCursor: GhostCursorSettings;
 }
+
+export const DEFAULT_GHOST_CURSOR_SETTINGS: GhostCursorSettings = {
+  color: '#f59e0b',
+  gradientColor: '#fb7185',
+  gradientEnabled: false,
+  thickness: 2,
+  motion: 'slow'
+};
 
 export interface FeatureSettingMeta {
   label: string;
@@ -196,7 +215,8 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   highlightedWordsEnabled: true,
   highlightedWords: normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS),
   customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
-  disabledCustomLinterRuleIds: [...DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS]
+  disabledCustomLinterRuleIds: [...DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS],
+  ghostCursor: { ...DEFAULT_GHOST_CURSOR_SETTINGS }
 };
 
 export const FEATURE_KEYS: FeatureSettingKey[] = FEATURE_REGISTRATIONS.map(
@@ -224,6 +244,96 @@ function normalizeDisabledCustomLinterRuleIds(source: unknown): string[] {
   return disabledRuleIds;
 }
 
+const SAFE_HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const GHOST_CURSOR_MOTIONS = new Set<GhostCursorMotion>(['slow', 'balanced', 'snappy']);
+
+function normalizeGhostCursorColor(source: unknown, fallback: string): string {
+  return typeof source === 'string' && SAFE_HEX_COLOR.test(source) ? source.toLowerCase() : fallback;
+}
+
+export function normalizeGhostCursorSettings(source: unknown): GhostCursorSettings {
+  const incoming =
+    source && typeof source === 'object' && source !== null ? (source as Record<string, unknown>) : {};
+  const thickness =
+    typeof incoming.thickness === 'number' && Number.isFinite(incoming.thickness)
+      ? Math.round(Math.min(8, Math.max(1, incoming.thickness)))
+      : DEFAULT_GHOST_CURSOR_SETTINGS.thickness;
+
+  return {
+    color: normalizeGhostCursorColor(incoming.color, DEFAULT_GHOST_CURSOR_SETTINGS.color),
+    gradientColor: normalizeGhostCursorColor(
+      incoming.gradientColor,
+      DEFAULT_GHOST_CURSOR_SETTINGS.gradientColor
+    ),
+    gradientEnabled:
+      typeof incoming.gradientEnabled === 'boolean'
+        ? incoming.gradientEnabled
+        : DEFAULT_GHOST_CURSOR_SETTINGS.gradientEnabled,
+    thickness,
+    motion: GHOST_CURSOR_MOTIONS.has(incoming.motion as GhostCursorMotion)
+      ? (incoming.motion as GhostCursorMotion)
+      : DEFAULT_GHOST_CURSOR_SETTINGS.motion
+  };
+}
+
+const GHOST_CURSOR_SHARE_PREFIX = 'gc1.';
+
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+export function encodeGhostCursorSettingsShare(settings: GhostCursorSettings): string {
+  const normalized = normalizeGhostCursorSettings(settings);
+  return (
+    GHOST_CURSOR_SHARE_PREFIX +
+    encodeBase64Url(
+      JSON.stringify({
+        c: normalized.color,
+        g: normalized.gradientColor,
+        e: normalized.gradientEnabled,
+        w: normalized.thickness,
+        m: normalized.motion
+      })
+    )
+  );
+}
+
+export function decodeGhostCursorSettingsShare(value: unknown): GhostCursorSettings | null {
+  if (typeof value !== 'string' || !value.startsWith(GHOST_CURSOR_SHARE_PREFIX)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(decodeBase64Url(value.slice(GHOST_CURSOR_SHARE_PREFIX.length)));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return null;
+    }
+    const source = payload as Record<string, unknown>;
+    return normalizeGhostCursorSettings({
+      color: source.c,
+      gradientColor: source.g,
+      gradientEnabled: source.e,
+      thickness: source.w,
+      motion: source.m
+    });
+  } catch {
+    return null;
+  }
+}
+
 function getExtensionStorage() {
   const chromeApi = (globalThis as { chrome?: any }).chrome;
   if (!chromeApi || !chromeApi.storage || !chromeApi.storage.local) {
@@ -240,6 +350,11 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
     incoming.features && typeof incoming.features === 'object'
       ? (incoming.features as Record<string, unknown>)
       : {};
+  const rawGhostCursor =
+    incoming.ghostCursor && typeof incoming.ghostCursor === 'object'
+      ? incoming.ghostCursor
+      : {};
+
 
   const features = {} as FeatureSettings;
   for (const key of FEATURE_KEYS) {
@@ -275,7 +390,8 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
         : DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled,
     highlightedWords: normalizeHighlightedWords(incoming.highlightedWords),
     customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
-    disabledCustomLinterRuleIds
+    disabledCustomLinterRuleIds,
+    ghostCursor: normalizeGhostCursorSettings(rawGhostCursor)
   };
 }
 
