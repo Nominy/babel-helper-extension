@@ -41,6 +41,82 @@ test('transcript text context tokenizes inline tags and answers range queries', 
   assert.equal(context.isRangeInsideGenericTag(8, 11), true);
   assert.equal(context.isRangeInsideGenericTag(19, 23), false);
 });
+test('normalized stutter matcher reports only invalid letter fragments', async () => {
+  const { getNormalizedStutterMatches } = await importBundledTs(
+    'src/features/custom-linter/linter/text-context.ts'
+  );
+
+  const matches = (text) =>
+    getNormalizedStutterMatches(text).map(({ start, end, text: fragment }) => ({
+      start,
+      end,
+      text: fragment
+    }));
+
+  assert.deepEqual(matches('нь- нет'), [{ start: 0, end: 2, text: 'нь' }]);
+  assert.deepEqual(matches('н- нет'), []);
+  assert.deepEqual(matches('не- нет'), []);
+  assert.deepEqual(matches('н- не- нет'), []);
+  assert.deepEqual(matches('а- а- один'), [
+    { start: 0, end: 1, text: 'а' },
+    { start: 3, end: 4, text: 'а' }
+  ]);
+});
+
+test('normalized stutter matcher excludes generic tags and non-stutter hyphens', async () => {
+  const { getNormalizedStutterMatches } = await importBundledTs(
+    'src/features/custom-linter/linter/text-context.ts'
+  );
+
+  assert.deepEqual(getNormalizedStutterMatches('{TAG: нь- нет} нь- нет'), [
+    { start: 15, end: 17, text: 'нь' }
+  ]);
+  assert.deepEqual(getNormalizedStutterMatches('слово-тест foo - bar 12- test'), []);
+});
+
+test('normalized stutter rule is an error rule without autocorrection', async () => {
+  const { createLanguageRules } = await importBundledTs(
+    'src/features/custom-linter/linter/rules/language-rules.ts'
+  );
+  const sentinel = [{ start: 2, end: 3, text: 'x' }];
+  const accessed = [];
+  const deps = new Proxy(
+    {
+      ruleSeverity: 'error',
+      highlightedWordRuleSeverity: 'warning',
+      reasons: new Proxy({}, { get: (_target, key) => String(key) })
+    },
+    {
+      get: (_target, key) => {
+        if (typeof key === 'string') {
+          accessed.push(key);
+        }
+        if (key === 'ruleSeverity') {
+          return 'error';
+        }
+        if (key === 'highlightedWordRuleSeverity') {
+          return 'warning';
+        }
+        if (key === 'reasons') {
+          return new Proxy({}, { get: (_reasons, reasonKey) => String(reasonKey) });
+        }
+        return typeof key === 'string' && /stutter/i.test(key)
+          ? () => sentinel
+          : typeof key === 'string'
+            ? () => []
+            : undefined;
+      }
+    }
+  );
+
+  const rule = createLanguageRules(deps).find(({ id }) => id === 'normalized-stutters');
+  assert.ok(rule);
+  assert.equal(rule.severity, 'error');
+  assert.match(rule.reason.toLocaleLowerCase(), /stutter/);
+  assert.equal('fix' in rule, false);
+  assert.deepEqual(rule.getMatches({ text: 'sample' }), sentinel);
+  assert.ok(accessed.includes('getNormalizedStutterMatches'));
+});
 
 test('linter rule registry builds issues, filters visible tooltip entries, and applies fixes in rule order', async () => {
   const {

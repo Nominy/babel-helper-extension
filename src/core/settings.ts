@@ -137,6 +137,12 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     enabledByDefault: true
   },
   {
+    id: 'normalized-stutters',
+    label: 'Normalized stutters',
+    description: 'Warns when stutter fragments are not substrings of the following word.',
+    enabledByDefault: true
+  },
+  {
     id: 'highlighted-words',
     label: 'Highlighted words',
     description: 'Warns when a segment contains a configured highlighted word.',

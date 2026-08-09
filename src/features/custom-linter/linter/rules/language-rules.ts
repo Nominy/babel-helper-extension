@@ -2,6 +2,18 @@ import type { CustomLinterRuleFactory } from './types';
 
 export const createLanguageRules: CustomLinterRuleFactory = (deps) => [
   {
+    id: 'normalized-stutters',
+    reason: deps.reasons.normalizedStutters,
+    severity: deps.ruleSeverity,
+    markers: [
+      deps.reasons.normalizedStutters,
+      'Stutter fragments',
+      'must be in-order substrings of the following word'
+    ],
+    getMatches: (entry) => deps.getNormalizedStutterMatches(entry.text)
+  },
+
+  {
     id: 'incorrect-interjection-forms',
     reason: deps.reasons.incorrectInterjectionForms,
     severity: deps.ruleSeverity,

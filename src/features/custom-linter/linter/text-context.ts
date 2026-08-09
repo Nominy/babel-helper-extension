@@ -130,6 +130,75 @@ export function tokenizeTranscriptText(text: string): TranscriptToken[] {
 
   return tokens;
 }
+function isWordToken(token: TranscriptToken | undefined): token is TranscriptToken {
+  return Boolean(token && token.kind === 'word');
+}
+
+function isLetterOnlyWordToken(token: TranscriptToken | undefined): token is TranscriptToken {
+  return Boolean(isWordToken(token) && /^\p{L}+$/u.test(token.text));
+}
+
+export function getNormalizedStutterMatches(text: string): TextRange[] {
+  const tokens = tokenizeTranscriptText(text);
+  const invalidFragmentIndexes = new Set<number>();
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    let cursor = index;
+    const fragmentIndexes: number[] = [];
+    let terminalWord: TranscriptToken | undefined;
+
+    while (true) {
+      const fragment = tokens[cursor];
+      const dash = tokens[cursor + 1];
+      const whitespace = tokens[cursor + 2];
+      const followingWord = tokens[cursor + 3];
+      if (
+        !isLetterOnlyWordToken(fragment) ||
+        dash?.kind !== 'punctuation' ||
+        dash.text !== '-' ||
+        whitespace?.kind !== 'space' ||
+        !isWordToken(followingWord)
+      ) {
+        fragmentIndexes.length = 0;
+        break;
+      }
+
+      fragmentIndexes.push(cursor);
+      const nextDash = tokens[cursor + 4];
+      const nextWhitespace = tokens[cursor + 5];
+      if (
+        isLetterOnlyWordToken(followingWord) &&
+        nextDash?.kind === 'punctuation' &&
+        nextDash.text === '-' &&
+        nextWhitespace?.kind === 'space'
+      ) {
+        cursor += 3;
+        continue;
+      }
+
+      terminalWord = followingWord;
+      break;
+    }
+
+    if (!terminalWord) {
+      continue;
+    }
+
+    const normalizedTerminalWord = terminalWord.text.toLowerCase();
+    for (const fragmentIndex of fragmentIndexes) {
+      if (!normalizedTerminalWord.includes(tokens[fragmentIndex].text.toLowerCase())) {
+        invalidFragmentIndexes.add(fragmentIndex);
+      }
+    }
+  }
+
+  return [...invalidFragmentIndexes]
+    .sort((left, right) => left - right)
+    .map((index) => {
+      const { start, end, text: fragmentText } = tokens[index];
+      return { start, end, text: fragmentText };
+    });
+}
 
 export function createTranscriptTextContext(text: string): TranscriptTextContext {
   const sourceText = typeof text === 'string' ? text : '';

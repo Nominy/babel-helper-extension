@@ -11,6 +11,7 @@ import {
 import {
   createTranscriptTextContext,
   getEnclosingGenericTagRange as getContextEnclosingGenericTagRange,
+  getNormalizedStutterMatches,
   isRangeInsideGenericTag as isContextRangeInsideGenericTag,
 } from "../features/custom-linter/linter/text-context";
 import { createCustomLinterRules } from "../features/custom-linter/linter/rules";
@@ -56,6 +57,8 @@ export function initLinterBridge() {
     "Punctuation immediately after single dash is typically avoided.";
   const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
     "Incorrect interjection forms must use dictionary spelling.";
+  const NORMALIZED_STUTTERS_RULE_REASON =
+    "Stutter fragments must be in-order substrings of the following word.";
   const SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON =
     "Words after clear sentence endings ., ?, ! must start uppercase.";
   const POLITE_PRONOUN_CASE_RULE_REASON =
@@ -2224,6 +2227,7 @@ export function initLinterBridge() {
         doubleDashPunctuation: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
         singleDashPunctuation: SINGLE_DASH_PUNCTUATION_RULE_REASON,
         incorrectInterjectionForms: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+        normalizedStutters: NORMALIZED_STUTTERS_RULE_REASON,
         highlightedWord: HIGHLIGHTED_WORD_RULE_REASON,
         sentenceBoundaryCapitalization:
           SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
@@ -2265,6 +2269,7 @@ export function initLinterBridge() {
       fixSingleDashPunctuation,
       getIncorrectInterjectionFormMatches,
       normalizeIncorrectInterjectionForms,
+      getNormalizedStutterMatches,
       getHighlightedWordMatches,
       getSentenceBoundaryCapitalizationMatches,
       fixSentenceBoundaryCapitalization,

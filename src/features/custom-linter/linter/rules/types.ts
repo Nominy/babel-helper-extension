@@ -23,6 +23,7 @@ export type CustomLinterReasons = {
   politePronounCase: string;
   terminalPunctuation: string;
   segmentStartCapitalization: string;
+  normalizedStutters: string;
 };
 
 export type CustomLinterRuleDependencies = {
@@ -76,6 +77,7 @@ export type CustomLinterRuleDependencies = {
   ): boolean;
   getSegmentStartCapitalizationMatches(entry: AnnotationEntry): TextRange[];
   fixSegmentStartCapitalization(text: string, previousSameSpeakerText: string): string;
+  getNormalizedStutterMatches(text: string): TextRange[];
 };
 
 export type CustomLinterRuleFactory = (deps: CustomLinterRuleDependencies) => LinterRule[];
