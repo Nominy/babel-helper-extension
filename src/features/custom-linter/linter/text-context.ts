@@ -177,6 +177,9 @@ export function getNormalizedStutterMatches(text: string): TextRange[] {
       }
 
       fragmentIndexes.push(cursor);
+      if (fragment.text.length > followingWord.text.length) {
+        invalidFragmentIndexes.add(cursor);
+      }
       const nextDash = tokens[cursor + 4];
       const nextWhitespace = tokens[cursor + 5];
       if (
@@ -196,10 +199,10 @@ export function getNormalizedStutterMatches(text: string): TextRange[] {
     if (!terminalWord) {
       continue;
     }
-
     const normalizedTerminalWord = terminalWord.text.toLowerCase();
     for (const fragmentIndex of fragmentIndexes) {
-      if (!normalizedTerminalWord.includes(tokens[fragmentIndex].text.toLowerCase())) {
+      const fragmentText = tokens[fragmentIndex].text;
+      if (!normalizedTerminalWord.includes(fragmentText.toLowerCase())) {
         invalidFragmentIndexes.add(fragmentIndex);
       }
     }

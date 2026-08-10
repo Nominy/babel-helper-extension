@@ -63,6 +63,8 @@ test('normalized stutter matcher reports only invalid letter fragments', async (
   ]);
   assert.deepEqual(matches('что-то- что-то'), []);
   assert.deepEqual(matches('что-же- что-то'), [{ start: 0, end: 6, text: 'что-же' }]);
+  assert.deepEqual(matches('на- н- на'), [{ start: 0, end: 2, text: 'на' }]);
+  assert.deepEqual(matches('на- на'), []);
 });
 
 test('normalized stutter matcher excludes generic tags and non-stutter hyphens', async () => {
