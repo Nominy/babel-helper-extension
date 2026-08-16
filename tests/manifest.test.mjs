@@ -13,7 +13,9 @@ test('manifest targets bundled dist assets', () => {
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/linter-bridge.js'), true);
   assert.equal(manifest.background.service_worker, 'dist/background/commands.js');
   assert.equal(manifest.commands['auto-insert-segment'].suggested_key.default, 'Alt+C');
-  assert.equal(manifest.options_page, 'options.html');
+  assert.deepEqual(manifest.options_ui, { page: 'options.html', open_in_tab: true });
+  assert.equal(manifest.action.default_title, 'Open Babel Helper settings');
+  assert.equal(manifest.action.default_popup, 'options.html');
   assert.equal(manifest.permissions.includes('storage'), true);
 });
 
