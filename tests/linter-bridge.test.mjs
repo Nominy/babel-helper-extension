@@ -611,10 +611,13 @@ function hasDoubleDashPunctuationViolation(text) {
     return false;
   }
 
-  const pattern = /--[.,?!:;]/gu;
+  const pattern = /--[.,?!:;]+/gu;
   let match;
   while ((match = pattern.exec(text))) {
-    if (!isRangeInsideGenericTag(text, match.index, match.index + match[0].length)) {
+    if (
+      match[0] !== '--...' &&
+      !isRangeInsideGenericTag(text, match.index, match.index + match[0].length)
+    ) {
       return true;
     }
   }
@@ -1634,10 +1637,17 @@ function fixDoubleDashPunctuation(text) {
     return text;
   }
 
-  // Remove punctuation immediately after double dash
-  return text.replace(/--[.,?!:;]+/g, (match, offset) =>
-    isRangeInsideGenericTag(text, offset, offset + match.length) ? match : '--'
-  );
+  // Keep the joined "--..." sequence used inside a split word.
+  return text.replace(/--[.,?!:;]+/g, (match, offset) => {
+    if (
+      match === '--...' ||
+      isRangeInsideGenericTag(text, offset, offset + match.length)
+    ) {
+      return match;
+    }
+
+    return '--';
+  });
 }
 
 function fixSingleDashPunctuation(text) {
@@ -2650,6 +2660,8 @@ test('flags double dash punctuation violation', () => {
   assert.equal(hasDoubleDashPunctuationViolation('wait--,'), true);
   assert.equal(hasDoubleDashPunctuationViolation('wait--?'), true);
   assert.equal(hasDoubleDashPunctuationViolation('wait--!'), true);
+  assert.equal(hasDoubleDashPunctuationViolation('som--...ord'), false);
+  assert.equal(hasDoubleDashPunctuationViolation('wait--...'), false);
   assert.equal(hasDoubleDashPunctuationViolation('wait-- '), false);
   assert.equal(hasDoubleDashPunctuationViolation('wait.--'), false);
   assert.equal(hasDoubleDashPunctuationViolation('<wait--.>'), false);
@@ -2687,13 +2699,16 @@ test('fixes double dash punctuation', () => {
   assert.equal(fixDoubleDashPunctuation('wait--,'), 'wait--');
   assert.equal(fixDoubleDashPunctuation('wait--?'), 'wait--');
   assert.equal(fixDoubleDashPunctuation('wait--!'), 'wait--');
-  assert.equal(fixDoubleDashPunctuation('wait--...'), 'wait--');
+  assert.equal(fixDoubleDashPunctuation('wait--...'), 'wait--...');
+  assert.equal(fixDoubleDashPunctuation('som--...ord'), 'som--...ord');
   assert.equal(fixDoubleDashPunctuation('wait--?!'), 'wait--');
   assert.equal(fixDoubleDashPunctuation('<wait--.> {wait--?} [wait--!]'), '<wait--.> {wait--?} [wait--!]');
 });
 
 test('applyAllFixes includes double dash punctuation fix', () => {
   assert.equal(applyAllFixes('wait--.'), 'wait--');
+  assert.equal(applyAllFixes('wait--...'), 'wait--...');
+  assert.equal(applyAllFixes('som--...ord.'), 'som--...ord.');
 });
 
 test('treats generic bracket, curly, and angle tokens as tags for double dash placement', () => {

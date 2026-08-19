@@ -52,7 +52,7 @@ export function initLinterBridge() {
   const FREE_MID_SENTENCE_DOUBLE_DASH_RULE_REASON =
     "Free-floating mid-sentence double dash must be a single dash.";
   const DOUBLE_DASH_PUNCTUATION_RULE_REASON =
-    "Punctuation immediately after double dash is typically avoided.";
+    'Punctuation immediately after double dash is typically avoided, except in joined "--..." word fragments.';
   const SINGLE_DASH_PUNCTUATION_RULE_REASON =
     "Punctuation immediately after single dash is typically avoided.";
   const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
@@ -697,10 +697,11 @@ export function initLinterBridge() {
       return false;
     }
 
-    const pattern = /--[.,?!:;]/gu;
+    const pattern = /--[.,?!:;]+/gu;
     let match;
     while ((match = pattern.exec(text))) {
       if (
+        match[0] !== "--..." &&
         !isRangeInsideGenericTag(
           text,
           match.index,
@@ -1498,7 +1499,7 @@ export function initLinterBridge() {
       /--[.,?!:;]+/gu,
       0,
       textContext,
-    );
+    ).filter((match) => text.slice(match.start, match.end) !== "--...");
   }
 
   function getFreeMidSentenceDoubleDashMatches(text, textContext) {
@@ -5412,12 +5413,18 @@ export function initLinterBridge() {
       return text;
     }
 
-    // Remove punctuation immediately after double dash
-    return text.replace(/--[.,?!:;]+/g, (match, offset) =>
-      isRangeInsideGenericTag(text, offset, offset + match.length)
-        ? match
-        : "--",
-    );
+    // Keep the joined "--..." sequence used between two heard fragments of
+    // one word. Other punctuation immediately after a double dash is invalid.
+    return text.replace(/--[.,?!:;]+/g, (match, offset) => {
+      if (
+        match === "--..." ||
+        isRangeInsideGenericTag(text, offset, offset + match.length)
+      ) {
+        return match;
+      }
+
+      return "--";
+    });
   }
 
   function fixSingleDashPunctuation(text) {
