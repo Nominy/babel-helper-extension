@@ -297,17 +297,159 @@ test('linter rule registry skips disabled rule ids for issues, tooltips, and fix
   assert.equal(applyRuleFixes(' hello', rules, {}, { disabledRuleIds }), 'hello');
 });
 
+test('late-bound community linter rules affect issues, tooltips, and fixes until disposed', async () => {
+  const {
+    applyRuleFixes,
+    buildRegistryIssues,
+    createLateBoundLinterRuleResolver,
+    getVisibleTooltipEntries
+  } = await importBundledTs('src/features/custom-linter/linter/rule-registry.ts');
+
+  const builtInRule = {
+    id: 'built-in-period',
+    reason: 'Built-in period',
+    severity: 'error',
+    markers: ['Built-in period'],
+    getMatches(entry) {
+      return entry.text.endsWith('.')
+        ? []
+        : [{ start: entry.text.length - 1, end: entry.text.length, text: entry.text.slice(-1) }];
+    },
+    fix(text) {
+      return text.endsWith('.') ? text : `${text}.`;
+    }
+  };
+  const beforeInitRule = {
+    id: 'community-uppercase',
+    reason: 'Community uppercase',
+    severity: 'warning',
+    markers: ['Community uppercase'],
+    getMatches(entry) {
+      return /^[a-z]/.test(entry.text)
+        ? [{ start: 0, end: 1, text: entry.text.slice(0, 1) }]
+        : [];
+    },
+    fix(text) {
+      return text ? text[0].toUpperCase() + text.slice(1) : text;
+    }
+  };
+  const contributions = [];
+  const contribute = (rule) => {
+    contributions.push(rule);
+    let active = true;
+    return () => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      contributions.splice(contributions.indexOf(rule), 1);
+    };
+  };
+  const disposeBeforeInitRule = contribute(beforeInitRule);
+  const resolveRules = createLateBoundLinterRuleResolver(
+    () => [builtInRule],
+    () => contributions
+  );
+  const makeIssue = (entry, rule, matches) => ({
+    annotationId: entry.annotationId,
+    reviewActionId: entry.reviewActionId || '',
+    reason: rule.reason,
+    severity: rule.severity,
+    babelHelper: { sourceText: entry.text, matches }
+  });
+  const lint = (text) =>
+    buildRegistryIssues(
+      [{ annotationId: 'a1', reviewActionId: 'r1', text }],
+      resolveRules(),
+      makeIssue
+    );
+
+  assert.deepEqual(
+    lint('hello').map(({ reason }) => reason),
+    ['Built-in period', 'Community uppercase']
+  );
+  assert.deepEqual(
+    getVisibleTooltipEntries(
+      'hello',
+      'Built-in period Community uppercase',
+      resolveRules()
+    ).map(({ reason }) => reason),
+    ['Built-in period', 'Community uppercase']
+  );
+  assert.equal(applyRuleFixes('hello', resolveRules()), 'Hello.');
+
+  const afterInitRule = {
+    id: 'community-exclamation',
+    reason: 'Community exclamation',
+    severity: 'error',
+    markers: ['Community exclamation'],
+    getMatches(entry) {
+      return entry.text.includes('!')
+        ? []
+        : [{ start: entry.text.length, end: entry.text.length, text: '' }];
+    },
+    fix(text) {
+      return text.includes('!') ? text : `${text}!`;
+    }
+  };
+  const disposeAfterInitRule = contribute(afterInitRule);
+  assert.deepEqual(
+    lint('hello').map(({ reason }) => reason),
+    ['Built-in period', 'Community uppercase', 'Community exclamation']
+  );
+  assert.equal(applyRuleFixes('hello', resolveRules()), 'Hello.!');
+  assert.deepEqual(
+    getVisibleTooltipEntries(
+      'hello',
+      'Built-in period Community uppercase Community exclamation',
+      resolveRules()
+    ).map(({ reason }) => reason),
+    ['Built-in period', 'Community uppercase', 'Community exclamation']
+  );
+
+  disposeBeforeInitRule();
+  assert.deepEqual(
+    lint('hello').map(({ reason }) => reason),
+    ['Built-in period', 'Community exclamation']
+  );
+  assert.equal(applyRuleFixes('hello', resolveRules()), 'hello.!');
+  assert.deepEqual(
+    getVisibleTooltipEntries(
+      'hello',
+      'Built-in period Community uppercase Community exclamation',
+      resolveRules()
+    ).map(({ reason }) => reason),
+    ['Built-in period', 'Community exclamation']
+  );
+
+  disposeAfterInitRule();
+  assert.deepEqual(lint('hello').map(({ reason }) => reason), ['Built-in period']);
+  assert.equal(applyRuleFixes('hello', resolveRules()), 'hello.');
+  assert.deepEqual(
+    getVisibleTooltipEntries(
+      'hello',
+      'Built-in period Community uppercase Community exclamation',
+      resolveRules()
+    ).map(({ reason }) => reason),
+    ['Built-in period']
+  );
+});
+
 test('linter bridge delegates rule loops to the registry module', async () => {
   const bridgeSource = await fs.readFile('src/content/linter-bridge.ts', 'utf8');
 
   assert.match(bridgeSource, /from ['"]\.\.\/features\/custom-linter\/linter\/rule-registry['"]/);
   assert.match(bridgeSource, /from ['"]\.\.\/features\/custom-linter\/linter\/rules['"]/);
   assert.match(bridgeSource, /createCustomLinterRules/);
+  assert.match(bridgeSource, /createLateBoundLinterRuleResolver/);
   assert.match(bridgeSource, /buildRegistryIssues/);
   assert.match(bridgeSource, /getVisibleTooltipEntries/);
   assert.match(bridgeSource, /applyRuleFixes/);
+  assert.match(bridgeSource, /registries\?\.get\?\.\("linter\.rules"\)/);
+  assert.match(bridgeSource, /provide\(\s*"page\.linter"/);
+  assert.match(bridgeSource, /services\.invoke\("page\.linter", method, \.\.\.args\)/);
 
-  const buildCustomIssuesStart = bridgeSource.indexOf('function buildCustomIssues');
+  const buildCustomIssuesStart = bridgeSource.indexOf('function buildBuiltInCustomIssues');
   const buildCustomIssuesEnd = bridgeSource.indexOf('function isLintIssueLike', buildCustomIssuesStart);
   const buildCustomIssuesBody = bridgeSource.slice(buildCustomIssuesStart, buildCustomIssuesEnd);
   assert.doesNotMatch(buildCustomIssuesBody, /if \(has[A-Z]/);
@@ -315,7 +457,7 @@ test('linter bridge delegates rule loops to the registry module', async () => {
   assert.match(buildCustomIssuesBody, /recordCustomLinterRuleError/);
 
   const errorRecorderStart = bridgeSource.indexOf('function recordCustomLinterRuleError');
-  const errorRecorderEnd = bridgeSource.indexOf('function buildCustomIssues', errorRecorderStart);
+  const errorRecorderEnd = bridgeSource.indexOf('function buildBuiltInCustomIssues', errorRecorderStart);
   assert.notEqual(errorRecorderStart, -1);
   assert.notEqual(errorRecorderEnd, -1);
   const errorRecorderBody = bridgeSource.slice(errorRecorderStart, errorRecorderEnd);

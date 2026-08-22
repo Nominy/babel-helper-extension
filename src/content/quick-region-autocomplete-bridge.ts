@@ -11,6 +11,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
 
   const TOGGLE_EVENT = 'babel-helper-quick-region-autocomplete-toggle';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+  const SERVICE_ID = 'page.quickRegionAutocomplete';
   const QUICK_TEXTAREA_SELECTOR = 'textarea[placeholder^="Enter text for this region"]';
   const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
   const LISTBOX_ATTR = 'data-babel-helper-quick-region-listbox';
@@ -21,6 +22,8 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
   let bound = false;
   let dismissTimer = 0;
   let mouseMoveBound = false;
+  let serviceRegistry: any = null;
+  let serviceProviderHandle: { dispose(): void } | null = null;
 
   const state = {
     isOpen: false,
@@ -504,7 +507,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     if (mouseMoveBound) {
       return;
     }
-    document.addEventListener('mousemove', onMouseMove, true);
+    document.addEventListener('mousemove', serviceListeners.mousemove, true);
     mouseMoveBound = true;
   }
 
@@ -512,7 +515,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     if (!mouseMoveBound) {
       return;
     }
-    document.removeEventListener('mousemove', onMouseMove, true);
+    document.removeEventListener('mousemove', serviceListeners.mousemove, true);
     mouseMoveBound = false;
   }
 
@@ -1017,12 +1020,12 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     }
 
     ensureListboxRoot();
-    document.addEventListener('beforeinput', onBeforeInput, true);
-    document.addEventListener('input', onInput, true);
-    document.addEventListener('click', onClick, true);
-    document.addEventListener('mousedown', onMouseDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    document.addEventListener('focusout', onFocusOut, true);
+    document.addEventListener('beforeinput', serviceListeners.beforeinput, true);
+    document.addEventListener('input', serviceListeners.input, true);
+    document.addEventListener('click', serviceListeners.click, true);
+    document.addEventListener('mousedown', serviceListeners.mousedown, true);
+    document.addEventListener('keydown', serviceListeners.keydown, true);
+    document.addEventListener('focusout', serviceListeners.focusout, true);
     bound = true;
   }
 
@@ -1031,36 +1034,131 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
       return;
     }
 
-    document.removeEventListener('beforeinput', onBeforeInput, true);
-    document.removeEventListener('input', onInput, true);
-    document.removeEventListener('click', onClick, true);
-    document.removeEventListener('mousedown', onMouseDown, true);
+    document.removeEventListener('beforeinput', serviceListeners.beforeinput, true);
+    document.removeEventListener('input', serviceListeners.input, true);
+    document.removeEventListener('click', serviceListeners.click, true);
+    document.removeEventListener('mousedown', serviceListeners.mousedown, true);
     unbindMouseMove();
-    document.removeEventListener('keydown', onKeyDown, true);
-    document.removeEventListener('focusout', onFocusOut, true);
+    document.removeEventListener('keydown', serviceListeners.keydown, true);
+    document.removeEventListener('focusout', serviceListeners.focusout, true);
     bound = false;
     pendingWrapSelection.current = null;
     dismiss();
   }
 
-  function handleToggle(event: Event) {
-    const detail = (event as CustomEvent<{ enabled?: boolean }>).detail || {};
-    enabled = Boolean(detail.enabled);
+  function setEnabled(nextEnabled: boolean) {
+    enabled = Boolean(nextEnabled);
     if (enabled) {
       bind();
     } else {
       unbind();
     }
+    return enabled;
+  }
+
+  const rawImplementation = {
+    setEnabled,
+    isEnabled: () => enabled,
+    bind,
+    unbind,
+    dismiss,
+    openForTextarea,
+    insertSuggestion,
+    onBeforeInput,
+    onInput,
+    onClick,
+    onMouseDown,
+    onMouseMove,
+    onKeyDown,
+    onFocusOut,
+    state,
+    contextState,
+    pendingWrapSelection,
+    pendingNativeRowAutocomplete
+  };
+  const implementation = {
+    setEnabled,
+    isEnabled: rawImplementation.isEnabled,
+    handleBeforeInput: onBeforeInput,
+    handleInput: onInput,
+    handleClick: onClick,
+    handleMouseDown: onMouseDown,
+    handleMouseMove: onMouseMove,
+    handleKeyDown: onKeyDown,
+    handleFocusOut: onFocusOut,
+    raw: rawImplementation
+  };
+
+  function getHostServiceRegistry() {
+    const services = (window as any).BabelMods?.unsafe?.services;
+    return services && typeof services.invoke === 'function' ? services : null;
+  }
+
+  function ensureServiceProvider() {
+    const currentRegistry = getHostServiceRegistry();
+    if (!currentRegistry || typeof currentRegistry.provide !== 'function') {
+      return null;
+    }
+
+    if (serviceRegistry === currentRegistry && serviceProviderHandle) {
+      return currentRegistry;
+    }
+
+    serviceProviderHandle?.dispose();
+    serviceRegistry = currentRegistry;
+    serviceProviderHandle = currentRegistry.provide(SERVICE_ID, implementation, {
+      owner: 'builtin:quick-region-autocomplete'
+    });
+    return currentRegistry;
+  }
+
+  function invokeService(method: string, ...args: any[]) {
+    const currentRegistry = ensureServiceProvider();
+    if (currentRegistry) {
+      return currentRegistry.invoke(SERVICE_ID, method, ...args);
+    }
+
+    const operation = (implementation as any)[method];
+    if (typeof operation !== 'function') {
+      throw new TypeError(`Unknown ${SERVICE_ID} operation: ${String(method)}`);
+    }
+    return operation.apply(implementation, args);
+  }
+
+  const serviceListeners = {
+    beforeinput: (event: InputEvent) => invokeService('handleBeforeInput', event),
+    input: (event: Event) => invokeService('handleInput', event),
+    click: (event: MouseEvent) => invokeService('handleClick', event),
+    mousedown: (event: MouseEvent) => invokeService('handleMouseDown', event),
+    mousemove: (event: MouseEvent) => invokeService('handleMouseMove', event),
+    keydown: (event: KeyboardEvent) => invokeService('handleKeyDown', event),
+    focusout: (event: FocusEvent) => invokeService('handleFocusOut', event)
+  };
+
+  function handleToggle(event: Event) {
+    const detail = (event as CustomEvent<{ enabled?: boolean }>).detail || {};
+    invokeService('setEnabled', Boolean(detail.enabled));
   }
 
   function dispose() {
     unbind();
+    serviceProviderHandle?.dispose();
+    serviceProviderHandle = null;
+    serviceRegistry = null;
+    listboxRoot?.remove();
+    listboxRoot = null;
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     delete (window as any).__babelHelperQuickRegionAutocompleteBridge;
   }
 
+  ensureServiceProvider();
   window.addEventListener(TOGGLE_EVENT, handleToggle, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
-  (window as any).__babelHelperQuickRegionAutocompleteBridge = { dispose };
+  (window as any).__babelHelperQuickRegionAutocompleteBridge = {
+    setEnabled: (nextEnabled: boolean) => invokeService('setEnabled', nextEnabled),
+    isEnabled: () => invokeService('isEnabled'),
+    implementation: rawImplementation,
+    dispose
+  };
 })();

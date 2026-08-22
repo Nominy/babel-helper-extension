@@ -29,7 +29,7 @@ test('custom linter and quick autocomplete bridges do not inject during feature 
 
 test('lazy session runtime re-registers services after kernel restart', () => {
   const source = read('../src/content/lazy-session.ts');
-  const stopStart = source.indexOf('export async function stopSessionRuntime');
+  const stopStart = source.search(/export (?:async )?function stopSessionRuntime/);
   const stopBlock = source.slice(stopStart);
 
   assert.ok(stopStart >= 0, 'expected stopSessionRuntime export');

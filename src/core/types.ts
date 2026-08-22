@@ -1,8 +1,12 @@
-﻿export type Disposer = () => void;
+﻿import type { Scope } from '../mod-platform/scope';
+import type { BuiltinServiceRegistry } from './service-registry';
+
+export type Disposer = () => void;
 
 export interface FeatureContext {
   helper: any;
   services: ServiceRegistry;
+  scope: Scope;
   state: any;
   config: any;
   runtime: any;
@@ -27,18 +31,5 @@ export interface FeatureModule {
   stop?: (ctx: FeatureContext) => void | Promise<void>;
 }
 
-export interface ServiceRegistry {
-  session: any;
-  rows: any;
-  actions: any;
-  focus: any;
-  hotkeysHelp: any;
-  timelineSelection: any;
-  smartSplit: any;
-  timestampEdit: any;
-  waveformScale: any;
-  magnifier: any;
-  minimap: any;
-  bridge: any;
-}
+export type ServiceRegistry = BuiltinServiceRegistry;
 

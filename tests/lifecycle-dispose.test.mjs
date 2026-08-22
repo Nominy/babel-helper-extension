@@ -12,7 +12,7 @@ test('lifecycle exposes cleanup used by kernel stop', () => {
     'utf8'
   );
 
-  assert.match(kernelSource, /helper\.runtime\.disposeLifecycle\(\)/);
+  assert.match(kernelSource, /helper\.runtime\.disposeLifecycle\((?:reason)?\)/);
   assert.match(lifecycleSource, /helper\.runtime\.disposeLifecycle\s*=/);
   assert.match(lifecycleSource, /unbindRouteWatchers\(\)/);
   assert.match(lifecycleSource, /unbindGlobalListeners\(\)/);

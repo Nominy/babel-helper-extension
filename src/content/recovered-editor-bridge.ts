@@ -12,6 +12,9 @@ export function initRecoveredEditorBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const REQUEST_EVENT = 'babel-helper-recovered-editor-request';
   const RESPONSE_EVENT = 'babel-helper-recovered-editor-response';
+  const SERVICE_ID = 'page.recoveredEditor';
+  let serviceRegistry = null;
+  let serviceProviderHandle = null;
   const existingBridge = window.__babelHelperRecoveredEditorBridge;
   let extendedDiffPatch = null;
   let extendedDiffFetchPatch = null;
@@ -942,6 +945,60 @@ export function initRecoveredEditorBridge() {
     };
   }
 
+  const rawImplementation = {
+    getEditorSnapshot,
+    applyExtendedDiffState,
+    clearExtendedDiffState,
+    getTranscriptionDiffToolbarProps,
+    findCurrentTranscriptionDiffQueryResult,
+    patchTranscriptionDiffPayload,
+    patchTranscriptionDiffResponseText
+  };
+  const implementation = {
+    getEditorSnapshot,
+    applyExtendedDiffState,
+    clearExtendedDiffState,
+    raw: rawImplementation
+  };
+
+  function getHostServiceRegistry() {
+    const services = window.BabelMods?.unsafe?.services;
+    return services && typeof services.invoke === 'function' ? services : null;
+  }
+
+  function ensureServiceProvider() {
+    const currentRegistry = getHostServiceRegistry();
+    if (!currentRegistry || typeof currentRegistry.provide !== 'function') {
+      return null;
+    }
+
+    if (serviceRegistry === currentRegistry && serviceProviderHandle) {
+      return currentRegistry;
+    }
+
+    if (serviceProviderHandle && typeof serviceProviderHandle.dispose === 'function') {
+      serviceProviderHandle.dispose();
+    }
+    serviceRegistry = currentRegistry;
+    serviceProviderHandle = currentRegistry.provide(SERVICE_ID, implementation, {
+      owner: 'builtin:recovered-editor'
+    });
+    return currentRegistry;
+  }
+
+  function invokeService(method, ...args) {
+    const currentRegistry = ensureServiceProvider();
+    if (currentRegistry) {
+      return currentRegistry.invoke(SERVICE_ID, method, ...args);
+    }
+
+    const operation = implementation[method];
+    if (typeof operation !== 'function') {
+      throw new TypeError(`Unknown ${SERVICE_ID} operation: ${String(method)}`);
+    }
+    return operation.apply(implementation, args);
+  }
+
   function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
@@ -952,18 +1009,18 @@ export function initRecoveredEditorBridge() {
     if (detail.operation === 'snapshot') {
       respond(id, {
         ok: true,
-        snapshot: getEditorSnapshot()
+        snapshot: invokeService('getEditorSnapshot')
       });
       return;
     }
 
     if (detail.operation === 'apply-extended-diff-state') {
-      respond(id, applyExtendedDiffState(detail.payload || {}));
+      respond(id, invokeService('applyExtendedDiffState', detail.payload || {}));
       return;
     }
 
     if (detail.operation === 'clear-extended-diff-state') {
-      respond(id, clearExtendedDiffState());
+      respond(id, invokeService('clearExtendedDiffState'));
       return;
     }
 
@@ -974,20 +1031,26 @@ export function initRecoveredEditorBridge() {
   }
 
   function dispose() {
-    restoreExtendedDiffMutations();
-    uninstallExtendedDiffFetchPatch();
+    clearExtendedDiffState();
+    if (serviceProviderHandle && typeof serviceProviderHandle.dispose === 'function') {
+      serviceProviderHandle.dispose();
+    }
+    serviceProviderHandle = null;
+    serviceRegistry = null;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     delete window.__babelHelperRecoveredEditorBridge;
   }
 
+  ensureServiceProvider();
   window.addEventListener(REQUEST_EVENT, handleRequest, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperRecoveredEditorBridge = {
-    getEditorSnapshot,
-    applyExtendedDiffState,
-    clearExtendedDiffState,
+    getEditorSnapshot: (...args) => invokeService('getEditorSnapshot', ...args),
+    applyExtendedDiffState: (...args) => invokeService('applyExtendedDiffState', ...args),
+    clearExtendedDiffState: (...args) => invokeService('clearExtendedDiffState', ...args),
+    implementation: rawImplementation,
     dispose
   };
 }

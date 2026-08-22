@@ -324,7 +324,7 @@ test('automatic segment insertion bridge finds nearest uncovered speech island f
   assert.match(bridgeSource, /const hostResolved = resolveWaveForHost\(hostMarker\)/);
   assert.match(bridgeSource, /if \(hostResolved\.wave && isUsableWaveCandidate\(hostResolved\.wave, hostResolved\.host\)\)/);
   assert.match(bridgeSource, /typeof existingBridge\.findNearestSpeechIsland === 'function'/);
-  assert.match(bridgeSource, /findNearestSpeechIsland: findNearestSpeechIslandForResolvedWave/);
+  assert.match(bridgeSource, /findNearestSpeechIsland: \(\.\.\.args\) =>\s*invokeMagnifierService\('findNearestSpeechIslandForResolvedWave', \.\.\.args\)/);
   assert.match(bridgeSource, /track\.processedRecordingId != null/);
 });
 

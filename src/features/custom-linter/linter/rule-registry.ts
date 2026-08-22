@@ -41,6 +41,22 @@ type RegistryOptions = {
   ) => void;
 };
 
+export type LinterRuleSource = () => readonly LinterRule[];
+
+export function createLateBoundLinterRuleResolver(
+  builtInRules: LinterRuleSource,
+  externalRules: LinterRuleSource = () => []
+): () => LinterRule[] {
+  return () => {
+    const builtIns = builtInRules();
+    const external = externalRules();
+    return [
+      ...(Array.isArray(builtIns) ? builtIns : []),
+      ...(Array.isArray(external) ? external : [])
+    ];
+  };
+}
+
 function isRuleEnabled(rule: LinterRule, options: RegistryOptions): boolean {
   if (!Array.isArray(options.disabledRuleIds) || !rule || typeof rule.id !== 'string') {
     return true;
@@ -139,13 +155,20 @@ export function getVisibleTooltipEntries(
       continue;
     }
 
-    const ranges = rule.getMatches(entry, context);
-    if (ranges.length) {
-      entries.push({
-        reason: rule.reason,
-        matches: ranges.map((match) => match.text).filter(Boolean),
-        ranges
-      });
+    try {
+      const ranges = rule.getMatches(entry, context);
+      if (!Array.isArray(ranges)) {
+        throw new TypeError(`Custom linter rule "${rule.id}" returned a non-array match result.`);
+      }
+      if (ranges.length) {
+        entries.push({
+          reason: rule.reason,
+          matches: ranges.map((match) => match.text).filter(Boolean),
+          ranges
+        });
+      }
+    } catch (error) {
+      options.onRuleError?.(error, rule, entry, context);
     }
   }
 
@@ -169,7 +192,20 @@ export function applyRuleFixes(
     }
 
     if (typeof rule.fix === 'function') {
-      result = rule.fix(result, context);
+      try {
+        result = rule.fix(result, context);
+      } catch (error) {
+        const entry: AnnotationEntry = {
+          annotationId: '',
+          text: result
+        };
+        options.onRuleError?.(
+          error,
+          rule,
+          entry,
+          createRuleContext(entry, [entry], 0, options)
+        );
+      }
     }
   }
 

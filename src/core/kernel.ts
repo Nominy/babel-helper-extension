@@ -3,6 +3,7 @@ import { createState } from './state-store';
 import { createLogger } from './logger';
 import {
   DEFAULT_EXTENSION_SETTINGS,
+  SETTINGS_STORAGE_KEY,
   type ExtensionSettings,
   type FeatureSettingKey,
   loadExtensionSettings,
@@ -10,19 +11,36 @@ import {
 } from './settings';
 import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, sleep, waitFor } from '../hooks/dom';
 import { registerLifecycle } from './lifecycle';
-import { createDisposerStack } from './disposables';
-import type { FeatureContext, ServiceRegistry } from './types';
+import type { FeatureContext } from './types';
+import { createBuiltinServiceRegistry } from './service-registry';
+import { createScope } from '../mod-platform/scope';
 import { createAnalyticsStore } from './analytics-store';
 import { createPerfRuntime } from './perf';
 import { registerExtendedDiffViewService } from '../services/extended-diff-view-service';
 import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
+import { createSessionService } from '../services/session-service';
 import type * as SessionRuntimeModule from '../content/lazy-session';
+import { createModController } from '../content/mod-controller';
 
 type LoadedSessionRuntimeModule = typeof SessionRuntimeModule;
+
+type ChromeStorageChange = {
+  newValue?: unknown;
+};
 
 type ChromeRuntimeHost = {
   runtime: {
     getURL: (path: string) => string;
+  };
+  storage?: {
+    onChanged?: {
+      addListener: (
+        listener: (changes: Record<string, ChromeStorageChange>, areaName: string) => void
+      ) => void;
+      removeListener: (
+        listener: (changes: Record<string, ChromeStorageChange>, areaName: string) => void
+      ) => void;
+    };
   };
 };
 
@@ -58,6 +76,10 @@ export function createHelperKernel() {
   const perf = createPerfRuntime();
   let sessionRuntimeModule: LoadedSessionRuntimeModule | null = null;
   let sessionRuntimeLoadPromise: Promise<LoadedSessionRuntimeModule> | null = null;
+  const modController = createModController({ initialSettings: settings });
+  const kernelScope = createScope(`builtin:kernel:${modController.generation}`);
+  let startPromise: Promise<void> | null = null;
+  let settingsListenerBound = false;
 
   const helper: any = {
     config,
@@ -85,8 +107,8 @@ export function createHelperKernel() {
       isSessionInteractive() {
         return false;
       },
-      onLoaded() {
-        return helper.runtime.activateFeature('session', 'on-loaded');
+      onLoaded(reason?: string) {
+        return helper.runtime.activateFeature('session', reason || 'on-loaded');
       },
       activateFeature(_id: string, reason?: string) {
         return activateSessionRuntime(reason || 'activate');
@@ -107,42 +129,75 @@ export function createHelperKernel() {
     waitFor
   };
 
-  function applySettings(nextSettings: ExtensionSettings) {
+  function applySettings(nextSettings: ExtensionSettings, reason?: string) {
     settings = cloneSettings(nextSettings);
     helper.settings = settings;
 
     const nextConfig = createConfig(settings.features);
     Object.assign(helper.config, nextConfig);
+    if (reason) {
+      modController.updateSettings(settings, reason);
+    }
   }
 
-  const services: ServiceRegistry = {
-    session: {
-      isInteractive: () => helper.runtime.isSessionInteractive()
-    },
-    rows: helper,
-    actions: helper,
-    focus: helper,
-    hotkeysHelp: helper,
-    timelineSelection: helper,
-    smartSplit: helper,
-    timestampEdit: helper,
-    waveformScale: helper,
-    magnifier: helper,
-    minimap: helper,
-    bridge: helper
-  };
+  const services = createBuiltinServiceRegistry();
+  services.provide('session', createSessionService(helper), { scope: kernelScope });
 
   const logger = createLogger('kernel');
-  const disposerStack = createDisposerStack();
   const featureContext: FeatureContext = {
     helper,
     services,
+    scope: kernelScope,
     state,
     config,
     runtime: helper.runtime,
-    onDispose: (disposer) => disposerStack.add(disposer),
+    onDispose: (disposer) => {
+      kernelScope.defer(disposer);
+    },
     logger
   };
+
+  function bindSettingsForwarding() {
+    if (settingsListenerBound) {
+      return;
+    }
+    const storageChanges = getChromeApi()?.storage?.onChanged;
+    if (!storageChanges) {
+      return;
+    }
+
+    const onSettingsChanged = (
+      changes: Record<string, ChromeStorageChange>,
+      areaName: string
+    ) => {
+      if (areaName !== 'local' || !(SETTINGS_STORAGE_KEY in changes)) {
+        return;
+      }
+      applySettings(
+        normalizeExtensionSettings(changes[SETTINGS_STORAGE_KEY]?.newValue),
+        'storage-change'
+      );
+    };
+
+    try {
+      storageChanges.addListener(onSettingsChanged);
+      settingsListenerBound = true;
+      kernelScope.defer(() => {
+        try {
+          storageChanges.removeListener(onSettingsChanged);
+        } finally {
+          settingsListenerBound = false;
+        }
+      });
+    } catch {
+      try {
+        storageChanges.removeListener(onSettingsChanged);
+      } catch {
+        // The extension context may already be invalidated; the listener is then gone with it.
+      }
+      settingsListenerBound = false;
+    }
+  }
 
   async function loadSessionRuntimeModule() {
     if (sessionRuntimeModule) {
@@ -176,75 +231,94 @@ export function createHelperKernel() {
 
   async function ensureSessionRuntime(reason: string) {
     const module = await loadSessionRuntimeModule();
-    if (typeof module.ensureSessionRuntime === 'function') {
-      await module.ensureSessionRuntime(featureContext, reason);
+    if (typeof module.ensureSessionRuntime !== 'function') {
+      return true;
     }
+    return module.ensureSessionRuntime(featureContext, reason);
   }
 
-  async function activateSessionRuntime(reason: string) {
-    perf.setPhase('session-ready', { reason });
-    const module = await loadSessionRuntimeModule();
-    if (typeof module.activateSessionFeatures === 'function') {
-      await module.activateSessionFeatures(featureContext, reason);
-    }
-    perf.setPhase('active', { reason });
+  function activateSessionRuntime(reason: string) {
+    return modController.activateSession(reason, async () => {
+      perf.setPhase('session-ready', { reason });
+      const module = await loadSessionRuntimeModule();
+      if (typeof module.activateSessionFeatures === 'function') {
+        const activated = await module.activateSessionFeatures(featureContext, reason);
+        if (!activated) {
+          return false;
+        }
+      }
+      perf.setPhase('active', { reason });
+      return true;
+    });
   }
 
-  async function deactivateSessionRuntime(reason: string) {
-    if (!sessionRuntimeModule) {
-      return;
+  function deactivateSessionRuntime(reason: string) {
+    return modController.deactivateSession(reason, async () => {
+      if (
+        sessionRuntimeModule &&
+        typeof sessionRuntimeModule.deactivateSessionFeatures === 'function'
+      ) {
+        await sessionRuntimeModule.deactivateSessionFeatures(featureContext, reason);
+      }
+      perf.setPhase('route-ready', { reason });
+      return true;
+    });
+  }
+
+  function startKernel() {
+    if (startPromise) {
+      return startPromise;
     }
-    if (typeof sessionRuntimeModule.deactivateSessionFeatures === 'function') {
-      await sessionRuntimeModule.deactivateSessionFeatures(featureContext, reason);
-    }
-    perf.setPhase('route-ready', { reason });
+
+    modController.start('kernel-start');
+    startPromise = (async () => {
+      try {
+        const loadedSettings = await loadExtensionSettings();
+        applySettings(loadedSettings, 'settings-loaded');
+        bindSettingsForwarding();
+
+        perf.setPhase('route-ready', { reason: 'kernel-start' });
+        registerLifecycle(helper);
+        kernelScope.defer(() => {
+          if (typeof helper.runtime.disposeLifecycle === 'function') {
+            helper.runtime.disposeLifecycle();
+          }
+        });
+        registerRecoveredEditorSnapshotService(helper);
+        if (helper.isFeatureEnabled('extendedDiffView')) {
+          registerExtendedDiffViewService(helper);
+          kernelScope.defer(() => {
+            if (typeof helper.unbindExtendedDiffView === 'function') {
+              helper.unbindExtendedDiffView();
+            }
+          });
+        }
+        modController.ready('kernel-ready');
+      } catch (error: unknown) {
+        await stopKernel('kernel-start-error');
+        throw error;
+      }
+    })();
+    return startPromise;
+  }
+
+  function stopKernel(reason = 'kernel-stop') {
+    return modController.stop(reason, async () => {
+      if (sessionRuntimeModule && typeof sessionRuntimeModule.stopSessionRuntime === 'function') {
+        await sessionRuntimeModule.stopSessionRuntime(featureContext, reason);
+      }
+      await kernelScope.dispose(reason);
+    });
   }
 
   return {
     helper,
-    async start() {
-      const loadedSettings = await loadExtensionSettings();
-      applySettings(loadedSettings);
-
-      perf.setPhase('route-ready', { reason: 'kernel-start' });
-      registerLifecycle(helper);
-      registerRecoveredEditorSnapshotService(helper);
-      if (helper.isFeatureEnabled('extendedDiffView')) {
-        registerExtendedDiffViewService(helper);
-      }
+    controller: modController,
+    generation: modController.generation,
+    start: startKernel,
+    onLoaded(reason?: string) {
+      return activateSessionRuntime(reason || 'kernel-on-loaded');
     },
-    async onLoaded() {
-      await activateSessionRuntime('kernel-on-loaded');
-    },
-    async stop() {
-      if (sessionRuntimeModule && typeof sessionRuntimeModule.stopSessionRuntime === 'function') {
-        await sessionRuntimeModule.stopSessionRuntime(featureContext);
-      }
-      disposerStack.flush();
-      if (typeof helper.runtime.disposeLifecycle === 'function') {
-        helper.runtime.disposeLifecycle();
-      }
-      if (typeof helper.unbindCutPreview === 'function') {
-        helper.unbindCutPreview();
-      }
-      if (typeof helper.unbindNativeTimelineDoubleClickBlocker === 'function') {
-        helper.unbindNativeTimelineDoubleClickBlocker();
-      }
-      if (typeof helper.unbindMagnifier === 'function') {
-        helper.unbindMagnifier();
-      }
-      if (typeof helper.unbindWaveformScaleUnlock === 'function') {
-        helper.unbindWaveformScaleUnlock();
-      }
-      if (typeof helper.unbindZoomPersistence === 'function') {
-        helper.unbindZoomPersistence();
-      }
-      if (typeof helper.unbindRowTracking === 'function') {
-        helper.unbindRowTracking();
-      }
-      if (typeof helper.unbindExtendedDiffView === 'function') {
-        helper.unbindExtendedDiffView();
-      }
-    }
+    stop: stopKernel
   };
 }

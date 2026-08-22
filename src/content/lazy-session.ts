@@ -1,39 +1,56 @@
 import type { FeatureContext, FeatureModule } from '../core/types';
 import { createFeatureModules } from '../features';
-import { registerHotkeysHelpService } from '../services/hotkeys-help-service';
-import { registerMagnifierService } from '../services/magnifier-service';
-import { registerMinimapService } from '../services/minimap-service';
+import type { Scope } from '../mod-platform/scope';
 import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
-import { registerRowService } from '../services/row-service';
-import { registerTimelineSelectionService } from '../services/timeline-selection-service';
-import { registerTimestampEditService } from '../services/timestamp-edit-service';
-import { registerWaveformScaleService } from '../services/waveform-scale-service';
+import {
+  disposeSessionServiceScopes,
+  installHotkeysHelpServiceProvider,
+  installMagnifierServiceProvider,
+  installMinimapServiceProvider,
+  installRowServiceProviders,
+  installTimelineSelectionServiceProviders,
+  installTimestampEditServiceProvider,
+  installWaveformScaleServiceProvider,
+  type SessionServiceScopes
+} from '../services/builtin-service-adapters';
 
 type SessionRuntime = {
   features: FeatureModule[];
   servicesRegistered: boolean;
+  serviceScopes: SessionServiceScopes;
   started: boolean;
   activeFeatures: Set<string>;
+  transitionRevision: number;
+  transitionTail: Promise<void>;
+  startPromise: Promise<boolean> | null;
+  stopPromise: Promise<void> | null;
+  stopping: boolean;
+  stopped: boolean;
 };
 
 type FeatureHook = Exclude<keyof FeatureModule, 'id' | 'dependsOn'>;
 
-declare global {
-  interface Window {
-    __babelHelperSessionRuntime?: SessionRuntime;
-  }
-}
+const sessionRuntimes = new WeakMap<FeatureContext, SessionRuntime>();
 
-function getRuntime(): SessionRuntime {
-  if (!window.__babelHelperSessionRuntime) {
-    window.__babelHelperSessionRuntime = {
+function getRuntime(ctx: FeatureContext): SessionRuntime {
+  let runtime = sessionRuntimes.get(ctx);
+  if (!runtime) {
+    runtime = {
       features: [],
       servicesRegistered: false,
+      serviceScopes: [],
       started: false,
-      activeFeatures: new Set()
+      activeFeatures: new Set(),
+      transitionRevision: 0,
+      transitionTail: Promise.resolve(),
+      startPromise: null,
+      stopPromise: null,
+      stopping: false,
+      stopped: false
     };
+    sessionRuntimes.set(ctx, runtime);
   }
-  return window.__babelHelperSessionRuntime;
+  return runtime;
 }
 
 function isFeatureEnabled(ctx: FeatureContext, key: string) {
@@ -52,17 +69,22 @@ function reportRuntimeError(ctx: FeatureContext, stage: string, id: string, erro
   ctx.logger?.warn?.('[babel-helper] session runtime error', stage, id, message);
 }
 
-function registerSessionServices(ctx: FeatureContext): boolean {
-  const runtime = getRuntime();
+async function registerSessionServices(ctx: FeatureContext): Promise<boolean> {
+  const runtime = getRuntime(ctx);
   if (runtime.servicesRegistered) {
     return true;
   }
 
   const { helper } = ctx;
   let failures = 0;
-  const register = (id: string, fn: () => void) => {
+  const register = (id: string, fn: () => Scope | SessionServiceScopes | void) => {
     try {
-      fn();
+      const owned = fn();
+      if (Array.isArray(owned)) {
+        runtime.serviceScopes.push(...owned);
+      } else if (owned) {
+        runtime.serviceScopes.push(owned as Scope);
+      }
     } catch (error: unknown) {
       failures += 1;
       reportRuntimeError(ctx, 'service.register', id, error);
@@ -70,26 +92,33 @@ function registerSessionServices(ctx: FeatureContext): boolean {
   };
 
   register('recovered-editor-snapshot', () => registerRecoveredEditorSnapshotService(helper));
-  register('row', () => registerRowService(helper));
-  register('timestamp-edit', () => registerTimestampEditService(helper));
+  register('row', () => installRowServiceProviders(ctx));
+  register('timestamp-edit', () => installTimestampEditServiceProvider(ctx));
 
   if (isFeatureEnabled(ctx, 'hotkeysHelp')) {
-    register('hotkeys-help', () => registerHotkeysHelpService(helper));
+    register('hotkeys-help', () => installHotkeysHelpServiceProvider(ctx));
   }
   if (isFeatureEnabled(ctx, 'timelineSelection') || isFeatureEnabled(ctx, 'disableNativeTimelineDoubleClick')) {
-    register('timeline-selection', () => registerTimelineSelectionService(helper));
+    register('timeline-selection', () => installTimelineSelectionServiceProviders(ctx));
   }
   if (isFeatureEnabled(ctx, 'waveformScaleUnlock')) {
-    registerWaveformScaleService(helper);
+    register('waveform-scale', () => installWaveformScaleServiceProvider(ctx));
   }
   if (isFeatureEnabled(ctx, 'magnifier')) {
-    register('magnifier', () => registerMagnifierService(helper));
+    register('magnifier', () => installMagnifierServiceProvider(ctx));
   }
   if (isFeatureEnabled(ctx, 'minimap')) {
-    register('minimap', () => registerMinimapService(helper));
+    register('minimap', () => installMinimapServiceProvider(ctx));
   }
 
   runtime.servicesRegistered = failures === 0;
+  if (failures > 0) {
+    try {
+      await disposeSessionServiceScopes(runtime.serviceScopes, 'service-registration-failed');
+    } catch (error: unknown) {
+      reportRuntimeError(ctx, 'service.dispose', 'registration-failed', error);
+    }
+  }
   helper.perf?.count?.('session.services.registered', { failures });
   return runtime.servicesRegistered;
 }
@@ -126,7 +155,7 @@ async function invokeFeatureHook(
 }
 
 async function runFeatures(ctx: FeatureContext, method: FeatureHook, reason?: string) {
-  const runtime = getRuntime();
+  const runtime = getRuntime(ctx);
   const activationReason = reason || String(method);
   for (const feature of runtime.features) {
     const hook = feature[method];
@@ -143,51 +172,55 @@ async function runFeatures(ctx: FeatureContext, method: FeatureHook, reason?: st
 }
 
 export async function ensureSessionRuntime(ctx: FeatureContext, reason = 'session-ready') {
-  const runtime = getRuntime();
-  registerSessionServices(ctx);
+  const runtime = getRuntime(ctx);
+  if (runtime.stopping || runtime.stopped) {
+    return false;
+  }
+  await registerSessionServices(ctx);
 
   if (!runtime.features.length) {
     runtime.features = createFeatureModules(ctx.helper.settings.features);
   }
 
   if (runtime.started) {
-    return;
+    return true;
   }
-
-  ctx.helper.perf?.mark?.('session-runtime-start');
-  await runFeatures(ctx, 'load', reason);
-  await runFeatures(ctx, 'register', reason);
-  await runFeatures(ctx, 'start', reason);
-  runtime.started = true;
-  ctx.helper.perf?.measure?.('session-runtime-start', 'session-runtime-start');
+  if (!runtime.startPromise) {
+    runtime.startPromise = (async () => {
+      ctx.helper.perf?.mark?.('session-runtime-start');
+      await runFeatures(ctx, 'load', reason);
+      await runFeatures(ctx, 'register', reason);
+      await runFeatures(ctx, 'start', reason);
+      runtime.started = true;
+      ctx.helper.perf?.measure?.('session-runtime-start', 'session-runtime-start');
+      return !runtime.stopping && !runtime.stopped;
+    })().finally(() => {
+      runtime.startPromise = null;
+    });
+  }
+  return runtime.startPromise;
 }
 
-export async function activateSessionFeatures(ctx: FeatureContext, reason = 'session-ready') {
-  const runtime = getRuntime();
-  await ensureSessionRuntime(ctx, reason);
-  await runFeatures(ctx, 'onLoaded', reason);
-  for (const feature of runtime.features) {
-    if (runtime.activeFeatures.has(feature.id)) {
-      continue;
-    }
-    try {
-      if (typeof feature.activate === 'function') {
-        ctx.helper.perf?.count?.('feature.activate', { id: feature.id, reason });
-        await feature.activate(ctx, reason);
-      }
-      runtime.activeFeatures.add(feature.id);
-    } catch (error: unknown) {
-      reportRuntimeError(ctx, 'feature.activate', feature.id, error);
-    }
-  }
+function enqueueTransition<T>(runtime: SessionRuntime, operation: () => Promise<T>): Promise<T> {
+  const result = runtime.transitionTail.then(operation);
+  runtime.transitionTail = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
 }
 
-export async function deactivateSessionFeatures(ctx: FeatureContext, reason = 'session-clear') {
-  const runtime = getRuntime();
+async function deactivateActiveFeatures(
+  ctx: FeatureContext,
+  runtime: SessionRuntime,
+  reason: string
+) {
+  let changed = false;
   for (const feature of runtime.features) {
     if (!runtime.activeFeatures.has(feature.id)) {
       continue;
     }
+    changed = true;
     try {
       if (typeof feature.deactivate === 'function') {
         ctx.helper.perf?.count?.('feature.deactivate', { id: feature.id, reason });
@@ -199,14 +232,104 @@ export async function deactivateSessionFeatures(ctx: FeatureContext, reason = 's
       runtime.activeFeatures.delete(feature.id);
     }
   }
+  return changed;
 }
 
-export async function stopSessionRuntime(ctx: FeatureContext) {
-  const runtime = getRuntime();
-  await deactivateSessionFeatures(ctx, 'stop');
-  await runFeatures(ctx, 'stop', 'stop');
-  runtime.started = false;
-  runtime.servicesRegistered = false;
-  runtime.features = [];
-  runtime.activeFeatures.clear();
+export function activateSessionFeatures(ctx: FeatureContext, reason = 'session-ready') {
+  const runtime = getRuntime(ctx);
+  const transitionRevision = ++runtime.transitionRevision;
+  return enqueueTransition(runtime, async () => {
+    if (
+      runtime.stopping ||
+      runtime.stopped ||
+      transitionRevision !== runtime.transitionRevision
+    ) {
+      return false;
+    }
+
+    const ready = await ensureSessionRuntime(ctx, reason);
+    if (
+      !ready ||
+      runtime.stopping ||
+      runtime.stopped ||
+      transitionRevision !== runtime.transitionRevision
+    ) {
+      return false;
+    }
+
+    await runFeatures(ctx, 'onLoaded', reason);
+    for (const feature of runtime.features) {
+      if (
+        runtime.stopping ||
+        runtime.stopped ||
+        transitionRevision !== runtime.transitionRevision
+      ) {
+        break;
+      }
+      if (runtime.activeFeatures.has(feature.id)) {
+        continue;
+      }
+      try {
+        if (typeof feature.activate === 'function') {
+          ctx.helper.perf?.count?.('feature.activate', { id: feature.id, reason });
+          await feature.activate(ctx, reason);
+        }
+        runtime.activeFeatures.add(feature.id);
+      } catch (error: unknown) {
+        reportRuntimeError(ctx, 'feature.activate', feature.id, error);
+      }
+    }
+
+    if (
+      runtime.stopping ||
+      runtime.stopped ||
+      transitionRevision !== runtime.transitionRevision
+    ) {
+      await deactivateActiveFeatures(ctx, runtime, `stale:${reason}`);
+      return false;
+    }
+    return true;
+  });
+}
+
+export function deactivateSessionFeatures(ctx: FeatureContext, reason = 'session-clear') {
+  const runtime = getRuntime(ctx);
+  ++runtime.transitionRevision;
+  return enqueueTransition(runtime, async () => {
+    if (runtime.stopped) {
+      return false;
+    }
+    await deactivateActiveFeatures(ctx, runtime, reason);
+    return true;
+  });
+}
+
+export function stopSessionRuntime(ctx: FeatureContext, reason = 'kernel-stop') {
+  const runtime = getRuntime(ctx);
+  if (runtime.stopPromise) {
+    return runtime.stopPromise;
+  }
+
+  runtime.stopping = true;
+  ++runtime.transitionRevision;
+  runtime.stopPromise = enqueueTransition(runtime, async () => {
+    if (runtime.startPromise) {
+      await runtime.startPromise.catch(() => false);
+    }
+    await deactivateActiveFeatures(ctx, runtime, reason);
+    if (runtime.started) {
+      await runFeatures(ctx, 'stop', reason);
+    }
+    try {
+      await disposeSessionServiceScopes(runtime.serviceScopes, reason);
+    } catch (error: unknown) {
+      reportRuntimeError(ctx, 'service.dispose', 'session', error);
+    }
+    runtime.started = false;
+    runtime.servicesRegistered = false;
+    runtime.features = [];
+    runtime.activeFeatures.clear();
+    runtime.stopped = true;
+  });
+  return runtime.stopPromise;
 }

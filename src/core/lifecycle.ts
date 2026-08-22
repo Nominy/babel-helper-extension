@@ -12,6 +12,12 @@ export function registerLifecycle(helper: any) {
   }
 
   helper.__mainInitialized = true;
+  helper.state.sessionLifecycleRevision = Math.max(
+    0,
+    Number(helper.state.sessionLifecycleRevision) || 0
+  );
+  helper.state.onLoadedCalledRevision = -1;
+  helper.state.onLoadedInFlightRevision = -1;
 
   const ROUTE_REFRESH_DELAY_MS = 80;
   const ROUTE_REFRESH_MAX_ATTEMPTS = 60;
@@ -63,7 +69,6 @@ export function registerLifecycle(helper: any) {
     helper.state.routeRefreshWindowStartedAt = Date.now();
     helper.state.sessionBindRetryCount = 0;
     helper.state.onLoadedCalled = false;
-    helper.state.onLoadedInFlight = false;
   }
 
   function startHotkeysEnhanceFrame() {
@@ -1095,6 +1100,13 @@ export function registerLifecycle(helper: any) {
   function handleRouteEvent(reason) {
     lastPolledHref = window.location.href;
     resetRouteRefreshWindow();
+    if (
+      helper.state.sessionActive ||
+      helper.state.onLoadedInFlight ||
+      helper.state.sessionBindPromise
+    ) {
+      clearSessionFeatures(reason || 'route-change');
+    }
     helper.runtime.scheduleRouteRefresh(reason);
     if (helper.analytics) {
       helper.analytics.record('session:route-change', {
@@ -1138,10 +1150,10 @@ export function registerLifecycle(helper: any) {
     helper.state.routeWatchBound = false;
   }
 
-  helper.runtime.disposeLifecycle = function disposeLifecycle() {
+  helper.runtime.disposeLifecycle = function disposeLifecycle(reason) {
     document.removeEventListener('DOMContentLoaded', helper.init, false);
     helper.runtime.clearRuntimeTimer();
-    clearSessionFeatures();
+    clearSessionFeatures(reason || 'lifecycle-dispose');
     stopRouteRecoveryObserver();
     unbindRouteWatchers();
     unbindGlobalListeners();
@@ -1152,10 +1164,12 @@ export function registerLifecycle(helper: any) {
     helper.__mainInitialized = false;
   };
 
-  function clearSessionFeatures() {
+  function clearSessionFeatures(reason) {
+    helper.state.sessionLifecycleRevision =
+      Math.max(0, Number(helper.state.sessionLifecycleRevision) || 0) + 1;
     stopHotkeysObserver();
     stopHotkeysEnhanceFrame();
-    void helper.runtime.deactivateFeature?.('session', 'session-clear');
+    void helper.runtime.deactivateFeature?.('session', reason || 'session-clear');
     if (typeof helper.unbindRowTracking === 'function') {
       helper.unbindRowTracking();
     }
@@ -1224,29 +1238,50 @@ export function registerLifecycle(helper: any) {
     );
   }
 
-  function runSessionOnLoaded(reason) {
-    if (helper.state.onLoadedCalled || helper.state.onLoadedInFlight) {
+  function runSessionOnLoaded(reason, bindHref, lifecycleRevision) {
+    if (
+      helper.state.onLoadedCalledRevision === lifecycleRevision ||
+      helper.state.onLoadedInFlightRevision === lifecycleRevision ||
+      lifecycleRevision !== helper.state.sessionLifecycleRevision ||
+      !isCurrentSessionSurface(bindHref)
+    ) {
       return;
     }
 
     if (typeof helper.runtime.onLoaded !== 'function') {
       helper.state.onLoadedCalled = true;
+      helper.state.onLoadedCalledRevision = lifecycleRevision;
       return;
     }
 
     helper.state.onLoadedInFlight = true;
+    helper.state.onLoadedInFlightRevision = lifecycleRevision;
     Promise.resolve()
-      .then(() => helper.runtime.onLoaded())
-      .then(() => {
+      .then(() => helper.runtime.onLoaded(reason || 'session-ready'))
+      .then((activated) => {
+        if (
+          activated === false ||
+          lifecycleRevision !== helper.state.sessionLifecycleRevision ||
+          !isCurrentSessionSurface(bindHref)
+        ) {
+          return;
+        }
         helper.state.onLoadedCalled = true;
+        helper.state.onLoadedCalledRevision = lifecycleRevision;
         helper.state.sessionBindRetryCount = 0;
       })
       .catch((error) => {
+        if (lifecycleRevision !== helper.state.sessionLifecycleRevision) {
+          return;
+        }
         helper.state.onLoadedCalled = false;
         scheduleSessionBindRetry('on-loaded-error', error);
       })
       .finally(() => {
-        helper.state.onLoadedInFlight = false;
+        if (helper.state.onLoadedInFlightRevision === lifecycleRevision) {
+          helper.state.onLoadedInFlight = false;
+          helper.state.onLoadedInFlightRevision = -1;
+        }
       });
   }
 
@@ -1256,11 +1291,18 @@ export function registerLifecycle(helper: any) {
     }
 
     const bindHref = window.location.href;
+    const lifecycleRevision = Math.max(
+      0,
+      Number(helper.state.sessionLifecycleRevision) || 0
+    );
     helper.state.sessionBindPromise = (async () => {
       const wasSessionActive = Boolean(helper.state.sessionActive);
       stopRouteRecoveryObserver();
       await helper.runtime.ensureSessionRuntime?.(reason || 'session-ready');
-      if (!isCurrentSessionSurface(bindHref)) {
+      if (
+        lifecycleRevision !== helper.state.sessionLifecycleRevision ||
+        !isCurrentSessionSurface(bindHref)
+      ) {
         return false;
       }
 
@@ -1330,7 +1372,7 @@ export function registerLifecycle(helper: any) {
           url: window.location.href
         });
       }
-      return true;
+      return { lifecycleRevision };
     })();
 
     try {
@@ -1351,7 +1393,7 @@ export function registerLifecycle(helper: any) {
 
   helper.runtime.refreshRouteSession = function refreshRouteSession(reason) {
     if (!isTranscriptionRoute()) {
-      clearSessionFeatures();
+      clearSessionFeatures(reason || 'route-exit');
       stopRouteRecoveryObserver();
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
@@ -1360,7 +1402,7 @@ export function registerLifecycle(helper: any) {
     }
 
     if (isReadOnlyFeedbackRoute()) {
-      clearSessionFeatures();
+      clearSessionFeatures(reason || 'read-only-route');
       startRouteRecoveryObserver();
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
@@ -1378,7 +1420,11 @@ export function registerLifecycle(helper: any) {
             }
             return;
           }
-          runSessionOnLoaded(reason || 'transcript-surface');
+          runSessionOnLoaded(
+            reason || 'transcript-surface',
+            bindHref,
+            bound.lifecycleRevision
+          );
         })
         .catch((error) => {
           scheduleSessionBindRetry('session-bind-error', error);

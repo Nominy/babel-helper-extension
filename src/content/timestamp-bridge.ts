@@ -18,6 +18,7 @@ export function initTimestampBridge() {
 
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
+  const SERVICE_ID = 'page.timestamp';
   const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
 
   function safe(callback, fallbackValue) {
@@ -1064,6 +1065,29 @@ export function initTimestampBridge() {
     };
   }
 
+  const nativeService = {
+    createSegment,
+    deleteSegment,
+    mergeSegment,
+    setBoundaryTime,
+    splitSegmentAtTime
+  };
+  const serviceRegistry = window.BabelMods?.unsafe?.services;
+  if (
+    !serviceRegistry ||
+    typeof serviceRegistry.provide !== 'function' ||
+    typeof serviceRegistry.invoke !== 'function'
+  ) {
+    throw new Error('BabelMods page service registry is unavailable');
+  }
+  const provider = serviceRegistry.provide(SERVICE_ID, nativeService, {
+    owner: 'builtin:timestamp'
+  });
+
+  function invokeService(method, ...args) {
+    return serviceRegistry.invoke(SERVICE_ID, method, ...args);
+  }
+
   function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
@@ -1074,7 +1098,7 @@ export function initTimestampBridge() {
     }
 
     if (operation === 'set-boundary-time') {
-      Promise.resolve(setBoundaryTime(payload))
+      Promise.resolve(invokeService('setBoundaryTime', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -1085,7 +1109,7 @@ export function initTimestampBridge() {
           })
         );
     } else if (operation === 'split-segment-at-time') {
-      Promise.resolve(splitSegmentAtTime(payload))
+      Promise.resolve(invokeService('splitSegmentAtTime', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -1096,7 +1120,7 @@ export function initTimestampBridge() {
           })
         );
     } else if (operation === 'merge-segment') {
-      Promise.resolve(mergeSegment(payload))
+      Promise.resolve(invokeService('mergeSegment', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -1107,7 +1131,7 @@ export function initTimestampBridge() {
           })
         );
     } else if (operation === 'create-segment') {
-      Promise.resolve(createSegment(payload))
+      Promise.resolve(invokeService('createSegment', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -1118,7 +1142,7 @@ export function initTimestampBridge() {
           })
         );
     } else if (operation === 'delete-segment') {
-      Promise.resolve(deleteSegment(payload))
+      Promise.resolve(invokeService('deleteSegment', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -1131,23 +1155,32 @@ export function initTimestampBridge() {
     }
   }
 
+  let disposed = false;
   function dispose() {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
-    delete window.__babelHelperTimestampBridge;
+    provider.dispose();
+    if (window.__babelHelperTimestampBridge === facade) {
+      delete window.__babelHelperTimestampBridge;
+    }
   }
 
   window.addEventListener(REQUEST_EVENT, handleRequest, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
-  window.__babelHelperTimestampBridge = {
-    createSegment,
-    deleteSegment,
-    mergeSegment,
-    setBoundaryTime,
-    splitSegmentAtTime,
+  const facade = {
+    createSegment: (...args) => invokeService('createSegment', ...args),
+    deleteSegment: (...args) => invokeService('deleteSegment', ...args),
+    mergeSegment: (...args) => invokeService('mergeSegment', ...args),
+    setBoundaryTime: (...args) => invokeService('setBoundaryTime', ...args),
+    splitSegmentAtTime: (...args) => invokeService('splitSegmentAtTime', ...args),
     dispose
   };
+  window.__babelHelperTimestampBridge = facade;
 }
 
 initTimestampBridge();

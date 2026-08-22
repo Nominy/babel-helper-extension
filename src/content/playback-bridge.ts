@@ -7,6 +7,7 @@ export function initPlaybackBridge() {
   const REQUEST_EVENT = 'babel-helper-playback-request';
   const RESPONSE_EVENT = 'babel-helper-playback-response';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+  const SERVICE_ID = 'page.playback';
   const DEFAULT_PLAYBACK_SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
   function safe(callback, fallbackValue) {
@@ -811,6 +812,29 @@ export function initPlaybackBridge() {
     };
   }
 
+  const nativeService = {
+    adjustPlaybackSpeed,
+    getPlaybackState,
+    seekPlaybackBySeconds,
+    setPlaybackPaused,
+    setPlaybackSpeed
+  };
+  const serviceRegistry = window.BabelMods?.unsafe?.services;
+  if (
+    !serviceRegistry ||
+    typeof serviceRegistry.provide !== 'function' ||
+    typeof serviceRegistry.invoke !== 'function'
+  ) {
+    throw new Error('BabelMods page service registry is unavailable');
+  }
+  const provider = serviceRegistry.provide(SERVICE_ID, nativeService, {
+    owner: 'builtin:playback'
+  });
+
+  function invokeService(method, ...args) {
+    return serviceRegistry.invoke(SERVICE_ID, method, ...args);
+  }
+
   function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
@@ -821,42 +845,51 @@ export function initPlaybackBridge() {
     }
 
     if (operation === 'seek') {
-      respond(id, seekPlaybackBySeconds(payload.deltaSeconds));
+      respond(id, invokeService('seekPlaybackBySeconds', payload.deltaSeconds));
       return;
     }
 
     if (operation === 'state') {
-      respond(id, getPlaybackState());
+      respond(id, invokeService('getPlaybackState'));
       return;
     }
 
     if (operation === 'set-paused') {
-      respond(id, setPlaybackPaused(payload.paused));
+      respond(id, invokeService('setPlaybackPaused', payload.paused));
       return;
     }
 
     if (operation === 'adjust-speed') {
-      respond(id, adjustPlaybackSpeed(payload.direction, payload.steps));
+      respond(id, invokeService('adjustPlaybackSpeed', payload.direction, payload.steps));
     }
   }
 
+  let disposed = false;
   function dispose() {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
-    delete window.__babelHelperPlaybackBridge;
+    provider.dispose();
+    if (window.__babelHelperPlaybackBridge === facade) {
+      delete window.__babelHelperPlaybackBridge;
+    }
   }
 
   window.addEventListener(REQUEST_EVENT, handleRequest, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
-  window.__babelHelperPlaybackBridge = {
-    seekPlaybackBySeconds,
-    getPlaybackState,
-    setPlaybackPaused,
-    adjustPlaybackSpeed,
-    setPlaybackSpeed,
+  const facade = {
+    adjustPlaybackSpeed: (...args) => invokeService('adjustPlaybackSpeed', ...args),
+    getPlaybackState: (...args) => invokeService('getPlaybackState', ...args),
+    seekPlaybackBySeconds: (...args) => invokeService('seekPlaybackBySeconds', ...args),
+    setPlaybackPaused: (...args) => invokeService('setPlaybackPaused', ...args),
+    setPlaybackSpeed: (...args) => invokeService('setPlaybackSpeed', ...args),
     dispose
   };
+  window.__babelHelperPlaybackBridge = facade;
 }
 
 initPlaybackBridge();

@@ -14,6 +14,11 @@ const REQUIRED_FILES = [
   'src/content/timestamp-bridge.ts',
   'src/content/linter-bridge.ts',
   'src/options/options.ts',
+  'src/mod-platform/page-host.ts',
+  'src/userscript/babel-mods.ts',
+  'src/userscript/babel-mods.d.ts',
+  'examples/tampermonkey/native-registration.user.js',
+  'examples/tampermonkey/coremod-decoration.user.js',
   'options.html'
 ];
 

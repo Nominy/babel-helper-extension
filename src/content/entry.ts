@@ -4,8 +4,12 @@ import { bootstrapCustomLinterBridge, preloadCustomLinterBridge } from '../featu
 declare global {
   interface Window {
     __babelHelperKernel?: {
+      generation: number;
+      helper?: {
+        isFeatureEnabled?: (featureKey: string) => boolean;
+      };
       start: () => Promise<void>;
-      stop: () => Promise<void>;
+      stop: (reason?: string) => Promise<void>;
     };
   }
 }
@@ -21,7 +25,7 @@ async function boot() {
 
   const previousKernel = window.__babelHelperKernel;
   if (previousKernel && typeof previousKernel.stop === 'function') {
-    await previousKernel.stop().catch(() => {});
+    await previousKernel.stop('kernel-replaced').catch(() => {});
   }
 
   const kernel = createHelperKernel();
@@ -31,6 +35,7 @@ async function boot() {
     if (window.__babelHelperKernel === kernel) {
       delete window.__babelHelperKernel;
     }
+    void kernel.stop('kernel-start-error').catch(() => {});
     throw error;
   });
 

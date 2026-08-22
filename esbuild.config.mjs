@@ -1,9 +1,18 @@
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, context } from 'esbuild';
 
 const watch = process.argv.includes('--watch');
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const manifest = JSON.parse(await readFile(path.join(rootDir, 'manifest.json'), 'utf8'));
+const userscriptDeclarationSource = path.join(rootDir, 'src/userscript/babel-mods.d.ts');
+const userscriptDeclarationOutput = path.join(rootDir, 'dist/userscript/babel-mods.d.ts');
+
+async function copyUserscriptDeclaration() {
+  await mkdir(path.dirname(userscriptDeclarationOutput), { recursive: true });
+  await copyFile(userscriptDeclarationSource, userscriptDeclarationOutput);
+}
 
 const fsShimPlugin = {
   name: 'fs-browser-shim',
@@ -34,6 +43,19 @@ const sharedModule = {
 };
 
 const tasks = [
+  {
+    ...shared,
+    define: {
+      __BABEL_MOD_INTERNALS_VERSION__: JSON.stringify(manifest.version)
+    },
+    entryPoints: ['src/mod-platform/page-host.ts'],
+    outfile: 'dist/content/mod-host.js'
+  },
+  {
+    ...shared,
+    entryPoints: ['src/userscript/babel-mods.ts'],
+    outfile: 'dist/userscript/babel-mods.js'
+  },
   {
     ...shared,
     entryPoints: ['src/content/entry.ts'],
@@ -89,7 +111,9 @@ const tasks = [
 if (watch) {
   const contexts = await Promise.all(tasks.map((options) => context(options)));
   await Promise.all(contexts.map((ctx) => ctx.watch()));
+  await copyUserscriptDeclaration();
   console.log('Watching extension bundles...');
 } else {
   await Promise.all(tasks.map((options) => build(options)));
+  await copyUserscriptDeclaration();
 }

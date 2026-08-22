@@ -6,7 +6,13 @@ test('manifest targets bundled dist assets', () => {
   const raw = fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8').replace(/^\uFEFF/, '');
   const manifest = JSON.parse(raw);
 
-  assert.equal(manifest.content_scripts[0].js[0], 'dist/content/entry.js');
+  const mainHost = manifest.content_scripts.find((script) => script.world === 'MAIN');
+  const isolatedEntry = manifest.content_scripts.find((script) => script.world !== 'MAIN');
+
+  assert.deepEqual(mainHost.js, ['dist/content/mod-host.js']);
+  assert.equal(mainHost.run_at, 'document_start');
+  assert.deepEqual(mainHost.matches, ['https://dashboard.babel.audio/*']);
+  assert.equal(isolatedEntry.js[0], 'dist/content/entry.js');
   assert.equal(manifest.web_accessible_resources[0].resources[0], 'dist/content/magnifier-bridge.js');
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/lazy-session.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/timestamp-bridge.js'), true);
@@ -17,6 +23,18 @@ test('manifest targets bundled dist assets', () => {
   assert.equal(manifest.action.default_title, 'Open Babel Helper settings');
   assert.equal(manifest.action.default_popup, 'options.html');
   assert.equal(manifest.permissions.includes('storage'), true);
+  assert.equal(manifest.permissions.length, 1);
+  assert.equal(manifest.host_permissions, undefined);
+});
+
+test('mod host and standalone userscript SDK are build-wired', () => {
+  const source = fs.readFileSync(new URL('../esbuild.config.mjs', import.meta.url), 'utf8');
+
+  assert.match(source, /src\/mod-platform\/page-host\.ts/);
+  assert.match(source, /dist\/content\/mod-host\.js/);
+  assert.match(source, /src\/userscript\/babel-mods\.ts/);
+  assert.match(source, /dist\/userscript\/babel-mods\.js/);
+  assert.match(source, /dist\/userscript\/babel-mods\.d\.ts/);
 });
 
 test('package build bumps the version before syncing unpacked assets', () => {

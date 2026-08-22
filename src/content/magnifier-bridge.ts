@@ -16,6 +16,7 @@ export function initMagnifierBridge() {
 
   const REQUEST_EVENT = 'babel-helper-magnifier-request';
   const RESPONSE_EVENT = 'babel-helper-magnifier-response';
+  const SERVICE_ID = 'page.magnifier';
   const HOST_ATTR = 'data-babel-helper-magnifier-host';
   const MINIMAP_HOST_ATTR = 'data-babel-helper-minimap-host';
   const MOUNT_ATTR = 'data-babel-helper-magnifier-mount';
@@ -60,6 +61,7 @@ export function initMagnifierBridge() {
   };
   const promptSessions = new Map();
   let promptSessionCounter = 0;
+  let serviceProviderHandle = null;
 
   function safe(callback, fallbackValue) {
     try {
@@ -4668,6 +4670,58 @@ export function initMagnifierBridge() {
     };
   }
 
+  const magnifierService = {
+    ensureLens,
+    updateLens,
+    destroyLens,
+    startLoop,
+    measureSelectionTimeRange,
+    findTrimTargets,
+    findSegmentSilenceRuns,
+    findNearestSpeechIsland,
+    findNearestSpeechIslandForResolvedWave,
+    resolveVisibleLaneTargets,
+    prepareAutoSegmentTextRedistributionSession,
+    redistributeAutoSegmentText,
+    transcribeSegmentAudio,
+    destroyAutoSegmentTextRedistributionSession,
+    findTrimTargetsForSpeaker,
+    findExtendTargets,
+    findExtendTargetsForSpeaker,
+    setZoomValue,
+    enableWaveformScaleUnlock,
+    disableWaveformScaleUnlock: unbindWaveformScaleUnlock,
+    setWaveformScaleByIndex,
+    stopLoop,
+    seekSource,
+    navigateSource,
+    getMinimapData
+  };
+
+  function getPageServiceRegistry() {
+    const mods = window.BabelMods;
+    const services = mods && mods.unsafe && mods.unsafe.services;
+    return services && typeof services.invoke === 'function' ? services : null;
+  }
+
+  function invokeMagnifierService(method, ...args) {
+    const services = getPageServiceRegistry();
+    if (services) {
+      return services.invoke(SERVICE_ID, method, ...args);
+    }
+    return magnifierService[method](...args);
+  }
+
+  function registerMagnifierService() {
+    const services = getPageServiceRegistry();
+    if (!services || typeof services.provide !== 'function') {
+      return null;
+    }
+    return services.provide(SERVICE_ID, magnifierService, {
+      owner: 'builtin:magnifier'
+    });
+  }
+
   function handleRequest(event) {
     const detail = event.detail || {};
     const id = detail.id;
@@ -4679,34 +4733,70 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'ensure') {
-      respond(id, ensureLens(payload.hostMarker, payload.mountMarker, payload.height, payload.scale));
+      respond(
+        id,
+        invokeMagnifierService(
+          'ensureLens',
+          payload.hostMarker,
+          payload.mountMarker,
+          payload.height,
+          payload.scale
+        )
+      );
       return;
     }
 
     if (operation === 'update') {
-      respond(id, updateLens(payload.instanceId, payload.time, payload.width, payload.height, payload.scale));
+      respond(
+        id,
+        invokeMagnifierService(
+          'updateLens',
+          payload.instanceId,
+          payload.time,
+          payload.width,
+          payload.height,
+          payload.scale
+        )
+      );
       return;
     }
 
     if (operation === 'destroy') {
-      respond(id, destroyLens(payload.instanceId));
+      respond(id, invokeMagnifierService('destroyLens', payload.instanceId));
       return;
     }
 
     if (operation === 'loop-start') {
-      respond(id, startLoop(payload.hostMarker, payload.startSeconds, payload.endSeconds));
+      respond(
+        id,
+        invokeMagnifierService(
+          'startLoop',
+          payload.hostMarker,
+          payload.startSeconds,
+          payload.endSeconds
+        )
+      );
       return;
     }
 
     if (operation === 'selection-time-range') {
-      respond(id, measureSelectionTimeRange(payload.hostMarker, payload.leftPx, payload.rightPx));
+      respond(
+        id,
+        invokeMagnifierService(
+          'measureSelectionTimeRange',
+          payload.hostMarker,
+          payload.leftPx,
+          payload.rightPx
+        )
+      );
       return;
     }
 
     if (operation === 'trim-segment-audio') {
       respond(
         id,
-        findTrimTargets(
+        invokeMagnifierService(
+          'findTrimTargets',
           payload.hostMarker,
           payload.startSeconds,
           payload.endSeconds,
@@ -4720,7 +4810,8 @@ export function initMagnifierBridge() {
     if (operation === 'find-segment-silence-runs') {
       respond(
         id,
-        findSegmentSilenceRuns(
+        invokeMagnifierService(
+          'findSegmentSilenceRuns',
           payload.hostMarker,
           payload.speakerKey,
           payload.startSeconds,
@@ -4735,7 +4826,8 @@ export function initMagnifierBridge() {
     if (operation === 'find-nearest-speech-island') {
       respond(
         id,
-        findNearestSpeechIsland(
+        invokeMagnifierService(
+          'findNearestSpeechIsland',
           payload.hostMarker,
           payload.speakerKey,
           payload.caretSeconds,
@@ -4749,12 +4841,14 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'resolve-visible-lane-targets') {
-      respond(id, resolveVisibleLaneTargets(payload.lanes));
+      respond(id, invokeMagnifierService('resolveVisibleLaneTargets', payload.lanes));
       return;
     }
 
     if (operation === 'prepare-auto-segment-text-redistribution') {
-      Promise.resolve(prepareAutoSegmentTextRedistributionSession(payload))
+      Promise.resolve(
+        invokeMagnifierService('prepareAutoSegmentTextRedistributionSession', payload)
+      )
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -4768,7 +4862,7 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'auto-segment-redistribute-text') {
-      Promise.resolve(redistributeAutoSegmentText(payload))
+      Promise.resolve(invokeMagnifierService('redistributeAutoSegmentText', payload))
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -4782,7 +4876,13 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'transcribe-segment-audio') {
-      Promise.resolve(transcribeSegmentAudio(payload, (progress) => respondProgress(id, progress)))
+      Promise.resolve(
+        invokeMagnifierService(
+          'transcribeSegmentAudio',
+          payload,
+          (progress) => respondProgress(id, progress)
+        )
+      )
         .then((result) => respond(id, result))
         .catch((error) =>
           respond(id, {
@@ -4796,14 +4896,18 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'destroy-auto-segment-text-redistribution-session') {
-      respond(id, destroyAutoSegmentTextRedistributionSession(payload));
+      respond(
+        id,
+        invokeMagnifierService('destroyAutoSegmentTextRedistributionSession', payload)
+      );
       return;
     }
 
     if (operation === 'trim-segment-audio-for-speaker') {
       respond(
         id,
-        findTrimTargetsForSpeaker(
+        invokeMagnifierService(
+          'findTrimTargetsForSpeaker',
           payload.speakerKey,
           payload.startSeconds,
           payload.endSeconds,
@@ -4817,7 +4921,8 @@ export function initMagnifierBridge() {
     if (operation === 'extend-segment-audio-to-silence') {
       respond(
         id,
-        findExtendTargets(
+        invokeMagnifierService(
+          'findExtendTargets',
           payload.hostMarker,
           payload.startSeconds,
           payload.endSeconds,
@@ -4831,7 +4936,8 @@ export function initMagnifierBridge() {
     if (operation === 'extend-segment-audio-to-silence-for-speaker') {
       respond(
         id,
-        findExtendTargetsForSpeaker(
+        invokeMagnifierService(
+          'findExtendTargetsForSpeaker',
           payload.speakerKey,
           payload.startSeconds,
           payload.endSeconds,
@@ -4843,43 +4949,50 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'zoom-set') {
-      respond(id, setZoomValue(payload.value));
+      respond(id, invokeMagnifierService('setZoomValue', payload.value));
       return;
     }
 
     if (operation === 'waveform-scale-unlock-enable') {
-      respond(id, enableWaveformScaleUnlock(payload.max));
+      respond(id, invokeMagnifierService('enableWaveformScaleUnlock', payload.max));
       return;
     }
 
     if (operation === 'waveform-scale-unlock-disable') {
-      respond(id, unbindWaveformScaleUnlock());
+      respond(id, invokeMagnifierService('disableWaveformScaleUnlock'));
       return;
     }
 
     if (operation === 'waveform-scale-set') {
-      respond(id, setWaveformScaleByIndex(payload.index, payload.value, payload.max));
+      respond(
+        id,
+        invokeMagnifierService(
+          'setWaveformScaleByIndex',
+          payload.index,
+          payload.value,
+          payload.max
+        )
+      );
       return;
     }
 
     if (operation === 'loop-stop') {
-      respond(id, stopLoop(payload.hostMarker));
+      respond(id, invokeMagnifierService('stopLoop', payload.hostMarker));
       return;
     }
 
     if (operation === 'seek-source') {
-      respond(id, seekSource(payload.hostMarker, payload.time));
+      respond(id, invokeMagnifierService('seekSource', payload.hostMarker, payload.time));
       return;
     }
 
     if (operation === 'navigate-source') {
-      respond(id, navigateSource(payload.hostMarker, payload.time));
+      respond(id, invokeMagnifierService('navigateSource', payload.hostMarker, payload.time));
       return;
     }
 
     if (operation === 'minimap-data') {
-      respond(id, getMinimapData(payload.hostMarker, payload));
-      return;
+      respond(id, invokeMagnifierService('getMinimapData', payload.hostMarker, payload));
     }
   }
 
@@ -4894,20 +5007,28 @@ export function initMagnifierBridge() {
       destroyPromptSessionRecord(record);
     }
     promptSessions.clear();
+    if (serviceProviderHandle) {
+      serviceProviderHandle.dispose();
+      serviceProviderHandle = null;
+    }
     unbindWaveformScaleUnlock();
-    window.removeEventListener(REQUEST_EVENT, handleRequest, true);
+    window.removeEventListener(REQUEST_EVENT, handleRequest, { capture: true });
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     delete window.__babelHelperMagnifierBridge;
   }
 
-  window.addEventListener(REQUEST_EVENT, handleRequest, true);
+  serviceProviderHandle = registerMagnifierService();
+
+  window.addEventListener(REQUEST_EVENT, handleRequest, { capture: true });
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   window.__babelHelperMagnifierBridge = {
     instances,
     loops,
-    findTrimTargetsForSpeaker,
-    findNearestSpeechIsland: findNearestSpeechIslandForResolvedWave,
+    findTrimTargetsForSpeaker: (...args) =>
+      invokeMagnifierService('findTrimTargetsForSpeaker', ...args),
+    findNearestSpeechIsland: (...args) =>
+      invokeMagnifierService('findNearestSpeechIslandForResolvedWave', ...args),
     dispose
   };
 }

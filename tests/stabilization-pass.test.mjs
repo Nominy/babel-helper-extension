@@ -77,7 +77,7 @@ test('lazy session isolates service registration and feature hook failures', () 
   const source = read('../src/content/lazy-session.ts');
 
   assert.match(source, /function reportRuntimeError\(ctx: FeatureContext, stage: string, id: string, error: unknown\)/);
-  assert.match(source, /const register = \(id: string, fn: \(\) => void\) => \{\s*try \{\s*fn\(\);\s*\} catch \(error: unknown\) \{\s*failures \+= 1;\s*reportRuntimeError\(ctx, 'service\.register', id, error\);/);
+  assert.match(source, /const register = \(id: string, fn: \(\) => Scope \| SessionServiceScopes \| void\) => \{[\s\S]*try \{[\s\S]*const owned = fn\(\);[\s\S]*\} catch \(error: unknown\) \{\s*failures \+= 1;\s*reportRuntimeError\(ctx, 'service\.register', id, error\);/);
   assert.match(source, /register\('recovered-editor-snapshot'[\s\S]*register\('row'[\s\S]*register\('timestamp-edit'/);
   assert.match(source, /for \(const feature of runtime\.features\) \{[\s\S]*try \{\s*await invokeFeatureHook\(ctx, feature, method, activationReason\);\s*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, `feature\.\$\{String\(method\)\}`, feature\.id, error\);/);
   assert.match(source, /try \{\s*if \(typeof feature\.activate === 'function'\) \{[\s\S]*await feature\.activate\(ctx, reason\);[\s\S]*runtime\.activeFeatures\.add\(feature\.id\);\s*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, 'feature\.activate', feature\.id, error\);/);

@@ -6,6 +6,7 @@ import {
 import {
   applyRuleFixes,
   buildRegistryIssues,
+  createLateBoundLinterRuleResolver,
   getVisibleTooltipEntries,
 } from "../features/custom-linter/linter/rule-registry";
 import {
@@ -129,6 +130,8 @@ export function initLinterBridge() {
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
   let disabledCustomLinterRuleIds = [];
+  let pageLinterService = null;
+  let pageLinterServiceDisposer = null;
   const INTERJECTION_CORRECTION_SPECS = [
     { canonical: "а", variants: ["аа", "а-а", "а-а-а"] },
     { canonical: "ага", variants: ["ага-а", "агаа"] },
@@ -2208,7 +2211,7 @@ export function initLinterBridge() {
     );
   }
 
-  function getCustomLintRules() {
+  function createBuiltInLintRules() {
     return createCustomLinterRules({
       reasons: {
         nativeLeadingTrailingSpaces: NATIVE_LEADING_TRAILING_SPACES_REASON,
@@ -2285,12 +2288,44 @@ export function initLinterBridge() {
     });
   }
 
+  function getExternalLintRules() {
+    const rules = window.BabelMods?.registries?.get?.("linter.rules");
+    return Array.isArray(rules) ? rules : [];
+  }
+
+  const resolveCustomLintRules = createLateBoundLinterRuleResolver(
+    createBuiltInLintRules,
+    getExternalLintRules,
+  );
+
+  function getCustomLintRules() {
+    return resolveCustomLintRules();
+  }
+
+  function invokePageLinter(method, args, fallback) {
+    const services = window.BabelMods?.unsafe?.services;
+    if (
+      pageLinterServiceDisposer &&
+      services &&
+      typeof services.invoke === "function"
+    ) {
+      return services.invoke("page.linter", method, ...args);
+    }
+
+    return fallback(...args);
+  }
+
+  function isPageLinterEnabled() {
+    return Boolean(invokePageLinter("isEnabled", [], () => enabled));
+  }
+
   function normalizeDisabledCustomLinterRuleIds(value) {
     if (!Array.isArray(value)) {
       return [];
     }
-
-    const availableRuleIds = new Set(getCustomLintRules().map((rule) => rule.id));
+    const availableRuleIds = new Set(
+      createBuiltInLintRules().map((rule) => rule.id),
+    );
     const disabledRuleIds = [];
     const seen = new Set();
     for (const id of value) {
@@ -2342,7 +2377,7 @@ export function initLinterBridge() {
     }
   }
 
-  function buildCustomIssues(annotationEntries) {
+  function buildBuiltInCustomIssues(annotationEntries) {
     return buildRegistryIssues(
       annotationEntries,
       getCustomLintRules(),
@@ -2352,6 +2387,14 @@ export function initLinterBridge() {
         disabledRuleIds: disabledCustomLinterRuleIds,
         onRuleError: recordCustomLinterRuleError,
       },
+    );
+  }
+
+  function buildCustomIssues(annotationEntries) {
+    return invokePageLinter(
+      "buildIssues",
+      [annotationEntries],
+      buildBuiltInCustomIssues,
     );
   }
 
@@ -2450,7 +2493,7 @@ export function initLinterBridge() {
   }
 
   function augmentNativeLintIssues(_linter, annotations, nativeIssues) {
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return nativeIssues;
     }
 
@@ -2785,7 +2828,7 @@ export function initLinterBridge() {
   }
 
   function syncNativeLintState(reason) {
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return false;
     }
 
@@ -2839,7 +2882,7 @@ export function initLinterBridge() {
   }
 
   function scheduleNativeLintStateSync(reason) {
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return;
     }
 
@@ -3527,20 +3570,25 @@ export function initLinterBridge() {
     );
   }
 
-  function getNativeTooltipHighlightEntries(rowText = getHoveredRowText()) {
-    if (!document.body) {
-      return [];
-    }
+  function getBuiltInVisibleTooltipEntries(rowText, bodyText) {
+    return getVisibleTooltipEntries(rowText, bodyText, getCustomLintRules(), {
+      createTextContext: createTranscriptTextContext,
+      disabledRuleIds: disabledCustomLinterRuleIds,
+      onRuleError: recordCustomLinterRuleError,
+    });
+  }
 
-    if (!rowText) {
+  function getNativeTooltipHighlightEntries(rowText = getHoveredRowText()) {
+    if (!document.body || !rowText) {
       return [];
     }
 
     const bodyText = document.body.innerText || "";
-    return getVisibleTooltipEntries(rowText, bodyText, getCustomLintRules(), {
-      createTextContext: createTranscriptTextContext,
-      disabledRuleIds: disabledCustomLinterRuleIds,
-    });
+    return invokePageLinter(
+      "getVisibleTooltipEntries",
+      [rowText, bodyText],
+      getBuiltInVisibleTooltipEntries,
+    );
   }
 
   function findReasonTextNode(reason) {
@@ -4353,7 +4401,7 @@ export function initLinterBridge() {
   }
 
   function handleVisibleTextarea(routeKey, reason) {
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return;
     }
 
@@ -4553,7 +4601,7 @@ export function initLinterBridge() {
   }
 
   function scheduleInitialNativeLintTrigger(reason) {
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return;
     }
 
@@ -4570,7 +4618,7 @@ export function initLinterBridge() {
     stopTextareaVisibilityObservers();
 
     const attempt = () => {
-      if (!enabled) {
+      if (!isPageLinterEnabled()) {
         return;
       }
 
@@ -4947,7 +4995,7 @@ export function initLinterBridge() {
       return fallbackFetch(input, init);
     }
 
-    if (!enabled) {
+    if (!isPageLinterEnabled()) {
       return callUpstreamFetch(input, init);
     }
 
@@ -5014,9 +5062,8 @@ export function initLinterBridge() {
     installFetchPatch("watchdog");
   }, 1000);
 
-  function handleToggle(event) {
-    const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
-    enabled = nextEnabled;
+  function setBuiltInEnabled(nextEnabled) {
+    enabled = Boolean(nextEnabled);
     if (!enabled && autoLintTimer) {
       window.clearTimeout(autoLintTimer);
       autoLintTimer = 0;
@@ -5036,8 +5083,12 @@ export function initLinterBridge() {
     }
   }
 
-  function handleConfig(event) {
-    const detail = event && event.detail ? event.detail : {};
+  function handleToggle(event) {
+    const nextEnabled = Boolean(event && event.detail && event.detail.enabled);
+    invokePageLinter("setEnabled", [nextEnabled], setBuiltInEnabled);
+  }
+
+  function configureBuiltInLinter(detail = {}) {
     highlightedWordsEnabled = detail.highlightedWordsEnabled !== false;
     highlightedWords = normalizeHighlightedWords(detail.highlightedWords);
     disabledCustomLinterRuleIds = normalizeDisabledCustomLinterRuleIds(
@@ -5050,6 +5101,11 @@ export function initLinterBridge() {
       scheduleNativeLintStateSync("config");
       scheduleLinterHighlights();
     }
+  }
+
+  function handleConfig(event) {
+    const detail = event && event.detail ? event.detail : {};
+    invokePageLinter("configure", [detail], configureBuiltInLinter);
   }
 
   function handlePopState() {
@@ -5095,6 +5151,11 @@ export function initLinterBridge() {
     }
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
     window.removeEventListener(CONFIG_EVENT, handleConfig, true);
+    window.removeEventListener(
+      AUTOFIX_REQUEST_EVENT,
+      handleAutoFixRequest,
+      true,
+    );
     window.removeEventListener("input", handleNativeLintTextareaInput, true);
     window.removeEventListener("change", handleNativeLintTextareaInput, true);
     window.removeEventListener("pointerover", handleHighlightPointerOver, true);
@@ -5104,6 +5165,14 @@ export function initLinterBridge() {
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     if (window[NATIVE_LINT_AUGMENT_GLOBAL] === augmentNativeLintIssues) {
       delete window[NATIVE_LINT_AUGMENT_GLOBAL];
+    }
+    const serviceDisposer = pageLinterServiceDisposer;
+    pageLinterServiceDisposer = null;
+    pageLinterService = null;
+    if (typeof serviceDisposer === "function") {
+      serviceDisposer();
+    } else {
+      serviceDisposer?.dispose?.();
     }
     delete window.__babelHelperLinterBridge;
   }
@@ -5560,7 +5629,7 @@ export function initLinterBridge() {
     );
   }
 
-  function applyAllFixes(text) {
+  function applyBuiltInFixes(text, context = {}) {
     if (typeof text !== "string") {
       return text;
     }
@@ -5570,9 +5639,18 @@ export function initLinterBridge() {
         rule.id !== "polite-pronoun-case" &&
         rule.id !== "segment-start-capitalization",
     );
-    return applyRuleFixes(text, broadTextRules, {}, {
+    return applyRuleFixes(text, broadTextRules, context, {
       disabledRuleIds: disabledCustomLinterRuleIds,
+      onRuleError: recordCustomLinterRuleError,
     });
+  }
+
+  function applyAllFixes(text, context = {}) {
+    return invokePageLinter(
+      "applyFixes",
+      [text, context],
+      applyBuiltInFixes,
+    );
   }
 
   function getRowSpeakerKey(row) {
@@ -5656,7 +5734,7 @@ export function initLinterBridge() {
       options && typeof options.previousSameSpeakerText === "string"
         ? options.previousSameSpeakerText
         : "";
-    let fixed = applyAllFixes(original);
+    let fixed = applyAllFixes(original, { previousSameSpeakerText });
     fixed = fixPolitePronounCase(fixed);
     fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
     if (fixed === original) {
@@ -5692,7 +5770,7 @@ export function initLinterBridge() {
     });
   }
 
-  function autoFixAll() {
+  function autoFixAllBuiltIn() {
     const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
     let fixedCount = 0;
     let totalCount = 0;
@@ -5712,7 +5790,7 @@ export function initLinterBridge() {
     return { fixedCount, totalCount };
   }
 
-  function autoFixCurrent() {
+  function autoFixCurrentBuiltIn() {
     // Fix the textarea that is currently focused, or the first one in the
     // active row (detected by Babel's active-row styling).
     const active = document.activeElement;
@@ -5743,45 +5821,75 @@ export function initLinterBridge() {
     });
   }
 
-  window.addEventListener(
-    AUTOFIX_REQUEST_EVENT,
-    (event) => {
-      if (!enabled) {
-        window.dispatchEvent(
-          new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-            detail: { ok: false, reason: "disabled" },
-          }),
-        );
-        return;
-      }
+  function autoFixAll() {
+    return invokePageLinter("autoFixAll", [], autoFixAllBuiltIn);
+  }
 
-      const detail = event && event.detail ? event.detail : {};
-      const scope = detail.scope || "current";
-      let result;
+  function autoFixCurrent() {
+    return invokePageLinter("autoFixCurrent", [], autoFixCurrentBuiltIn);
+  }
 
-      if (scope === "all") {
-        result = autoFixAll();
-      } else {
-        result = autoFixCurrent();
-      }
-
-      // Re-trigger lint after fixes so the linter UI updates
-      scheduleInitialNativeLintTrigger("autofix");
-      scheduleNativeLintStateSync("autofix");
-
+  function handleAutoFixRequest(event) {
+    const serviceEnabled = isPageLinterEnabled();
+    if (!serviceEnabled) {
       window.dispatchEvent(
         new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
-          detail: { ok: true, scope, ...result },
+          detail: { ok: false, reason: "disabled" },
         }),
       );
+      return;
+    }
+
+    const detail = event && event.detail ? event.detail : {};
+    const scope = detail.scope || "current";
+    const result = scope === "all" ? autoFixAll() : autoFixCurrent();
+
+    scheduleInitialNativeLintTrigger("autofix");
+    scheduleNativeLintStateSync("autofix");
+
+    window.dispatchEvent(
+      new CustomEvent(AUTOFIX_RESPONSE_EVENT, {
+        detail: { ok: true, scope, ...result },
+      }),
+    );
+  }
+
+  pageLinterService = {
+    get enabled() {
+      return enabled;
     },
+    isEnabled() {
+      return enabled;
+    },
+    setEnabled: setBuiltInEnabled,
+    configure: configureBuiltInLinter,
+    getRules: getCustomLintRules,
+    buildIssues: buildBuiltInCustomIssues,
+    getVisibleTooltipEntries: getBuiltInVisibleTooltipEntries,
+    applyFixes: applyBuiltInFixes,
+    autoFixCurrent: autoFixCurrentBuiltIn,
+    autoFixAll: autoFixAllBuiltIn,
+  };
+
+  const pageServices = window.BabelMods?.unsafe?.services;
+  if (pageServices && typeof pageServices.provide === "function") {
+    pageLinterServiceDisposer = pageServices.provide(
+      "page.linter",
+      pageLinterService,
+      { owner: "builtin:page.linter" },
+    );
+  }
+
+  window.addEventListener(
+    AUTOFIX_REQUEST_EVENT,
+    handleAutoFixRequest,
     true,
   );
 
   window.__babelHelperLinterBridge = {
     version: 2,
     get enabled() {
-      return enabled;
+      return isPageLinterEnabled();
     },
     get debug() {
       return debugState;
