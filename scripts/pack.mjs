@@ -11,7 +11,7 @@
  *   manifest.json
  *   options.html
  *   icons/*
- *   dist/ JS bundles       (source maps excluded)
+ *   dist/ runtime JS and CSS (source maps excluded)
  */
 
 import { execSync } from 'node:child_process';
@@ -72,10 +72,10 @@ try {
   console.warn('  Warning: icons/ directory not found. Store submission requires icons.');
 }
 
-// dist/**/*.js (no .map files)
+// dist/**/*.js and dist/**/*.css (no source maps)
 const distDir = join(ROOT, 'dist');
 for (const { full, rel } of collectFiles(distDir, 'dist')) {
-  if (full.endsWith('.js')) {
+  if (full.endsWith('.js') || full.endsWith('.css')) {
     files.push({ full, rel });
   }
 }

@@ -200,10 +200,13 @@ test('ghost cursor options wire custom controls without themes or presets', () =
     assert.match(optionsSource, pattern);
     assert.match(optionsHtml, pattern);
   }
-  assert.doesNotMatch(optionsSource, /theme|preset|style|GHOST_CURSOR_PRESETS/i);
+  assert.doesNotMatch(
+    optionsSource,
+    /ghost-cursor-(?:theme|preset|style)|GHOST_CURSOR_PRESETS/i
+  );
   assert.doesNotMatch(optionsHtml, /ghost-cursor-theme|Theme preset|Amber Pulse|Cyber Mint|data-role="ghost-cursor-style"/i);
-  assert.doesNotMatch(settingsSource, /GhostCursorTheme|GHOST_CURSOR_PRESETS|theme|style/i);
-  assert.match(optionsSource, /DEFAULT_EXTENSION_SETTINGS\.ghostCursor/);
+  assert.doesNotMatch(settingsSource, /GhostCursorTheme|GHOST_CURSOR_PRESETS/);
+  assert.match(optionsSource, /applyGhostCursorSettingsToInputs\(settings\.ghostCursor,/);
 });
 
 

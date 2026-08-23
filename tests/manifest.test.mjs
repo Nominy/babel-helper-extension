@@ -12,11 +12,20 @@ test('manifest targets bundled dist assets', () => {
   assert.deepEqual(mainHost.js, ['dist/content/mod-host.js']);
   assert.equal(mainHost.run_at, 'document_start');
   assert.deepEqual(mainHost.matches, ['https://dashboard.babel.audio/*']);
-  assert.equal(isolatedEntry.js[0], 'dist/content/entry.js');
+  assert.deepEqual(isolatedEntry.js, ['dist/content/entry.js']);
+  assert.deepEqual(isolatedEntry.css, ['dist/content/website-appearance.css']);
+  assert.equal(isolatedEntry.run_at, 'document_start');
+  assert.deepEqual(isolatedEntry.matches, ['https://dashboard.babel.audio/*']);
   assert.equal(manifest.web_accessible_resources[0].resources[0], 'dist/content/magnifier-bridge.js');
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/lazy-session.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/timestamp-bridge.js'), true);
   assert.equal(manifest.web_accessible_resources[0].resources.includes('dist/content/linter-bridge.js'), true);
+  assert.equal(
+    manifest.web_accessible_resources[0].resources.includes('dist/content/waveform-theme-bridge.js'),
+    true
+  );
+  assert.equal(manifest.web_accessible_resources.length, 1);
+  assert.deepEqual(manifest.web_accessible_resources[0].matches, ['https://dashboard.babel.audio/*']);
   assert.equal(manifest.background.service_worker, 'dist/background/commands.js');
   assert.equal(manifest.commands['auto-insert-segment'].suggested_key.default, 'Alt+C');
   assert.deepEqual(manifest.options_ui, { page: 'options.html', open_in_tab: true });
@@ -27,14 +36,44 @@ test('manifest targets bundled dist assets', () => {
   assert.equal(manifest.host_permissions, undefined);
 });
 
-test('mod host and standalone userscript SDK are build-wired', () => {
+test('mod host, waveform bridge, userscript SDK, and website appearance stylesheet are build-wired', () => {
   const source = fs.readFileSync(new URL('../esbuild.config.mjs', import.meta.url), 'utf8');
+  const packSource = fs.readFileSync(new URL('../scripts/pack.mjs', import.meta.url), 'utf8');
 
   assert.match(source, /src\/mod-platform\/page-host\.ts/);
   assert.match(source, /dist\/content\/mod-host\.js/);
   assert.match(source, /src\/userscript\/babel-mods\.ts/);
   assert.match(source, /dist\/userscript\/babel-mods\.js/);
   assert.match(source, /dist\/userscript\/babel-mods\.d\.ts/);
+  assert.match(source, /src\/content\/website-appearance\.css/);
+  assert.match(source, /dist\/content\/website-appearance\.css/);
+  assert.match(source, /copyFile\(websiteAppearanceSource, websiteAppearanceOutput\)/);
+  assert.match(
+    source,
+    /function enqueueCopy\(\) \{\s+const copy = pendingCopy\.then\(copyWebsiteAppearanceStylesheet\);/
+  );
+  assert.match(source, /filename !== null && filename !== path\.basename\(websiteAppearanceSource\)/);
+  assert.match(source, /watchFileChanges\([\s\S]*?enqueueCopy\(\);\s+\}\);\s+return enqueueCopy;/);
+  assert.match(
+    source,
+    /const enqueueWebsiteAppearanceCopy = watchWebsiteAppearanceStylesheet\(\);\s+await Promise\.all\(\[copyUserscriptDeclaration\(\), enqueueWebsiteAppearanceCopy\(\)\]\);/
+  );
+  assert.match(source, /src\/content\/waveform-theme-bridge\.ts/);
+  assert.match(source, /dist\/content\/waveform-theme-bridge\.js/);
+  assert.match(
+    source,
+    /banner: \{\},\s+entryPoints: \['src\/content\/waveform-theme-bridge\.ts'\]/,
+    'the page-world waveform bridge must not inject the node __dirname banner into the page'
+  );
+  assert.match(packSource, /full\.endsWith\('\.js'\) \|\| full\.endsWith\('\.css'\)/);
+});
+
+test('waveform bridge reaches the unpacked build and the store ZIP', () => {
+  const packSource = fs.readFileSync(new URL('../scripts/pack.mjs', import.meta.url), 'utf8');
+  const syncSource = fs.readFileSync(new URL('../scripts/sync-unpacked.mjs', import.meta.url), 'utf8');
+
+  assert.match(packSource, /collectFiles\(distDir, 'dist'\)/);
+  assert.match(syncSource, /replaceDirectory\('dist'\)/);
 });
 
 test('package build bumps the version before syncing unpacked assets', () => {

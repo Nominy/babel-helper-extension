@@ -13,6 +13,7 @@
         --muted: #5f6f86;
         --accent: #0f7a67;
         --accent-soft: #e6f3f0;
+        --focus-ring: rgba(15, 122, 103, 0.24);
       }
 
       * {
@@ -339,6 +340,29 @@
         font-variant-numeric: tabular-nums;
       }
 
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible,
+      summary:focus-visible,
+      a:focus-visible {
+        outline: 3px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+
+      .features-title {
+        margin: 0 0 10px;
+        font-size: 16px;
+        line-height: 1.25;
+      }
+
       .footer {
         margin-top: 14px;
         display: flex;
@@ -431,7 +455,8 @@
 
       <section class="panel">
         <div class="settings-home" data-role="settings-home">
-          <div class="feature-list" data-role="feature-list"></div>
+          <h2 id="features-title" class="features-title">Features</h2>
+          <div class="feature-list" data-role="feature-list" aria-labelledby="features-title"></div>
           <div class="dictionary-settings">
             <label for="highlighted-words" class="dictionary-title">Highlighted Words</label>
             <label class="dictionary-toggle">
@@ -498,7 +523,7 @@
           </div>
         </div>
         <div class="footer">
-          <button class="reset-btn" type="button" data-role="reset">Reset to Defaults</button>
+          <button class="reset-btn" type="button" data-role="reset">Reset all settings</button>
           <button class="download-btn" type="button" data-role="download-logs">Download Logs</button>
           <div class="status" data-role="status">Loading...</div>
         </div>

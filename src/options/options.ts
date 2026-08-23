@@ -25,7 +25,6 @@ type GhostCursorInputMap = {
   motion: HTMLSelectElement;
 };
 
-
 function requireElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector(selector);
   if (!(element instanceof HTMLElement)) {
@@ -205,7 +204,8 @@ function readSettingsFromInputs(
   ruleInputs: RuleInputMap,
   highlightedWordsInput: HTMLTextAreaElement,
   highlightedWordsEnabledInput: HTMLInputElement,
-  ghostCursorInputs: GhostCursorInputMap
+  ghostCursorInputs: GhostCursorInputMap,
+  websiteAppearance: ExtensionSettings['websiteAppearance']
 ): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
@@ -220,7 +220,8 @@ function readSettingsFromInputs(
       .filter((rule) => ruleInputs[rule.id] && !ruleInputs[rule.id].checked)
       .map((rule) => rule.id),
     customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
-    ghostCursor: readGhostCursorSettingsFromInputs(ghostCursorInputs)
+    ghostCursor: readGhostCursorSettingsFromInputs(ghostCursorInputs),
+    websiteAppearance
   };
 }
 
@@ -283,8 +284,11 @@ async function boot() {
   const ruleInputs = renderCustomLinterRuleCards(customLinterRuleList);
   const manageRulesButton = requireElement<HTMLButtonElement>('[data-role="manage-custom-linter-rules"]');
 
+  let retainedWebsiteAppearance = DEFAULT_EXTENSION_SETTINGS.websiteAppearance;
+
   try {
-    const settings = await loadExtensionSettings();
+    const { loaded, settings } = await loadExtensionSettings();
+    retainedWebsiteAppearance = settings.websiteAppearance;
     applySettingsToInputs(
       settings,
       inputs,
@@ -294,35 +298,55 @@ async function boot() {
       ghostCursorInputs
     );
     refreshGhostCursorShare(settings.ghostCursor);
-    setStatus(statusElement, 'Loaded');
-  } catch (_error) {
+    setStatus(statusElement, loaded ? 'Loaded' : 'Could not load settings.');
+  } catch {
     setStatus(statusElement, 'Could not load settings.');
   }
 
-  const save = async () => {
-    setStatus(statusElement, 'Saving...');
-    try {
-      const next = readSettingsFromInputs(
-        inputs,
-        ruleInputs,
-        highlightedWordsInput,
-        highlightedWordsEnabledInput,
-        ghostCursorInputs
-      );
-      const persisted = await saveExtensionSettings(next);
-      applySettingsToInputs(
-        persisted,
-        inputs,
-        ruleInputs,
-        highlightedWordsInput,
-        highlightedWordsEnabledInput,
-        ghostCursorInputs
-      );
-      refreshGhostCursorShare(persisted.ghostCursor);
-      setStatus(statusElement, 'Saved. Reload dashboard tabs to apply changes.');
-    } catch (_error) {
-      setStatus(statusElement, 'Could not save settings.');
-    }
+  let saveQueue = Promise.resolve();
+  const save = (websiteAppearanceOverride?: ExtensionSettings['websiteAppearance']) => {
+    const formSettings = readSettingsFromInputs(
+      inputs,
+      ruleInputs,
+      highlightedWordsInput,
+      highlightedWordsEnabledInput,
+      ghostCursorInputs,
+      retainedWebsiteAppearance
+    );
+    const run = async () => {
+      setStatus(statusElement, 'Saving...');
+      try {
+        if (websiteAppearanceOverride !== undefined) {
+          retainedWebsiteAppearance = websiteAppearanceOverride;
+        } else {
+          const latest = await loadExtensionSettings();
+          if (!latest.loaded) {
+            throw new Error(latest.error ?? 'Could not load current settings.');
+          }
+          retainedWebsiteAppearance = latest.settings.websiteAppearance;
+        }
+        const persisted = await saveExtensionSettings({
+          ...formSettings,
+          websiteAppearance: retainedWebsiteAppearance
+        });
+        retainedWebsiteAppearance = persisted.websiteAppearance;
+        applySettingsToInputs(
+          persisted,
+          inputs,
+          ruleInputs,
+          highlightedWordsInput,
+          highlightedWordsEnabledInput,
+          ghostCursorInputs
+        );
+        refreshGhostCursorShare(persisted.ghostCursor);
+        setStatus(statusElement, 'Saved. Dashboard changes apply live.');
+      } catch {
+        setStatus(statusElement, 'Could not save settings.');
+      }
+    };
+
+    saveQueue = saveQueue.then(run, run);
+    return saveQueue;
   };
 
   for (const key of FEATURE_KEYS) {
@@ -363,19 +387,16 @@ async function boot() {
   });
 
   resetButton.addEventListener('click', () => {
-    for (const key of FEATURE_KEYS) {
-      inputs[key].checked = DEFAULT_EXTENSION_SETTINGS.features[key];
-    }
-    const disabledRuleIds = new Set(DEFAULT_EXTENSION_SETTINGS.disabledCustomLinterRuleIds);
-    for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
-      if (ruleInputs[rule.id]) {
-        ruleInputs[rule.id].checked = !disabledRuleIds.has(rule.id);
-      }
-    }
-    highlightedWordsEnabledInput.checked = DEFAULT_EXTENSION_SETTINGS.highlightedWordsEnabled;
-    highlightedWordsInput.value = formatHighlightedWordsForTextarea(DEFAULT_EXTENSION_SETTINGS.highlightedWords);
-    applyGhostCursorSettingsToInputs(DEFAULT_EXTENSION_SETTINGS.ghostCursor, ghostCursorInputs);
-    void save();
+    retainedWebsiteAppearance = DEFAULT_EXTENSION_SETTINGS.websiteAppearance;
+    applySettingsToInputs(
+      DEFAULT_EXTENSION_SETTINGS,
+      inputs,
+      ruleInputs,
+      highlightedWordsInput,
+      highlightedWordsEnabledInput,
+      ghostCursorInputs
+    );
+    void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance);
   });
 
   manageRulesButton.addEventListener('click', (event) => {
@@ -399,6 +420,7 @@ async function boot() {
     ghostCursorPage.hidden = true;
     settingsHome.hidden = false;
   });
+
   copyShareButton.addEventListener('click', async () => {
     try {
       if (navigator.clipboard?.writeText) {

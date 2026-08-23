@@ -17,6 +17,10 @@ export type HotkeysHelpProvider =
   | HotkeysHelpRow[]
   | ((featureSettings: FeatureSettingsLike) => HotkeysHelpRow[]);
 
+export const ALWAYS_PRESENT_HOTKEYS_HELP_ROWS: HotkeysHelpRow[] = [
+  ['Alt + Shift + P', 'Toggle Website Appearance editor']
+];
+
 export type FeatureRegistration = {
   id: string;
   setting: {
@@ -304,7 +308,9 @@ export function getRegisteredFeatureModules(featureSettings: FeatureSettingsLike
 }
 
 export function getRegisteredHotkeysHelpRows(featureSettings: FeatureSettingsLike): HotkeysHelpRow[] {
-  const rows: HotkeysHelpRow[] = [];
+  const rows: HotkeysHelpRow[] = ALWAYS_PRESENT_HOTKEYS_HELP_ROWS.map(
+    (row) => [row[0], row[1]]
+  );
   for (const registration of (FEATURE_REGISTRATIONS as readonly FeatureRegistration[])
     .filter((entry) => entry.hotkeysHelp)
     .slice()

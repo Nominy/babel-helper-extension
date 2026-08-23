@@ -1,3 +1,4 @@
+import { watch as watchFileChanges } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,10 +9,40 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(path.join(rootDir, 'manifest.json'), 'utf8'));
 const userscriptDeclarationSource = path.join(rootDir, 'src/userscript/babel-mods.d.ts');
 const userscriptDeclarationOutput = path.join(rootDir, 'dist/userscript/babel-mods.d.ts');
+const websiteAppearanceSource = path.join(rootDir, 'src/content/website-appearance.css');
+const websiteAppearanceOutput = path.join(rootDir, 'dist/content/website-appearance.css');
 
 async function copyUserscriptDeclaration() {
   await mkdir(path.dirname(userscriptDeclarationOutput), { recursive: true });
   await copyFile(userscriptDeclarationSource, userscriptDeclarationOutput);
+}
+
+async function copyWebsiteAppearanceStylesheet() {
+  await mkdir(path.dirname(websiteAppearanceOutput), { recursive: true });
+  await copyFile(websiteAppearanceSource, websiteAppearanceOutput);
+}
+
+function watchWebsiteAppearanceStylesheet() {
+  let pendingCopy = Promise.resolve();
+
+  function enqueueCopy() {
+    const copy = pendingCopy.then(copyWebsiteAppearanceStylesheet);
+    pendingCopy = copy.then(
+      () => console.log('Copied website appearance stylesheet.'),
+      (error) => console.error('Failed to copy website appearance stylesheet:', error)
+    );
+    return copy;
+  }
+
+  watchFileChanges(path.dirname(websiteAppearanceSource), (_eventType, filename) => {
+    if (filename !== null && filename !== path.basename(websiteAppearanceSource)) {
+      return;
+    }
+
+    enqueueCopy();
+  });
+
+  return enqueueCopy;
 }
 
 const fsShimPlugin = {
@@ -103,6 +134,12 @@ const tasks = [
   },
   {
     ...shared,
+    banner: {},
+    entryPoints: ['src/content/waveform-theme-bridge.ts'],
+    outfile: 'dist/content/waveform-theme-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/options/options.ts'],
     outfile: 'dist/options/options.js'
   }
@@ -111,9 +148,10 @@ const tasks = [
 if (watch) {
   const contexts = await Promise.all(tasks.map((options) => context(options)));
   await Promise.all(contexts.map((ctx) => ctx.watch()));
-  await copyUserscriptDeclaration();
-  console.log('Watching extension bundles...');
+  const enqueueWebsiteAppearanceCopy = watchWebsiteAppearanceStylesheet();
+  await Promise.all([copyUserscriptDeclaration(), enqueueWebsiteAppearanceCopy()]);
+  console.log('Watching extension bundles and website appearance stylesheet...');
 } else {
   await Promise.all(tasks.map((options) => build(options)));
-  await copyUserscriptDeclaration();
+  await Promise.all([copyUserscriptDeclaration(), copyWebsiteAppearanceStylesheet()]);
 }

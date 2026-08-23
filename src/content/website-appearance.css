@@ -1,0 +1,441 @@
+/*
+ * Website Appearance is strictly opt in. Each rule is gated by the master
+ * attribute and the group that owns its variables. Structural selectors stay
+ * inside :where() so the attributes provide the useful specificity.
+ *
+ * The runtime writes the dashboard's own design tokens for generic surfaces
+ * and text. This stylesheet only claims hardcoded palette utilities, the
+ * transcript and waveform structures, inline colours, and shadow parts that
+ * those tokens cannot reach. It never changes layout geometry.
+ *
+ * Transcript structure is gated on the marks the controller stamps
+ * (data-babel-helper-scope), never on :has(). A :has() gate re-walks the
+ * transcript subtree for every rule that guards it and a single palette
+ * variable invalidates style for the whole document, so the subtree walk was
+ * being paid hundreds of times per drag. The controller stamps 'transcript' on
+ * the main holding a row textarea and 'transcript-table' on a table inside
+ * that main holding one, which is what the two :has() gates used to spell; a
+ * stamped table therefore already implies the stamped main, and the html
+ * attribute gate already implies body, so neither ancestor step is repeated.
+ */
+
+/* Text group — the only non-colour controls. The dashboard's transcript
+ * textarea and dense table text use important font utilities, hence the two
+ * matching important declarations here. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-text='enabled']
+  :where([data-babel-helper-scope='transcript'])
+  :where(textarea[placeholder='What was said…'], textarea.w-full) {
+  font-size: var(--bh-text-size) !important;
+  line-height: calc(4 / 3) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-text='enabled']
+  :where(
+    [data-babel-helper-scope='transcript'] .text-xs:not(textarea),
+    table[data-babel-helper-scope='transcript-table'] td,
+    table[data-babel-helper-scope='transcript-table'] tr
+  ) {
+  font-size: var(--bh-table-text-size) !important;
+  line-height: calc(4 / 3) !important;
+}
+
+/* Theme group — the native design-token map handles ordinary token classes. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(body) {
+  background-color: var(--bh-page);
+  background-image: none;
+}
+
+/* Hardcoded neutral utilities used by the dashboard outside its token system. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-white'], [class~='bg-white/80']) {
+  background-color: var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-neutral-50'], [class~='bg-neutral-50/50']) {
+  background-color: var(--bh-surface-raised);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-neutral-100'], [class~='bg-neutral-200']) {
+  background-color: var(--bh-surface-hover);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-neutral-200']) {
+  border-color: var(--bh-border);
+}
+
+/* The active toolbar button is hardcoded blue/white rather than token based. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-blue-500'][class~='text-white']) {
+  background-color: var(--bh-accent);
+  color: var(--bh-accent-text);
+}
+
+/* Linter dots use solid status utilities. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-red-500']) {
+  background-color: var(--bh-danger);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-amber-500'], [class~='bg-yellow-500']) {
+  background-color: var(--bh-warning);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-green-500'], [class~='bg-green-600']) {
+  background-color: var(--bh-success);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='text-red-500'], [class~='text-red-600'], [class~='text-red-700']) {
+  color: var(--bh-danger);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    [class~='text-amber-500'],
+    [class~='text-amber-600'],
+    [class~='text-amber-700'],
+    [class~='text-yellow-500'],
+    [class~='text-yellow-600'],
+    [class~='text-yellow-700']
+  ) {
+  color: var(--bh-warning);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='text-green-500'], [class~='text-green-600'], [class~='text-green-700']) {
+  color: var(--bh-success);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-red-200'], [class~='border-red-500']) {
+  border-color: var(--bh-danger);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    [class~='border-amber-200'],
+    [class~='border-amber-500'],
+    [class~='border-yellow-200'],
+    [class~='border-yellow-500']
+  ) {
+  border-color: var(--bh-warning);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-green-200'], [class~='border-green-600']) {
+  border-color: var(--bh-success);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-l-red-300'], [class~='border-l-red-500']) {
+  border-left-color: var(--bh-danger);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-l-amber-500'], [class~='border-l-yellow-500']) {
+  border-left-color: var(--bh-warning);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='border-l-green-300'], [class~='border-l-green-500']) {
+  border-left-color: var(--bh-success);
+}
+
+/* Transcript table. Default and hover rows replace the hardcoded neutral
+ * utility; active and selected rows claim both colours so dark palettes remain
+ * readable instead of inheriting the dashboard's unchanged dark foreground. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table']) {
+  background-color: var(--bh-surface);
+  border-color: var(--bh-border);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table'])
+  :where(thead, thead th) {
+  background-color: var(--bh-surface-raised);
+  color: var(--bh-muted);
+  border-color: var(--bh-border);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table'])
+  :where(td) {
+  background-color: transparent;
+  border-color: var(--bh-border);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table'])
+  :where(tbody > tr):where(
+    :not(:hover):not([aria-selected='true']):not([data-state='selected']):not(
+        [class~='bg-neutral-100'][class~='ring-neutral-300']
+      ):not([class~='bg-green-50'][class~='ring-green-300'])
+  ) {
+  background-color: var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table'])
+  :where(tbody > tr:hover):where(
+    :not([aria-selected='true']):not([data-state='selected']):not(
+        [class~='bg-neutral-100'][class~='ring-neutral-300']
+      ):not([class~='bg-green-50'][class~='ring-green-300'])
+  ) {
+  background-color: var(--bh-surface-hover);
+}
+
+/* Banners and diff fragments use the dashboard's hardcoded status tints. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-red-50'], [class~='bg-red-50/50'], [class~='bg-red-100']) {
+  background-color: var(--bh-danger-tint);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    [class~='bg-amber-50'],
+    [class~='bg-yellow-50'],
+    [class~='bg-yellow-200']
+  ) {
+  background-color: var(--bh-warning-tint);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([class~='bg-green-50'], [class~='bg-green-50/50'], [class~='bg-green-100']) {
+  background-color: var(--bh-success-tint);
+}
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(table[data-babel-helper-scope='transcript-table'])
+  :where(
+    tbody > tr[aria-selected='true'],
+    tbody > tr[data-state='selected'],
+    tbody > tr[class~='bg-neutral-100'][class~='ring-neutral-300'],
+    tbody > tr[class~='bg-green-50'][class~='ring-green-300']
+  ) {
+  background-color: var(--bh-active-row);
+  color: var(--bh-active-row-text);
+  --tw-ring-color: var(--bh-border);
+}
+
+/* Scrollbar colours only: width and corner geometry remain native. The
+ * overflow utilities are spelled as whole tokens: the substring matcher this
+ * replaces tested every class attribute in the document, and the tokens it
+ * additionally caught were the non-scrolling ones (hidden, visible, clip),
+ * which have no scrollbar to colour. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    main[data-babel-helper-scope='transcript'],
+    [role='dialog'],
+    [role='menu'],
+    [role='listbox'],
+    [class~='overflow-auto'],
+    [class~='overflow-x-auto'],
+    [class~='overflow-y-auto']
+  ) {
+  scrollbar-color: var(--bh-scrollbar-thumb) var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    main[data-babel-helper-scope='transcript'],
+    [role='dialog'],
+    [role='menu'],
+    [role='listbox'],
+    [class~='overflow-auto'],
+    [class~='overflow-x-auto'],
+    [class~='overflow-y-auto']
+  )::-webkit-scrollbar-track,
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    main[data-babel-helper-scope='transcript'],
+    [role='dialog'],
+    [role='menu'],
+    [role='listbox'],
+    [class~='overflow-auto'],
+    [class~='overflow-x-auto'],
+    [class~='overflow-y-auto']
+  )::-webkit-scrollbar-corner {
+  background-color: var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    main[data-babel-helper-scope='transcript'],
+    [role='dialog'],
+    [role='menu'],
+    [role='listbox'],
+    [class~='overflow-auto'],
+    [class~='overflow-x-auto'],
+    [class~='overflow-y-auto']
+  )::-webkit-scrollbar-thumb {
+  background-color: var(--bh-scrollbar-thumb);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    main[data-babel-helper-scope='transcript'],
+    [role='dialog'],
+    [role='menu'],
+    [role='listbox'],
+    [class~='overflow-auto'],
+    [class~='overflow-x-auto'],
+    [class~='overflow-y-auto']
+  )::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(
+    in srgb,
+    var(--bh-scrollbar-thumb) 75%,
+    var(--bh-text)
+  );
+}
+
+/* Waveform lane and exposed wavesurfer shadow parts. The page-world bridge
+ * owns stamped wave/progress/cursor/region colours; CSS supplies the backdrop
+ * and a short-lived fallback for a renderer it has not stamped yet. Every
+ * renderer that exposes these parts hosts its shadow root on a div, which is
+ * also how the bridges find it, so the host side names div rather than *. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where([data-babel-helper-scope='transcript'])
+  :where(div[class~='flex-1'][class~='overflow-x-auto'][class~='overflow-y-hidden']) {
+  background-color: var(--bh-surface-raised);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div)::part(scroll),
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div)::part(wrapper) {
+  background-color: var(--bh-surface-raised);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div)::part(scroll) {
+  scrollbar-color: var(--bh-scrollbar-thumb) var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div)::part(scroll)::-webkit-scrollbar-track {
+  background-color: var(--bh-surface);
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div)::part(scroll)::-webkit-scrollbar-thumb {
+  background-color: var(--bh-scrollbar-thumb);
+}
+
+/* Wavesurfer writes these overlay colours inline. Important is required for
+ * the fallback, while excluding stamped hosts leaves bridge ownership intact. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div:not([data-babel-helper-lane-index]))::part(cursor) {
+  background-color: var(--bh-text) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div:not([data-babel-helper-lane-index]))::part(region) {
+  background-color: color-mix(in srgb, var(--bh-wave) 25%, transparent) !important;
+  border-left-color: var(--bh-wave) !important;
+  border-right-color: var(--bh-wave) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div:not([data-babel-helper-lane-index]))::part(marker) {
+  border-left-color: var(--bh-wave) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(div:not([data-babel-helper-lane-index]))::part(region-handle) {
+  border-color: var(--bh-wave) !important;
+}
+
+/* The bridge stamps both the lane root and its attributed speaker cells. The
+ * app writes these exact colours inline, so important longhands are necessary
+ * and leave its border width/style and all layout untouched. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    div[data-babel-helper-lane-index][data-babel-helper-lane-slot='1'][data-babel-helper-speaker-label]
+  ) {
+  border-left-color: var(--bh-speaker-1) !important;
+  border-right-color: var(--bh-speaker-1) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    div[data-babel-helper-lane-index][data-babel-helper-lane-slot='2'][data-babel-helper-speaker-label]
+  ) {
+  border-left-color: var(--bh-speaker-2) !important;
+  border-right-color: var(--bh-speaker-2) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    div[data-babel-helper-lane-index][data-babel-helper-lane-slot='3'][data-babel-helper-speaker-label]
+  ) {
+  border-left-color: var(--bh-speaker-3) !important;
+  border-right-color: var(--bh-speaker-3) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='1'][data-babel-helper-speaker-label]
+  ) {
+  color: var(--bh-speaker-1) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='2'][data-babel-helper-speaker-label]
+  ) {
+  color: var(--bh-speaker-2) !important;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
+  :where(
+    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='3'][data-babel-helper-speaker-label]
+  ) {
+  color: var(--bh-speaker-3) !important;
+}
+
+/* Gradient is last so it can reveal the page behind the token-themed shell. */
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-gradient='enabled'][data-babel-helper-appearance-gradient-speed]
+  :where(body) {
+  background-image: linear-gradient(
+    var(--bh-gradient-angle),
+    var(--bh-gradient-color-1),
+    var(--bh-gradient-color-2),
+    var(--bh-gradient-color-3),
+    var(--bh-gradient-color-1)
+  );
+  background-position: 0% 15%;
+  background-size: 300% 300%;
+  background-repeat: no-repeat;
+  animation: babel-helper-website-appearance-gradient-slide
+    var(--bh-gradient-duration) ease-in-out infinite alternate;
+}
+
+html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-gradient='enabled'][data-babel-helper-appearance-gradient-speed]
+  :where([data-babel-helper-scope='transcript']) {
+  background-color: transparent;
+  background-image: none;
+}
+
+@keyframes babel-helper-website-appearance-gradient-slide {
+  from {
+    background-position: 0% 15%;
+  }
+
+  to {
+    background-position: 100% 85%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-gradient='enabled'][data-babel-helper-appearance-gradient-speed]
+    :where(body) {
+    animation: none;
+    background-position: 50% 50%;
+  }
+}

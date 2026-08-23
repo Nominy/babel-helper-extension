@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Babel Audio Workflow Helper",
-  "version": "1.0.250",
+  "version": "1.0.251",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
   "icons": {
     "16": "icons/icon16.png",
@@ -53,6 +53,9 @@
       "js": [
         "dist/content/entry.js"
       ],
+      "css": [
+        "dist/content/website-appearance.css"
+      ],
       "run_at": "document_start"
     }
   ],
@@ -65,7 +68,8 @@
         "dist/content/recovered-editor-bridge.js",
         "dist/content/timestamp-bridge.js",
         "dist/content/linter-bridge.js",
-        "dist/content/quick-region-autocomplete-bridge.js"
+        "dist/content/quick-region-autocomplete-bridge.js",
+        "dist/content/waveform-theme-bridge.js"
       ],
       "matches": [
         "https://dashboard.babel.audio/*"

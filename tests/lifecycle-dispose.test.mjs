@@ -25,7 +25,7 @@ test('reset-to-defaults follows extension default settings', () => {
     'utf8'
   );
 
-  assert.match(optionsSource, /DEFAULT_EXTENSION_SETTINGS\.features\[key\]/);
+  assert.match(optionsSource, /applySettingsToInputs\(\s*DEFAULT_EXTENSION_SETTINGS,/);
 });
 
 test('content boot tears down page-world bridges before restarting', () => {
@@ -45,7 +45,8 @@ test('page-world bridges expose teardown cleanup hooks', () => {
     '../src/content/timestamp-bridge.ts',
     '../src/content/magnifier-bridge.ts',
     '../src/content/linter-bridge.ts',
-    '../src/content/quick-region-autocomplete-bridge.ts'
+    '../src/content/quick-region-autocomplete-bridge.ts',
+    '../src/content/waveform-theme-bridge.ts'
   ];
 
   for (const bridgePath of bridgePaths) {
