@@ -367,6 +367,28 @@ function hasSquareBracketTagSpacingViolation(text) {
   return getSquareBracketTagSpacingParts(text).length > 0;
 }
 
+function getCurlyTagSpacingMatches(text) {
+  if (typeof text !== 'string' || text.indexOf('{') === -1) {
+    return [];
+  }
+
+  const matches = [];
+  const tagPattern = /(?<=\S)\{[\p{L}\p{N}_-]+:[^{}\r\n]*\}/gu;
+  let match;
+  while ((match = tagPattern.exec(text))) {
+    matches.push({
+      start: match.index,
+      end: tagPattern.lastIndex,
+      text: match[0]
+    });
+  }
+  return matches;
+}
+
+function hasCurlyTagSpacingViolation(text) {
+  return getCurlyTagSpacingMatches(text).length > 0;
+}
+
 function isCurlyTagTrailingPunctuationChar(char) {
   return typeof char === 'string' && /[.,?!:;"-]/.test(char);
 }
@@ -1499,6 +1521,17 @@ function fixSquareBracketTagSpacing(text) {
   return result + text.slice(cursor);
 }
 
+function fixCurlyTagSpacing(text) {
+  if (typeof text !== 'string' || text.indexOf('{') === -1) {
+    return text;
+  }
+
+  return text.replace(
+    /(\S)(\{[\p{L}\p{N}_-]+:[^{}\r\n]*\})/gu,
+    '$1 $2'
+  );
+}
+
 function fixUnicodeDashes(text) {
   if (typeof text !== 'string') {
     return text;
@@ -1777,6 +1810,7 @@ function applyAllFixes(text) {
   result = fixUnicodeQuotes(result);
   result = fixAngleTagSpacing(result);
   result = fixSquareBracketTagSpacing(result);
+  result = fixCurlyTagSpacing(result);
   result = fixUnicodeDashes(result);
   result = fixCurlyTagTrailingPunctuation(result);
   result = fixSquareBracketTagTrailingPunctuation(result);
@@ -2253,6 +2287,19 @@ test('flags and fixes spaces around square bracket tags as standalone transcript
   assert.equal(fixSquareBracketTagSpacing('TEXT[laugh'), 'TEXT[laugh');
 });
 
+test('flags and fixes missing space before curly annotation tags', () => {
+  assert.equal(hasCurlyTagSpacingViolation('9 {СКАЗ: девять}'), false);
+  assert.equal(hasCurlyTagSpacingViolation('9{СКАЗ: девять}'), true);
+  assert.equal(hasCurlyTagSpacingViolation('{СКАЗ: девять}'), false);
+  assert.equal(hasCurlyTagSpacingViolation('{ЗАИКАНИЕ}слово'), false);
+  assert.equal(hasCurlyTagSpacingViolation('9{СКАЗ: девять'), false);
+
+  assert.equal(fixCurlyTagSpacing('9{СКАЗ: девять}'), '9 {СКАЗ: девять}');
+  assert.equal(fixCurlyTagSpacing('{СКАЗ: девять}'), '{СКАЗ: девять}');
+  assert.equal(fixCurlyTagSpacing('{ЗАИКАНИЕ}слово'), '{ЗАИКАНИЕ}слово');
+  assert.equal(fixCurlyTagSpacing('9{СКАЗ: девять'), '9{СКАЗ: девять');
+});
+
 test('flags punctuation that appears outside closing angle tags', () => {
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>.'), true);
   assert.equal(hasAngleTagTrailingPunctuationViolation('Да </TAG>:'), true);
@@ -2543,6 +2590,10 @@ test('applyAllFixes includes period and angle tag spacing fixes', () => {
   assert.equal(applyAllFixes('hello .world'), 'hello. World.');
   assert.equal(applyAllFixes('hello<TAG>world'), 'hello <TAG> world.');
   assert.equal(applyAllFixes('<TAG>hello world</TAG>'), '<TAG> hello world. </TAG>');
+});
+
+test('applyAllFixes inserts missing space before curly annotation tags', () => {
+  assert.equal(applyAllFixes('9{СКАЗ: девять}'), '9. {СКАЗ: девять}');
 });
 
 test('moves punctuation before closing angle tags', () => {

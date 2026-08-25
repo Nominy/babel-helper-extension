@@ -54,5 +54,16 @@ export const createSpacingRules: CustomLinterRuleFactory = (deps) => [
     ],
     getMatches: (entry) => deps.getSquareBracketTagSpacingMatches(entry.text),
     fix: (text) => deps.fixSquareBracketTagSpacing(text)
+  },
+  {
+    id: 'curly-tag-spacing',
+    reason: deps.reasons.curlyTagSpacing,
+    severity: deps.ruleSeverity,
+    markers: [
+      deps.reasons.curlyTagSpacing,
+      'Curly tags must be formatted'
+    ],
+    getMatches: (entry) => deps.getCurlyTagSpacingMatches(entry.text),
+    fix: (text) => deps.fixCurlyTagSpacing(text)
   }
 ];

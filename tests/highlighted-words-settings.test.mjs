@@ -89,6 +89,11 @@ test('fresh custom linter defaults disable exactly the tag punctuation rules', a
     CUSTOM_LINTER_RULE_SETTINGS.filter((rule) => !rule.enabledByDefault).map((rule) => rule.id),
     TAG_TRAILING_PUNCTUATION_RULE_IDS
   );
+  assert.equal(
+    CUSTOM_LINTER_RULE_SETTINGS.find((rule) => rule.id === 'curly-tag-spacing')
+      ?.enabledByDefault,
+    true
+  );
 });
 
 test('ghost cursor settings default safely and normalize every field', async () => {

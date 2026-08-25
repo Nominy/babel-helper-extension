@@ -10,6 +10,7 @@ export type CustomLinterReasons = {
   unicodeQuote: string;
   angleTagSpacing: string;
   squareBracketTagSpacing: string;
+  curlyTagSpacing: string;
   curlyTagTrailingPunctuation: string;
   angleTagTrailingPunctuation: string;
   squareBracketTagTrailingPunctuation: string;
@@ -46,6 +47,8 @@ export type CustomLinterRuleDependencies = {
   fixAngleTagSpacing(text: string): string;
   getSquareBracketTagSpacingMatches(text: string): TextRange[];
   fixSquareBracketTagSpacing(text: string): string;
+  getCurlyTagSpacingMatches(text: string): TextRange[];
+  fixCurlyTagSpacing(text: string): string;
   getCurlyTagTrailingPunctuationMatches(text: string): TextRange[];
   fixCurlyTagTrailingPunctuation(text: string): string;
   getAngleTagTrailingPunctuationMatches(text: string): TextRange[];

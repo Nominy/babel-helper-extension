@@ -537,6 +537,10 @@ test('period, angle tag, and free double dash rules live in co-located rule file
   assert.match(spacingRulesSource, /deps\.reasons\.squareBracketTagSpacing/);
   assert.match(spacingRulesSource, /getSquareBracketTagSpacingMatches/);
   assert.match(spacingRulesSource, /fixSquareBracketTagSpacing/);
+  assert.match(spacingRulesSource, /id:\s*'curly-tag-spacing'/);
+  assert.match(spacingRulesSource, /deps\.reasons\.curlyTagSpacing/);
+  assert.match(spacingRulesSource, /getCurlyTagSpacingMatches/);
+  assert.match(spacingRulesSource, /fixCurlyTagSpacing/);
   assert.match(punctuationRulesSource, /id:\s*'free-mid-sentence-double-dash'/);
   assert.match(punctuationRulesSource, /deps\.reasons\.freeMidSentenceDoubleDash/);
   assert.match(punctuationRulesSource, /getFreeMidSentenceDoubleDashMatches/);

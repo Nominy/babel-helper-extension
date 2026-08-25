@@ -162,6 +162,12 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     enabledByDefault: true
   },
   {
+    id: 'curly-tag-spacing',
+    label: 'Curly tag spacing',
+    description: 'Requires a space before curly annotation tags.',
+    enabledByDefault: true
+  },
+  {
     id: 'quote-balance',
     label: 'Quote balance',
     description: 'Warns when double quotes are unbalanced.',

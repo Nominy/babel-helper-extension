@@ -42,6 +42,8 @@ export function initLinterBridge() {
     'Angle tags must be formatted as standalone "TEXT <TAG> OTHER" tokens.';
   const SQUARE_BRACKET_TAG_SPACING_RULE_REASON =
     'Square bracket tags must be formatted as standalone "TEXT [TAG] OTHER" tokens.';
+  const CURLY_TAG_SPACING_RULE_REASON =
+    'Curly tags must be formatted as "TEXT {TAG: OTHER}".';
   const CURLY_TAG_TRAILING_PUNCTUATION_RULE_REASON =
     "Punctuation after curly tags must move before the tag.";
   const ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON =
@@ -1880,6 +1882,17 @@ export function initLinterBridge() {
     );
   }
 
+  function getCurlyTagSpacingMatches(text) {
+    if (typeof text !== "string" || text.indexOf("{") === -1) {
+      return [];
+    }
+
+    return collectRegexMatches(
+      text,
+      /(?<=\S)\{[\p{L}\p{N}_-]+:[^{}\r\n]*\}/gu,
+    );
+  }
+
   function isCurlyTagTrailingPunctuationChar(char) {
     return typeof char === "string" && /[.,?!:;"]/.test(char);
   }
@@ -2222,6 +2235,7 @@ export function initLinterBridge() {
         unicodeQuote: UNICODE_QUOTE_RULE_REASON,
         angleTagSpacing: ANGLE_TAG_SPACING_RULE_REASON,
         squareBracketTagSpacing: SQUARE_BRACKET_TAG_SPACING_RULE_REASON,
+        curlyTagSpacing: CURLY_TAG_SPACING_RULE_REASON,
         curlyTagTrailingPunctuation: CURLY_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         angleTagTrailingPunctuation: ANGLE_TAG_TRAILING_PUNCTUATION_RULE_REASON,
         squareBracketTagTrailingPunctuation:
@@ -2257,6 +2271,8 @@ export function initLinterBridge() {
       fixAngleTagSpacing,
       getSquareBracketTagSpacingMatches,
       fixSquareBracketTagSpacing,
+      getCurlyTagSpacingMatches,
+      fixCurlyTagSpacing,
       getCurlyTagTrailingPunctuationMatches,
       fixCurlyTagTrailingPunctuation,
       getAngleTagTrailingPunctuationMatches,
@@ -5341,6 +5357,17 @@ export function initLinterBridge() {
     }
 
     return result + text.slice(cursor);
+  }
+
+  function fixCurlyTagSpacing(text) {
+    if (typeof text !== "string" || text.indexOf("{") === -1) {
+      return text;
+    }
+
+    return text.replace(
+      /(\S)(\{[\p{L}\p{N}_-]+:[^{}\r\n]*\})/gu,
+      "$1 $2",
+    );
   }
 
   function fixUnicodeDashes(text) {
