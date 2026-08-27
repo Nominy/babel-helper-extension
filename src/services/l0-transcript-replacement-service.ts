@@ -60,6 +60,7 @@ type MutationResult = {
 };
 
 type TranscriptReplacementHelper = {
+  snapshotTranscriptWithNativeBridge: () => Promise<unknown>;
   getTranscriptRows: () => unknown[];
   getRowIdentity: (row: unknown) => Record<string, unknown> | null;
   getRowTextarea: (row: unknown) => { value: string } | null;
@@ -74,6 +75,7 @@ function hasReplacementCapabilities(value: unknown): value is TranscriptReplacem
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<TranscriptReplacementHelper>;
   return (
+    typeof candidate.snapshotTranscriptWithNativeBridge === 'function' &&
     typeof candidate.getTranscriptRows === 'function' &&
     typeof candidate.getRowIdentity === 'function' &&
     typeof candidate.getRowTextarea === 'function' &&
@@ -175,83 +177,41 @@ function validateRequest(value: unknown):
   };
 }
 
-function parseTimeValue(value: unknown): number | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return null;
-  const timestamp = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
-  if (timestamp) {
-    let total = 0;
-    for (const part of timestamp[0].split(':')) {
-      const numeric = Number(part);
-      if (!Number.isFinite(numeric)) return null;
-      total = total * 60 + numeric;
-    }
-    return total;
+function snapshotBridgeRow(value: unknown, index: number): SnapshotRow {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Current transcript row ${index} is not an object.`);
   }
-  let total = 0;
-  let foundUnit = false;
-  for (const match of normalized.matchAll(/(-?\d+(?:\.\d+)?)\s*([hms])/g)) {
-    const numeric = Number(match[1]);
-    if (!Number.isFinite(numeric)) return null;
-    foundUnit = true;
-    total += match[2] === 'h' ? numeric * 3600 : match[2] === 'm' ? numeric * 60 : numeric;
-  }
-  if (foundUnit) return total;
-  const numeric = Number(normalized.match(/-?\d+(?:\.\d+)?/)?.[0]);
-  return Number.isFinite(numeric) ? numeric : null;
-}
-
-function normalizedText(helper: TranscriptReplacementHelper, value: unknown): string {
-  if (typeof helper.normalizeText === 'function') {
-    return String(helper.normalizeText(value) || '').trim();
-  }
-  return typeof value === 'string' ? value.trim() : String(value || '').trim();
-}
-
-function childAt(row: unknown, index: number): unknown {
-  if (!row || typeof row !== 'object' || !('children' in row)) return undefined;
-  const children = row.children;
-  if (!children || typeof children !== 'object') return undefined;
-  return (children as Record<number, unknown>)[index];
-}
-
-function snapshotRow(
-  helper: TranscriptReplacementHelper,
-  row: unknown,
-  index: number
-): SnapshotRow {
-  const identity = helper.getRowIdentity(row);
-  if (!identity || typeof identity !== 'object') {
-    throw new Error(`Current transcript row ${index} has no Babel annotation identity.`);
-  }
-  const annotationId = typeof identity.annotationId === 'string' ? identity.annotationId.trim() : '';
+  const row = value as Record<string, unknown>;
+  const annotationId = typeof row.annotationId === 'string' ? row.annotationId.trim() : '';
   const processedRecordingId =
-    typeof identity.processedRecordingId === 'string' ? identity.processedRecordingId.trim() : '';
-  const speakerKey = typeof identity.speakerKey === 'string' ? identity.speakerKey.trim() : '';
-  const trackLabel = typeof identity.trackLabel === 'string' ? identity.trackLabel.trim() : '';
-  const visibleLane = normalizedText(helper, childAt(row, 1));
-  const lane = visibleLane || trackLabel || speakerKey;
-  const startText =
-    typeof identity.startText === 'string' && identity.startText
-      ? identity.startText
-      : normalizedText(helper, childAt(row, 2));
-  const endText =
-    typeof identity.endText === 'string' && identity.endText
-      ? identity.endText
-      : normalizedText(helper, childAt(row, 3));
-  const startSeconds = parseTimeValue(startText);
-  const endSeconds = parseTimeValue(endText);
-  const textarea = helper.getRowTextarea(row);
-  const text = typeof textarea?.value === 'string' ? textarea.value : '';
+    typeof row.processedRecordingId === 'string' ? row.processedRecordingId.trim() : '';
+  const speakerKey = typeof row.speakerKey === 'string' ? row.speakerKey.trim() : '';
+  const lane = typeof row.lane === 'string' ? row.lane.trim() : '';
+  const trackLabel =
+    (typeof row.trackLabel === 'string' ? row.trackLabel.trim() : '') || lane;
+  const startText = typeof row.startText === 'string' ? row.startText.trim() : '';
+  const endText = typeof row.endText === 'string' ? row.endText.trim() : '';
+  const startSeconds = row.startSeconds;
+  const endSeconds = row.endSeconds;
+  const text = typeof row.text === 'string' ? row.text : null;
 
-  if (!annotationId || !processedRecordingId || !speakerKey || !lane) {
+  if (!annotationId || !processedRecordingId || !speakerKey || !(lane || trackLabel)) {
     throw new Error(`Current transcript row ${index} has incomplete annotation or speaker identity.`);
   }
-  if (startSeconds === null || endSeconds === null || startSeconds < 0 || endSeconds <= startSeconds) {
+  if (!startText || !endText) {
+    throw new Error(`Current transcript row ${index} has incomplete timestamp labels.`);
+  }
+  if (
+    typeof startSeconds !== 'number' ||
+    typeof endSeconds !== 'number' ||
+    !Number.isFinite(startSeconds) ||
+    !Number.isFinite(endSeconds) ||
+    startSeconds < 0 ||
+    endSeconds <= startSeconds
+  ) {
     throw new Error(`Current transcript row ${index} has an invalid timestamp range.`);
   }
-  if (!textarea || typeof textarea.value !== 'string') {
+  if (text === null) {
     throw new Error(`Current transcript row ${index} has no editable transcript text.`);
   }
 
@@ -259,23 +219,41 @@ function snapshotRow(
     annotationId,
     processedRecordingId,
     speakerKey,
-    lane,
+    lane: lane || trackLabel,
     trackLabel,
     startSeconds,
     endSeconds,
     startText,
     endText,
     text,
-    rowIdentity: { ...identity }
+    rowIdentity: {
+      annotationId,
+      processedRecordingId,
+      speakerKey,
+      trackLabel,
+      startText,
+      endText
+    }
   };
 }
 
-function snapshotTranscript(helper: TranscriptReplacementHelper): SnapshotRow[] {
-  const rows = helper.getTranscriptRows();
-  if (!Array.isArray(rows) || rows.length === 0) {
+async function snapshotTranscript(
+  helper: TranscriptReplacementHelper,
+  allowEmpty = false
+): Promise<SnapshotRow[]> {
+  const result = await helper.snapshotTranscriptWithNativeBridge();
+  if (!result || typeof result !== 'object') {
+    throw new Error('The native transcript snapshot bridge did not respond.');
+  }
+  const candidate = result as Record<string, unknown>;
+  if (candidate.ok !== true || !Array.isArray(candidate.rows)) {
+    const message = typeof candidate.message === 'string' ? candidate.message : '';
+    throw new Error(message || 'The native transcript snapshot bridge failed.');
+  }
+  if (!allowEmpty && candidate.rows.length === 0) {
     throw new Error('The current Babel transcript has no rows.');
   }
-  return rows.map((row: unknown, index: number) => snapshotRow(helper, row, index));
+  return candidate.rows.map((row, index) => snapshotBridgeRow(row, index));
 }
 
 function laneBindings(snapshot: SnapshotRow[]): Map<string, LaneBinding | null> {
@@ -362,7 +340,10 @@ function findRowByAnnotationId(
 }
 
 function restoreText(helper: TranscriptReplacementHelper, row: SnapshotRow): boolean {
-  const current = findRowByAnnotationId(helper, row.annotationId);
+  const current =
+    (typeof helper.findRowByIdentity === 'function'
+      ? helper.findRowByIdentity(row.rowIdentity)
+      : null) || findRowByAnnotationId(helper, row.annotationId);
   const textarea = current ? helper.getRowTextarea(current) : null;
   return Boolean(textarea && helper.setEditableValue(textarea, row.text));
 }
@@ -370,7 +351,8 @@ function restoreText(helper: TranscriptReplacementHelper, row: SnapshotRow): boo
 async function rollback(
   helper: TranscriptReplacementHelper,
   original: SnapshotRow[],
-  created: Array<PreparedRow & { annotationId: string }>
+  created: Array<PreparedRow & { annotationId: string }>,
+  deletedOriginalIds: Set<string>
 ): Promise<string[]> {
   const errors: string[] = [];
   for (let index = created.length - 1; index >= 0; index -= 1) {
@@ -382,34 +364,30 @@ async function rollback(
   }
 
   const originalIds = new Set(original.map((row) => row.annotationId));
-  let currentRows: unknown[] = [];
+  let present = new Set<string>();
+  let authoritativeCurrent = false;
   try {
-    currentRows = helper.getTranscriptRows();
-    for (let index = currentRows.length - 1; index >= 0; index -= 1) {
-      const identity = helper.getRowIdentity(currentRows[index]);
-      const annotationId =
-        identity && typeof identity.annotationId === 'string' ? identity.annotationId : '';
-      if (!annotationId || originalIds.has(annotationId)) continue;
+    const current = await snapshotTranscript(helper, true);
+    authoritativeCurrent = true;
+    present = new Set(current.map((row) => row.annotationId));
+    for (let index = current.length - 1; index >= 0; index -= 1) {
+      const stray = current[index];
+      if (originalIds.has(stray.annotationId)) continue;
       try {
-        const stray = snapshotRow(helper, currentRows[index], index);
         const result = await helper.deleteSegmentWithNativeAction(deleteOptions(stray));
-        if (!result?.ok) errors.push(`could not remove new annotation ${annotationId}`);
+        if (!result?.ok) errors.push(`could not remove new annotation ${stray.annotationId}`);
       } catch {
-        errors.push(`could not remove new annotation ${annotationId}`);
+        errors.push(`could not remove new annotation ${stray.annotationId}`);
       }
     }
-    currentRows = helper.getTranscriptRows();
   } catch {
     errors.push('could not inspect transcript during rollback');
   }
-
-  const present = new Set(
-    currentRows
-      .map((row) => helper.getRowIdentity(row)?.annotationId)
-      .filter((id: unknown): id is string => typeof id === 'string' && Boolean(id))
-  );
   for (const row of original) {
-    if (!present.has(row.annotationId)) {
+    const shouldRecreate = authoritativeCurrent
+      ? !present.has(row.annotationId)
+      : deletedOriginalIds.has(row.annotationId);
+    if (shouldRecreate) {
       let recreated: MutationResult;
       try {
         recreated = await helper.createSegmentWithNativeAction({
@@ -461,7 +439,7 @@ export async function replaceTranscriptSegmentation(
 
   let original: SnapshotRow[];
   try {
-    original = snapshotTranscript(helper);
+    original = await snapshotTranscript(helper);
   } catch (error) {
     return response(request.requestId, false, {
       reason: 'snapshot-invalid',
@@ -477,6 +455,7 @@ export async function replaceTranscriptSegmentation(
   }
 
   const created: Array<PreparedRow & { annotationId: string }> = [];
+  const deletedOriginalIds = new Set<string>();
   let mutationReason = '';
   let mutationMessage = '';
 
@@ -495,6 +474,7 @@ export async function replaceTranscriptSegmentation(
       );
       break;
     }
+    deletedOriginalIds.add(original[index].annotationId);
   }
 
   if (!mutationReason) {
@@ -523,7 +503,7 @@ export async function replaceTranscriptSegmentation(
   }
 
   if (mutationReason) {
-    const rollbackErrors = await rollback(helper, original, created);
+    const rollbackErrors = await rollback(helper, original, created, deletedOriginalIds);
     if (rollbackErrors.length) {
       mutationMessage += ` Rollback incomplete: ${rollbackErrors.join('; ')}.`;
     } else {

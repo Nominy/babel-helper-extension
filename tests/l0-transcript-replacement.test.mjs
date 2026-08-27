@@ -41,6 +41,22 @@ function makeRow({ annotationId, processedRecordingId, lane, startSeconds, endSe
   };
 }
 
+function nativeSnapshotRow(row, index) {
+  return {
+    index,
+    annotationId: row.identity.annotationId,
+    processedRecordingId: row.identity.processedRecordingId,
+    speakerKey: row.identity.speakerKey,
+    trackLabel: row.identity.trackLabel,
+    lane: row.children[1],
+    startText: row.identity.startText,
+    endText: row.identity.endText,
+    startSeconds: Number(row.identity.startText.split(':').at(-1)),
+    endSeconds: Number(row.identity.endText.split(':').at(-1)),
+    text: row.textarea.value
+  };
+}
+
 function createHelper(options = {}) {
   const rows = [
     makeRow({
@@ -68,10 +84,30 @@ function createHelper(options = {}) {
   return {
     rows,
     mutations,
+    async snapshotTranscriptWithNativeBridge() {
+      if (options.bridgeFailure) {
+        throw new Error('fake bridge failure');
+      }
+      if (Object.hasOwn(options, 'bridgeResult')) {
+        return options.bridgeResult;
+      }
+      return {
+        ok: true,
+        backend: 'page-react-transcript-snapshot',
+        rows: rows.map(nativeSnapshotRow)
+      };
+    },
     getTranscriptRows() {
       return rows;
     },
     getRowIdentity(row) {
+      if (options.isolatedIdentityIncomplete) {
+        return {
+          speakerKey: row.identity.trackLabel,
+          startText: row.identity.startText,
+          endText: row.identity.endText
+        };
+      }
       return row.identity;
     },
     getRowTextarea(row) {
@@ -155,6 +191,55 @@ test('valid replacement deletes in reverse order, creates deterministically, and
     { id: 'first', annotationId: 'created-1', lane: 'Speaker 1', startSeconds: 0, endSeconds: 3 }
   ]);
   assert.deepEqual(helper.rows.map((row) => row.identity.annotationId), ['created-1', 'created-2']);
+});
+
+test('authoritative bridge snapshot replaces despite incomplete isolated React identity', async () => {
+  const helper = createHelper({ isolatedIdentityIncomplete: true });
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    helper.mutations.filter(([kind]) => kind === 'delete'),
+    [['delete', 'original-2'], ['delete', 'original-1']]
+  );
+});
+
+test('bridge failure performs zero transcript mutation', async () => {
+  const helper = createHelper({ bridgeFailure: true, isolatedIdentityIncomplete: true });
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'snapshot-invalid');
+  assert.match(result.message, /fake bridge failure/);
+  assert.deepEqual(helper.mutations, []);
+});
+
+test('malformed bridge snapshot performs zero transcript mutation', async () => {
+  const helper = createHelper({
+    bridgeResult: {
+      ok: true,
+      rows: [
+        {
+          annotationId: 'original-1',
+          processedRecordingId: '',
+          speakerKey: 'track-1',
+          trackLabel: 'Speaker 1',
+          lane: 'Speaker 1',
+          startText: '00:00:00.000',
+          endText: '00:00:04.000',
+          startSeconds: 0,
+          endSeconds: 4,
+          text: 'Original one'
+        }
+      ]
+    }
+  });
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'snapshot-invalid');
+  assert.match(result.message, /incomplete annotation or speaker identity/);
+  assert.deepEqual(helper.mutations, []);
 });
 
 test('request and lane validation finish before the first native mutation', async () => {

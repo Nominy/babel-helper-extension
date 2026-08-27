@@ -5,7 +5,10 @@ export function initTimestampBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const existingBridge = window.__babelHelperTimestampBridge;
   if (existingBridge) {
-    if (typeof existingBridge.createSegment === 'function') {
+    if (
+      typeof existingBridge.createSegment === 'function' &&
+      typeof existingBridge.snapshotTranscript === 'function'
+    ) {
       return;
     }
 
@@ -182,6 +185,83 @@ export function initTimestampBridge() {
     return {
       startSeconds,
       endSeconds
+    };
+  }
+
+  function resolveRowAnnotation(row) {
+    if (!(row instanceof HTMLTableRowElement)) {
+      return null;
+    }
+
+    let fiber = getReactFiber(row);
+    if (!fiber) {
+      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
+    }
+
+    let current = fiber;
+    let depth = 0;
+    while (current && typeof current === 'object' && depth < 24) {
+      const props = current.memoizedProps;
+      const annotation =
+        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
+          ? props.annotation
+          : null;
+      if (annotation && typeof annotation.id === 'string' && annotation.id) {
+        return annotation;
+      }
+
+      current = current.return;
+      depth += 1;
+    }
+
+    return null;
+  }
+
+  function snapshotTranscript() {
+    const rows = getTranscriptRows().map((row, index) => {
+      const annotation = resolveRowAnnotation(row);
+      const labels = getRowTimeLabels(row);
+      const range = getRowTimeRange(row);
+      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
+      const visibleLane = getRowSpeakerKey(row);
+      const processedRecordingId =
+        annotation && annotation.processedRecordingId != null
+          ? String(annotation.processedRecordingId).trim()
+          : '';
+      const trackLabel =
+        annotation && typeof annotation.trackLabel === 'string' && annotation.trackLabel.trim()
+          ? annotation.trackLabel.trim()
+          : visibleLane;
+      const annotationStart = Number(annotation?.startTimeInSeconds);
+      const annotationEnd = Number(annotation?.endTimeInSeconds);
+      const startSeconds = Number.isFinite(annotationStart)
+        ? annotationStart
+        : range?.startSeconds ?? null;
+      const endSeconds = Number.isFinite(annotationEnd)
+        ? annotationEnd
+        : range?.endSeconds ?? null;
+      const speakerKey = processedRecordingId || trackLabel || visibleLane;
+
+      return {
+        index,
+        annotationId:
+          annotation && typeof annotation.id === 'string' ? annotation.id.trim() : '',
+        processedRecordingId,
+        trackLabel,
+        speakerKey,
+        lane: visibleLane || trackLabel || speakerKey,
+        startText: labels?.startText || '',
+        endText: labels?.endText || '',
+        startSeconds,
+        endSeconds,
+        text: textarea && typeof textarea.value === 'string' ? textarea.value : ''
+      };
+    });
+
+    return {
+      ok: true,
+      backend: 'page-react-transcript-snapshot',
+      rows
     };
   }
 
@@ -1070,6 +1150,7 @@ export function initTimestampBridge() {
     deleteSegment,
     mergeSegment,
     setBoundaryTime,
+    snapshotTranscript,
     splitSegmentAtTime
   };
   const serviceRegistry = window.BabelMods?.unsafe?.services;
@@ -1094,6 +1175,20 @@ export function initTimestampBridge() {
     const operation = detail.operation;
     const payload = detail.payload || {};
     if (!id) {
+      return;
+    }
+
+    if (operation === 'snapshot-transcript') {
+      Promise.resolve(invokeService('snapshotTranscript'))
+        .then((result) => respond(id, result))
+        .catch((error) =>
+          respond(id, {
+            ok: false,
+            backend: 'page-react-transcript-snapshot',
+            reason: 'bridge-error',
+            message: error instanceof Error ? error.message : String(error || '')
+          })
+        );
       return;
     }
 
@@ -1177,6 +1272,7 @@ export function initTimestampBridge() {
     deleteSegment: (...args) => invokeService('deleteSegment', ...args),
     mergeSegment: (...args) => invokeService('mergeSegment', ...args),
     setBoundaryTime: (...args) => invokeService('setBoundaryTime', ...args),
+    snapshotTranscript: (...args) => invokeService('snapshotTranscript', ...args),
     splitSegmentAtTime: (...args) => invokeService('splitSegmentAtTime', ...args),
     dispose
   };

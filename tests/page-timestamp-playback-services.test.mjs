@@ -230,3 +230,69 @@ test('timestamp and playback facades stay late-bound across mod layers and teard
   replacementBase.dispose();
   survivingDecorator.dispose();
 });
+
+test('MAIN timestamp bridge snapshots live React annotation identity and textarea text', async () => {
+  const { createServiceRegistry } = await importBundledTs(
+    'src/mod-platform/service-registry.ts',
+    'snapshot-service-registry'
+  );
+  const services = createServiceRegistry();
+  const pageWindow = installPageGlobals(services);
+  const textarea = new FakeHTMLElement();
+  textarea.value = 'Live transcript text';
+  const cells = ['', 'Speaker 2', '00:00:00.840', '00:00:29.826'].map((textContent) => {
+    const cell = new FakeHTMLElement();
+    cell.textContent = textContent;
+    return cell;
+  });
+  const row = new FakeHTMLTableRowElement();
+  row.children = cells;
+  row.querySelector = () => textarea;
+  row.__reactFiber$live = {
+    return: {
+      memoizedProps: {
+        annotation: {
+          id: 'f4ecee57-live',
+          processedRecordingId: '01a03c7b-live',
+          trackLabel: 'Speaker 2',
+          startTimeInSeconds: 0.84,
+          endTimeInSeconds: 29.826
+        }
+      },
+      return: null
+    }
+  };
+  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? [row] : []);
+
+  await importBundledTs('src/content/timestamp-bridge.ts', 'snapshot-timestamp-bridge');
+  const direct = pageWindow.__babelHelperTimestampBridge.snapshotTranscript();
+  assert.deepEqual(direct, {
+    ok: true,
+    backend: 'page-react-transcript-snapshot',
+    rows: [
+      {
+        index: 0,
+        annotationId: 'f4ecee57-live',
+        processedRecordingId: '01a03c7b-live',
+        trackLabel: 'Speaker 2',
+        speakerKey: '01a03c7b-live',
+        lane: 'Speaker 2',
+        startText: '00:00:00.840',
+        endText: '00:00:29.826',
+        startSeconds: 0.84,
+        endSeconds: 29.826,
+        text: 'Live transcript text'
+      }
+    ]
+  });
+
+  const { registerTimestampEditService } = await importBundledTs(
+    'src/services/timestamp-edit-service.ts',
+    'snapshot-timestamp-client'
+  );
+  const isolatedHelper = {};
+  registerTimestampEditService(isolatedHelper);
+  assert.deepEqual(await isolatedHelper.snapshotTranscriptWithNativeBridge(), direct);
+
+  pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
+});

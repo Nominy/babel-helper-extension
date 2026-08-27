@@ -1,6 +1,7 @@
 import type { ServiceOptions, TimestampEditService } from '../core/service-contracts';
 
 type TimestampEditServiceHelper = {
+  snapshotTranscriptWithNativeBridge?: () => Promise<unknown>;
   setSegmentBoundaryTime?: (options: ServiceOptions) => Promise<unknown>;
   splitSegmentAtTime?: (options: ServiceOptions) => Promise<unknown>;
   mergeSegmentWithNativeAction?: (options: ServiceOptions) => Promise<unknown>;
@@ -16,6 +17,12 @@ export function createTimestampEditServiceFacade(
   helper: TimestampEditServiceHelper
 ): TimestampEditService {
   return {
+    snapshotTranscriptWithNativeBridge() {
+      return (
+        helper.snapshotTranscriptWithNativeBridge?.() ??
+        unavailable('snapshotTranscriptWithNativeBridge')
+      );
+    },
     setSegmentBoundaryTime(options) {
       return helper.setSegmentBoundaryTime?.(options) ?? unavailable('setSegmentBoundaryTime');
     },

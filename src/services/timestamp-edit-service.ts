@@ -341,6 +341,11 @@ export function registerTimestampEditService(helper: any) {
   helper.findTimestampEditRowByTimeRange = findRowByTimeRange;
   helper.findTimestampEditRowByTimeLabels = findRowByTimeLabels;
 
+
+  helper.snapshotTranscriptWithNativeBridge =
+    async function snapshotTranscriptWithNativeBridge() {
+      return callTimestampBridge('snapshot-transcript', {});
+    };
   helper.setSegmentBoundaryTime = async function setSegmentBoundaryTime(options) {
     const settings = options || {};
     const side = settings.side === 'left' ? 'left' : 'right';

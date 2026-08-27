@@ -32,6 +32,7 @@ export interface SmartSplitService {
 }
 
 export interface TimestampEditService {
+  snapshotTranscriptWithNativeBridge(): Promise<unknown>;
   setSegmentBoundaryTime(options: ServiceOptions): Promise<unknown>;
   splitSegmentAtTime(options: ServiceOptions): Promise<unknown>;
   mergeSegmentWithNativeAction(options: ServiceOptions): Promise<unknown>;
