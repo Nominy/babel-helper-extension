@@ -29,6 +29,7 @@ const publishType = normalizePublishType(
 const skipReview = parseBoolean(
   args.values.get('skip-review') ?? process.env.CWS_SKIP_REVIEW ?? 'false'
 );
+const cancelPendingSubmission = parseBoolean(process.env.CWS_CANCEL_PENDING ?? 'false');
 const pollIntervalMs = parsePositiveInteger(
   args.values.get('poll-interval-ms') ?? process.env.CWS_POLL_INTERVAL_MS ?? '5000',
   'poll interval'
@@ -53,6 +54,16 @@ console.log(`Preparing Chrome Web Store upload for ${extensionId} (${manifest.ve
 console.log(`ZIP: ${zipPath}`);
 
 const accessToken = await getAccessToken();
+if (cancelPendingSubmission) {
+  const cancelResult = await requestJson(createCancelSubmissionUrl(publisherId, extensionId), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  ensureApiSuccess(cancelResult, 'submission cancellation');
+  console.log(`Cancelled pending Chrome Web Store submission for ${extensionId}.`);
+}
 const uploadUrl = createUploadUrl(publisherId, extensionId);
 const publishUrl = createPublishUrl(publisherId, extensionId);
 const statusUrl = createStatusUrl(publisherId, extensionId);
@@ -166,6 +177,7 @@ Environment:
   CWS_ZIP_PATH
   CWS_PUBLISH_TYPE
   CWS_SKIP_REVIEW
+  CWS_CANCEL_PENDING      Cancel the current pending review before uploading
   CWS_REQUEST_RETRIES
   CWS_REQUEST_RETRY_DELAY_MS
 `);
@@ -368,6 +380,12 @@ function createPublishUrl(publisherId, extensionId) {
   return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(
     publisherId
   )}/items/${encodeURIComponent(extensionId)}:publish`;
+}
+
+function createCancelSubmissionUrl(publisherId, extensionId) {
+  return `https://chromewebstore.googleapis.com/v2/publishers/${encodeURIComponent(
+    publisherId
+  )}/items/${encodeURIComponent(extensionId)}:cancelSubmission`;
 }
 
 function createStatusUrl(publisherId, extensionId) {
