@@ -328,19 +328,21 @@ test('automatic segment insertion bridge finds nearest uncovered speech island f
   assert.match(bridgeSource, /track\.processedRecordingId != null/);
 });
 
-test('automatic segment insertion creates native empty transcription segments through React onCreateAnnotation', () => {
+test('automatic segment insertion defaults native annotation content to empty text', () => {
   const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
   const timestampBridgeSource = read('../src/content/timestamp-bridge.ts');
 
   assert.match(timestampServiceSource, /helper\.createSegmentWithNativeAction = async function createSegmentWithNativeAction/);
   assert.match(timestampServiceSource, /callTimestampBridge\('create-segment'/);
   assert.match(timestampServiceSource, /processedRecordingId: settings\.processedRecordingId/);
+  assert.match(timestampServiceSource, /text: typeof settings\.text === 'string' \? settings\.text : ''/);
 
   assert.match(timestampBridgeSource, /function resolveCreateAnnotationBinding/);
   assert.match(timestampBridgeSource, /typeof props\.onCreateAnnotation === 'function'/);
   assert.match(timestampBridgeSource, /onCreateAnnotation\(\{/);
   assert.match(timestampBridgeSource, /type: 'transcription'/);
-  assert.match(timestampBridgeSource, /content: ''/);
+  assert.match(timestampBridgeSource, /const content = typeof payload\?\.text === 'string' \? payload\.text : ''/);
+  assert.match(timestampBridgeSource, /\scontent,/);
   assert.match(timestampBridgeSource, /processedRecordingId/);
   assert.match(timestampBridgeSource, /startTimeInSeconds/);
   assert.match(timestampBridgeSource, /endTimeInSeconds/);

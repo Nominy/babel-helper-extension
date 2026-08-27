@@ -681,6 +681,7 @@ export function initTimestampBridge() {
     const processedRecordingId =
       typeof payload?.processedRecordingId === 'string' ? payload.processedRecordingId : '';
     const speakerKey = typeof payload?.speakerKey === 'string' ? payload.speakerKey : processedRecordingId;
+    const content = typeof payload?.text === 'string' ? payload.text : '';
     const startSeconds = Number(payload?.startSeconds);
     const endSeconds = Number(payload?.endSeconds);
     if (!processedRecordingId || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
@@ -709,7 +710,7 @@ export function initTimestampBridge() {
       binding.onCreateAnnotation({
         id: annotationId,
         type: 'transcription',
-        content: '',
+        content,
         processedRecordingId,
         startTimeInSeconds: startSeconds,
         endTimeInSeconds: endSeconds,

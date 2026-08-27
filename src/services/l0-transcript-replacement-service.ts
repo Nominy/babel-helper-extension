@@ -345,7 +345,9 @@ function restoreText(helper: TranscriptReplacementHelper, row: SnapshotRow): boo
       ? helper.findRowByIdentity(row.rowIdentity)
       : null) || findRowByAnnotationId(helper, row.annotationId);
   const textarea = current ? helper.getRowTextarea(current) : null;
-  return Boolean(textarea && helper.setEditableValue(textarea, row.text));
+  if (!textarea) return false;
+  if (textarea.value === row.text) return true;
+  return helper.setEditableValue(textarea, row.text);
 }
 
 async function rollback(
@@ -395,7 +397,8 @@ async function rollback(
           processedRecordingId: row.processedRecordingId,
           speakerKey: row.speakerKey,
           startSeconds: row.startSeconds,
-          endSeconds: row.endSeconds
+          endSeconds: row.endSeconds,
+          text: row.text
         });
       } catch {
         recreated = { ok: false };
@@ -485,7 +488,8 @@ export async function replaceTranscriptSegmentation(
           processedRecordingId: row.processedRecordingId,
           speakerKey: row.speakerKey,
           startSeconds: row.startSeconds,
-          endSeconds: row.endSeconds
+          endSeconds: row.endSeconds,
+          text: row.text
         });
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };

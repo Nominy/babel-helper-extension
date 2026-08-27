@@ -137,7 +137,13 @@ function createHelper(options = {}) {
     async createSegmentWithNativeAction(call) {
       const restoring = typeof call.annotationId === 'string' && call.annotationId;
       if (!restoring) requestedCreateCount += 1;
-      mutations.push(['create', restoring || null, call.startSeconds, call.processedRecordingId]);
+      mutations.push([
+        'create',
+        restoring || null,
+        call.startSeconds,
+        call.processedRecordingId,
+        call.text
+      ]);
       const shouldFail = !restoring && requestedCreateCount === options.failRequestedCreateNumber;
       if (shouldFail && !options.failCreateAfterMutation) {
         return { ok: false, reason: 'fake-create-failure' };
@@ -150,7 +156,7 @@ function createHelper(options = {}) {
           lane: laneByTrack[call.processedRecordingId],
           startSeconds: call.startSeconds,
           endSeconds: call.endSeconds,
-          text: ''
+          text: call.text
         })
       );
       if (shouldFail) return { ok: false, reason: 'fake-create-failure-after-mutation' };
@@ -184,7 +190,7 @@ test('valid replacement deletes in reverse order, creates deterministically, and
   );
   assert.deepEqual(
     helper.mutations.filter(([kind]) => kind === 'create').map((entry) => entry.slice(2)),
-    [[0, 'track-1'], [3, 'track-2']]
+    [[0, 'track-1', 'First text'], [3, 'track-2', 'Later text']]
   );
   assert.deepEqual(result.created, [
     { id: 'later', annotationId: 'created-2', lane: 'Speaker 2', startSeconds: 3, endSeconds: 7 },
@@ -271,6 +277,10 @@ test('partial deletion failure recreates the deleted original row and text befor
     helper.rows.map((row) => [row.identity.annotationId, row.textarea.value]).sort(),
     [['original-1', 'Original one'], ['original-2', 'Original two']]
   );
+  assert.deepEqual(
+    helper.mutations.filter(([kind]) => kind === 'create'),
+    [['create', 'original-2', 4, 'track-2', 'Original two']]
+  );
 });
 
 test('creation failure removes new rows and restores every original identity and text', async () => {
@@ -286,6 +296,15 @@ test('creation failure removes new rows and restores every original identity and
   );
   assert.ok(helper.mutations.some(([kind, id]) => kind === 'delete' && id === 'created-1'));
   assert.ok(helper.mutations.some(([kind, id]) => kind === 'delete' && id === 'created-2'));
+  assert.deepEqual(
+    helper.mutations
+      .filter(([kind, annotationId]) => kind === 'create' && annotationId)
+      .map((entry) => entry.slice(1)),
+    [
+      ['original-1', 0, 'track-1', 'Original one'],
+      ['original-2', 4, 'track-2', 'Original two']
+    ]
+  );
 });
 
 class FakeWindow extends EventTarget {

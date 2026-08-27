@@ -557,6 +557,7 @@ export function registerTimestampEditService(helper: any) {
             : '',
         processedRecordingId: settings.processedRecordingId,
         speakerKey: settings.speakerKey,
+        text: typeof settings.text === 'string' ? settings.text : '',
         startSeconds,
         endSeconds
       });

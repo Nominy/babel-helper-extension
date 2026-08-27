@@ -240,6 +240,7 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
   const services = createServiceRegistry();
   const pageWindow = installPageGlobals(services);
   let transcriptRows = [];
+  const createdAnnotations = [];
   const makeLiveRow = (annotation, text) => {
     const textarea = new FakeHTMLElement();
     textarea.value = text;
@@ -259,7 +260,8 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
           annotation,
           onTimeChange() {},
           onCreateAnnotation(createdAnnotation) {
-            transcriptRows = [makeLiveRow(createdAnnotation, '')];
+            createdAnnotations.push(createdAnnotation);
+            transcriptRows = [makeLiveRow(createdAnnotation, createdAnnotation.content)];
           }
         },
         return: null
@@ -309,16 +311,20 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
   assert.deepEqual(await isolatedHelper.snapshotTranscriptWithNativeBridge(), direct);
 
   transcriptRows = [];
-  const recreated = await pageWindow.__babelHelperTimestampBridge.createSegment({
+  const recreated = await isolatedHelper.createSegmentWithNativeAction({
     annotationId: originalAnnotation.id,
     processedRecordingId: originalAnnotation.processedRecordingId,
     speakerKey: originalAnnotation.processedRecordingId,
     startSeconds: originalAnnotation.startTimeInSeconds,
-    endSeconds: originalAnnotation.endTimeInSeconds
+    endSeconds: originalAnnotation.endTimeInSeconds,
+    text: 'Live transcript text'
   });
   assert.equal(recreated.ok, true);
-  assert.equal(recreated.annotationId, originalAnnotation.id);
+  assert.equal(recreated.verification.annotationId, originalAnnotation.id);
   assert.equal(transcriptRows.length, 1);
+  assert.equal(createdAnnotations.length, 1);
+  assert.equal(createdAnnotations[0].content, 'Live transcript text');
+  assert.equal(transcriptRows[0].querySelector().value, 'Live transcript text');
 
   pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
 });
