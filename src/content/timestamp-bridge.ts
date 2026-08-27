@@ -218,6 +218,7 @@ export function initTimestampBridge() {
   }
 
   function snapshotTranscript() {
+    resolveCreateAnnotationBinding();
     const rows = getTranscriptRows().map((row, index) => {
       const annotation = resolveRowAnnotation(row);
       const labels = getRowTimeLabels(row);
@@ -571,6 +572,8 @@ export function initTimestampBridge() {
     return randomId || 'babel-helper-created-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   }
 
+  let cachedCreateAnnotationBinding = null;
+
   function resolveCreateAnnotationBinding() {
     const seeds = [];
     for (const row of getTranscriptRows()) {
@@ -578,6 +581,11 @@ export function initTimestampBridge() {
       const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
       if (textarea instanceof HTMLElement) {
         seeds.push(textarea);
+      }
+    }
+    for (const seed of document.querySelectorAll('tbody, table, main')) {
+      if (seed instanceof Element) {
+        seeds.push(seed);
       }
     }
 
@@ -591,11 +599,12 @@ export function initTimestampBridge() {
             ? props.onCreateAnnotation
             : null;
         if (onCreateAnnotation) {
-          return {
+          cachedCreateAnnotationBinding = {
             onCreateAnnotation,
             annotations: Array.isArray(props.annotations) ? props.annotations : [],
             tracks: Array.isArray(props.tracks) ? props.tracks : []
           };
+          return cachedCreateAnnotationBinding;
         }
 
         current = current.return;
@@ -603,7 +612,7 @@ export function initTimestampBridge() {
       }
     }
 
-    return null;
+    return cachedCreateAnnotationBinding;
   }
 
   function findRowsAroundSplit(annotationId, splitSeconds, options) {
@@ -1256,6 +1265,7 @@ export function initTimestampBridge() {
       return;
     }
     disposed = true;
+    cachedCreateAnnotationBinding = null;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     provider.dispose();

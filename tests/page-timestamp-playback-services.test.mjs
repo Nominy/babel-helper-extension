@@ -232,38 +232,51 @@ test('timestamp and playback facades stay late-bound across mod layers and teard
   survivingDecorator.dispose();
 });
 
-test('MAIN timestamp bridge snapshots live React annotation identity and textarea text', async () => {
+test('MAIN snapshot retains create binding for rollback after all rows are deleted', async () => {
   const { createServiceRegistry } = await importBundledTs(
     'src/mod-platform/service-registry.ts',
     'snapshot-service-registry'
   );
   const services = createServiceRegistry();
   const pageWindow = installPageGlobals(services);
-  const textarea = new FakeHTMLElement();
-  textarea.value = 'Live transcript text';
-  const cells = ['', 'Speaker 2', '00:00:00.840', '00:00:29.826'].map((textContent) => {
-    const cell = new FakeHTMLElement();
-    cell.textContent = textContent;
-    return cell;
-  });
-  const row = new FakeHTMLTableRowElement();
-  row.children = cells;
-  row.querySelector = () => textarea;
-  row.__reactFiber$live = {
-    return: {
-      memoizedProps: {
-        annotation: {
-          id: 'f4ecee57-live',
-          processedRecordingId: '01a03c7b-live',
-          trackLabel: 'Speaker 2',
-          startTimeInSeconds: 0.84,
-          endTimeInSeconds: 29.826
-        }
-      },
-      return: null
-    }
+  let transcriptRows = [];
+  const makeLiveRow = (annotation, text) => {
+    const textarea = new FakeHTMLElement();
+    textarea.value = text;
+    const cells = ['', annotation.trackLabel, '00:00:00.840', '00:00:29.826'].map(
+      (textContent) => {
+        const cell = new FakeHTMLElement();
+        cell.textContent = textContent;
+        return cell;
+      }
+    );
+    const row = new FakeHTMLTableRowElement();
+    row.children = cells;
+    row.querySelector = () => textarea;
+    row.__reactFiber$live = {
+      return: {
+        memoizedProps: {
+          annotation,
+          onTimeChange() {},
+          onCreateAnnotation(createdAnnotation) {
+            transcriptRows = [makeLiveRow(createdAnnotation, '')];
+          }
+        },
+        return: null
+      }
+    };
+    return row;
   };
-  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? [row] : []);
+  const originalAnnotation = {
+    id: 'f4ecee57-live',
+    processedRecordingId: '01a03c7b-live',
+    trackLabel: 'Speaker 2',
+    startTimeInSeconds: 0.84,
+    endTimeInSeconds: 29.826
+  };
+  transcriptRows = [makeLiveRow(originalAnnotation, 'Live transcript text')];
+  pageWindow.document.querySelectorAll = (selector) =>
+    selector === 'tbody tr' ? transcriptRows : [];
 
   await importBundledTs('src/content/timestamp-bridge.ts', 'snapshot-timestamp-bridge');
   const direct = pageWindow.__babelHelperTimestampBridge.snapshotTranscript();
@@ -294,6 +307,18 @@ test('MAIN timestamp bridge snapshots live React annotation identity and textare
   const isolatedHelper = {};
   registerTimestampEditService(isolatedHelper);
   assert.deepEqual(await isolatedHelper.snapshotTranscriptWithNativeBridge(), direct);
+
+  transcriptRows = [];
+  const recreated = await pageWindow.__babelHelperTimestampBridge.createSegment({
+    annotationId: originalAnnotation.id,
+    processedRecordingId: originalAnnotation.processedRecordingId,
+    speakerKey: originalAnnotation.processedRecordingId,
+    startSeconds: originalAnnotation.startTimeInSeconds,
+    endSeconds: originalAnnotation.endTimeInSeconds
+  });
+  assert.equal(recreated.ok, true);
+  assert.equal(recreated.annotationId, originalAnnotation.id);
+  assert.equal(transcriptRows.length, 1);
 
   pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
 });
