@@ -29,6 +29,7 @@ import {
   createWebsiteAppearancePanel,
   type WebsiteAppearanceCommitResult
 } from '../content/website-appearance-panel';
+import { registerL0ReplaceListener } from '../content/l0-replace-listener';
 
 type LoadedSessionRuntimeModule = typeof SessionRuntimeModule;
 
@@ -448,6 +449,8 @@ export function createHelperKernel() {
             helper.runtime.disposeLifecycle();
           }
         });
+        const disposeL0ReplaceListener = registerL0ReplaceListener(helper);
+        kernelScope.defer(disposeL0ReplaceListener);
         registerRecoveredEditorSnapshotService(helper);
         if (helper.isFeatureEnabled('extendedDiffView')) {
           registerExtendedDiffViewService(helper);
