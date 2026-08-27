@@ -57,6 +57,7 @@ function installPageGlobals(services) {
     document: pageDocument,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     setTimeout,
+    clearTimeout,
     window: pageWindow
   });
   Object.assign(globalThis, {
