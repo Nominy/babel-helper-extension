@@ -278,7 +278,7 @@ test('React review action identity separates same-route tasks and rejects stale 
     JSON.stringify({
       version: 1,
       baseTaskId: 'review-action-first',
-      stableLaneIds: ['shared-lane']
+      stableLaneIds: []
     })
   );
   assert.equal(
@@ -286,10 +286,19 @@ test('React review action identity separates same-route tasks and rejects stale 
     JSON.stringify({
       version: 1,
       baseTaskId: 'review-action-second',
-      stableLaneIds: ['shared-lane']
+      stableLaneIds: []
     })
   );
   assert.notEqual(firstTaskId, secondTaskId);
+  secondHelper.getRowIdentity = () => ({
+    processedRecordingId: 'lane-hidden-by-switch',
+    speakerKey: 'Speaker 2'
+  });
+  assert.equal(
+    identity.buildCurrentL0TimingTaskId(secondHelper, location),
+    secondTaskId,
+    'lane switching must not change a review-scoped task identity'
+  );
 
   const state = { l0TimingIndex: null };
   const protocolWindow = createProtocolWindow();
@@ -330,7 +339,7 @@ test('published main-world review action overrides the shared route in Helper', 
       JSON.stringify({
         version: 1,
         baseTaskId: 'review-action-bridged',
-        stableLaneIds: ['shared-lane']
+        stableLaneIds: []
       })
     );
   } finally {

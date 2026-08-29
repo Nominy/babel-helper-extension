@@ -186,11 +186,12 @@ export function buildCurrentL0TimingTaskId(
   const currentLocation =
     suppliedLocation ?? (typeof location === 'undefined' ? { pathname: '', search: '' } : location);
   const rows = getCurrentL0TimingRows(helper);
-  const baseTaskId =
+  const scopedTaskId =
     getPublishedReviewActionId()
     || (helper && getReviewActionIdFromRows(helper, rows))
-    || buildL0TimingBaseTaskId(currentLocation);
-  const rowIdentities = helper ? getL0TimingRowIdentities(helper, rows) : [];
+    || '';
+  const baseTaskId = scopedTaskId || buildL0TimingBaseTaskId(currentLocation);
+  const rowIdentities = scopedTaskId || !helper ? [] : getL0TimingRowIdentities(helper, rows);
   return serializeL0TimingTaskId(baseTaskId, rowIdentities);
 }
 
