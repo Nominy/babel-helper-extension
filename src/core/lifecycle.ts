@@ -891,6 +891,62 @@ export function registerLifecycle(helper: any) {
     }
   }
 
+  function handleTimestampWordSeekClick(event) {
+    if (
+      !helper.runtime.isSessionInteractive() ||
+      !isFeatureEnabled('rowActions') ||
+      !event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey
+    ) {
+      return;
+    }
+    const textarea = event.target;
+    if (
+      !(textarea instanceof HTMLTextAreaElement) ||
+      !textarea.matches(helper.config.rowTextareaSelector)
+    ) {
+      return;
+    }
+    const row = textarea.closest('tr');
+    const offset = textarea.selectionStart;
+    if (
+      !(row instanceof HTMLTableRowElement) ||
+      typeof offset !== 'number' ||
+      typeof helper.getL0TimestampForRowOffset !== 'function'
+    ) {
+      return;
+    }
+    const targetSeconds = helper.getL0TimestampForRowOffset(row, offset);
+    if (!Number.isFinite(targetSeconds)) {
+      return;
+    }
+    helper.setCurrentRow(row);
+    void helper.getPlaybackState()
+      .then((playback) => {
+        if (
+          !playback ||
+          !Number.isFinite(playback.currentTime) ||
+          typeof helper.seekPlaybackBySeconds !== 'function'
+        ) {
+          return false;
+        }
+        return helper.seekPlaybackBySeconds(targetSeconds - playback.currentTime);
+      })
+      .then((seekResult) => {
+        if (seekResult !== false && helper.analytics) {
+          helper.analytics.record('playback:seek', {
+            source: 'timestamp-word-alt-click',
+            targetSeconds,
+            rowId: helper.getRowIdentity(row)?.annotationId ?? null,
+            characterOffset: offset
+          });
+        }
+      })
+      .catch(() => undefined);
+  }
+
   function clearPlaybackRowSyncTimer() {
     if (helper.state.playbackRowSyncTimer != null) {
       window.clearTimeout(helper.state.playbackRowSyncTimer);
@@ -951,6 +1007,7 @@ export function registerLifecycle(helper: any) {
     document.addEventListener('input', handleCursorBaselineUpdate, true);
     document.addEventListener('keyup', handleCursorBaselineUpdate, true);
     document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
+    document.addEventListener('click', handleTimestampWordSeekClick);
     helper.state.rowTrackingBound = true;
     schedulePlaybackRowSync();
     helper.perf?.count?.('row-tracking.bound');
@@ -966,6 +1023,7 @@ export function registerLifecycle(helper: any) {
     document.removeEventListener('input', handleCursorBaselineUpdate, true);
     document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
     document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
+    document.removeEventListener('click', handleTimestampWordSeekClick);
     clearPlaybackRowSyncTimer();
     helper.state.playbackRowSyncInFlight = false;
     helper.state.lastPlaybackRow = null;

@@ -1,3 +1,8 @@
+import {
+  computeL0TimedCharacterOffset,
+  type L0WordTimingToken
+} from './l0-word-timing-alignment';
+
 export type AutoSegmentTextSegment = {
   id: string;
   speakerKey: string;
@@ -152,6 +157,81 @@ function nearestWordBoundary(text: string, index: number, minIndex: number, maxI
   }
 
   return clamped;
+}
+
+function floorWordBoundary(text: string, index: number, minIndex: number, maxIndex: number): number {
+  const clamped = Math.max(minIndex, Math.min(maxIndex, Math.floor(index)));
+  if (clamped >= maxIndex) {
+    return maxIndex;
+  }
+  for (let cursor = clamped; cursor >= minIndex; cursor -= 1) {
+    if (/\s/u.test(text[cursor] || '')) {
+      return cursor;
+    }
+  }
+  return minIndex;
+}
+
+export function splitAutoSegmentTextAtFloorOffset(text: string, offset: number) {
+  const source = normalizeAutoSegmentText(text);
+  const boundary = floorWordBoundary(source, offset, 0, source.length);
+  const firstText = normalizeAutoSegmentText(source.slice(0, boundary));
+  const secondText = normalizeAutoSegmentText(source.slice(boundary));
+  return {
+    firstText,
+    secondText,
+    splitCount: firstText ? firstText.split(/\s+/).length : 0,
+    wordCount: source ? source.split(/\s+/).length : 0,
+    source: 'ghost-cursor-timing'
+  };
+}
+
+export function createL0TimedAutoSegmentTextAllocations(
+  group: AutoSegmentTextGroup,
+  tokens: readonly L0WordTimingToken[],
+  options: { boundaryMode?: 'nearest' | 'floor' } = {}
+):
+  | { ok: true; fullText: string; allocations: AutoSegmentTextAllocation[] }
+  | { ok: false; reason: string; allocations: AutoSegmentTextAllocation[] } {
+  const validation = validateGroup(group);
+  if (!validation.ok) {
+    return { ok: false, reason: validation.reason, allocations: [] };
+  }
+
+  const source = normalizeAutoSegmentText(group.fullText);
+  const segments = group.segments;
+  const range = {
+    startSeconds: segments[0].startSeconds,
+    endSeconds: segments[segments.length - 1].endSeconds
+  };
+  const chunks: string[] = [];
+  let cursor = 0;
+
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const left = segments[index];
+    const right = segments[index + 1];
+    const boundaryTime = (left.endSeconds + right.startSeconds) / 2;
+    const timedOffset = computeL0TimedCharacterOffset(source, tokens, range, boundaryTime);
+    if (timedOffset === null) {
+      return { ok: false, reason: 'missing-timing-anchors', allocations: [] };
+    }
+    const boundary =
+      options.boundaryMode === 'floor'
+        ? floorWordBoundary(source, timedOffset, cursor, source.length)
+        : nearestWordBoundary(source, timedOffset, cursor, source.length);
+    chunks.push(normalizeAutoSegmentText(source.slice(cursor, boundary)));
+    cursor = boundary;
+  }
+  chunks.push(normalizeAutoSegmentText(source.slice(cursor)));
+
+  const allocations = segments.map((segment, index) => ({
+    id: segment.id,
+    text: chunks[index] || ''
+  }));
+  if (!validateAutoSegmentTextAllocationsPreserveText(group, allocations)) {
+    return { ok: false, reason: 'timed-allocation-lost-text', allocations: [] };
+  }
+  return { ok: true, fullText: source, allocations };
 }
 
 function splitByDurationFallback(fullText: string, segments: AutoSegmentTextSegment[]): string[] {

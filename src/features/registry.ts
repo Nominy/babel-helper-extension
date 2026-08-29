@@ -81,6 +81,7 @@ export const FEATURE_REGISTRATIONS = [
       }
       rows.push(['Right Shift + Left / Right', 'Focus previous / next segment from start']);
       rows.push(['Tab', 'Toggle active ghost cursor lane']);
+      rows.push(['Alt + Click word', 'Seek playback to the word timestamp']);
       rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
       rows.push(['Alt + Shift + Down', 'Merge with next segment']);
       rows.push(['D', 'Delete current segment when not typing']);

@@ -30,6 +30,7 @@ import {
   type WebsiteAppearanceCommitResult
 } from '../content/website-appearance-panel';
 import { registerL0ReplaceListener } from '../content/l0-replace-listener';
+import { registerL0TimingListener } from '../content/l0-timing-listener';
 
 type LoadedSessionRuntimeModule = typeof SessionRuntimeModule;
 
@@ -451,6 +452,8 @@ export function createHelperKernel() {
         });
         const disposeL0ReplaceListener = registerL0ReplaceListener(helper);
         kernelScope.defer(disposeL0ReplaceListener);
+        const disposeL0TimingListener = registerL0TimingListener(helper.state, helper);
+        kernelScope.defer(disposeL0TimingListener);
         registerRecoveredEditorSnapshotService(helper);
         if (helper.isFeatureEnabled('extendedDiffView')) {
           registerExtendedDiffViewService(helper);

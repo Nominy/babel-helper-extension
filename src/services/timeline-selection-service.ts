@@ -7,9 +7,20 @@ import {
 import {
   applyAutoSegmentTextReview,
   createAutoSegmentTextRedistributionDraft,
+  createL0TimedAutoSegmentTextAllocations,
   normalizeAutoSegmentText,
+  splitAutoSegmentTextAtFloorOffset,
   validateAutoSegmentTextAllocationsPreserveText
 } from './auto-segment-text-allocation';
+import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
+import { computeL0CompletedWordCharacterOffset } from './l0-word-timing-alignment';
+import {
+  buildCurrentL0TimingTaskId,
+  buildL0TimingLaneAliases,
+  getPreferredL0TimingLaneKey,
+  resolveL0TimingTrack
+} from './l0-timing-identity';
+import { transcribeEmptySegmentWithL0 } from './l0-segment-transcription';
 import { requestGoldDraftingAiBroker } from './gold-drafting-ai-broker';
 
 export function registerTimelineSelectionService(helper: any) {
@@ -47,6 +58,8 @@ export function registerTimelineSelectionService(helper: any) {
   const AUTO_SEGMENT_MERGE_GAP_SECONDS = 1;
   const AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS = 0.05;
   const AUTO_SEGMENT_SPLIT_SETTLE_MS = 220;
+  const AUTO_SEGMENT_TIMING_WAIT_MS = 300000;
+  const AUTO_SEGMENT_TIMING_POLL_MS = 250;
   const AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS = 1;
   const AUTO_INSERT_SEGMENT_PROVISIONAL_PADDING_SECONDS = 0.05;
   const AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS = 1;
@@ -63,7 +76,7 @@ export function registerTimelineSelectionService(helper: any) {
     complete: { label: 'Finishing auto segmentation', percentBase: 98, percentSpan: 2 }
   };
   const LONG_TASK_PROGRESS_ID = 'babel-helper-long-task-progress';
-  const PROMPT_API_TROUBLESHOOTING_DISMISS_MS = 18000;
+  const L0_TRANSCRIPTION_FAILURE_DISMISS_MS = 18000;
 
   helper.state.cutDraft = null;
   helper.state.cutPreview = null;
@@ -79,7 +92,7 @@ export function registerTimelineSelectionService(helper: any) {
   helper.state.autoInsertSegmentHotkeyHandledAt = 0;
   if (isFeatureEnabled('timelineSelection')) {
     helper.config.hotkeysHelpRows.unshift(['Alt + C', 'Create empty segment around nearest uncovered speech near caret']);
-    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + G', 'Transcribe current empty segment with local Prompt API']);
+    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + G', 'Transcribe current empty segment with free L0']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + S', 'Split visible segments on silence runs over 1000ms, then trim all']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
@@ -101,7 +114,6 @@ export function registerTimelineSelectionService(helper: any) {
   let zoomPersistenceLoaded = false;
   let zoomPersistenceDefaults = null;
   let zoomPersistenceSaveChain = Promise.resolve();
-  let autoSegmentTextRedistributionSession = null;
   const getTranscriptRowsFromHelper =
     typeof helper.getTranscriptRows === 'function' ? helper.getTranscriptRows.bind(helper) : null;
 
@@ -305,103 +317,28 @@ export function registerTimelineSelectionService(helper: any) {
         : safeTotal > 0
           ? `${safeCurrent} / ${safeTotal} segments`
           : 'Preparing...';
-    delete progress.root.dataset.babelHelperPromptApiTroubleshooting;
-    delete progress.root.dataset.babelHelperPromptApiTroubleshootingToken;
+    delete progress.root.dataset.babelHelperL0TranscriptionFailure;
+    delete progress.root.dataset.babelHelperL0TranscriptionFailureToken;
     progress.fill.style.background = '#2563eb';
     progress.fill.style.width = `${safePercent}%`;
   }
 
-  function formatPromptApiNativeError(result) {
-    const errorName = result && typeof result.errorName === 'string' ? result.errorName.trim() : '';
-    const errorMessage = result && typeof result.errorMessage === 'string' ? result.errorMessage.trim() : '';
-    if (errorName && errorMessage) {
-      return errorName + ': ' + errorMessage;
-    }
-
-    return errorName || errorMessage || '';
-  }
-
-  function createPromptApiTroubleshooting(result, contextLabel) {
-    const reason = result && typeof result.reason === 'string' ? result.reason : '';
-    if (reason.indexOf('prompt-api-') !== 0) {
-      return null;
-    }
-
-    const availability = result && typeof result.availability === 'string' ? result.availability : '';
-    const errorName = result && typeof result.errorName === 'string' ? result.errorName.trim() : '';
-    const errorMessage = result && typeof result.errorMessage === 'string' ? result.errorMessage.trim() : '';
-    const nativeError = formatPromptApiNativeError(result);
-    let summary = 'Gemini Nano could not be used for this AI feature.';
-    let action =
-      'Check chrome://on-device-internals for the model status, keep free Chrome profile storage available, and reload Babel after the model finishes downloading.';
-
-    if (reason === 'prompt-api-missing') {
-      summary = 'This Chrome profile does not expose the local Gemini Nano Prompt API.';
-      action =
-        'Use a Chrome build/profile with built-in AI enabled, then check chrome://on-device-internals for model status.';
-    } else if (reason === 'prompt-api-downloadable') {
-      summary = 'Gemini Nano is available to download, but the local model is not installed yet.';
-      action =
-        'Start the model download from Chrome built-in AI, keep free Chrome profile storage available, then reload Babel.';
-    } else if (reason === 'prompt-api-downloading') {
-      summary = 'Gemini Nano is still downloading in Chrome.';
-      action = 'Keep Chrome open until the download finishes, confirm it in chrome://on-device-internals, then reload Babel.';
-    } else if (reason === 'prompt-api-unavailable') {
-      summary = 'Gemini Nano is unavailable in this Chrome profile or on this device.';
-      action =
-        'Confirm built-in AI eligibility in Chrome, check chrome://on-device-internals, and make sure the profile has enough free storage.';
-    } else if (reason === 'prompt-api-availability-failed') {
-      summary = 'Chrome failed while checking Gemini Nano availability.';
-    } else if (reason === 'prompt-api-create-failed') {
-      summary = 'Chrome found Gemini Nano but could not start a local model session.';
-    } else if (
-      reason === 'prompt-api-prompt-failed' ||
-      reason === 'prompt-api-transcription-failed' ||
-      reason === 'prompt-api-redistribution-failed' ||
-      reason === 'prompt-api-prepare-failed'
-    ) {
-      summary = 'Gemini Nano started, but the local model request failed.';
-      action =
-        'Try a shorter segment, reload Babel, then check chrome://on-device-internals if the error repeats. Audio input needs a supported GPU.';
-    }
-
-    const specificError = nativeError || reason;
-    const availabilityDetail = availability ? ' Availability: ' + availability + '.' : '';
-    const hardwareNote = 'Audio input needs a supported GPU.';
-    const messageParts = [
-      summary + availabilityDetail,
-      'Specific error: ' + specificError + '.',
-      action
-    ];
-    if (action.indexOf(hardwareNote) < 0) {
-      messageParts.push(hardwareNote);
-    }
-    const message = messageParts.join(' ');
-
-    return {
-      title: contextLabel || 'Gemini Nano troubleshooting',
-      message,
-      summary,
-      action,
-      reason,
-      availability,
-      errorName,
-      errorMessage,
-      nativeError: formatPromptApiNativeError(result)
-    };
-  }
-
-  function showPromptApiTroubleshootingFailure(troubleshooting) {
-    if (!troubleshooting || typeof troubleshooting !== 'object') {
-      return;
-    }
-
+  function showL0SegmentTranscriptionFailure(result) {
+    const reason =
+      result && typeof result.reason === 'string' && result.reason.trim()
+        ? result.reason.trim()
+        : 'l0-transcription-failed';
+    const broker = result && result.broker && typeof result.broker === 'object' ? result.broker : null;
+    const message =
+      broker && typeof broker.message === 'string' && broker.message.trim()
+        ? broker.message.trim()
+        : 'Free L0 transcription did not return text.';
     updateLongTaskProgress({
-      label: troubleshooting.title || 'Gemini Nano unavailable',
+      label: 'L0 transcription failed',
       current: 100,
       total: 100,
       percent: 100,
-      detail: troubleshooting.message || 'Gemini Nano failed. Check chrome://on-device-internals.'
+      detail: reason + '. ' + message
     });
 
     const progress = helper.state.longTaskProgress;
@@ -410,62 +347,17 @@ export function registerTimelineSelectionService(helper: any) {
     }
     if (progress && progress.root instanceof HTMLElement) {
       const dismissToken = Date.now() + '-' + Math.random().toString(36).slice(2);
-      progress.root.dataset.babelHelperPromptApiTroubleshooting = 'true';
-      progress.root.dataset.babelHelperPromptApiTroubleshootingToken = dismissToken;
+      progress.root.dataset.babelHelperL0TranscriptionFailure = 'true';
+      progress.root.dataset.babelHelperL0TranscriptionFailureToken = dismissToken;
       window.setTimeout(() => {
         if (
           helper.state.longTaskProgress === progress &&
           progress.root instanceof HTMLElement &&
-          progress.root.dataset.babelHelperPromptApiTroubleshootingToken === dismissToken
+          progress.root.dataset.babelHelperL0TranscriptionFailureToken === dismissToken
         ) {
           dismissLongTaskProgress();
         }
-      }, PROMPT_API_TROUBLESHOOTING_DISMISS_MS);
-    }
-  }
-
-  function formatGoldDraftingBrokerFailure(result) {
-    if (!result || typeof result !== 'object') {
-      return 'Gold Drafting remote broker failed without returning details.';
-    }
-
-    const reason =
-      result && typeof result.reason === 'string' && result.reason.trim()
-        ? result.reason.trim()
-        : 'gold-drafting-broker-empty-error-response';
-    const message = result && typeof result.message === 'string' ? result.message.trim() : '';
-    const details = serializeGoldDraftingBrokerFailure(result);
-    return message
-      ? 'Reason: ' + reason + '. ' + message + ' Details: ' + details
-      : 'Reason: ' + reason + '. Gold Drafting returned no message. Details: ' + details;
-  }
-
-  function serializeGoldDraftingBrokerFailure(result) {
-    try {
-      return JSON.stringify(result);
-    } catch (error) {
-      return String(error && error.message ? error.message : error);
-    }
-  }
-
-  function showGoldDraftingBrokerFailure(result, contextLabel) {
-    const failureDetails = serializeGoldDraftingBrokerFailure(result);
-    updateLongTaskProgress({
-      label: 'Gold Drafting remote model failed',
-      current: 100,
-      total: 100,
-      percent: 100,
-      detail: (contextLabel ? contextLabel + '. ' : '') + formatGoldDraftingBrokerFailure(result)
-    });
-
-    const progress = helper.state.longTaskProgress;
-    if (progress && progress.fill instanceof HTMLElement) {
-      progress.fill.style.background = '#dc2626';
-    }
-    if (progress && progress.root instanceof HTMLElement) {
-      progress.root.dataset.babelHelperGoldDraftingBrokerFailure = 'true';
-      progress.root.dataset.babelHelperGoldDraftingBrokerFailureDetails = failureDetails;
-      progress.root.setAttribute('data-babel-helper-gold-drafting-broker-failure-details', failureDetails);
+      }, L0_TRANSCRIPTION_FAILURE_DISMISS_MS);
     }
   }
 
@@ -493,101 +385,30 @@ export function registerTimelineSelectionService(helper: any) {
     });
   }
 
-  function formatProgressDuration(seconds) {
-    const safeSeconds = Math.max(0, Number(seconds) || 0);
-    if (safeSeconds >= 60) {
-      const minutes = Math.floor(safeSeconds / 60);
-      const remainder = Math.round(safeSeconds % 60);
-      return `${minutes}:${String(remainder).padStart(2, '0')}`;
-    }
-
-    return `${Math.round(safeSeconds)}s`;
-  }
-
-  function formatBrokerWaitDuration(elapsedMs) {
-    const safeSeconds = Math.max(0, Math.round((Number(elapsedMs) || 0) / 1000));
-    if (safeSeconds >= 60) {
-      const minutes = Math.floor(safeSeconds / 60);
-      const seconds = safeSeconds % 60;
-      return `${minutes}:${String(seconds).padStart(2, '0')}`;
-    }
-
-    return `${safeSeconds}s`;
-  }
-
-  function updateCurrentSegmentTranscriptionProgress(progress, range) {
-    const phase = progress && typeof progress.phase === 'string' ? progress.phase : '';
-    const audioDurationSeconds =
-      progress && Number.isFinite(Number(progress.audioDurationSeconds))
-        ? Number(progress.audioDurationSeconds)
-        : range && Number.isFinite(Number(range.endSeconds - range.startSeconds))
-          ? range.endSeconds - range.startSeconds
-          : 0;
-    const generatedCharCount = Math.max(0, Math.round(Number(progress && progress.generatedCharCount) || 0));
-    const estimatedCharCount = Math.max(0, Math.round(Number(progress && progress.estimatedCharCount) || 0));
-    const fallbackPercent =
-      phase === 'transcribing' && estimatedCharCount > 0
-        ? Math.min(95, 20 + Math.round((generatedCharCount / estimatedCharCount) * 75))
-        : phase === 'starting-remote-broker'
-          ? 15
-          : phase === 'capturing-remote-audio'
-            ? 25
-            : phase === 'waiting-remote-model'
-              ? 35
-              : phase === 'starting-model'
-                ? 15
-                : phase === 'applying'
-                  ? 98
-                  : 5;
-    const percent = Number.isFinite(Number(progress && progress.percent))
-      ? Number(progress.percent)
-      : fallbackPercent;
-    const detail =
-      phase === 'transcribing'
-        ? `Generating text... ${generatedCharCount}${estimatedCharCount ? ` / ~${estimatedCharCount}` : ''} chars`
-        : phase === 'starting-remote-broker'
-          ? 'Starting Gold Drafting remote model...'
-          : phase === 'capturing-remote-audio'
-            ? 'Capturing audio for Gold Drafting...'
-            : phase === 'waiting-remote-model'
-              ? `Waiting for OpenRouter... ${formatBrokerWaitDuration(progress && progress.elapsedMs)} elapsed`
-              : phase === 'starting-model'
-                ? 'Starting local model...'
-                : phase === 'applying'
-                  ? 'Applying text...'
-                  : `Preparing ${formatProgressDuration(audioDurationSeconds)} audio...`;
-
+  function updateL0SegmentTranscriptionProgress(event, range) {
+    const eventName = event && typeof event.event === 'string' ? event.event : '';
+    const elapsedSeconds = Math.max(0, Math.round((Number(event && event.elapsedMs) || 0) / 1000));
+    const durationSeconds =
+      range && Number.isFinite(range.endSeconds - range.startSeconds)
+        ? Math.max(0, range.endSeconds - range.startSeconds)
+        : 0;
+    const progress =
+      eventName === 'accepted'
+        ? { percent: 10, detail: 'Starting free L0 transcription' }
+        : eventName === 'capturing-audio'
+          ? { percent: 30, detail: `Capturing ${Math.round(durationSeconds)}s segment audio` }
+          : eventName === 'calling-backend'
+            ? { percent: 55, detail: 'Generating text with free L0' }
+            : eventName === 'backend-waiting'
+              ? { percent: Math.min(90, 55 + Math.floor(elapsedSeconds / 10)), detail: `Waiting for free L0... ${elapsedSeconds}s elapsed` }
+              : { percent: 5, detail: 'Preparing free L0 transcription' };
     updateLongTaskProgress({
       label: 'Transcribing current segment',
-      current: percent,
+      current: progress.percent,
       total: 100,
-      percent,
-      detail
+      percent: progress.percent,
+      detail: progress.detail
     });
-  }
-
-  function updateGoldDraftingBrokerProgress(event, range) {
-    const eventName = event && typeof event.event === 'string' ? event.event : '';
-    if (eventName === 'accepted') {
-      updateCurrentSegmentTranscriptionProgress({ phase: 'starting-remote-broker', percent: 15 }, range);
-      return;
-    }
-    if (eventName === 'capturing-audio') {
-      updateCurrentSegmentTranscriptionProgress({ phase: 'capturing-remote-audio', percent: 25 }, range);
-      return;
-    }
-    if (eventName === 'calling-backend') {
-      updateCurrentSegmentTranscriptionProgress({ phase: 'waiting-remote-model', percent: 35 }, range);
-      return;
-    }
-    if (eventName === 'backend-waiting') {
-      const elapsedMs = Math.max(0, Number(event && event.elapsedMs) || 0);
-      updateCurrentSegmentTranscriptionProgress({
-        phase: 'waiting-remote-model',
-        percent: Math.min(90, 35 + Math.floor(elapsedMs / 10000)),
-        elapsedMs
-      }, range);
-    }
   }
 
   function parseSecondsLabel(value) {
@@ -4520,6 +4341,7 @@ export function registerTimelineSelectionService(helper: any) {
       row,
       rowIdentity,
       speakerKey,
+      timingLaneAliases: getL0TimingLaneAliases(row, speakerKey),
       startSeconds: range.startSeconds,
       endSeconds: range.endSeconds,
       startText: labels.startText,
@@ -4550,6 +4372,7 @@ export function registerTimelineSelectionService(helper: any) {
         current = {
           id: 'baseline-' + groups.length,
           speakerKey: segment.speakerKey,
+          timingLaneAliases: segment.timingLaneAliases,
           startSeconds: segment.startSeconds,
           endSeconds: segment.endSeconds,
           fullText: '',
@@ -4597,6 +4420,8 @@ export function registerTimelineSelectionService(helper: any) {
             .sort((left, right) => left.startSeconds - right.startSeconds);
           return {
             speakerKey: baseline.speakerKey,
+            timingLaneAliases:
+              baseline.timingLaneAliases || segments[0]?.timingLaneAliases || buildL0TimingLaneAliases({ speakerKey: baseline.speakerKey }),
             fullText: normalizeAutoSegmentRedistributionText(baseline.fullText),
             segments
           };
@@ -4610,6 +4435,7 @@ export function registerTimelineSelectionService(helper: any) {
       if (!current || segment.speakerKey !== current.speakerKey) {
         current = {
           speakerKey: segment.speakerKey,
+          timingLaneAliases: segment.timingLaneAliases,
           fullText: '',
           segments: []
         };
@@ -4625,30 +4451,7 @@ export function registerTimelineSelectionService(helper: any) {
     return groups.filter((group) => group.segments.length > 0 && normalizeAutoSegmentRedistributionText(group.fullText));
   }
 
-  async function prepareAutoSegmentTextRedistributionSession() {
-    const result = await callSelectionBridge('prepare-auto-segment-text-redistribution', {
-      timeoutMs: 30000
-    });
-    return result || {
-      ok: false,
-      reason: 'prompt-api-prepare-timeout'
-    };
-  }
 
-  async function disposeAutoSegmentTextRedistributionSession(sessionResult) {
-    const sessionId =
-      sessionResult && sessionResult.ok && typeof sessionResult.sessionId === 'string'
-        ? sessionResult.sessionId
-        : '';
-    if (!sessionId) {
-      return null;
-    }
-
-    return callSelectionBridge('destroy-auto-segment-text-redistribution-session', {
-      sessionId,
-      timeoutMs: 3000
-    });
-  }
 
   function applyAutoSegmentTextRedistributionAllocations(group, allocations) {
     if (!validateAutoSegmentTextAllocationsPreserveText(group, allocations)) {
@@ -4686,11 +4489,25 @@ export function registerTimelineSelectionService(helper: any) {
     };
   }
 
-  async function redistributeAutoSegmentTextWithPromptApi(baselineGroups, options) {
+  function getL0TimingLaneAliases(row, fallback) {
+    const identity =
+      row instanceof HTMLTableRowElement && typeof helper.getRowIdentity === 'function'
+        ? helper.getRowIdentity(row) || {}
+        : {};
+    const speakerCell =
+      row instanceof HTMLTableRowElement && row.children[1] instanceof HTMLElement
+        ? helper.normalizeText(row.children[1])
+        : '';
+    return buildL0TimingLaneAliases(identity, [
+      fallback,
+      row instanceof HTMLTableRowElement ? helper.getRowSpeakerKey(row) : '',
+      speakerCell
+    ]);
+  }
+
+  async function redistributeAutoSegmentTextWithL0Timing(baselineGroups, options) {
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
-    let sessionResult = autoSegmentTextRedistributionSession;
-    let hasPromptSession = Boolean(sessionResult && sessionResult.ok && sessionResult.sessionId);
-    let localPromptPrepareAttempted = Boolean(sessionResult);
+    const timingIndex = options && options.timingIndex;
     const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
     if (!groups.length) {
       return {
@@ -4699,136 +4516,29 @@ export function registerTimelineSelectionService(helper: any) {
         appliedGroupCount: 0,
         skippedCount: 0,
         groupCount: 0,
+        source: 'l0-word-timing',
         reason: 'no-text-redistribution-groups'
+      };
+    }
+    if (!timingIndex || !Array.isArray(timingIndex.tracks)) {
+      return {
+        ok: false,
+        changedCount: 0,
+        appliedGroupCount: 0,
+        skippedCount: groups.length,
+        groupCount: groups.length,
+        source: 'l0-word-timing',
+        reason: 'timing-unavailable'
       };
     }
 
     let changedCount = 0;
     let appliedGroupCount = 0;
     let skippedCount = 0;
-    let audioSampleCount = 0;
-    let errorCount = 0;
-    let draftGroupCount = 0;
-    let promptReviewCount = 0;
-    let rejectedPromptReviewCount = 0;
     let lastErrorMessage = '';
-    let lastPromptTroubleshooting = null;
-    const redistributionJobs = [];
-    const remoteReviewGroups = [];
 
     for (let index = 0; index < groups.length; index += 1) {
       const group = groups[index];
-      const detail = 'Preparing ' + (index + 1) + ' / ' + groups.length + ' text groups';
-      if (progressPhase) {
-        updateAutoSegmentProgress({
-          phase: progressPhase,
-          current: index,
-          total: groups.length,
-          detail
-        });
-      } else {
-        updateLongTaskProgress({
-          label: 'Aligning segmented text',
-          current: index,
-          total: groups.length,
-          detail
-        });
-      }
-
-      const draftResult = createAutoSegmentTextRedistributionDraft(group);
-      let job = {
-        index,
-        group,
-        draftResult,
-        remoteReviewGroupIndex: -1
-      };
-
-      if (draftResult && draftResult.ok) {
-        draftGroupCount += 1;
-        job = {
-          index,
-          group,
-          draftResult,
-          remoteReviewGroupIndex: remoteReviewGroups.length
-        };
-        remoteReviewGroups.push({
-          groupId: group.id || 'auto-segment-text-group-' + index,
-          speakerKey: group.speakerKey,
-          fullText: draftResult.fullText,
-          segments: group.segments.map((segment, segmentIndex) => ({
-            id: segment.id,
-            index: segmentIndex,
-            speakerKey: segment.speakerKey,
-            startSeconds: segment.startSeconds,
-            endSeconds: segment.endSeconds,
-            text: segment.text || ''
-          })),
-          draftAllocations: draftResult.allocations.map((allocation) => ({
-            segmentId: allocation.id,
-            text: allocation.text
-          }))
-        });
-      }
-
-      redistributionJobs.push(job);
-    }
-
-    let brokerRequestErrorMessage = '';
-    const brokerResult = remoteReviewGroups.length
-      ? await (async () => {
-          try {
-            return await requestGoldDraftingAiBroker({
-              operation: 'redistributeText',
-              groups: remoteReviewGroups
-            }, {
-              onEvent: (event) => {
-                if (!event || (event.event !== 'calling-backend' && event.event !== 'backend-waiting')) {
-                  return;
-                }
-
-                const elapsedDetail =
-                  event.event === 'backend-waiting'
-                    ? ' (' + formatBrokerWaitDuration(event.elapsedMs) + ' elapsed)'
-                    : '';
-                const remoteDetail =
-                  'Waiting for OpenRouter reviews for ' +
-                  remoteReviewGroups.length +
-                  ' text groups' +
-                  elapsedDetail;
-                if (progressPhase) {
-                  updateAutoSegmentProgress({
-                    phase: progressPhase,
-                    current: 0,
-                    total: remoteReviewGroups.length,
-                    detail: remoteDetail
-                  });
-                } else {
-                  updateLongTaskProgress({
-                    label: 'Aligning segmented text',
-                    current: 0,
-                    total: remoteReviewGroups.length,
-                    detail: remoteDetail
-                  });
-                }
-              }
-            });
-          } catch (error) {
-            brokerRequestErrorMessage = getAutoSegmentErrorMessage(error);
-            return null;
-          }
-        })()
-      : null;
-    const brokerReviewResults =
-      brokerResult && brokerResult.ok && Array.isArray(brokerResult.results)
-        ? brokerResult.results
-        : [];
-    if (brokerRequestErrorMessage) {
-      errorCount += 1;
-      lastErrorMessage = brokerRequestErrorMessage;
-    }
-
-    for (const job of redistributionJobs) {
-      const { index, group, draftResult } = job;
       const detail = 'Aligned ' + appliedGroupCount + ' / ' + groups.length + ' text groups';
       if (progressPhase) {
         updateAutoSegmentProgress({
@@ -4846,133 +4556,43 @@ export function registerTimelineSelectionService(helper: any) {
         });
       }
 
-      if (!draftResult || !draftResult.ok) {
+      const timingTrack = resolveL0TimingTrack(
+        timingIndex,
+        group.timingLaneAliases || buildL0TimingLaneAliases({ speakerKey: group.speakerKey })
+      );
+      if (!timingTrack) {
         skippedCount += 1;
+        lastErrorMessage = 'No L0 timing track matched ' + group.speakerKey + '.';
         continue;
       }
 
-      let allocations = draftResult.allocations;
-      let bridgeResult = null;
-      const brokerReviewResult =
-        job.remoteReviewGroupIndex >= 0 ? brokerReviewResults[job.remoteReviewGroupIndex] : null;
-      const brokerGroupError =
-        brokerReviewResult && brokerReviewResult.ok === false ? brokerReviewResult : null;
-
-      if (brokerResult && brokerResult.ok && brokerReviewResult && brokerReviewResult.ok && brokerReviewResult.review) {
-        const reviewResult = applyAutoSegmentTextReview(group, draftResult.allocations, brokerReviewResult.review);
-        if (reviewResult && reviewResult.ok) {
-          allocations = reviewResult.allocations;
-          promptReviewCount += 1;
-        } else {
-          rejectedPromptReviewCount += 1;
-        }
-      } else if (brokerResult && !brokerResult.ok && brokerResult.fallbackAllowed === false) {
-        rejectedPromptReviewCount += 1;
-        errorCount += 1;
+      const timedResult = createL0TimedAutoSegmentTextAllocations(
+        group,
+        timingTrack.tokens
+      );
+      if (!timedResult || !timedResult.ok) {
+        skippedCount += 1;
         lastErrorMessage =
-          brokerResult.message ||
-          brokerResult.reason ||
-          'Gold Drafting AI broker text alignment failed.';
-      } else {
-        if (brokerGroupError) {
-          rejectedPromptReviewCount += 1;
-          errorCount += 1;
-          lastErrorMessage =
-            brokerGroupError.error ||
-            'Gold Drafting AI broker text alignment failed for a text group.';
-        }
-
-        if (!hasPromptSession && !localPromptPrepareAttempted) {
-          localPromptPrepareAttempted = true;
-          if (progressPhase) {
-            updateAutoSegmentProgress({
-              phase: progressPhase,
-              current: index,
-              total: groups.length,
-              detail: 'Remote reviewer unavailable; starting local text reviewer'
-            });
-          } else {
-            updateLongTaskProgress({
-              label: 'Aligning segmented text',
-              current: index,
-              total: groups.length,
-              detail: 'Remote reviewer unavailable; starting local text reviewer'
-            });
-          }
-
-          try {
-            autoSegmentTextRedistributionSession = await prepareAutoSegmentTextRedistributionSession();
-            sessionResult = autoSegmentTextRedistributionSession;
-          } catch (error) {
-            sessionResult = {
-              ok: false,
-              reason: 'prompt-api-prepare-failed',
-              errorName: error && error.name ? error.name : '',
-              errorMessage: error && error.message ? error.message : ''
-            };
-            autoSegmentTextRedistributionSession = sessionResult;
-            errorCount += 1;
-            lastErrorMessage = getAutoSegmentErrorMessage(error);
-          }
-
-          hasPromptSession = Boolean(sessionResult && sessionResult.ok && sessionResult.sessionId);
-          const prepareTroubleshooting = createPromptApiTroubleshooting(sessionResult, 'Gemini Nano text alignment');
-          if (sessionResult && prepareTroubleshooting) {
-            sessionResult.troubleshooting = prepareTroubleshooting;
-            lastPromptTroubleshooting = prepareTroubleshooting;
-          }
-        }
-
-        if (hasPromptSession) {
-          try {
-            bridgeResult = await callSelectionBridge('auto-segment-redistribute-text', {
-              sessionId: sessionResult.sessionId,
-              speakerKey: group.speakerKey,
-              fullText: draftResult.fullText,
-              segments: group.segments.map((segment) => ({
-                id: segment.id,
-                speakerKey: segment.speakerKey,
-                startSeconds: segment.startSeconds,
-                endSeconds: segment.endSeconds
-              })),
-              draftAllocations: draftResult.allocations,
-              timeoutMs: 45000
-            });
-          } catch (error) {
-            errorCount += 1;
-            lastErrorMessage = getAutoSegmentErrorMessage(error);
-          }
-
-          if (bridgeResult && bridgeResult.ok && bridgeResult.review) {
-            const reviewResult = applyAutoSegmentTextReview(group, draftResult.allocations, bridgeResult.review);
-            if (reviewResult && reviewResult.ok) {
-              allocations = reviewResult.allocations;
-              promptReviewCount += 1;
-            } else {
-              rejectedPromptReviewCount += 1;
-            }
-            audioSampleCount += Number(bridgeResult.audioSampleCount) || 0;
-          } else if (bridgeResult && !bridgeResult.ok) {
-            rejectedPromptReviewCount += 1;
-            lastPromptTroubleshooting = createPromptApiTroubleshooting(bridgeResult, 'Gemini Nano text alignment');
-            if (lastPromptTroubleshooting && lastPromptTroubleshooting.nativeError) {
-              lastErrorMessage = lastPromptTroubleshooting.nativeError;
-            }
-          }
-        }
+          timedResult && timedResult.reason
+            ? timedResult.reason
+            : 'L0 timing allocation failed.';
+        continue;
       }
 
       let applyResult = null;
       try {
-        applyResult = applyAutoSegmentTextRedistributionAllocations(group, allocations);
+        applyResult = applyAutoSegmentTextRedistributionAllocations(
+          group,
+          timedResult.allocations
+        );
       } catch (error) {
         skippedCount += 1;
-        errorCount += 1;
         lastErrorMessage = getAutoSegmentErrorMessage(error);
         continue;
       }
       if (!applyResult || !applyResult.ok) {
         skippedCount += 1;
+        lastErrorMessage = 'L0 timing allocations did not preserve transcript text.';
         continue;
       }
 
@@ -5000,26 +4620,129 @@ export function registerTimelineSelectionService(helper: any) {
       });
     }
 
-    const result = {
-      ok: true,
+    return {
+      ok: skippedCount === 0,
       changedCount,
       appliedGroupCount,
       skippedCount,
       groupCount: groups.length,
-      audioSampleCount,
-      draftGroupCount,
-      promptReviewCount,
-      rejectedPromptReviewCount,
-      unavailable: !hasPromptSession && promptReviewCount === 0
+      source: 'l0-word-timing',
+      reason: skippedCount ? 'timed-redistribution-incomplete' : null,
+      errorMessage: lastErrorMessage
     };
-    if (errorCount) {
-      result.errorCount = errorCount;
-      result.errorMessage = lastErrorMessage;
+  }
+
+  async function redistributeAutoSegmentTextWithLegacyModels(baselineGroups, options) {
+    const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
+    const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
+    if (!groups.length) {
+      return {
+        ok: true,
+        changedCount: 0,
+        appliedGroupCount: 0,
+        skippedCount: 0,
+        groupCount: 0,
+        source: 'legacy-model-fallback'
+      };
     }
-    if (lastPromptTroubleshooting) {
-      result.troubleshooting = lastPromptTroubleshooting;
+
+    const drafts = groups.map((group) => createAutoSegmentTextRedistributionDraft(group));
+    const remoteGroups = drafts.flatMap((draft, index) =>
+      draft && draft.ok
+        ? [{
+            groupId: 'auto-segment-text-group-' + index,
+            speakerKey: groups[index].speakerKey,
+            fullText: draft.fullText,
+            segments: groups[index].segments.map((segment, segmentIndex) => ({
+              id: segment.id,
+              index: segmentIndex,
+              speakerKey: segment.speakerKey,
+              startSeconds: segment.startSeconds,
+              endSeconds: segment.endSeconds,
+              text: segment.text || ''
+            })),
+            draftAllocations: draft.allocations.map((allocation) => ({
+              segmentId: allocation.id,
+              text: allocation.text
+            }))
+          }]
+        : []
+    );
+    const brokerResult = remoteGroups.length
+      ? await requestGoldDraftingAiBroker({
+          operation: 'redistributeText',
+          groups: remoteGroups
+        }).catch(() => null)
+      : null;
+    const brokerReviews =
+      brokerResult && brokerResult.ok && Array.isArray(brokerResult.results)
+        ? brokerResult.results
+        : [];
+
+    let changedCount = 0;
+    let appliedGroupCount = 0;
+    let skippedCount = 0;
+    for (let index = 0; index < groups.length; index += 1) {
+      const group = groups[index];
+      const draft = drafts[index];
+      if (!draft || !draft.ok) {
+        skippedCount += 1;
+        continue;
+      }
+      if (progressPhase) {
+        updateAutoSegmentProgress({
+          phase: progressPhase,
+          current: index,
+          total: groups.length,
+          detail: 'Aligning ' + (index + 1) + ' / ' + groups.length + ' text groups'
+        });
+      }
+
+      let allocations = draft.allocations;
+      const brokerReview =
+        brokerReviews[index] && brokerReviews[index].ok
+          ? brokerReviews[index].review
+          : null;
+      if (brokerReview) {
+        const reviewed = applyAutoSegmentTextReview(group, allocations, brokerReview);
+        if (reviewed && reviewed.ok) allocations = reviewed.allocations;
+      } else {
+        const localReview = await callSelectionBridge('auto-segment-redistribute-text', {
+          speakerKey: group.speakerKey,
+          fullText: draft.fullText,
+          segments: group.segments.map((segment) => ({
+            id: segment.id,
+            speakerKey: segment.speakerKey,
+            startSeconds: segment.startSeconds,
+            endSeconds: segment.endSeconds,
+            text: segment.text || ''
+          })),
+          draftAllocations: allocations,
+          timeoutMs: 300000
+        }).catch(() => null);
+        if (localReview && localReview.ok && localReview.review) {
+          const reviewed = applyAutoSegmentTextReview(group, allocations, localReview.review);
+          if (reviewed && reviewed.ok) allocations = reviewed.allocations;
+        }
+      }
+
+      const applied = applyAutoSegmentTextRedistributionAllocations(group, allocations);
+      if (!applied || !applied.ok) {
+        skippedCount += 1;
+        continue;
+      }
+      appliedGroupCount += 1;
+      changedCount += applied.changedCount || 0;
     }
-    return result;
+
+    return {
+      ok: skippedCount === 0,
+      changedCount,
+      appliedGroupCount,
+      skippedCount,
+      groupCount: groups.length,
+      source: 'legacy-model-fallback'
+    };
   }
 
   function emitAutoSegmentDebug(detail) {
@@ -5110,6 +4833,53 @@ export function registerTimelineSelectionService(helper: any) {
     return plan.row instanceof HTMLTableRowElement && plan.row.isConnected ? plan.row : null;
   }
 
+  function getSmartSplitCursorTextOffset(row) {
+    const ghostTarget =
+      typeof helper.getGhostCursorTarget === 'function'
+        ? helper.getGhostCursorTarget()
+        : null;
+    const activeTextarea =
+      typeof helper.getActiveRowTextarea === 'function'
+        ? helper.getActiveRowTextarea()
+        : null;
+    const activeRow =
+      activeTextarea instanceof HTMLTextAreaElement
+        ? activeTextarea.closest('tr')
+        : null;
+    const remembered = helper.state.lastBlur;
+    const currentRow =
+      typeof helper.getCurrentRow === 'function' ? helper.getCurrentRow() : null;
+    const candidates = [
+      ghostTarget,
+      {
+        row: activeRow,
+        offset:
+          activeTextarea instanceof HTMLTextAreaElement
+            ? activeTextarea.selectionStart
+            : null
+      },
+      {
+        row: remembered && remembered.row,
+        offset: remembered && remembered.selectionStart
+      },
+      {
+        row: currentRow,
+        offset: helper.state.cursorBaseline
+      }
+    ];
+    for (const candidate of candidates) {
+      if (
+        candidate &&
+        candidate.row === row &&
+        Number.isFinite(candidate.offset) &&
+        candidate.offset > 0
+      ) {
+        return candidate.offset;
+      }
+    }
+    return null;
+  }
+
   function buildSmartSplitPlanForRow(row, splitSeconds, speakerKey) {
     if (!(row instanceof HTMLTableRowElement) || !Number.isFinite(splitSeconds)) {
       return null;
@@ -5148,6 +4918,10 @@ export function registerTimelineSelectionService(helper: any) {
       rowCount: rows.length,
       speakerKey: sourceSpeakerKey,
       sourceText,
+      ghostTextOffset: getSmartSplitCursorTextOffset(row),
+      timingLaneAliases: getL0TimingLaneAliases(row, sourceSpeakerKey),
+      sourceRange: range,
+      splitSeconds,
       pivotPx: 0,
       ratio: clamp(
         (splitSeconds - range.startSeconds) / (range.endSeconds - range.startSeconds),
@@ -5329,6 +5103,43 @@ export function registerTimelineSelectionService(helper: any) {
     }
   };
 
+  async function waitForAutoSegmentL0Timing() {
+    const expectedTaskId = buildCurrentL0TimingTaskId(helper);
+    const existingTiming = getCurrentL0TimingIndex(helper.state, helper);
+    if (existingTiming && existingTiming.taskId === expectedTaskId) {
+      return { ok: true, timingIndex: existingTiming };
+    }
+    const brokerAvailability = await requestGoldDraftingAiBroker({
+      operation: 'ping'
+    }).catch(() => null);
+    if (!brokerAvailability || brokerAvailability.ok !== true) {
+      return { ok: false, reason: 'timing-provider-unavailable', useLegacy: true };
+    }
+    const startedAt = Date.now();
+    let reportedSecond = -1;
+    while (Date.now() - startedAt < AUTO_SEGMENT_TIMING_WAIT_MS) {
+      if (buildCurrentL0TimingTaskId(helper) !== expectedTaskId) {
+        return { ok: false, reason: 'task-changed' };
+      }
+      const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
+      if (timingIndex && timingIndex.taskId === expectedTaskId) {
+        return { ok: true, timingIndex };
+      }
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      if (elapsedSeconds !== reportedSecond) {
+        reportedSecond = elapsedSeconds;
+        updateAutoSegmentProgress({
+          phase: 'prepare',
+          current: 0,
+          total: 1,
+          detail: 'Waiting for background word timing (' + elapsedSeconds + 's)'
+        });
+      }
+      await helper.sleep(AUTO_SEGMENT_TIMING_POLL_MS);
+    }
+    return { ok: false, reason: 'timing-timeout' };
+  }
+
   helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences() {
     if (helper.state.autoSegmentationPending) {
       return {
@@ -5339,16 +5150,34 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     helper.state.autoSegmentationPending = true;
-    autoSegmentTextRedistributionSession = null;
-    let keepTroubleshootingProgress = false;
 
     try {
       updateAutoSegmentProgress({
         phase: 'prepare',
         current: 0,
         total: 1,
-        detail: 'Preparing AI text reviewer'
+        detail: 'Waiting for background word timing'
       });
+      const timingWaitResult = await waitForAutoSegmentL0Timing();
+      if (
+        timingWaitResult &&
+        timingWaitResult.reason === 'task-changed'
+      ) {
+        return { ok: false, reason: 'task-changed', splitCount: 0 };
+      }
+      const timingIndex =
+        timingWaitResult && timingWaitResult.ok
+          ? timingWaitResult.timingIndex
+          : null;
+      const useLegacyRedistribution = !timingIndex;
+      if (useLegacyRedistribution) {
+        updateAutoSegmentProgress({
+          phase: 'prepare',
+          current: 1,
+          total: 1,
+          detail: 'Using default text redistribution'
+        });
+      }
       const preTrimResult = await helper.trimAllSegmentsToAudio({
         amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
         progressLabel: 'Pre-trimming visible segments',
@@ -5548,9 +5377,16 @@ export function registerTimelineSelectionService(helper: any) {
       }).catch((error) =>
         createAutoSegmentCleanupFailureResult(error)
       );
-      const redistributionResult = await redistributeAutoSegmentTextWithPromptApi(textBaselineGroups, {
-        progressPhase: 'alignText'
-      }).catch((error) =>
+      const redistributionResult = await (
+        useLegacyRedistribution
+          ? redistributeAutoSegmentTextWithLegacyModels(textBaselineGroups, {
+              progressPhase: 'alignText'
+            })
+          : redistributeAutoSegmentTextWithL0Timing(textBaselineGroups, {
+              progressPhase: 'alignText',
+              timingIndex
+            })
+      ).catch((error) =>
         createAutoSegmentRedistributionFailureResult(error)
       );
       const finalPhaseOk =
@@ -5574,10 +5410,6 @@ export function registerTimelineSelectionService(helper: any) {
         total: 1,
         detail: result.ok ? 'Complete' : 'Finished with issues'
       });
-      if (redistributionResult && redistributionResult.troubleshooting) {
-        showPromptApiTroubleshootingFailure(redistributionResult.troubleshooting);
-        keepTroubleshootingProgress = true;
-      }
       emitAutoSegmentDebug({
         phase: 'complete',
         ok: result.ok,
@@ -5595,12 +5427,8 @@ export function registerTimelineSelectionService(helper: any) {
       });
       return result;
     } finally {
-      await disposeAutoSegmentTextRedistributionSession(autoSegmentTextRedistributionSession);
-      autoSegmentTextRedistributionSession = null;
       helper.state.autoSegmentationPending = false;
-      if (!keepTroubleshootingProgress) {
-        dismissLongTaskProgress();
-      }
+      dismissLongTaskProgress();
     }
   };
 
@@ -5997,44 +5825,32 @@ export function registerTimelineSelectionService(helper: any) {
     }
   };
 
-  helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi() {
+  async function transcribeCurrentSegmentWithLegacyModel() {
     const target = findCurrentSegmentTarget();
-    if (!target) {
-      return { ok: false, reason: 'missing-current-segment' };
-    }
-
+    if (!target) return { ok: false, reason: 'missing-current-segment' };
     const textarea = helper.getRowTextarea(target.row);
     if (!(textarea instanceof HTMLTextAreaElement)) {
       return { ok: false, reason: 'missing-current-textarea' };
     }
-
     if (normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row))) {
       return { ok: false, reason: 'segment-not-empty' };
     }
-
     const range = getRowTimeRange(target.row);
-    if (!range) {
-      return { ok: false, reason: 'missing-current-range' };
-    }
-
+    if (!range) return { ok: false, reason: 'missing-current-range' };
     const targetSpeakerKey =
       target.speakerKey ||
       getSpeakerKeyForContainer(target.container) ||
       helper.getRowSpeakerKey(target.row);
-    if (!targetSpeakerKey) {
-      return { ok: false, reason: 'missing-current-speaker' };
-    }
+    if (!targetSpeakerKey) return { ok: false, reason: 'missing-current-speaker' };
 
     const hostMarker = ensureSelectionHostMarker(target.container);
     updateCurrentSegmentTranscriptionProgress({ phase: 'preparing-audio', percent: 5 }, range);
-
     let keepTroubleshootingProgress = false;
     let brokerFailure = null;
     try {
       const rowIdentity =
         target.rowIdentity ||
         (typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(target.row) : null);
-      updateCurrentSegmentTranscriptionProgress({ phase: 'starting-remote-broker', percent: 15 }, range);
       const brokerResult = await requestGoldDraftingAiBroker({
         operation: 'transcribeSegment',
         segment: {
@@ -6053,11 +5869,9 @@ export function registerTimelineSelectionService(helper: any) {
       }, {
         onEvent: (event) => updateGoldDraftingBrokerProgress(event, range)
       });
-      if (brokerResult && !brokerResult.ok) {
-        brokerFailure = brokerResult;
-      }
+      if (brokerResult && !brokerResult.ok) brokerFailure = brokerResult;
       if (brokerResult && !brokerResult.ok && brokerResult.fallbackAllowed === false) {
-        showGoldDraftingBrokerFailure(brokerFailure || brokerResult, 'Gold Drafting remote transcription');
+        showGoldDraftingBrokerFailure(brokerResult, 'Gold Drafting remote transcription');
         keepTroubleshootingProgress = true;
         return {
           ok: false,
@@ -6066,26 +5880,28 @@ export function registerTimelineSelectionService(helper: any) {
         };
       }
 
-      let bridgeResult = brokerResult && brokerResult.ok
-        ? brokerResult
-        : await callSelectionBridge(
-            'transcribe-segment-audio',
-            {
-              hostMarker,
-              speakerKey: target.speakerKey || targetSpeakerKey,
-              startSeconds: range.startSeconds,
-              endSeconds: range.endSeconds,
-              timeoutMs: 300000
-            },
-            {
-              onProgress: (progress) => updateCurrentSegmentTranscriptionProgress(progress, range)
-            }
-          );
-      if (brokerResult && brokerResult.ok) {
-        updateCurrentSegmentTranscriptionProgress({ phase: 'applying', percent: 92 }, range);
-      }
+      const bridgeResult =
+        brokerResult && brokerResult.ok
+          ? brokerResult
+          : await callSelectionBridge(
+              'transcribe-segment-audio',
+              {
+                hostMarker,
+                speakerKey: target.speakerKey || targetSpeakerKey,
+                startSeconds: range.startSeconds,
+                endSeconds: range.endSeconds,
+                timeoutMs: 300000
+              },
+              {
+                onProgress: (progress) =>
+                  updateCurrentSegmentTranscriptionProgress(progress, range)
+              }
+            );
       if (!bridgeResult || !bridgeResult.ok) {
-        const troubleshooting = createPromptApiTroubleshooting(bridgeResult, 'Gemini Nano segment transcription');
+        const troubleshooting = createPromptApiTroubleshooting(
+          bridgeResult,
+          'Gemini Nano segment transcription'
+        );
         if (troubleshooting) {
           showPromptApiTroubleshootingFailure(troubleshooting);
           keepTroubleshootingProgress = true;
@@ -6095,49 +5911,138 @@ export function registerTimelineSelectionService(helper: any) {
         }
         return {
           ok: false,
-          reason: bridgeResult && bridgeResult.reason ? bridgeResult.reason : 'transcription-failed',
+          reason:
+            bridgeResult && bridgeResult.reason
+              ? bridgeResult.reason
+              : 'transcription-failed',
           bridge: bridgeResult,
           troubleshooting
         };
       }
 
-      const text = normalizeAutoSegmentRedistributionText(bridgeResult.text);
-      if (!text) {
-        return {
-          ok: false,
-          reason: 'empty-transcription',
-          bridge: bridgeResult
-        };
-      }
-
+      const text = normalizeAutoSegmentRedistributionText(
+        bridgeResult.text || bridgeResult.result?.text
+      );
+      if (!text) return { ok: false, reason: 'empty-transcription', bridge: bridgeResult };
       if (
         normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row)) ||
         normalizeAutoSegmentRedistributionText(textarea.value || '')
       ) {
         return { ok: false, reason: 'segment-no-longer-empty' };
       }
-
       if (!helper.setEditableValue(textarea, text)) {
         return { ok: false, reason: 'transcription-write-failed' };
       }
-
       updateCurrentSegmentTranscriptionProgress({ phase: 'applying', percent: 100 }, range);
-      return {
-        ok: true,
-        changed: true,
-        textLength: text.length,
-        audioDurationSeconds:
-          bridgeResult && Number.isFinite(Number(bridgeResult.audioDurationSeconds))
-            ? Number(bridgeResult.audioDurationSeconds)
-            : null
-      };
+      return { ok: true, changed: true, textLength: text.length };
     } finally {
-      if (!keepTroubleshootingProgress) {
+      if (!keepTroubleshootingProgress) dismissLongTaskProgress();
+    }
+  }
+
+  helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0() {
+    const target = findCurrentSegmentTarget();
+    if (!target) {
+      return { ok: false, reason: 'missing-current-segment' };
+    }
+
+    const textarea = helper.getRowTextarea(target.row);
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      return { ok: false, reason: 'missing-current-textarea' };
+    }
+    if (normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row))) {
+      return { ok: false, reason: 'segment-not-empty' };
+    }
+
+    const range = getRowTimeRange(target.row);
+    if (!range) {
+      return { ok: false, reason: 'missing-current-range' };
+    }
+    const rowIdentity =
+      typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(target.row) : null;
+    if (!rowIdentity) {
+      return { ok: false, reason: 'missing-current-row-identity' };
+    }
+
+    const laneAliases = getL0TimingLaneAliases(target.row, target.speakerKey);
+    const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
+    const timingTrack = timingIndex ? resolveL0TimingTrack(timingIndex, laneAliases) : null;
+    if (timingIndex && !timingTrack && !laneAliases.stableId) {
+      return { ok: false, reason: 'ambiguous-current-speaker' };
+    }
+    const speakerKey = timingTrack?.lane || getPreferredL0TimingLaneKey(laneAliases);
+    if (!speakerKey) {
+      return { ok: false, reason: 'missing-current-speaker' };
+    }
+
+    const taskId = buildCurrentL0TimingTaskId(helper);
+    const rows = helper.getTranscriptRows();
+    const rowIndex = Array.isArray(rows) ? rows.indexOf(target.row) : -1;
+    const rowId =
+      typeof rowIdentity.annotationId === 'string' && rowIdentity.annotationId.trim()
+        ? rowIdentity.annotationId.trim()
+        : [
+            speakerKey,
+            Math.round(range.startSeconds * 1000),
+            Math.round(range.endSeconds * 1000)
+          ].join(':');
+
+    updateL0SegmentTranscriptionProgress(null, range);
+    let keepFailureProgress = false;
+    try {
+      const result = await transcribeEmptySegmentWithL0({
+        taskId,
+        rowIdentity,
+        rowId,
+        speakerKey,
+        startSeconds: range.startSeconds,
+        endSeconds: range.endSeconds,
+        index: Math.max(0, rowIndex),
+        request: (request) =>
+          requestGoldDraftingAiBroker(request, {
+            onEvent: (event) => updateL0SegmentTranscriptionProgress(event, range)
+          }),
+        getCurrentTaskId: () => buildCurrentL0TimingTaskId(helper),
+        resolveCurrentRow: (identity) => {
+          const currentTarget = findCurrentSegmentTarget();
+          if (!(currentTarget?.row instanceof HTMLTableRowElement)) return null;
+          if (
+            typeof helper.rowMatchesIdentity === 'function' &&
+            !helper.rowMatchesIdentity(currentTarget.row, identity)
+          ) {
+            return null;
+          }
+          return currentTarget.row;
+        },
+        isRowEmpty: (row) =>
+          !normalizeAutoSegmentRedistributionText(helper.getRowTextValue(row)) &&
+          !normalizeAutoSegmentRedistributionText(helper.getRowTextarea(row)?.value || ''),
+        writeRowText: (row, text) => {
+          const currentTextarea = helper.getRowTextarea(row);
+          return currentTextarea instanceof HTMLTextAreaElement
+            ? helper.setEditableValue(currentTextarea, text)
+            : false;
+        }
+      });
+
+      if (!result || !result.ok) {
+        keepFailureProgress = true;
+        return await transcribeCurrentSegmentWithLegacyModel();
+      }
+      updateLongTaskProgress({
+        label: 'Transcribing current segment',
+        current: 100,
+        total: 100,
+        percent: 100,
+        detail: 'Applied free L0 transcription'
+      });
+      return result;
+    } finally {
+      if (!keepFailureProgress) {
         dismissLongTaskProgress();
       }
     }
   };
-
   helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio(options) {
     const target = findCurrentSegmentTarget();
     if (!target) {
@@ -6534,6 +6439,12 @@ export function registerTimelineSelectionService(helper: any) {
         rightRow,
         speakerKey: pairSpeakerKey,
         sourceText: leftText,
+        timingLaneAliases: getL0TimingLaneAliases(leftRow, pairSpeakerKey),
+        sourceRange: {
+          startSeconds: leftRange.startSeconds,
+          endSeconds: rightRange.endSeconds
+        },
+        splitSeconds: leftRange.endSeconds,
         ratio: leftDuration / totalDuration
       };
     }
@@ -6556,6 +6467,64 @@ export function registerTimelineSelectionService(helper: any) {
     );
   }
 
+  function getSmartSplitTextParts(plan) {
+    const fallback = helper.splitTextByWordRatio(plan.sourceText, plan.ratio);
+    const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
+    const timingTrack = resolveL0TimingTrack(
+      timingIndex,
+      plan.timingLaneAliases || buildL0TimingLaneAliases({ speakerKey: plan.speakerKey })
+    );
+    const range = plan.sourceRange;
+    if (
+      timingTrack &&
+      range &&
+      Number.isFinite(plan.splitSeconds) &&
+      plan.splitSeconds > range.startSeconds &&
+      plan.splitSeconds < range.endSeconds
+    ) {
+      const completedOffset = computeL0CompletedWordCharacterOffset(
+        plan.sourceText,
+        timingTrack.tokens,
+        range,
+        plan.splitSeconds
+      );
+      if (completedOffset !== null) {
+        return {
+          ...splitAutoSegmentTextAtFloorOffset(
+            plan.sourceText,
+            completedOffset
+          ),
+          source: 'l0-completed-word'
+        };
+      }
+    }
+    if (
+      Number.isFinite(plan.ghostTextOffset) &&
+      plan.ghostTextOffset > 0 &&
+      plan.ghostTextOffset < plan.sourceText.length
+    ) {
+      return splitAutoSegmentTextAtFloorOffset(
+        plan.sourceText,
+        plan.ghostTextOffset
+      );
+    }
+    return { ...fallback, source: 'word-ratio' };
+  }
+
+  function applySmartSplitTextParts(leftRow, rightRow, parts) {
+    const leftTextarea = helper.getRowTextarea(leftRow);
+    const rightTextarea = helper.getRowTextarea(rightRow);
+    if (
+      !(leftTextarea instanceof HTMLTextAreaElement) ||
+      !(rightTextarea instanceof HTMLTextAreaElement)
+    ) {
+      return false;
+    }
+    const wroteLeft = helper.setEditableValue(leftTextarea, parts.firstText);
+    const wroteRight = helper.setEditableValue(rightTextarea, parts.secondText);
+    return Boolean(wroteLeft && wroteRight);
+  }
+
   async function applySmartSplitFromDuplicateRows(context) {
     if (!context || !Number.isFinite(context.rowCount)) {
       return false;
@@ -6571,12 +6540,10 @@ export function registerTimelineSelectionService(helper: any) {
       return false;
     }
 
-    return helper.applySmartSplitToRows(
-      detected.leftRow,
-      detected.rightRow,
-      detected.sourceText,
-      detected.ratio
-    );
+    const parts = getSmartSplitTextParts(detected);
+    return parts.wordCount
+      ? applySmartSplitTextParts(detected.leftRow, detected.rightRow, parts)
+      : false;
   }
 
   async function waitForSmartSplitTextReady(rows, sourceText) {
@@ -6621,7 +6588,7 @@ export function registerTimelineSelectionService(helper: any) {
       return false;
     }
 
-    const parts = helper.splitTextByWordRatio(plan.sourceText, plan.ratio);
+    const parts = getSmartSplitTextParts(plan);
     if (!parts.wordCount) {
       return false;
     }
@@ -6632,7 +6599,7 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     const applyOnce = () =>
-      helper.applySmartSplitToRows(rows.leftRow, rows.rightRow, plan.sourceText, plan.ratio);
+      applySmartSplitTextParts(rows.leftRow, rows.rightRow, parts);
 
     if (!applyOnce()) {
       return false;
@@ -6692,6 +6659,14 @@ export function registerTimelineSelectionService(helper: any) {
     const width = entry.rightPx - entry.leftPx;
     const ratio =
       width > 0 ? clamp((pivotPx - entry.leftPx) / width, 0, 1) : 0.5;
+    const sourceRange = getRowTimeRange(sourceRow);
+    if (!sourceRange) {
+      return null;
+    }
+    const splitSeconds =
+      sourceRange.startSeconds +
+      ratio * (sourceRange.endSeconds - sourceRange.startSeconds);
+
 
     return {
       sourceRow,
@@ -6700,6 +6675,10 @@ export function registerTimelineSelectionService(helper: any) {
       rowCount: rows.length,
       speakerKey,
       sourceText,
+      timingLaneAliases: getL0TimingLaneAliases(sourceRow, speakerKey),
+      ghostTextOffset: getSmartSplitCursorTextOffset(sourceRow),
+      sourceRange,
+      splitSeconds,
       pivotPx,
       ratio
     };
@@ -7137,7 +7116,7 @@ export function registerTimelineSelectionService(helper: any) {
     ) {
       event.preventDefault();
       event.stopPropagation();
-      void helper.transcribeCurrentSegmentWithPromptApi();
+      void helper.transcribeCurrentSegmentWithL0();
       return {
         handled: true,
         analyticsType: 'hotkey:trim',

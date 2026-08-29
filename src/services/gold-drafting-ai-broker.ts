@@ -38,7 +38,7 @@ const REDISTRIBUTE_TEXT_BROKER_TIMEOUT_MS = 120000;
 const GOLD_DRAFTING_BROKER_PORT_IDLE_TIMEOUT_MS = 20000;
 
 export type GoldDraftingAiBrokerPayload = {
-  operation: 'ping' | 'transcribeSegment' | 'redistributeText';
+  operation: 'ping' | 'transcribeSegment' | 'transcribeSegmentL0' | 'redistributeText';
   [key: string]: unknown;
 };
 
@@ -131,7 +131,7 @@ function reportGoldDraftingAiBrokerFailure(
 }
 
 function getGoldDraftingAiBrokerTimeoutMs(payload: GoldDraftingAiBrokerPayload): number {
-  if (payload.operation === 'transcribeSegment') {
+  if (payload.operation === 'transcribeSegment' || payload.operation === 'transcribeSegmentL0') {
     return TRANSCRIBE_SEGMENT_BROKER_TIMEOUT_MS;
   }
   if (payload.operation === 'redistributeText') {

@@ -114,3 +114,72 @@ test('auto-segment text review rejects non-adjacent or text-losing moves', async
   assert.equal(tooManySentences.ok, false);
   assert.equal(tooManySentences.reason, 'invalid-review-move');
 });
+
+test('timed allocator places words into segments from L0 token anchors', async () => {
+  const { createL0TimedAutoSegmentTextAllocations } = await loadAllocatorModule();
+  const group = {
+    speakerKey: 'speaker-1',
+    fullText: 'one two three four',
+    segments: [
+      { id: 'first', speakerKey: 'speaker-1', startSeconds: 0, endSeconds: 5 },
+      { id: 'second', speakerKey: 'speaker-1', startSeconds: 5, endSeconds: 10 }
+    ]
+  };
+  const result = createL0TimedAutoSegmentTextAllocations(group, [
+    { id: 'one', text: 'one', startSeconds: 0, endSeconds: 1 },
+    { id: 'two', text: 'two', startSeconds: 2, endSeconds: 3 },
+    { id: 'three', text: 'three', startSeconds: 7, endSeconds: 8 },
+    { id: 'four', text: 'four', startSeconds: 9, endSeconds: 10 }
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.allocations.map((allocation) => allocation.text), [
+    'one two',
+    'three four'
+  ]);
+  assert.equal(joinedText(result.allocations), group.fullText);
+});
+
+test('timed allocator refuses to guess without matching word anchors', async () => {
+  const { createL0TimedAutoSegmentTextAllocations } = await loadAllocatorModule();
+  const result = createL0TimedAutoSegmentTextAllocations(
+    {
+      speakerKey: 'speaker-1',
+      fullText: 'one two',
+      segments: [
+        { id: 'first', speakerKey: 'speaker-1', startSeconds: 0, endSeconds: 1 },
+        { id: 'second', speakerKey: 'speaker-1', startSeconds: 1, endSeconds: 2 }
+      ]
+    },
+    [{ id: 'other', text: 'different', startSeconds: 0, endSeconds: 2 }]
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'missing-timing-anchors');
+});
+
+test('smart-split timing floors an in-progress word into the right segment', async () => {
+  const { createL0TimedAutoSegmentTextAllocations } = await loadAllocatorModule();
+  const result = createL0TimedAutoSegmentTextAllocations(
+    {
+      speakerKey: 'speaker-1',
+      fullText: 'one longword end',
+      segments: [
+        { id: 'left', speakerKey: 'speaker-1', startSeconds: 0, endSeconds: 4 },
+        { id: 'right', speakerKey: 'speaker-1', startSeconds: 4, endSeconds: 8 }
+      ]
+    },
+    [
+      { id: 'one', text: 'one', startSeconds: 0, endSeconds: 1 },
+      { id: 'longword', text: 'longword', startSeconds: 2, endSeconds: 6 },
+      { id: 'end', text: 'end', startSeconds: 7, endSeconds: 8 }
+    ],
+    { boundaryMode: 'floor' }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.allocations.map((allocation) => allocation.text), [
+    'one',
+    'longword end'
+  ]);
+});

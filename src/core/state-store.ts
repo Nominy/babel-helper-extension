@@ -47,6 +47,7 @@
     ghostCursorLaneProjections: {},
     ghostCursorPlaybackTime: null,
     ghostCursorPlaybackPaused: null,
+    l0TimingIndex: null,
     playbackRowSyncTimer: null,
     playbackRowSyncInFlight: false,
     lastPlaybackRow: null,

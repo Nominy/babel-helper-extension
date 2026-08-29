@@ -3,6 +3,15 @@ import {
   getBabelRowActionLabel,
   isBabelActiveRowClassList
 } from '../core/babel-editor-contract';
+import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
+import {
+  computeL0TimedCharacterOffset,
+  computeL0TimestampAtCharacterOffset
+} from './l0-word-timing-alignment';
+import {
+  buildL0TimingLaneAliases,
+  resolveL0TimingTrack
+} from './l0-timing-identity';
 
 export function registerRowService(helper: any) {
   if (!helper || helper.__rowsRegistered) {
@@ -432,6 +441,50 @@ export function registerRowService(helper: any) {
     return { offset: final, clamped: final !== snapped };
   }
 
+  function getL0TimingTrackForRow(row) {
+    const index = getCurrentL0TimingIndex(helper.state, helper);
+    if (!index || !(row instanceof HTMLElement)) {
+      return null;
+    }
+
+    const identity = helper.getRowIdentity(row) || {};
+    const speakerCell = row.children[1] instanceof HTMLElement
+      ? helper.normalizeText(row.children[1])
+      : '';
+    return resolveL0TimingTrack(
+      index,
+      buildL0TimingLaneAliases(identity, [getRowSpeakerKeySafe(row), speakerCell])
+    );
+  }
+
+  function computeGhostCursorOffset(text, row, timeRange, currentTime, blurTime, baseline) {
+    const track = getL0TimingTrackForRow(row);
+    if (track) {
+      const timedOffset = computeL0TimedCharacterOffset(text, track.tokens, timeRange, currentTime);
+      if (timedOffset !== null) {
+        const floor = typeof baseline === 'number' && baseline >= 0 ? baseline : 0;
+        const final = Math.max(floor, timedOffset);
+        return { offset: final, clamped: final !== timedOffset };
+      }
+    }
+    return computeRestoreOffset(text, timeRange, currentTime, blurTime, baseline);
+  }
+
+  helper.getL0TimestampForRowOffset = function getL0TimestampForRowOffset(row, offset) {
+    const track = getL0TimingTrackForRow(row);
+    const range = getRowTimeRange(row);
+    const textarea = helper.getRowTextarea(row);
+    if (!track || !range || !(textarea instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+    return computeL0TimestampAtCharacterOffset(
+      textarea.value || '',
+      track.tokens,
+      range,
+      offset
+    );
+  };
+
   function getGhostCursorAppearance() {
     const configured = helper.settings?.ghostCursor;
     const isHexColor = (value) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
@@ -850,7 +903,14 @@ export function registerRowService(helper: any) {
     const speakerKey = getRowSpeakerKeySafe(entry.row);
     const text = textarea.value || '';
     const baseline = getGhostCursorProjectionBaseline(speakerKey, entry);
-    const result = computeRestoreOffset(text, entry, currentTime, blurTime, baseline);
+    const result = computeGhostCursorOffset(
+      text,
+      entry.row,
+      entry,
+      currentTime,
+      blurTime,
+      baseline
+    );
     if (!result) {
       return null;
     }
@@ -1115,7 +1175,14 @@ export function registerRowService(helper: any) {
         const text = ta.value || '';
         const baseline = typeof helper.state.cursorBaseline === 'number'
           ? helper.state.cursorBaseline : 0;
-        const result = computeRestoreOffset(text, trackedTimeRange, currentTime, blurTime, baseline);
+        const result = computeGhostCursorOffset(
+          text,
+          trackedRow,
+          trackedTimeRange,
+          currentTime,
+          blurTime,
+          baseline
+        );
         if (result === null) {
           el.style.display = 'none';
           return;
@@ -1172,6 +1239,8 @@ export function registerRowService(helper: any) {
       offset
     };
   }
+
+  helper.getGhostCursorTarget = getGhostCursorTarget;
 
   helper.toggleGhostCursorLane = function toggleGhostCursorLane() {
     if (!helper.config.features.proportionalCursorRestore) {
@@ -3098,7 +3167,12 @@ export function registerRowService(helper: any) {
       let direction = remembered.direction;
       let usedProportional = false;
 
-      if (helper.config.features.proportionalCursorRestore) {
+      if (preservedGhostTarget && preservedGhostTarget.row === rememberedRow) {
+        selectionStart = preservedGhostTarget.offset;
+        selectionEnd = preservedGhostTarget.offset;
+        direction = 'none';
+        usedProportional = true;
+      } else if (helper.config.features.proportionalCursorRestore) {
         const blurTime = helper.state.blurPlaybackTime;
         const restoreTime = helper.state.restorePlaybackTime;
         if (

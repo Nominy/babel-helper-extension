@@ -60,110 +60,55 @@ test('Gold Drafting AI broker waits long enough for remote transcription before 
   assert.match(source, /TRANSCRIBE_SEGMENT_BROKER_TIMEOUT_MS = 300000/);
   assert.match(source, /REDISTRIBUTE_TEXT_BROKER_TIMEOUT_MS = 120000/);
   assert.match(source, /function getGoldDraftingAiBrokerTimeoutMs/);
-  assert.match(source, /payload\.operation === 'transcribeSegment'/);
+  assert.match(source, /payload\.operation === 'transcribeSegment' \|\| payload\.operation === 'transcribeSegmentL0'/);
   assert.match(source, /payload\.operation === 'redistributeText'/);
   assert.match(source, /message: `Gold Drafting AI broker timed out after \$\{timeoutMs\}ms\.`/);
 });
 
-test('current segment transcription tries Gold remote broker before local Gemini Nano fallback', () => {
+test('current segment transcription prefers free L0 and retains legacy model fallback', () => {
   const source = read('src/services/timeline-selection-service.ts');
-  const methodStart = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
+  const segmentSource = read('src/services/l0-segment-transcription.ts');
+  const methodStart = source.indexOf('helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0()');
   const methodEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', methodStart);
   const block = source.slice(methodStart, methodEnd);
 
   assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected current segment transcription method');
-  assert.match(block, /requestGoldDraftingAiBroker\(\s*\{\s*operation: 'transcribeSegment'/);
-  assert.match(block, /if \(brokerResult && brokerResult\.ok\)/);
-  assert.match(block, /if \(brokerResult && !brokerResult\.ok && brokerResult\.fallbackAllowed === false\)/);
-  assert.doesNotMatch(block, /if \(brokerResult && !brokerResult\.fallbackAllowed\)/);
-  assert.match(block, /callSelectionBridge\(\s*'transcribe-segment-audio'/);
+  assert.match(segmentSource, /operation: 'transcribeSegmentL0'/);
+  assert.match(block, /requestGoldDraftingAiBroker/);
+  assert.match(block, /onEvent: \(event\) => updateL0SegmentTranscriptionProgress\(event, range\)/);
+  assert.match(block, /buildCurrentL0TimingTaskId\(helper\)/);
+  assert.match(block, /transcribeCurrentSegmentWithLegacyModel\(\)/);
+  assert.doesNotMatch(block, /operation: 'transcribeSegment'/);
+  assert.doesNotMatch(block, /transcribe-segment-audio|callSelectionBridge|OpenRouter|Gemini|Prompt/);
 });
 
-test('current segment transcription shows Gold remote progress before falling back local', () => {
-  const source = read('src/services/timeline-selection-service.ts');
-  const methodStart = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
-  const methodEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', methodStart);
-  const block = source.slice(methodStart, methodEnd);
-
-  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected current segment transcription method');
-  assert.match(block, /phase: 'starting-remote-broker'/);
-  assert.match(block, /onEvent: \(event\) => updateGoldDraftingBrokerProgress\(event, range\)/);
-  assert.match(source, /Starting Gold Drafting remote model\.\.\./);
-  assert.match(source, /formatBrokerWaitDuration/);
-  assert.match(source, /Waiting for OpenRouter\.\.\. \$\{formatBrokerWaitDuration/);
-});
-
-test('current segment transcription keeps Gold broker failure visible when remote path dies', () => {
-  const source = read('src/services/timeline-selection-service.ts');
-  const methodStart = source.indexOf('helper.transcribeCurrentSegmentWithPromptApi = async function transcribeCurrentSegmentWithPromptApi()');
-  const methodEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', methodStart);
-  const block = source.slice(methodStart, methodEnd);
-
-  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected current segment transcription method');
-  assert.match(source, /function showGoldDraftingBrokerFailure/);
-  assert.match(source, /Gold Drafting remote model failed/);
-  assert.match(source, /progress\.fill\.style\.background = '#dc2626'/);
-  assert.match(source, /function serializeGoldDraftingBrokerFailure/);
-  assert.match(source, /Details: /);
-  assert.match(source, /data-babel-helper-gold-drafting-broker-failure-details/);
-  assert.doesNotMatch(source, /Reason: ' \+ reason \+ '\. Check the console for the full broker response\.'/);
-  assert.match(block, /let brokerFailure = null/);
-  assert.match(block, /brokerFailure = brokerResult/);
-  assert.match(block, /showGoldDraftingBrokerFailure\(brokerFailure, 'Gold Drafting remote transcription'\)/);
-  assert.match(block, /keepTroubleshootingProgress = true/);
-});
-
-test('auto-segmentation text redistribution tries Gold broker review before local Prompt API review', () => {
-  const source = read('src/services/timeline-selection-service.ts');
-  const methodStart = source.indexOf('async function redistributeAutoSegmentTextWithPromptApi');
-  const methodEnd = source.indexOf('const finalDetail =', methodStart);
-  const block = source.slice(methodStart, methodEnd);
-
-  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected redistribution method');
-  assert.match(block, /requestGoldDraftingAiBroker\(\s*\{\s*operation: 'redistributeText'/);
-  assert.match(block, /groups: remoteReviewGroups/);
-  assert.match(block, /brokerResult && brokerResult\.ok && Array\.isArray\(brokerResult\.results\)/);
-  assert.match(block, /if \(brokerResult && !brokerResult\.ok && brokerResult\.fallbackAllowed === false\)/);
-  assert.doesNotMatch(block, /if \(brokerResult && !brokerResult\.fallbackAllowed\)/);
-  assert.match(block, /callSelectionBridge\('auto-segment-redistribute-text'/);
-});
-
-test('auto-segmentation sends one server-side grouped Gold broker text review request before ordered apply', () => {
-  const source = read('src/services/timeline-selection-service.ts');
-  const methodStart = source.indexOf('async function redistributeAutoSegmentTextWithPromptApi');
-  const methodEnd = source.indexOf('const finalDetail =', methodStart);
-  const block = source.slice(methodStart, methodEnd);
-  const remoteRunIndex = block.indexOf('const brokerResult = remoteReviewGroups.length');
-  const applyLoopIndex = block.indexOf('for (const job of redistributionJobs)');
-
-  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected redistribution method');
-  assert.doesNotMatch(source, /GOLD_DRAFTING_REMOTE_REVIEW_CONCURRENCY/);
-  assert.doesNotMatch(source, /runGoldDraftingRemoteReviewJobsWithConcurrency/);
-  assert.doesNotMatch(block, /remoteReviewJobs/);
-  assert.doesNotMatch(block, /Promise\.all\(\s*remoteReviewJobs/);
-  assert.match(block, /const redistributionJobs = \[\]/);
-  assert.match(block, /const remoteReviewGroups = \[\]/);
-  assert.match(block, /remoteReviewGroupIndex: remoteReviewGroups\.length/);
-  assert.match(block, /const brokerResult = remoteReviewGroups\.length[\s\S]*?requestGoldDraftingAiBroker\(\{[\s\S]*?operation: 'redistributeText'[\s\S]*?groups: remoteReviewGroups/);
-  assert.ok(remoteRunIndex >= 0, 'expected one server-side grouped remote review request');
-  assert.ok(applyLoopIndex > remoteRunIndex, 'expected ordered apply loop after server review finishes');
-});
-
-test('auto-segmentation does not start local text reviewer before Gold broker can be tried', () => {
+test('auto-segmentation waits for current L0 timing before mutating segments', () => {
   const source = read('src/services/timeline-selection-service.ts');
   const autoStart = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');
-  const autoEnd = source.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio', autoStart);
-  const autoPrepareBlock = source.slice(autoStart, autoEnd);
-  const redistributeStart = source.indexOf('async function redistributeAutoSegmentTextWithPromptApi');
-  const redistributeEnd = source.indexOf('const finalDetail =', redistributeStart);
-  const redistributeBlock = source.slice(redistributeStart, redistributeEnd);
-  const brokerIndex = redistributeBlock.indexOf("requestGoldDraftingAiBroker({");
-  const localPrepareIndex = redistributeBlock.indexOf('prepareAutoSegmentTextRedistributionSession()');
+  const waitIndex = source.indexOf('await waitForAutoSegmentL0Timing()', autoStart);
+  const preTrimIndex = source.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio', autoStart);
 
-  assert.ok(autoStart >= 0 && autoEnd > autoStart, 'expected auto-segmentation prepare block');
-  assert.ok(redistributeStart >= 0 && redistributeEnd > redistributeStart, 'expected redistribution method');
-  assert.doesNotMatch(autoPrepareBlock, /prepareAutoSegmentTextRedistributionSession\(\)/);
-  assert.match(autoPrepareBlock, /detail: 'Preparing AI text reviewer'/);
-  assert.ok(brokerIndex >= 0, 'expected Gold broker attempt in redistribution');
-  assert.ok(localPrepareIndex > brokerIndex, 'expected local reviewer startup only after broker attempt');
+  assert.ok(autoStart >= 0, 'expected auto-segmentation method');
+  assert.ok(waitIndex > autoStart, 'expected L0 timing wait');
+  assert.ok(preTrimIndex > waitIndex, 'timing must arrive before segment mutation');
+  assert.match(source.slice(autoStart, preTrimIndex), /Waiting for background word timing/);
+  assert.match(source.slice(autoStart, preTrimIndex), /timingWaitResult\.timingIndex/);
+});
+
+test('auto-segmentation redistributes text from L0 timings without AI review', () => {
+  const source = read('src/services/timeline-selection-service.ts');
+  const methodStart = source.indexOf('async function redistributeAutoSegmentTextWithL0Timing');
+  const methodEnd = source.indexOf('async function redistributeAutoSegmentTextWithLegacyModels', methodStart);
+  const block = source.slice(methodStart, methodEnd);
+
+  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected timed redistribution method');
+  assert.match(block, /createL0TimedAutoSegmentTextAllocations/);
+  assert.match(block, /timingTrack\.tokens/);
+  assert.match(block, /source: 'l0-word-timing'/);
+  assert.doesNotMatch(block, /requestGoldDraftingAiBroker/);
+  assert.doesNotMatch(block, /prepareAutoSegmentTextRedistributionSession/);
+  assert.doesNotMatch(block, /auto-segment-redistribute-text/);
+  assert.match(source, /async function redistributeAutoSegmentTextWithLegacyModels/);
+  assert.match(source, /operation: 'redistributeText'/);
+  assert.match(source, /auto-segment-redistribute-text/);
 });
