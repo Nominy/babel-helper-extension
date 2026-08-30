@@ -20,7 +20,11 @@ import {
   getPreferredL0TimingLaneKey,
   resolveL0TimingTrack
 } from './l0-timing-identity';
-import { transcribeEmptySegmentWithL0 } from './l0-segment-transcription';
+import {
+  hasL0SegmentBrokerCapability,
+  isL0SegmentLegacyFallbackAllowed,
+  transcribeEmptySegmentWithL0
+} from './l0-segment-transcription';
 import { requestGoldDraftingAiBroker } from './gold-drafting-ai-broker';
 
 export function registerTimelineSelectionService(helper: any) {
@@ -5105,15 +5109,15 @@ export function registerTimelineSelectionService(helper: any) {
 
   async function waitForAutoSegmentL0Timing() {
     const expectedTaskId = buildCurrentL0TimingTaskId(helper);
-    const existingTiming = getCurrentL0TimingIndex(helper.state, helper);
-    if (existingTiming && existingTiming.taskId === expectedTaskId) {
-      return { ok: true, timingIndex: existingTiming };
-    }
     const brokerAvailability = await requestGoldDraftingAiBroker({
       operation: 'ping'
     }).catch(() => null);
-    if (!brokerAvailability || brokerAvailability.ok !== true) {
-      return { ok: false, reason: 'timing-provider-unavailable', useLegacy: true };
+    if (!hasL0SegmentBrokerCapability(brokerAvailability)) {
+      return { ok: false, reason: 'timing-provider-unavailable' };
+    }
+    const existingTiming = getCurrentL0TimingIndex(helper.state, helper);
+    if (existingTiming && existingTiming.taskId === expectedTaskId) {
+      return { ok: true, timingIndex: existingTiming };
     }
     const startedAt = Date.now();
     let reportedSecond = -1;
@@ -5164,6 +5168,12 @@ export function registerTimelineSelectionService(helper: any) {
         timingWaitResult.reason === 'task-changed'
       ) {
         return { ok: false, reason: 'task-changed', splitCount: 0 };
+      }
+      if (
+        timingWaitResult &&
+        timingWaitResult.reason === 'timing-provider-unavailable'
+      ) {
+        return { ok: false, reason: 'timing-provider-unavailable', splitCount: 0 };
       }
       const timingIndex =
         timingWaitResult && timingWaitResult.ok
@@ -6027,6 +6037,17 @@ export function registerTimelineSelectionService(helper: any) {
 
       if (!result || !result.ok) {
         keepFailureProgress = true;
+        if (!isL0SegmentLegacyFallbackAllowed(result)) {
+          const brokerFailure =
+            result && result.broker && typeof result.broker === 'object'
+              ? result.broker
+              : result;
+          showGoldDraftingBrokerFailure(
+            brokerFailure,
+            'Gold Drafting local L0 transcription'
+          );
+          return result;
+        }
         return await transcribeCurrentSegmentWithLegacyModel();
       }
       updateLongTaskProgress({
