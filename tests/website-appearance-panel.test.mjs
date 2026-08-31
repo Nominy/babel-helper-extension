@@ -141,6 +141,36 @@ function findElement(root, selector) {
   return null;
 }
 
+function findElements(root, selector) {
+  const matches = [];
+  for (const child of root.children) {
+    if (matchesSelector(child, selector)) {
+      matches.push(child);
+    }
+    matches.push(...findElements(child, selector));
+  }
+  return matches;
+}
+
+function cssDeclarations(styleElement, selector) {
+  const rule = [...styleElement.textContent.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .find((match) => match[1].trim() === selector);
+  assert.ok(rule, `Missing CSS rule for ${selector}`);
+  return Object.fromEntries(
+    rule[2]
+      .split(';')
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separator = declaration.indexOf(':');
+        return [
+          declaration.slice(0, separator).trim(),
+          declaration.slice(separator + 1).trim()
+        ];
+      })
+  );
+}
+
 class FakeElement extends FakeNode {
   constructor(tagName, ownerDocument) {
     super();
@@ -155,6 +185,7 @@ class FakeElement extends FakeNode {
     this.open = false;
     this.textContent = '';
     this.shadowRoot = null;
+    this.style = {};
   }
 
   setAttribute(name, value) {
@@ -186,6 +217,9 @@ class FakeElement extends FakeNode {
     this.selected = true;
   }
 
+  get parentElement() {
+    return this.parentNode instanceof FakeElement ? this.parentNode : null;
+  }
   get isConnected() {
     let node = this;
     while (node) {
@@ -282,6 +316,23 @@ class FakeWindow {
         }
       }
     };
+    this.mutationObservers = new Set();
+    const owner = this;
+    this.MutationObserver = class {
+      constructor(callback) {
+        this.callback = callback;
+        this.connected = false;
+        owner.mutationObservers.add(this);
+      }
+
+      observe() {
+        this.connected = true;
+      }
+
+      disconnect() {
+        this.connected = false;
+      }
+    };
   }
 
   setTimeout(callback) {
@@ -314,6 +365,14 @@ class FakeWindow {
     const callbacks = [...this.timers.values()];
     this.timers.clear();
     callbacks.forEach((callback) => callback());
+  }
+
+  runMutations() {
+    for (const observer of [...this.mutationObservers]) {
+      if (observer.connected) {
+        observer.callback([], observer);
+      }
+    }
   }
 }
 
@@ -397,7 +456,11 @@ function markupFields(markup) {
   return [...markup.matchAll(/data-field="([^"]+)"/g)].map((match) => match[1]).sort();
 }
 
-function createHarness(createWebsiteAppearancePanel, initial = DEFAULTS, { frames = true } = {}) {
+function createHarness(
+  createWebsiteAppearancePanel,
+  initial = DEFAULTS,
+  { frames = true, setupDocument = undefined } = {}
+) {
   const document = new FakeDocument();
   const window = new FakeWindow();
   if (!frames) {
@@ -406,6 +469,7 @@ function createHarness(createWebsiteAppearancePanel, initial = DEFAULTS, { frame
     window.cancelAnimationFrame = undefined;
   }
   document.defaultView = window;
+  setupDocument?.(document);
   let settings = structuredClone(initial);
   const previews = [];
   const commits = [];
@@ -435,6 +499,22 @@ function createHarness(createWebsiteAppearancePanel, initial = DEFAULTS, { frame
   harness.host = document.querySelector('[data-babel-helper-appearance-panel]');
   harness.shadow = harness.host.shadowRoot;
   return harness;
+}
+
+function appendDashboardToolbar(document, { withWand = true } = {}) {
+  const toolbar = document.createElement('div');
+  const playAll = document.createElement('button');
+  playAll.setAttribute('aria-label', 'Play all tracks');
+  toolbar.appendChild(playAll);
+
+  let wand = null;
+  if (withWand) {
+    wand = document.createElement('button');
+    wand.setAttribute('id', 'babel-gold-drafting-magic-button');
+    toolbar.appendChild(wand);
+  }
+  document.body.appendChild(toolbar);
+  return { toolbar, playAll, wand };
 }
 
 function control(harness, field) {
@@ -519,6 +599,162 @@ test('exact Alt+Shift+P toggles one Shadow DOM editor even while a panel control
   assert.equal(harness.host.hidden, true);
   assert.equal(panelEscape.defaultPrevented, true);
   assert.equal(harness.document.activeElement, pageButton);
+});
+
+test('the toolbar launcher is an accessible green nature button that toggles exactly like the shortcut', () => {
+  let toolbar;
+  let wand;
+  const harness = createHarness(createWebsiteAppearancePanel, DEFAULTS, {
+    setupDocument(document) {
+      ({ toolbar, wand } = appendDashboardToolbar(document));
+    }
+  });
+  const launcher = harness.document.querySelector('[data-babel-helper-appearance-button]');
+
+  assert.ok(launcher);
+  assert.equal(launcher.tagName, 'BUTTON');
+  assert.equal(launcher.type, 'button');
+  assert.equal(launcher.getAttribute('data-babel-helper-appearance-button'), '');
+  assert.equal(launcher.getAttribute('aria-label'), 'Website Appearance');
+  assert.match(launcher.title, /Website Appearance/);
+  assert.match(launcher.title, /Alt \+ Shift \+ P/);
+  assert.equal(launcher.textContent, '🌿');
+  assert.equal(launcher.hidden, false);
+  assert.equal(launcher.style.width, '36px');
+  assert.equal(launcher.style.height, '36px');
+  assert.equal(launcher.style.backgroundColor, undefined);
+  assert.equal(launcher.style.border, undefined);
+  assert.equal(launcher.style.color, undefined);
+  const launcherStyles = findElements(
+    harness.document.documentElement,
+    '[data-babel-helper-appearance-button-style]'
+  );
+  assert.equal(launcherStyles.length, 1);
+  assert.equal(launcherStyles[0].tagName, 'STYLE');
+  assert.deepEqual(
+    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]'),
+    {
+      'background-color': 'rgba(240, 253, 244, 0.5)',
+      border: '1px solid #86efac',
+      color: '#15803d',
+      transition: 'background-color 120ms ease, border-color 120ms ease'
+    }
+  );
+  assert.deepEqual(
+    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:hover'),
+    {
+      'background-color': 'rgba(220, 252, 231, 0.75)',
+      'border-color': '#4ade80'
+    }
+  );
+  assert.deepEqual(
+    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:active'),
+    {
+      'background-color': 'rgba(187, 247, 208, 0.9)',
+      'border-color': '#22c55e'
+    }
+  );
+  assert.equal(launcher.parentElement, toolbar);
+  assert.equal(toolbar.children[toolbar.children.indexOf(wand) + 1], launcher);
+  assert.equal(
+    toolbar.children.filter(
+      (child) => child.getAttribute('data-babel-helper-appearance-button') !== null
+    ).length,
+    1
+  );
+
+  launcher.dispatchEvent(new FakeEvent('click'));
+  assert.equal(harness.host.hidden, false);
+  harness.document.dispatchEvent(new FakeEvent('keydown', {
+    code: 'KeyP', key: 'P', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false
+  }));
+  assert.equal(harness.host.hidden, true);
+
+  harness.document.dispatchEvent(new FakeEvent('keydown', {
+    code: 'KeyP', key: 'P', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false
+  }));
+  assert.equal(harness.host.hidden, false);
+  launcher.dispatchEvent(new FakeEvent('click'));
+  assert.equal(harness.host.hidden, true);
+});
+
+test('the toolbar launcher falls back to the Play all tracks toolbar without the drafting wand', () => {
+  let toolbar;
+  const harness = createHarness(createWebsiteAppearancePanel, DEFAULTS, {
+    setupDocument(document) {
+      ({ toolbar } = appendDashboardToolbar(document, { withWand: false }));
+    }
+  });
+  const launcher = harness.document.querySelector('[data-babel-helper-appearance-button]');
+
+  assert.equal(harness.document.querySelector('#babel-gold-drafting-magic-button'), null);
+  assert.ok(launcher);
+  assert.equal(launcher.parentElement, toolbar);
+  assert.equal(toolbar.children.at(-1), launcher);
+});
+
+test('the toolbar launcher follows a dynamically appearing or replaced toolbar and disposal stops remounting', () => {
+  const harness = createHarness(createWebsiteAppearancePanel);
+  assert.equal(
+    harness.document.querySelector('[data-babel-helper-appearance-button]'),
+    null
+  );
+
+  const first = appendDashboardToolbar(harness.document, { withWand: false });
+  harness.window.runMutations();
+  const firstLauncher =
+    harness.document.querySelector('[data-babel-helper-appearance-button]');
+  assert.ok(firstLauncher);
+  assert.equal(firstLauncher.parentElement, first.toolbar);
+  assert.equal(
+    findElements(
+      harness.document.documentElement,
+      '[data-babel-helper-appearance-button-style]'
+    ).length,
+    1
+  );
+
+  first.toolbar.remove();
+  const replacement = appendDashboardToolbar(harness.document);
+  harness.window.runMutations();
+  const replacementLauncher =
+    harness.document.querySelector('[data-babel-helper-appearance-button]');
+  assert.ok(replacementLauncher);
+  assert.equal(replacementLauncher.parentElement, replacement.toolbar);
+  assert.equal(
+    replacement.toolbar.children.filter(
+      (child) => child.getAttribute('data-babel-helper-appearance-button') !== null
+    ).length,
+    1
+  );
+  assert.equal(
+    findElements(
+      harness.document.documentElement,
+      '[data-babel-helper-appearance-button-style]'
+    ).length,
+    1
+  );
+
+  harness.panel.dispose();
+  assert.equal(
+    harness.document.querySelector('[data-babel-helper-appearance-button]'),
+    null
+  );
+  assert.equal(
+    harness.document.querySelector('[data-babel-helper-appearance-button-style]'),
+    null
+  );
+  replacement.toolbar.remove();
+  appendDashboardToolbar(harness.document);
+  harness.window.runMutations();
+  assert.equal(
+    harness.document.querySelector('[data-babel-helper-appearance-button]'),
+    null
+  );
+  assert.equal(
+    harness.document.querySelector('[data-babel-helper-appearance-button-style]'),
+    null
+  );
 });
 
 test('every control previews normalized complete settings and commits on debounce, change, and close', () => {

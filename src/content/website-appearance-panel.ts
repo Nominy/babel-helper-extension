@@ -14,6 +14,10 @@ const COMMIT_DELAY_MS = 250;
 // Only used where the target window has no animation frames at all.
 const PREVIEW_FRAME_FALLBACK_MS = 16;
 const SHORTCUT_LABEL = 'Alt + Shift + P';
+const LAUNCHER_ATTRIBUTE = 'data-babel-helper-appearance-button';
+const LAUNCHER_STYLE_ATTRIBUTE = 'data-babel-helper-appearance-button-style';
+const DRAFTING_BUTTON_SELECTOR = '#babel-gold-drafting-magic-button';
+const PLAY_ALL_BUTTON_SELECTOR = '[aria-label="Play all tracks"]';
 
 type SettingKeyOfType<T> = {
   [K in keyof WebsiteAppearanceSettings]: WebsiteAppearanceSettings[K] extends T ? K : never;
@@ -246,6 +250,43 @@ export function createWebsiteAppearancePanel(
   host.setAttribute(PANEL_ATTRIBUTE, '');
   host.hidden = true;
   const shadow = host.attachShadow({ mode: 'open' });
+  const launcher = targetDocument.createElement('button');
+  const launcherStyle = targetDocument.createElement('style');
+  launcherStyle.setAttribute(LAUNCHER_STYLE_ATTRIBUTE, '');
+  launcherStyle.textContent = `
+    button[${LAUNCHER_ATTRIBUTE}] {
+      background-color: rgba(240, 253, 244, 0.5);
+      border: 1px solid #86efac;
+      color: #15803d;
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    button[${LAUNCHER_ATTRIBUTE}]:hover {
+      background-color: rgba(220, 252, 231, 0.75);
+      border-color: #4ade80;
+    }
+    button[${LAUNCHER_ATTRIBUTE}]:active {
+      background-color: rgba(187, 247, 208, 0.9);
+      border-color: #22c55e;
+    }
+  `;
+  launcher.type = 'button';
+  launcher.setAttribute(LAUNCHER_ATTRIBUTE, '');
+  launcher.setAttribute('aria-label', 'Website Appearance');
+  launcher.title = `Website Appearance (${SHORTCUT_LABEL})`;
+  launcher.textContent = '🌿';
+  launcher.style.width = '36px';
+  launcher.style.height = '36px';
+  launcher.style.minWidth = '36px';
+  launcher.style.minHeight = '36px';
+  launcher.style.flex = '0 0 36px';
+  launcher.style.borderRadius = '8px';
+  launcher.style.display = 'inline-flex';
+  launcher.style.alignItems = 'center';
+  launcher.style.justifyContent = 'center';
+  launcher.style.padding = '0';
+  launcher.style.cursor = 'pointer';
+  launcher.style.fontSize = '18px';
+  launcher.style.lineHeight = '1';
   shadow.innerHTML = `
     <style>
       :host {
@@ -574,6 +615,68 @@ export function createWebsiteAppearancePanel(
   let previewFrame: number | null = null;
   let previewQueued = false;
   let shareStale = true;
+  let launcherReadyBound = false;
+  let launcherObserver: MutationObserver | null = null;
+
+  function mountLauncherStyle() {
+    if (launcherStyle.isConnected) {
+      return;
+    }
+    const existing = targetDocument.querySelector(`style[${LAUNCHER_STYLE_ATTRIBUTE}]`);
+    if (existing && existing !== launcherStyle) {
+      return;
+    }
+    (targetDocument.head ?? targetDocument.documentElement)?.appendChild(launcherStyle);
+  }
+
+  function mountLauncher() {
+    if (disposed) {
+      return;
+    }
+    mountLauncherStyle();
+    const anchor =
+      targetDocument.querySelector(DRAFTING_BUTTON_SELECTOR) ??
+      targetDocument.querySelector(PLAY_ALL_BUTTON_SELECTOR);
+    const toolbar = anchor?.parentElement;
+    if (!toolbar || (launcher.isConnected && launcher.parentElement === toolbar)) {
+      return;
+    }
+    const existing = targetDocument.querySelector(`[${LAUNCHER_ATTRIBUTE}]`);
+    if (existing && existing !== launcher) {
+      return;
+    }
+    toolbar.appendChild(launcher);
+  }
+
+  function handleLauncherDocumentReady() {
+    targetDocument.removeEventListener('DOMContentLoaded', handleLauncherDocumentReady);
+    launcherReadyBound = false;
+    mountLauncher();
+  }
+
+  function startLauncherMounting() {
+    mountLauncher();
+    if (targetDocument.readyState === 'loading') {
+      launcherReadyBound = true;
+      targetDocument.addEventListener('DOMContentLoaded', handleLauncherDocumentReady);
+    }
+    const MutationObserverConstructor =
+      targetDocument.defaultView?.MutationObserver ?? globalThis.MutationObserver;
+    if (MutationObserverConstructor) {
+      const observer = new MutationObserverConstructor(mountLauncher);
+      observer.observe(targetDocument, { childList: true, subtree: true });
+      launcherObserver = observer;
+    }
+  }
+
+  function stopLauncherMounting() {
+    if (launcherReadyBound) {
+      targetDocument.removeEventListener('DOMContentLoaded', handleLauncherDocumentReady);
+      launcherReadyBound = false;
+    }
+    launcherObserver?.disconnect();
+    launcherObserver = null;
+  }
 
   function stopWaitingForMount() {
     if (mountWaitBound) {
@@ -866,6 +969,10 @@ export function createWebsiteAppearancePanel(
     }
   }
 
+  function handleLauncherClick() {
+    toggle();
+  }
+
   function handleDocumentKeydown(event: KeyboardEvent) {
     if (disposed) {
       return;
@@ -965,6 +1072,8 @@ export function createWebsiteAppearancePanel(
   copyShareButton.addEventListener('click', handleCopyShare);
   importShareButton.addEventListener('click', handleImportShare);
   targetDocument.addEventListener('keydown', handleDocumentKeydown, true);
+  launcher.addEventListener('click', handleLauncherClick);
+  startLauncherMounting();
   mountHost();
   renderDraft();
 
@@ -980,6 +1089,7 @@ export function createWebsiteAppearancePanel(
       previewQueued = false;
       pendingCommit = null;
       stopWaitingForMount();
+      stopLauncherMounting();
       targetDocument.removeEventListener('keydown', handleDocumentKeydown, true);
       shadow.removeEventListener('input', handleInput);
       shadow.removeEventListener('change', handleChange);
@@ -987,11 +1097,14 @@ export function createWebsiteAppearancePanel(
       resetButton.removeEventListener('click', handleReset);
       copyShareButton.removeEventListener('click', handleCopyShare);
       importShareButton.removeEventListener('click', handleImportShare);
+      launcher.removeEventListener('click', handleLauncherClick);
       host.hidden = true;
       if (wasOpen) {
         restorePreviousFocus();
       }
       host.remove();
+      launcher.remove();
+      launcherStyle.remove();
     },
     open,
     close,
