@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { setMaxListeners } from 'node:events';
 import { build } from 'esbuild';
 
 async function loadEntry(entryPoint) {
@@ -17,7 +18,8 @@ async function loadEntry(entryPoint) {
 
 const runtime = {
   ...(await loadEntry('src/services/l0-transcript-replacement-service.ts')),
-  ...(await loadEntry('src/content/l0-replace-listener.ts'))
+  ...(await loadEntry('src/content/l0-replace-listener.ts')),
+  ...(await loadEntry('src/services/timestamp-edit-service.ts'))
 };
 
 function formatTime(seconds) {
@@ -197,6 +199,172 @@ test('valid replacement deletes in reverse order, creates deterministically, and
     { id: 'first', annotationId: 'created-1', lane: 'Speaker 1', startSeconds: 0, endSeconds: 3 }
   ]);
   assert.deepEqual(helper.rows.map((row) => row.identity.annotationId), ['created-1', 'created-2']);
+});
+
+test('86-row replacement retries the production timestamp bridge with a stable final ID', async () => {
+  class TimestampCustomEvent extends Event {
+    constructor(type, init = {}) {
+      super(type);
+      this.detail = init.detail;
+    }
+  }
+
+  const helper = createHelper();
+  helper.sleep = async () => {};
+  const bridgeWindow = new EventTarget();
+  setMaxListeners(0, bridgeWindow);
+  Object.assign(bridgeWindow, {
+    __babelHelperTimestampBridge: {},
+    setTimeout,
+    clearTimeout
+  });
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const previousCustomEvent = Object.getOwnPropertyDescriptor(globalThis, 'CustomEvent');
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, writable: true, value: bridgeWindow },
+    CustomEvent: { configurable: true, writable: true, value: TimestampCustomEvent }
+  });
+
+  const createAttempts = [];
+  const createdMutationIds = [];
+  const deleteAttempts = [];
+  const originalRecreations = [];
+  const respond = (event, result) => {
+    bridgeWindow.dispatchEvent(
+      new TimestampCustomEvent('babel-helper-timestamp-response', {
+        detail: { id: event.detail.id, result }
+      })
+    );
+  };
+  bridgeWindow.addEventListener('babel-helper-timestamp-request', (event) => {
+    const { operation, payload } = event.detail;
+    if (operation === 'snapshot-transcript') {
+      respond(event, {
+        ok: true,
+        backend: 'page-react-transcript-snapshot',
+        rows: helper.rows.map(nativeSnapshotRow)
+      });
+      return;
+    }
+
+    if (operation === 'delete-segment') {
+      deleteAttempts.push(payload.annotationId);
+      const index = helper.rows.findIndex(
+        (row) => row.identity.annotationId === payload.annotationId
+      );
+      if (index < 0) {
+        respond(event, {
+          ok: payload.allowAlreadyAbsent === true,
+          backend: 'page-react-row-action',
+          reason: 'not-found',
+          annotationId: payload.annotationId
+        });
+        return;
+      }
+      helper.rows.splice(index, 1);
+      respond(event, {
+        ok: true,
+        backend: 'page-react-row-action',
+        annotationId: payload.annotationId
+      });
+      return;
+    }
+
+    if (operation === 'create-segment') {
+      createAttempts.push({ ...payload });
+      const existing = helper.rows.find(
+        (row) => row.identity.annotationId === payload.annotationId
+      );
+      if (existing) {
+        respond(event, {
+          ok: true,
+          backend: 'page-react-create-annotation',
+          annotationId: payload.annotationId
+        });
+        return;
+      }
+
+      if (payload.annotationId.startsWith('original-')) {
+        originalRecreations.push(payload.annotationId);
+      }
+      createdMutationIds.push(payload.annotationId);
+      helper.rows.push(
+        makeRow({
+          annotationId: payload.annotationId,
+          processedRecordingId: payload.processedRecordingId,
+          lane: payload.processedRecordingId === 'track-1' ? 'Speaker 1' : 'Speaker 2',
+          startSeconds: payload.startSeconds,
+          endSeconds: payload.endSeconds,
+          text: payload.text
+        })
+      );
+      respond(
+        event,
+        createAttempts.length === 86
+          ? {
+              ok: false,
+              backend: 'page-react-create-annotation',
+              reason: 'verify-timeout',
+              annotationId: payload.annotationId
+            }
+          : {
+              ok: true,
+              backend: 'page-react-create-annotation',
+              annotationId: payload.annotationId
+            }
+      );
+    }
+  });
+
+  try {
+    runtime.registerTimestampEditService(helper);
+    const largeBatch = Array.from({ length: 86 }, (_, index) => ({
+      id: `row-${index + 1}`,
+      lane: index % 2 === 0 ? 'Speaker 1' : 'Speaker 2',
+      startSeconds: index,
+      endSeconds: index + 1,
+      text: `Replacement ${index + 1}`
+    }));
+    const result = await runtime.replaceTranscriptSegmentation(helper, request(largeBatch));
+    const remainingIds = helper.rows.map((row) => row.identity.annotationId);
+    const createdRowDeletes = deleteAttempts.filter(
+      (annotationId) =>
+        typeof annotationId === 'string' && !annotationId.startsWith('original-')
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.created.length, 86);
+    assert.equal(createAttempts.length, 87);
+    assert.equal(new Set(createAttempts.map(({ annotationId }) => annotationId)).size, 86);
+    assert.equal(createAttempts[85].annotationId, createAttempts[86].annotationId);
+    assert.equal(
+      createdMutationIds.filter(
+        (annotationId) => annotationId === createAttempts[86].annotationId
+      ).length,
+      1
+    );
+    assert.equal(createdMutationIds.length, 86);
+    assert.equal(new Set(createdMutationIds).size, 86);
+    assert.equal(helper.rows.length, 86);
+    assert.equal(new Set(remainingIds).size, 86);
+    assert.deepEqual(
+      new Set(remainingIds),
+      new Set(result.created.map((row) => row.annotationId))
+    );
+    assert.deepEqual(createdRowDeletes, []);
+    assert.deepEqual(originalRecreations, []);
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, 'window', previousWindow);
+    } else {
+      delete globalThis.window;
+    }
+    if (previousCustomEvent) {
+      Object.defineProperty(globalThis, 'CustomEvent', previousCustomEvent);
+    } else {
+      delete globalThis.CustomEvent;
+    }
+  }
 });
 
 test('authoritative bridge snapshot replaces despite incomplete isolated React identity', async () => {
