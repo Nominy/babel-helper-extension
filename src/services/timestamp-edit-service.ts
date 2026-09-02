@@ -10,7 +10,7 @@ export function registerTimestampEditService(helper: any) {
   const BRIDGE_REQUEST_EVENT = 'babel-helper-timestamp-request';
   const BRIDGE_RESPONSE_EVENT = 'babel-helper-timestamp-response';
   const BRIDGE_SCRIPT_PATH = 'dist/content/timestamp-bridge.js';
-  const BRIDGE_TIMEOUT_MS = 3000;
+  const BRIDGE_TIMEOUT_MS = 1600;
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
@@ -18,14 +18,6 @@ export function registerTimestampEditService(helper: any) {
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
-  }
-
-  function createAnnotationId() {
-    const randomId =
-      typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : '';
-    return randomId || 'babel-helper-created-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   }
 
   function parseTimeValue(value) {
@@ -556,15 +548,13 @@ export function registerTimestampEditService(helper: any) {
 
     const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
     const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
-    const annotationId =
-      typeof settings.annotationId === 'string' && settings.annotationId
-        ? settings.annotationId
-        : createAnnotationId();
-    let lastBridgeFailure = null;
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const bridgeResult = await callTimestampBridge('create-segment', {
-        annotationId,
+        annotationId:
+          typeof settings.annotationId === 'string' && settings.annotationId
+            ? settings.annotationId
+            : '',
         processedRecordingId: settings.processedRecordingId,
         speakerKey: settings.speakerKey,
         text: typeof settings.text === 'string' ? settings.text : '',
@@ -584,10 +574,6 @@ export function registerTimestampEditService(helper: any) {
         };
       }
 
-      if (bridgeResult) {
-        lastBridgeFailure = bridgeResult;
-      }
-
       if (attempt < attempts - 1 && retryDelayMs > 0) {
         await helper.sleep(retryDelayMs);
       }
@@ -597,9 +583,7 @@ export function registerTimestampEditService(helper: any) {
       ok: false,
       attempts,
       backend: 'page-react-create-annotation',
-      reason: lastBridgeFailure?.reason,
-      message: lastBridgeFailure?.message,
-      verification: lastBridgeFailure
+      verification: null
     };
   };
 
@@ -607,57 +591,28 @@ export function registerTimestampEditService(helper: any) {
     const settings = options || {};
     const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
     const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
-    let lastBridgeFailure = null;
-    let mayHaveAppliedDelete = false;
-    const initialRow =
-      (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
-        ? helper.findRowByIdentity(settings.rowIdentity)
-        : null) ||
-      findRowByTimeLabels(settings.startText, settings.endText, {
-        speakerKey: settings.speakerKey
-      }) ||
-      findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
-        speakerKey: settings.speakerKey
-      });
-    const initialRowIdentity = initialRow
-      ? helper.getRowIdentity(initialRow)
-      : settings.rowIdentity || null;
-    const annotationId =
-      (typeof settings.annotationId === 'string' && settings.annotationId) ||
-      (settings.rowIdentity && typeof settings.rowIdentity.annotationId === 'string'
-        ? settings.rowIdentity.annotationId
-        : '') ||
-      (initialRowIdentity && typeof initialRowIdentity.annotationId === 'string'
-        ? initialRowIdentity.annotationId
-        : '');
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const row =
-        attempt === 0
-          ? initialRow
-          : (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
-              ? helper.findRowByIdentity(settings.rowIdentity)
-              : null) ||
-            findRowByTimeLabels(settings.startText, settings.endText, {
-              speakerKey: settings.speakerKey
-            }) ||
-            findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
-              speakerKey: settings.speakerKey
-            });
-      const rowIdentity =
-        attempt === 0
-          ? initialRowIdentity
-          : row
-            ? helper.getRowIdentity(row)
-            : settings.rowIdentity || null;
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
+        findRowByTimeLabels(settings.startText, settings.endText, {
+          speakerKey: settings.speakerKey
+        }) ||
+        findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
+          speakerKey: settings.speakerKey
+        });
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
       const bridgeResult = await callTimestampBridge('delete-segment', {
         startText: settings.startText,
         endText: settings.endText,
         startSeconds: settings.startSeconds,
         endSeconds: settings.endSeconds,
         speakerKey: settings.speakerKey,
-        allowAlreadyAbsent: mayHaveAppliedDelete,
-        annotationId,
+        annotationId:
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
         rowIdentity
       });
 
@@ -673,17 +628,6 @@ export function registerTimestampEditService(helper: any) {
         };
       }
 
-      if (bridgeResult) {
-        lastBridgeFailure = bridgeResult;
-      }
-      if (
-        bridgeResult === null ||
-        bridgeResult.reason === 'verify-timeout' ||
-        bridgeResult.reason === 'apply-threw'
-      ) {
-        mayHaveAppliedDelete = true;
-      }
-
       if (attempt < attempts - 1 && retryDelayMs > 0) {
         await helper.sleep(retryDelayMs);
       }
@@ -693,9 +637,7 @@ export function registerTimestampEditService(helper: any) {
       ok: false,
       attempts,
       backend: 'page-react-row-action',
-      reason: lastBridgeFailure?.reason,
-      message: lastBridgeFailure?.message,
-      verification: lastBridgeFailure
+      verification: null
     };
   };
 }

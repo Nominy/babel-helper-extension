@@ -602,8 +602,7 @@ export function initTimestampBridge() {
           cachedCreateAnnotationBinding = {
             onCreateAnnotation,
             annotations: Array.isArray(props.annotations) ? props.annotations : [],
-            tracks: Array.isArray(props.tracks) ? props.tracks : [],
-            annotationsAreFresh: true
+            tracks: Array.isArray(props.tracks) ? props.tracks : []
           };
           return cachedCreateAnnotationBinding;
         }
@@ -613,9 +612,7 @@ export function initTimestampBridge() {
       }
     }
 
-    return cachedCreateAnnotationBinding
-      ? { ...cachedCreateAnnotationBinding, annotationsAreFresh: false }
-      : null;
+    return cachedCreateAnnotationBinding;
   }
 
   function findRowsAroundSplit(annotationId, splitSeconds, options) {
@@ -695,30 +692,6 @@ export function initTimestampBridge() {
       };
     }
 
-    const annotationId =
-      typeof payload?.annotationId === 'string' && payload.annotationId
-        ? payload.annotationId
-        : createAnnotationId();
-    const rowCountBefore = getTranscriptRows().length;
-    const existingRow = findRowByAnnotationId(annotationId);
-    if (existingRow instanceof HTMLTableRowElement) {
-      const labels = getRowTimeLabels(existingRow);
-      const range = getRowTimeRange(existingRow);
-      return {
-        ok: true,
-        backend: 'page-react-create-annotation',
-        annotationId,
-        processedRecordingId,
-        speakerKey,
-        startText: labels?.startText || '',
-        endText: labels?.endText || '',
-        startSeconds: range?.startSeconds ?? startSeconds,
-        endSeconds: range?.endSeconds ?? endSeconds,
-        rowCountBefore,
-        rowCountAfter: rowCountBefore
-      };
-    }
-
     const binding = resolveCreateAnnotationBinding();
     if (!binding || typeof binding.onCreateAnnotation !== 'function') {
       return {
@@ -728,28 +701,11 @@ export function initTimestampBridge() {
       };
     }
 
-    const existingAnnotation = binding.annotationsAreFresh
-      ? binding.annotations.find(
-          (annotation) => annotation && typeof annotation.id === 'string' && annotation.id === annotationId
-        )
-      : null;
-    if (existingAnnotation) {
-      const existingStartSeconds = Number(existingAnnotation.startTimeInSeconds);
-      const existingEndSeconds = Number(existingAnnotation.endTimeInSeconds);
-      return {
-        ok: true,
-        backend: 'page-react-create-annotation',
-        annotationId,
-        processedRecordingId,
-        speakerKey,
-        startText: '',
-        endText: '',
-        startSeconds: Number.isFinite(existingStartSeconds) ? existingStartSeconds : startSeconds,
-        endSeconds: Number.isFinite(existingEndSeconds) ? existingEndSeconds : endSeconds,
-        rowCountBefore,
-        rowCountAfter: rowCountBefore
-      };
-    }
+    const annotationId =
+      typeof payload?.annotationId === 'string' && payload.annotationId
+        ? payload.annotationId
+        : createAnnotationId();
+    const rowCountBefore = getTranscriptRows().length;
     try {
       binding.onCreateAnnotation({
         id: annotationId,
@@ -890,21 +846,8 @@ export function initTimestampBridge() {
   }
 
   async function deleteSegment(payload) {
-    const explicitAnnotationId =
-      typeof payload?.annotationId === 'string' && payload.annotationId ? payload.annotationId : '';
-    const rowCountBefore = getTranscriptRows().length;
-    const row = explicitAnnotationId ? findRowByAnnotationId(explicitAnnotationId) : resolveRowFromPayload(payload);
+    const row = resolveRowFromPayload(payload);
     if (!(row instanceof HTMLTableRowElement)) {
-      if (explicitAnnotationId && payload?.allowAlreadyAbsent === true) {
-        return {
-          ok: true,
-          backend: 'page-react-row-action',
-          annotationId: explicitAnnotationId,
-          rowCountBefore,
-          rowCountAfter: rowCountBefore
-        };
-      }
-
       return {
         ok: false,
         backend: 'page-react-row-action',
@@ -926,15 +869,7 @@ export function initTimestampBridge() {
       };
     }
 
-    if (explicitAnnotationId && binding.annotationId !== explicitAnnotationId) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'annotation-id-mismatch',
-        annotationId: explicitAnnotationId
-      };
-    }
-
+    const rowCountBefore = getTranscriptRows().length;
     try {
       binding.onDelete(binding.annotationId);
     } catch (error) {
@@ -948,6 +883,10 @@ export function initTimestampBridge() {
 
     const settled = await waitFor(() => {
       const rows = getTranscriptRows();
+      if (rows.length < rowCountBefore) {
+        return { rowCountAfter: rows.length, removed: true };
+      }
+
       const current = findRowByAnnotationId(binding.annotationId);
       if (!(current instanceof HTMLTableRowElement)) {
         return { rowCountAfter: rows.length, removed: true };
