@@ -273,7 +273,6 @@ function getBundle() {
         format: 'iife',
         platform: 'browser',
         target: 'chrome114',
-        banner: { js: 'var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";' },
         logLevel: 'silent'
       });
       return pathToFileURL(outfile).href;

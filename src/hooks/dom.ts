@@ -1,28 +1,4 @@
-﻿export function isEditable(element: unknown) {
-  if (!(element instanceof HTMLElement)) {
-    return false;
-  }
-
-  if (element.isContentEditable) {
-    return true;
-  }
-
-  return element.matches('textarea, input');
-}
-
-export function isVisible(element: unknown) {
-  if (!(element instanceof HTMLElement)) {
-    return false;
-  }
-
-  const style = window.getComputedStyle(element);
-  if (style.display === 'none' || style.visibility === 'hidden') {
-    return false;
-  }
-
-  const rect = element.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
-}
+﻿import { sleep } from '@nominy/babel-babel-runtime';
 
 export function normalizeText(element: unknown) {
   if (!(element instanceof HTMLElement)) {
@@ -69,45 +45,6 @@ export function setEditableValue(element: unknown, value: unknown) {
   );
 
   return true;
-}
-
-export function dispatchClick(element: unknown) {
-  if (!(element instanceof HTMLElement)) {
-    return;
-  }
-
-  if (typeof PointerEvent === 'function') {
-    element.dispatchEvent(
-      new PointerEvent('pointerdown', {
-        bubbles: true,
-        cancelable: true,
-        pointerId: 1,
-        pointerType: 'mouse'
-      })
-    );
-  }
-
-  element.dispatchEvent(
-    new MouseEvent('mousedown', {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-  element.dispatchEvent(
-    new MouseEvent('mouseup', {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    })
-  );
-  element.click();
-}
-
-export function sleep(milliseconds: number) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, milliseconds);
-  });
 }
 
 export async function waitFor<T>(getValue: () => T | null, timeoutMs?: number, intervalMs?: number) {

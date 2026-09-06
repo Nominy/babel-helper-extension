@@ -20,6 +20,31 @@
       }
       total = total * 60 + numeric;
     }
+
+    return total;
+  }
+
+  let total = 0;
+  let foundUnit = false;
+  const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
+  for (const match of normalized.matchAll(unitPattern)) {
+    const numeric = Number(match[1]);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+
+    foundUnit = true;
+    const unit = match[2];
+    if (unit === 'h') {
+      total += numeric * 3600;
+    } else if (unit === 'm') {
+      total += numeric * 60;
+    } else {
+      total += numeric;
+    }
+  }
+
+  if (foundUnit) {
     return total;
   }
 

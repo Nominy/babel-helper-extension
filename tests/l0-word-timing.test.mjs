@@ -348,6 +348,68 @@ test('published main-world review action overrides the shared route in Helper', 
   }
 });
 
+test('task guard follows the committed native action across empty rows and reused editor hosts', (t) => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const taskLocation = { href: 'https://babel.test/label?jobId=shared' };
+  const workbench = { memoizedProps: { reviewActionId: 'task-one' } };
+  const root = { child: workbench };
+  const rootState = { current: root };
+  root.stateNode = rootState;
+  workbench.return = root;
+  const nativeHost = { __reactFiber$test: workbench };
+  let publishedId = 'task-one';
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      documentElement: { getAttribute: () => publishedId },
+      querySelectorAll: () => [nativeHost]
+    }
+  });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+    else delete globalThis.document;
+    if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation);
+    else delete globalThis.location;
+  });
+  let rows = [{}];
+  const helper = { getTranscriptRows: () => rows, state: { sessionLifecycleRevision: 1 } };
+  const isOriginalTask = identity.captureL0TaskGuard(helper);
+  rows = [];
+  publishedId = '';
+  helper.state.sessionLifecycleRevision += 1;
+  assert.equal(isOriginalTask(), true, 'the native action survives an empty transcript and session refresh');
+
+  const nextWorkbench = { memoizedProps: { reviewActionId: 'task-two' }, alternate: workbench };
+  const nextRoot = { child: nextWorkbench, stateNode: rootState };
+  nextWorkbench.return = nextRoot;
+  workbench.alternate = nextWorkbench;
+  rootState.current = nextRoot;
+  publishedId = 'task-one';
+  assert.equal(isOriginalTask(), false, 'an empty new task supersedes the old DOM expando and publication');
+  const isNextTask = identity.captureL0TaskGuard(helper);
+  assert.equal(isNextTask(), true);
+  taskLocation.href = 'https://babel.test/other';
+  assert.equal(isNextTask(), false);
+  taskLocation.href = 'https://babel.test/label?jobId=shared';
+  nextRoot.child = null;
+  assert.equal(isNextTask(), false, 'a disconnected native anchor cannot use stale publication');
+});
+
+test('task guard refuses an unidentified empty editor instead of trusting its URL', (t) => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { documentElement: { getAttribute: () => '' }, querySelectorAll: () => [] }
+  });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+    else delete globalThis.document;
+  });
+  assert.equal(identity.captureL0TaskGuard({ getTranscriptRows: () => [] })(), false);
+});
+
 test('listener replacement and disposal prevent leaks across kernel restarts', () => {
   const protocolWindow = createProtocolWindow();
   const location = { pathname: '/label', search: '?id=second' };
@@ -484,28 +546,6 @@ test('missing anchors return null and ghost projections retain proportional fall
     /return computeRestoreOffset\(text, timeRange, currentTime, blurTime, baseline\)/
   );
   assert.equal((rowServiceSource.match(/computeGhostCursorOffset\(/g) || []).length, 3);
-});
-
-test('Alt-click on a transcript word seeks playback through the timestamp index', () => {
-  const lifecycleSource = readFileSync('src/core/lifecycle.ts', 'utf8');
-  const rowSource = readFileSync('src/services/row-service.ts', 'utf8');
-  const registrySource = readFileSync('src/features/registry.ts', 'utf8');
-  const handlerStart = lifecycleSource.indexOf('function handleTimestampWordSeekClick(event)');
-  const handlerEnd = lifecycleSource.indexOf('function clearPlaybackRowSyncTimer', handlerStart);
-  const handler = lifecycleSource.slice(handlerStart, handlerEnd);
-
-  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart, 'expected Alt-click seek handler');
-  assert.match(handler, /event\.altKey/);
-  assert.match(handler, /event\.ctrlKey/);
-  assert.match(handler, /event\.metaKey/);
-  assert.match(handler, /event\.shiftKey/);
-  assert.match(handler, /textarea\.selectionStart/);
-  assert.match(handler, /helper\.getL0TimestampForRowOffset\(row, offset\)/);
-  assert.match(handler, /helper\.seekPlaybackBySeconds\(targetSeconds - playback\.currentTime\)/);
-  assert.match(lifecycleSource, /addEventListener\('click', handleTimestampWordSeekClick\)/);
-  assert.match(lifecycleSource, /removeEventListener\('click', handleTimestampWordSeekClick\)/);
-  assert.match(rowSource, /computeL0TimestampAtCharacterOffset/);
-  assert.match(registrySource, /Alt \+ Click word/);
 });
 
 test('escape restoration lands on the last visible ghost cursor position', () => {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { build } from 'esbuild';
 
 const bridgePath = path.resolve('src/content/linter-bridge.ts');
 const bridgeSource = fs.readFileSync(bridgePath, 'utf8');
@@ -2043,49 +2044,6 @@ test('helper warning scrubber strips only highlighted-word asserted warnings', (
   ]);
 });
 
-test('linter bridge routes highlighted word clearance through Babel warning state', () => {
-  assert.match(bridgeSource, /HIGHLIGHTED_WORD_RULE_REASON/);
-  assert.match(bridgeSource, /getHighlightedWordMatches/);
-  assert.match(bridgeSource, /hasHighlightedWordViolation/);
-  assert.match(bridgeSource, /highlightedWordsEnabled\s*=\s*true/);
-  assert.match(bridgeSource, /detail\.highlightedWordsEnabled\s*!==\s*false/);
-  assert.match(bridgeSource, /if \(!highlightedWordsEnabled \|\| !highlightedWords\.length\)/);
-  assert.match(bridgeSource, /highlightedWords/);
-  assert.match(bridgeSource, /handleConfig/);
-  assert.match(bridgeSource, /HIGHLIGHTED_WORD_RULE_SEVERITY = "warning"/);
-  assert.match(bridgeSource, /getHighlightedWordClearanceKey/);
-  assert.match(bridgeSource, /getHighlightedWordClearanceTaskKey/);
-  assert.match(bridgeSource, /highlightedWordClearanceTaskKey/);
-  assert.match(bridgeSource, /SAVE_ANNOTATIONS_PATH/);
-  assert.match(bridgeSource, /stripHelperAssertedWarningsFromPayload/);
-  assert.match(bridgeSource, /applyHighlightedWordClearancesToPayload/);
-  assert.match(bridgeSource, /ensureHelperAssertedWarning/);
-  assert.match(bridgeSource, /maybeAugmentHighlightedWordClearanceResponse/);
-  assert.match(bridgeSource, /isNativeLintStatusTrigger/);
-  assert.match(bridgeSource, /isNativeLintSuccessTrigger/);
-  assert.match(bridgeSource, /observeNativeHighlightedWordWarningClick/);
-  assert.match(bridgeSource, /markHighlightedWordCleared/);
-  assert.match(bridgeSource, /unmarkHighlightedWordCleared/);
-  assert.match(bridgeSource, /taskKey:\s*highlightedWordClearanceTaskKey/);
-  assert.match(bridgeSource, /sanitizeHelperAssertedWarningsRequest\(\s*input,\s*init,\s*\{\s*recordClearance: true,\s*\}/);
-  assert.match(bridgeSource, new RegExp(escapeRegExp(HIGHLIGHTED_WORD_RULE_REASON)));
-  assert.match(bridgeSource, /highlightedWord:\s*HIGHLIGHTED_WORD_RULE_REASON/);
-  assert.match(bridgeSource, /highlightedWordRuleSeverity:\s*HIGHLIGHTED_WORD_RULE_SEVERITY/);
-  assert.match(languageRulesSource, /id:\s*'highlighted-words'/);
-  assert.match(languageRulesSource, /reason:\s*deps\.reasons\.highlightedWord/);
-  assert.match(languageRulesSource, /severity:\s*deps\.highlightedWordRuleSeverity/);
-  assert.doesNotMatch(bridgeSource, /HIGHLIGHTED_WORD_MARKER_ATTR/);
-  assert.doesNotMatch(bridgeSource, /body > div/);
-  assert.doesNotMatch(bridgeSource, /stopNativeHighlightedWordWarningEvent/);
-  assert.doesNotMatch(bridgeSource, /stopImmediatePropagation/);
-  assert.doesNotMatch(bridgeSource, /applyNativeClearedWarningState/);
-  assert.doesNotMatch(bridgeSource, /removeNativeLintTooltipNodes/);
-  assert.doesNotMatch(bridgeSource, /decrementVisibleWarningCount/);
-  assert.doesNotMatch(bridgeSource, /triggerNativeLintRefresh/);
-  assert.doesNotMatch(bridgeSource, /makeSuppressedMutationResponse/);
-  assert.doesNotMatch(bridgeSource, /scheduleInitialNativeLintTrigger\("config-highlighted-words"\)/);
-  assert.doesNotMatch(bridgeSource, /fixHighlightedWords/);
-});
 
 test('highlighted word status clicks record clearance immediately', () => {
   const handlerStart = bridgeSource.indexOf('function observeNativeHighlightedWordWarningClick');
@@ -2100,43 +2058,398 @@ test('highlighted word status clicks record clearance immediately', () => {
   );
 });
 
-test('linter bridge reattaches fetch patch when another page bridge replaces it', () => {
-  assert.match(bridgeSource, /function installFetchPatch/);
-  assert.match(bridgeSource, /__babelHelperLinterPatched/);
-  assert.match(bridgeSource, /fetchPatchTimer\s*=\s*window\.setInterval/);
-  assert.match(bridgeSource, /installFetchPatch\("init"\)/);
-  assert.match(bridgeSource, /installFetchPatch\("watchdog"\)/);
-  assert.match(bridgeSource, /forwardingFetch/);
-  assert.match(bridgeSource, /return fallbackFetch\(input,\s*init\)/);
+const LINTER_TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
+const BRIDGE_TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
+
+let bridgeBundlePromise = null;
+
+function getBridgeBundle() {
+  if (!bridgeBundlePromise) {
+    bridgeBundlePromise = build({
+      entryPoints: [bridgePath],
+      bundle: true,
+      write: false,
+      minify: false,
+      format: 'iife',
+      platform: 'browser',
+      target: 'chrome114',
+      logLevel: 'silent'
+    }).then((result) => result.outputFiles[0].text);
+  }
+
+  return bridgeBundlePromise;
+}
+
+// Boots the page-world bridge against a bare window whose fetch is a counting fake.
+// Timeouts are recorded, never fired; intervals are recorded so a test can tick them, since
+// any periodic re-patching of window.fetch is exactly what a stacked wrapper must survive.
+async function bootLinterBridgeOverNativeFetch() {
+  const calls = { native: 0 };
+  const timeouts = [];
+  const intervals = [];
+  const nativeResponse = { native: true };
+  const window = new EventTarget();
+  Object.assign(window, {
+    fetch: async function nativeFetch() {
+      calls.native += 1;
+      return nativeResponse;
+    },
+    location: { origin: 'https://babel.test', pathname: '/transcription/RU-tx-gold', search: '' },
+    history: {},
+    setTimeout(callback) {
+      return timeouts.push(callback);
+    },
+    clearTimeout() {},
+    setInterval(callback) {
+      return intervals.push(callback);
+    },
+    clearInterval() {}
+  });
+  const document = {
+    body: null,
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const runBridge = new Function(
+    'window',
+    'document',
+    'HTMLElement',
+    'MutationObserver',
+    'IntersectionObserver',
+    await getBridgeBundle()
+  );
+  runBridge(window, document, class HTMLElement {}, undefined, undefined);
+  assert.equal(window.fetch.name, 'babelHelperLinterPatchedFetch');
+  assert.ok(window.__babelHelperLinterBridge, 'bridge did not boot');
+
+  return {
+    window,
+    calls,
+    nativeResponse,
+    tickIntervals() {
+      for (const callback of intervals) {
+        callback();
+      }
+    }
+  };
+}
+
+// A second page bridge (Review) stacked on top of the linter wrapper: it captures whatever
+// window.fetch was at wrap time and calls it only after an await, so the linter's synchronous
+// re-entrancy guard cannot see it. Rejecting on re-entry turns a cycle into a failure instead
+// of a hang.
+function wrapWithForeignAsyncFetch(window, calls) {
+  const originalFetch = window.fetch;
+  calls.foreign = 0;
+  let inFlight = 0;
+  window.fetch = async function foreignPatchedFetch(input, init) {
+    calls.foreign += 1;
+    inFlight += 1;
+    try {
+      if (inFlight > 1) {
+        throw new Error('foreign fetch wrapper re-entered: window.fetch chain is cyclic');
+      }
+      await Promise.resolve();
+      return await originalFetch(input, init);
+    } finally {
+      inFlight -= 1;
+    }
+  };
+}
+
+test('linter bridge never re-wraps a foreign fetch wrapper that captured its own wrapper', async () => {
+  const { window, calls, nativeResponse, tickIntervals } = await bootLinterBridgeOverNativeFetch();
+  const linterFetch = window.fetch;
+  assert.equal(window.__babelHelperLinterBridge.debug.fetchPatch.upstreamName, 'nativeFetch');
+
+  wrapWithForeignAsyncFetch(window, calls);
+  window.dispatchEvent(new CustomEvent(LINTER_TOGGLE_EVENT, { detail: { enabled: false } }));
+  window.dispatchEvent(new CustomEvent(LINTER_TOGGLE_EVENT, { detail: { enabled: true } }));
+  tickIntervals();
+
+  const response = await window.fetch('https://babel.test/api/ping', { method: 'GET' });
+  assert.equal(response, nativeResponse);
+  assert.deepEqual(calls, { native: 1, foreign: 1 });
+
+  window.dispatchEvent(new CustomEvent(BRIDGE_TEARDOWN_EVENT));
+  assert.equal(window.__babelHelperLinterBridge, undefined);
+  // Disposed while a foreign wrapper holds it as original: the linter wrapper stays in the
+  // chain as a passthrough to the native fetch it bound at install.
+  assert.equal(window.fetch.name, 'foreignPatchedFetch');
+  assert.equal(linterFetch.__babelHelperLinterOriginal.name, 'bound nativeFetch');
+  const afterDispose = await window.fetch('https://babel.test/api/ping', { method: 'GET' });
+  assert.equal(afterDispose, nativeResponse);
+  assert.deepEqual(calls, { native: 2, foreign: 2 });
 });
 
-test('linter bridge plugs helper rules into Babel native client linter', () => {
-  assert.match(bridgeSource, /NATIVE_LINT_AUGMENT_GLOBAL/);
-  assert.match(bridgeSource, /function installNativeLinterWebpackPatch/);
-  assert.match(bridgeSource, /window\.webpackChunk_N_E/);
-  assert.match(bridgeSource, /function patchNativeLinterModuleFactory/);
-  assert.match(bridgeSource, /function augmentNativeLintIssues/);
-  assert.match(bridgeSource, /function mergeNativeAndHelperIssues/);
-  assert.match(bridgeSource, /function augmentNativeLintDispatchValue/);
-  assert.match(bridgeSource, /function patchNativeLintDispatch/);
-  assert.match(bridgeSource, /__babelHelperNativeLintDispatchPatched/);
-  assert.match(bridgeSource, /function findNativeReviewFiber/);
-  assert.match(bridgeSource, /function syncNativeLintState/);
-  assert.match(bridgeSource, /lintHook\.hook\.queue\.dispatch/);
-  assert.match(bridgeSource, /scheduleNativeLintStateSync\("boot"\)/);
-  assert.match(bridgeSource, /scheduleNativeLintStateSync\("textarea-input"\)/);
+test('linter bridge restores the native fetch on teardown when it is on top', async () => {
+  const { window, calls, nativeResponse } = await bootLinterBridgeOverNativeFetch();
+  assert.equal(window.fetch.name, 'babelHelperLinterPatchedFetch');
 
-  const fallbackStart = bridgeSource.indexOf('function scheduleInitialNativeLintTrigger');
-  const fallbackEnd = bridgeSource.indexOf('function notifyRouteChange', fallbackStart);
-  assert.notEqual(fallbackStart, -1);
-  assert.notEqual(fallbackEnd, -1);
-  const fallbackBody = bridgeSource.slice(fallbackStart, fallbackEnd);
-  assert.match(fallbackBody, /syncNativeLintState\("native-lint-fallback"\)/);
-
-  assert.doesNotMatch(bridgeSource, /CLIENT_LINT_STATUS_ATTR/);
-  assert.doesNotMatch(bridgeSource, /data-babel-helper-client-lint-status/);
-  assert.doesNotMatch(bridgeSource, /renderClientLintStatusIndicators/);
+  window.dispatchEvent(new CustomEvent(BRIDGE_TEARDOWN_EVENT));
+  assert.equal(window.fetch.name, 'bound nativeFetch');
+  assert.equal(await window.fetch('https://babel.test/api/ping'), nativeResponse);
+  assert.equal(calls.native, 1);
 });
+
+test('capitalization rules leave a sentence or segment that starts with a number alone', async () => {
+  const { window } = await bootLinterBridgeOverNativeFetch();
+  const bridge = window.__babelHelperLinterBridge;
+
+  assert.equal(bridge.fixSentenceBoundaryCapitalization('Что-то. 1-й вариант.'), 'Что-то. 1-й вариант.');
+  assert.equal(bridge.fixSentenceBoundaryCapitalization('Готово. 2020 год был.'), 'Готово. 2020 год был.');
+  assert.equal(bridge.fixSentenceBoundaryCapitalization('Готово. год был.'), 'Готово. Год был.');
+  assert.equal(bridge.fixSegmentStartCapitalization('1-й вариант.', ''), '1-й вариант.');
+  assert.equal(bridge.fixSegmentStartCapitalization('вариант.', ''), 'Вариант.');
+});
+
+const LINTER_CONFIG_EVENT = 'babel-helper-linter-bridge-config';
+const FEEDBACK_STEP_ID = 'step-1';
+const FEEDBACK_INPUTS = [
+  { id: 'input-word', label: 'Word Accuracy', type: 'rating' },
+  { id: 'input-word-comment', label: 'Word Accuracy Comment', type: 'textarea' },
+  { id: 'input-other', label: 'Other Feedback', type: 'textarea' }
+];
+const FEEDBACK_DEFINITIONS_URL =
+  'https://babel.test/api/trpc/forms.getFormInputsByStepId?input=' +
+  encodeURIComponent(JSON.stringify({ json: { stepId: FEEDBACK_STEP_ID } }));
+const FEEDBACK_DRAFT_URL = 'https://babel.test/api/trpc/transcriptionFeedbackForm.getOrCreateDraft?batch=1';
+const FEEDBACK_DRAFT_INIT = {
+  method: 'POST',
+  body: JSON.stringify({ 0: { json: { formStepId: FEEDBACK_STEP_ID, reviewActionId: 'review-1', workerId: 'worker-1' } } })
+};
+
+const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
+
+// Boots the bridge over a fetch the test settles by hand, in front of a fake
+// review fiber shaped like Babel's L2 page component: react-query observers for
+// the draft mutation and the definitions query, plus the label ref its effect
+// fills once the definitions commit. `Date.now` is the test's clock.
+async function bootLinterBridgeForFeedbackDraft({ fiberMounted = true } = {}) {
+  const timeouts = [];
+  const upstream = [];
+  const clock = { now: 1_000_000 };
+  const window = new EventTarget();
+  Object.assign(window, {
+    fetch: function nativeFetch(input, init) {
+      const { promise, resolve, reject } = Promise.withResolvers();
+      upstream.push({ url: typeof input === 'string' ? input : input.url, init, resolve, reject });
+      return promise;
+    },
+    location: { origin: 'https://babel.test', pathname: '/transcription/RU-tx-gold', search: '' },
+    history: {},
+    setTimeout(callback) {
+      return timeouts.push(callback);
+    },
+    clearTimeout() {},
+    setInterval() {
+      return 0;
+    },
+    clearInterval() {}
+  });
+
+  const definitionsObserver = {
+    options: { queryKey: [['forms', 'getFormInputsByStepId'], { input: { stepId: FEEDBACK_STEP_ID }, type: 'query' }] },
+    result: { status: 'pending', data: undefined },
+    getCurrentResult() {
+      return this.result;
+    }
+  };
+  const draftObserver = { options: { mutationKey: [['transcriptionFeedbackForm', 'getOrCreateDraft']] } };
+  const labelsRef = { current: null };
+  const hooks = [{ current: null }, { current: null }, labelsRef, definitionsObserver, draftObserver]
+    .map((memoizedState) => ({ memoizedState, next: null }));
+  hooks.forEach((hook, index) => {
+    hook.next = hooks[index + 1] ?? null;
+  });
+
+  class Element {}
+  class HTMLElement extends Element {}
+  const rootFiber = { return: null, child: null, sibling: null, stateNode: null };
+  rootFiber.stateNode = { current: rootFiber };
+  const reviewFiber = {
+    return: rootFiber,
+    child: null,
+    sibling: null,
+    memoizedProps: { reviewActionId: 'review-1', annotations: [], linterErrors: [] },
+    memoizedState: hooks[0]
+  };
+  const seedFiber = { return: reviewFiber, child: null, sibling: null, memoizedProps: {}, memoizedState: null };
+  rootFiber.child = reviewFiber;
+  reviewFiber.child = seedFiber;
+  const seed = new Element();
+  seed.__reactFiber$test = seedFiber;
+  const document = {
+    body: null,
+    getElementById: () => null,
+    querySelector: () => (fiberMounted ? seed : null),
+    querySelectorAll: () => []
+  };
+
+  const runBridge = new Function(
+    'window',
+    'document',
+    'HTMLElement',
+    'Element',
+    'MutationObserver',
+    'IntersectionObserver',
+    'Date',
+    await getBridgeBundle()
+  );
+  runBridge(window, document, HTMLElement, Element, undefined, undefined, { now: () => clock.now });
+  assert.equal(window.fetch.name, 'babelHelperLinterPatchedFetch');
+
+  return {
+    window,
+    clock,
+    get debug() {
+      return window.__babelHelperLinterBridge.debug.feedbackDraftRestore;
+    },
+    async requestDefinitions() {
+      const response = window.fetch(FEEDBACK_DEFINITIONS_URL, { method: 'GET' });
+      await flushMicrotasks();
+      return { response, upstream: upstream.findLast((call) => call.url === FEEDBACK_DEFINITIONS_URL) };
+    },
+    async requestDraft() {
+      const response = window.fetch(FEEDBACK_DRAFT_URL, FEEDBACK_DRAFT_INIT);
+      await flushMicrotasks();
+      return { response, upstream: upstream.findLast((call) => call.url === FEEDBACK_DRAFT_URL) };
+    },
+    commitDefinitions() {
+      definitionsObserver.result = { status: 'success', data: FEEDBACK_INPUTS };
+      labelsRef.current = FEEDBACK_INPUTS.map(({ id, label }) => ({ id, label }));
+    },
+    // Settles whatever the last upstream resolution started before the clock
+    // moves, so hold timestamps are taken at the pre-tick time.
+    async tick(elapsedMs = 25) {
+      await flushMicrotasks();
+      clock.now += elapsedMs;
+      for (const callback of timeouts.splice(0)) {
+        callback();
+      }
+      await flushMicrotasks();
+    }
+  };
+}
+
+async function settledState(promise) {
+  let state = 'pending';
+  promise.then(
+    () => {
+      state = 'fulfilled';
+    },
+    () => {
+      state = 'rejected';
+    }
+  );
+  await flushMicrotasks();
+  return state;
+}
+
+// A hold that never releases would otherwise hang the whole test file.
+function released(promise) {
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error('draft response was never released')), 2000))
+  ]);
+}
+
+test('feedback draft restore holds a draft-first response until the definitions commit', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  const definitions = await bridge.requestDefinitions();
+  const draft = await bridge.requestDraft();
+  const draftResponse = { ok: true, draft: true };
+
+  draft.upstream.resolve(draftResponse);
+  assert.equal(await settledState(draft.response), 'pending');
+  assert.equal(bridge.debug.pendingHolds, 1);
+
+  definitions.upstream.resolve({ ok: true, definitions: true });
+  await bridge.tick();
+  assert.equal(await settledState(draft.response), 'pending');
+  assert.equal(bridge.debug.definitions.status, 'delivered');
+
+  bridge.commitDefinitions();
+  await bridge.tick();
+  assert.equal(await released(draft.response), draftResponse);
+  assert.equal(bridge.debug.pendingHolds, 0);
+  assert.equal(bridge.debug.last.reason, 'committed');
+});
+
+test('feedback draft restore releases the response untouched when the commit never shows', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  const definitions = await bridge.requestDefinitions();
+  const draft = await bridge.requestDraft();
+  const draftResponse = { ok: true, draft: true };
+  draft.upstream.resolve(draftResponse);
+  await bridge.tick(7_900);
+  assert.equal(await settledState(draft.response), 'pending');
+  await bridge.tick(200);
+  assert.equal(await released(draft.response), draftResponse);
+  assert.equal(bridge.debug.last.reason, 'timeout');
+
+  // Definitions delivered but no observable commit: bounded grace, then release.
+  const laterDraft = await bridge.requestDraft();
+  const laterResponse = { ok: true, draft: 'later' };
+  laterDraft.upstream.resolve(laterResponse);
+  definitions.upstream.resolve({ ok: true });
+  await bridge.tick(1_000);
+  assert.equal(await settledState(laterDraft.response), 'pending');
+  await bridge.tick(600);
+  assert.equal(await released(laterDraft.response), laterResponse);
+  assert.equal(bridge.debug.last.reason, 'commit-grace-elapsed');
+
+  // No review fiber at all: only an in-flight definitions request justifies a hold.
+  const headless = await bootLinterBridgeForFeedbackDraft({ fiberMounted: false });
+  const loneDraft = await headless.requestDraft();
+  const loneResponse = { ok: true };
+  loneDraft.upstream.resolve(loneResponse);
+  assert.equal(await released(loneDraft.response), loneResponse);
+  assert.equal(headless.debug.last.reason, 'no-definitions-request');
+});
+
+test('feedback draft restore passes through when disabled, releasing holds already pending', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  await bridge.requestDefinitions();
+  const held = await bridge.requestDraft();
+  const heldResponse = { ok: true };
+  held.upstream.resolve(heldResponse);
+  assert.equal(await settledState(held.response), 'pending');
+
+  bridge.window.dispatchEvent(new CustomEvent(LINTER_CONFIG_EVENT, { detail: { feedbackDraftRestoreEnabled: false } }));
+  assert.equal(await released(held.response), heldResponse);
+  assert.equal(bridge.debug.last.reason, 'disabled');
+  assert.equal(bridge.debug.enabled, false);
+
+  const passthrough = await bridge.requestDraft();
+  const passthroughResponse = { ok: true, second: true };
+  passthrough.upstream.resolve(passthroughResponse);
+  assert.equal(await released(passthrough.response), passthroughResponse);
+  assert.equal(bridge.debug.pendingHolds, 0);
+
+  bridge.window.dispatchEvent(new CustomEvent(LINTER_CONFIG_EVENT, { detail: { feedbackDraftRestoreEnabled: true } }));
+  const reenabled = await bridge.requestDraft();
+  reenabled.upstream.resolve({ ok: true });
+  assert.equal(await settledState(reenabled.response), 'pending');
+});
+
+test('feedback draft restore never holds once the definitions are already committed', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  const definitions = await bridge.requestDefinitions();
+  definitions.upstream.resolve({ ok: true });
+  await bridge.tick();
+  bridge.commitDefinitions();
+
+  const draft = await bridge.requestDraft();
+  const draftResponse = { ok: true };
+  draft.upstream.resolve(draftResponse);
+  assert.equal(await released(draft.response), draftResponse);
+  assert.equal(bridge.debug.pendingHolds, 0);
+  assert.equal(bridge.debug.last.reason, 'committed');
+  assert.equal(bridge.debug.last.heldMs, 0);
+});
+
 
 test('linter bridge guards native lint state dispatches from dropping helper issues', () => {
   const augmentStart = bridgeSource.indexOf('function augmentNativeLintDispatchValue');

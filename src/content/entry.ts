@@ -39,14 +39,13 @@ async function boot() {
     throw error;
   });
 
-  if (kernel.helper?.isFeatureEnabled?.('customLinter')) {
-    void linterBridgePreload
-      .then(
-        () => bootstrapCustomLinterBridge({ helper: kernel.helper }),
-        () => bootstrapCustomLinterBridge({ helper: kernel.helper })
-      )
-      .catch(() => {});
-  }
+  const enableLinter = Boolean(kernel.helper?.isFeatureEnabled?.('customLinter'));
+  void linterBridgePreload
+    .then(
+      () => bootstrapCustomLinterBridge({ helper: kernel.helper }, { enableLinter }),
+      () => bootstrapCustomLinterBridge({ helper: kernel.helper }, { enableLinter })
+    )
+    .catch(() => {});
 }
 
 function scheduleBootRetry() {

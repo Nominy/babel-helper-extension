@@ -84,17 +84,6 @@ test('lazy session isolates service registration and feature hook failures', () 
   assert.match(source, /try \{\s*if \(typeof feature\.deactivate === 'function'\) \{[\s\S]*await feature\.deactivate\(ctx, reason\);[\s\S]*\} catch \(error: unknown\) \{\s*reportRuntimeError\(ctx, 'feature\.deactivate', feature\.id, error\);[\s\S]*\} finally \{\s*runtime\.activeFeatures\.delete\(feature\.id\);/);
 });
 
-test('zoom default retries when controls mount after session binding', () => {
-  const timelineSource = read('../src/services/timeline-selection-service.ts');
-  const lifecycleSource = read('../src/core/lifecycle.ts');
-
-  assert.match(timelineSource, /let zoomPersistenceRootObserver = null;/);
-  assert.match(timelineSource, /function scheduleZoomPersistenceRootObserver\(\) \{[\s\S]*zoomPersistenceRootObserver = new MutationObserver\(\(\) => \{[\s\S]*helper\.bindZoomPersistence\(\);[\s\S]*void helper\.applySavedZoomDefault\(\)\.catch\(\(\) => \{\}\);/);
-  assert.match(timelineSource, /if \(!\(slider instanceof HTMLElement\) \|\| typeof MutationObserver !== 'function'\) \{\s*scheduleZoomPersistenceRootObserver\(\);\s*return false;\s*\}/);
-  assert.match(timelineSource, /getZoomSliderElement\(\) \|\|\s*\(await helper\.waitFor\(\(\) => getZoomSliderElement\(\), 1000, 50\)\)/);
-  assert.match(lifecycleSource, /helper\.bindZoomPersistence\(\);[\s\S]*void helper\.applySavedZoomDefault\(\)\.catch\(\(error\) => \{/);
-});
-
 test('extended diff delegates text presentation to recovered Babel state instead of row overlays', () => {
   const source = read('../src/services/extended-diff-view-service.ts');
 

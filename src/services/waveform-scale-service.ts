@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { createMagnifierBridgeClient } from './bridge-client-service';
 import {
   loadWorkflowDefaults,
   updateWorkflowDefaults,
@@ -14,15 +15,9 @@ export function registerWaveformScaleService(helper: any) {
 
   const EXTENDED_MAX = 1000;
   const EDITOR_ATTR = 'data-babel-helper-waveform-scale-editor';
-  const BRIDGE_REQUEST_EVENT = 'babel-helper-magnifier-request';
-  const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const BRIDGE_SCRIPT_PATH = 'dist/content/magnifier-bridge.js';
-  const BRIDGE_TIMEOUT_MS = 700;
   const SAVE_DEBOUNCE_MS = 220;
 
-  let bridgeInjected = false;
-  let bridgeLoadPromise = null;
-  let bridgeRequestId = 0;
+  const callBridge = createMagnifierBridgeClient('waveform-scale-');
   let rowObserver = null;
   let persistTimer = 0;
   let defaultsLoaded = false;
@@ -41,105 +36,6 @@ export function registerWaveformScaleService(helper: any) {
 
   function getTargetMax() {
     return EXTENDED_MAX;
-  }
-
-  function injectBridge() {
-    if (window.__babelHelperMagnifierBridge) {
-      bridgeInjected = true;
-      return Promise.resolve(true);
-    }
-
-    if (bridgeInjected) {
-      return Promise.resolve(true);
-    }
-
-    if (bridgeLoadPromise) {
-      return bridgeLoadPromise;
-    }
-
-    bridgeLoadPromise = new Promise((resolve) => {
-      const parent = document.documentElement || document.head || document.body;
-      if (
-        !parent ||
-        typeof chrome === 'undefined' ||
-        !chrome.runtime ||
-        typeof chrome.runtime.getURL !== 'function'
-      ) {
-        bridgeLoadPromise = null;
-        resolve(false);
-        return;
-      }
-
-      const script = document.createElement('script');
-      try {
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
-      } catch (_error) {
-        script.remove();
-        bridgeLoadPromise = null;
-        resolve(false);
-        return;
-      }
-      script.async = false;
-      script.onload = () => {
-        script.remove();
-        bridgeInjected = true;
-        resolve(true);
-      };
-      script.onerror = () => {
-        script.remove();
-        bridgeLoadPromise = null;
-        resolve(false);
-      };
-
-      parent.appendChild(script);
-    });
-
-    return bridgeLoadPromise;
-  }
-
-  async function callBridge(operation, payload) {
-    const ready = await injectBridge();
-    if (!ready) {
-      return null;
-    }
-
-    return new Promise((resolve) => {
-      bridgeRequestId += 1;
-      const id = 'waveform-scale-' + bridgeRequestId;
-      let settled = false;
-
-      const finish = (result) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-        window.clearTimeout(timeoutId);
-        resolve(result || null);
-      };
-
-      const handleResponse = (event) => {
-        const detail = event.detail || {};
-        if (detail.id !== id) {
-          return;
-        }
-
-        finish(detail.result || null);
-      };
-
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
-      window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-      window.dispatchEvent(
-        new CustomEvent(BRIDGE_REQUEST_EVENT, {
-          detail: {
-            id,
-            operation,
-            payload: payload || {}
-          }
-        })
-      );
-    });
   }
 
   function clearPersistTimer() {

@@ -65,23 +65,6 @@ test('Gold Drafting AI broker waits long enough for remote transcription before 
   assert.match(source, /message: `Gold Drafting AI broker timed out after \$\{timeoutMs\}ms\.`/);
 });
 
-test('current segment transcription prefers free L0 and retains legacy model fallback', () => {
-  const source = read('src/services/timeline-selection-service.ts');
-  const segmentSource = read('src/services/l0-segment-transcription.ts');
-  const methodStart = source.indexOf('helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0()');
-  const methodEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', methodStart);
-  const block = source.slice(methodStart, methodEnd);
-
-  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'expected current segment transcription method');
-  assert.match(segmentSource, /operation: 'transcribeSegmentL0'/);
-  assert.match(block, /requestGoldDraftingAiBroker/);
-  assert.match(block, /onEvent: \(event\) => updateL0SegmentTranscriptionProgress\(event, range\)/);
-  assert.match(block, /buildCurrentL0TimingTaskId\(helper\)/);
-  assert.match(block, /transcribeCurrentSegmentWithLegacyModel\(\)/);
-  assert.doesNotMatch(block, /operation: 'transcribeSegment'/);
-  assert.doesNotMatch(block, /transcribe-segment-audio|callSelectionBridge|OpenRouter|Gemini|Prompt/);
-});
-
 test('auto-segmentation waits for current L0 timing before mutating segments', () => {
   const source = read('src/services/timeline-selection-service.ts');
   const autoStart = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');

@@ -295,6 +295,16 @@ export const FEATURE_REGISTRATIONS = [
       description:
         'Extend read-only feedback diff tables in place with extra text, punctuation, tag, segmentation, and timestamp details from Babel diff payloads.'
     }
+  }),
+  defineFeature({
+    id: 'feedback-draft-restore',
+    setting: {
+      key: 'feedbackDraftRestore',
+      defaultEnabled: true,
+      label: 'Feedback Draft Restore',
+      description:
+        'Hold the L2 feedback draft response until Babel has committed the form input definitions, so persisted ratings and comments survive a cold reload.'
+    }
   })
 ] as const;
 
