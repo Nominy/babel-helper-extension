@@ -236,3 +236,199 @@ test('page.magnifier keeps every legacy operation late-bound, preserves progress
   );
   assert.equal(responses.length, responseCountBeforeDispose);
 });
+
+async function loadClient() {
+  const result = await build({
+    entryPoints: [path.resolve('src/services/bridge-client-service.ts')],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2020'
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].contents).toString('base64')}`);
+}
+
+function clientFixture(t, { loaded = false, invalidContext = false } = {}) {
+  const listeners = new Map();
+  const timers = new Map();
+  const scripts = [];
+  const requests = [];
+  let time = 0;
+  let nextTimer = 0;
+  const pageWindow = {
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+    dispatchEvent(event) {
+      for (const listener of [...(listeners.get(event.type) || [])]) listener(event);
+      return true;
+    },
+    setTimeout(callback, delay) {
+      const id = ++nextTimer;
+      timers.set(id, { callback, deadline: time + delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); }
+  };
+  if (loaded) pageWindow.__babelHelperMagnifierBridge = {};
+  const globals = {
+    window: pageWindow,
+    document: {
+      documentElement: { appendChild(script) { scripts.push(script); } },
+      createElement() {
+        return { removed: false, remove() { this.removed = true; } };
+      }
+    },
+    chrome: { runtime: { getURL(resource) {
+      if (invalidContext) throw new Error('Extension context invalidated.');
+      return `chrome-extension://helper/${resource}`;
+    } } },
+    CustomEvent: TestCustomEvent
+  };
+  for (const [key, value] of Object.entries(globals)) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else delete globalThis[key];
+    });
+  }
+  pageWindow.addEventListener('babel-helper-magnifier-request', (event) => {
+    requests.push(event.detail);
+  });
+  return {
+    scripts,
+    requests,
+    timers,
+    responseListeners: () => listeners.get('babel-helper-magnifier-response')?.size || 0,
+    respond(id, result) {
+      pageWindow.dispatchEvent(new TestCustomEvent('babel-helper-magnifier-response', {
+        detail: { id, result }
+      }));
+    },
+    advance(milliseconds) {
+      time += milliseconds;
+      for (const [id, timer] of [...timers]) {
+        if (timer.deadline <= time) {
+          timers.delete(id);
+          timer.callback();
+        }
+      }
+    }
+  };
+}
+
+test('magnifier clients load independently and correlate concurrent out-of-order responses', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t);
+  const magnifier = createMagnifierBridgeClient('request-');
+  const minimap = createMagnifierBridgeClient('minimap-request-');
+  const scale = createMagnifierBridgeClient('waveform-scale-');
+  const settled = [];
+  const track = (name, request) => request.then((result) => {
+    settled.push(name);
+    return result;
+  });
+  const first = track('first', magnifier('ensure', { instanceId: 'lens-a' }));
+  const second = track('second', magnifier('update', { instanceId: 'lens-b' }));
+  const map = track('map', minimap('minimap-data'));
+  const zoom = track('zoom', scale('waveform-scale-set', { scale: 2 }));
+  assert.equal(fixture.scripts.length, 3, 'one pending load per client, not per call');
+  assert.deepEqual(fixture.requests, []);
+
+  fixture.scripts[1].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(fixture.requests.map((request) => request.operation), ['minimap-data']);
+  fixture.respond(fixture.requests[0].id, { lanes: ['speaker-a'] });
+  assert.deepEqual(await map, { lanes: ['speaker-a'] });
+  assert.deepEqual(settled, ['map'], 'one loaded client must not release another client');
+
+  fixture.scripts[0].onload();
+  fixture.scripts[2].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  const ids = fixture.requests.map((request) => request.id);
+  assert.equal(new Set(ids).size, 4, 'independent counters must not collide on the shared channel');
+  fixture.respond('unrelated-request', { ok: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(settled, ['map']);
+  const requestFor = (operation) => fixture.requests.find((request) => request.operation === operation);
+  fixture.respond(requestFor('waveform-scale-set').id, { scale: 2 });
+  fixture.respond(requestFor('update').id, { lens: 'lens-b' });
+  fixture.respond(requestFor('ensure').id, { lens: 'lens-a' });
+  assert.deepEqual(await Promise.all([first, second, zoom]), [
+    { lens: 'lens-a' }, { lens: 'lens-b' }, { scale: 2 }
+  ]);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+  assert.ok(fixture.scripts.every((script) => script.removed));
+});
+
+test('magnifier timeout releases its listener and late replies cannot settle a subsequent call', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t, { loaded: true });
+  const call = createMagnifierBridgeClient('request-');
+  let settled = false;
+  const lost = call('ensure').then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  const expiredId = fixture.requests[0].id;
+  fixture.respond('wrong-id', { ok: true });
+  fixture.advance(699);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  fixture.advance(1);
+  assert.equal(await lost, null);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+
+  let nextSettled = false;
+  const next = call('ensure').then((result) => { nextSettled = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.respond(expiredId, { stale: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nextSettled, false);
+  fixture.respond(fixture.requests[1].id, { lens: 'recovered' });
+  assert.deepEqual(await next, { lens: 'recovered' });
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+  assert.deepEqual(fixture.scripts, []);
+});
+
+test('magnifier script errors settle every load waiter and allow a later injection retry', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t);
+  const call = createMagnifierBridgeClient('request-');
+  const first = call('ensure');
+  const second = call('update');
+  fixture.scripts[0].onerror();
+  assert.deepEqual(await Promise.all([first, second]), [null, null]);
+  assert.equal(fixture.scripts[0].removed, true);
+  assert.deepEqual(fixture.requests, []);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+
+  const retried = call('ensure');
+  assert.equal(fixture.scripts.length, 2);
+  fixture.scripts[1].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.respond(fixture.requests[0].id, { lens: 'available' });
+  assert.deepEqual(await retried, { lens: 'available' });
+  assert.equal(fixture.scripts[1].removed, true);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+});
+
+test('invalidated extension context settles magnifier requests without leaking listeners or timers', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t, { invalidContext: true });
+  const call = createMagnifierBridgeClient('request-');
+  assert.equal(await call('ensure'), null);
+  assert.deepEqual(fixture.scripts, []);
+  assert.deepEqual(fixture.requests, []);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+});

@@ -29,6 +29,15 @@ export function initLinterBridge() {
   const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
   const SAVE_ANNOTATIONS_PATH =
     "/api/trpc/transcriptions.saveAnnotationsByReviewActionId";
+  const TRPC_PATH_PREFIX = "/api/trpc/";
+  const FEEDBACK_DRAFT_PROCEDURE = "transcriptionFeedbackForm.getOrCreateDraft";
+  const FEEDBACK_DEFINITIONS_PROCEDURE = "forms.getFormInputsByStepId";
+  // Upper bound on holding a draft while its definitions request is still in
+  // flight; after the definitions land, the commit normally follows within
+  // one JSON parse plus one React commit, so the grace is much shorter.
+  const FEEDBACK_DRAFT_HOLD_TIMEOUT_MS = 8000;
+  const FEEDBACK_DRAFT_COMMIT_GRACE_MS = 1500;
+  const FEEDBACK_DRAFT_POLL_MS = 25;
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
   const PERIOD_SPACING_RULE_REASON =
     'Periods must be spaced as "." followed by one space.';
@@ -104,7 +113,7 @@ export function initLinterBridge() {
   let enabled = false;
   let autoLintAttemptCount = 0;
   let autoLintTimer = 0;
-  let fetchPatchTimer = 0;
+  let fetchPatchInstalled = false;
   let highlightObserver = null;
   let highlightTimer = 0;
   let applyingHighlights = false;
@@ -117,7 +126,6 @@ export function initLinterBridge() {
   let textareaVisibilityObserver = null;
   let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
-  const routeLintCallCounts = new Map();
   const clearedHighlightedWordKeys = new Set();
   let highlightedWordClearancesLoaded = false;
   let highlightedWordClearanceTaskKey = "";
@@ -128,7 +136,17 @@ export function initLinterBridge() {
     nativeLint: null,
     nativeLintDispatch: null,
     customRuleErrors: [],
+    feedbackDraftRestore: {
+      enabled: true,
+      pendingHolds: 0,
+      last: null,
+      definitions: null,
+    },
   };
+  let feedbackDraftRestoreEnabled = true;
+  const feedbackDefinitionsRequests = new Map();
+  const feedbackDraftHolds = new Set();
+  let feedbackDraftPollTimer = 0;
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
   let disabledCustomLinterRuleIds = [];
@@ -880,14 +898,21 @@ export function initLinterBridge() {
     );
   }
 
+  // First capitalizable letter at a sentence/segment start. A start that
+  // begins with a number ("1-й", "2020 год") has no initial to capitalize, so
+  // the scan stops at the first digit instead of skipping into the suffix.
   function findFirstLetterIndex(text, startIndex = 0) {
     if (typeof text !== "string") {
       return -1;
     }
 
     for (let index = Math.max(0, startIndex); index < text.length; index += 1) {
-      if (/[\p{L}]/u.test(text[index])) {
+      const char = text[index];
+      if (/[\p{L}]/u.test(char)) {
         return index;
+      }
+      if (/[\p{N}]/u.test(char)) {
+        return -1;
       }
     }
 
@@ -2671,22 +2696,42 @@ export function initLinterBridge() {
 
   function findNativeReviewFiber() {
     let current = getReactFiber(getNativeReviewSeedElement());
-    while (current && typeof current === "object") {
-      const props = current.memoizedProps || current.pendingProps || {};
+    if (!current) {
+      return null;
+    }
+    const ancestry = [];
+    while (current.return) {
+      ancestry.push(current);
+      current = current.return;
+    }
+    current = current.stateNode?.current;
+    if (!current) {
+      return null;
+    }
+    let review = null;
+    // Match the committed child path, as in the native timestamp bridge:
+    // DOM fibers can retain either alternate and stale return pointers.
+    for (let index = ancestry.length - 1; index >= 0; index -= 1) {
+      const expected = ancestry[index];
+      let child = current.child;
+      while (child && child !== expected && child !== expected.alternate) {
+        child = child.sibling;
+      }
+      if (!child) {
+        return null;
+      }
+      current = child;
+      const props = current.memoizedProps;
       if (
         props &&
-        typeof props === "object" &&
         typeof props.reviewActionId === "string" &&
         Array.isArray(props.annotations) &&
         Array.isArray(props.linterErrors)
       ) {
-        return current;
+        review = current;
       }
-
-      current = current.return;
     }
-
-    return null;
+    return review;
   }
 
   function isNativeAnnotationArray(value) {
@@ -2843,6 +2888,58 @@ export function initLinterBridge() {
     return extractAnnotationEntries(hooks.annotationHook.hook.memoizedState);
   }
 
+  function reconcileNativeHighlightedWordAcknowledgements(hooks, annotations) {
+    const dispatch = hooks.annotationHook.hook.queue?.dispatch;
+    if (typeof dispatch !== "function" || !Array.isArray(annotations)) {
+      return;
+    }
+    const stale = new Map();
+    for (const annotation of annotations) {
+      if (!annotation.metadata?.assertedWarnings?.includes(HIGHLIGHTED_WORD_RULE_REASON)) {
+        continue;
+      }
+      const entry = getAnnotationEntryFromObject(annotation);
+      if (!entry || !isHighlightedWordCleared(entry)) {
+        stale.set(annotation.id, annotation.content);
+      }
+    }
+    if (!stale.size) {
+      return;
+    }
+    // Use Babel's annotation state callback, never mutate a hook or its derived
+    // warning-key Set. Keep every unrelated native acknowledgement untouched.
+    dispatch((previous) => {
+      if (!Array.isArray(previous)) {
+        return previous;
+      }
+      let next = previous;
+      for (let index = 0; index < previous.length; index += 1) {
+        const annotation = previous[index];
+        const warnings = annotation.metadata?.assertedWarnings;
+        if (
+          !stale.has(annotation.id) ||
+          stale.get(annotation.id) !== annotation.content ||
+          !Array.isArray(warnings) ||
+          !warnings.includes(HIGHLIGHTED_WORD_RULE_REASON)
+        ) {
+          continue;
+        }
+        const remaining = warnings.filter((warning) => warning !== HIGHLIGHTED_WORD_RULE_REASON);
+        const metadata = { ...annotation.metadata };
+        if (remaining.length) {
+          metadata.assertedWarnings = remaining;
+        } else {
+          delete metadata.assertedWarnings;
+        }
+        if (next === previous) {
+          next = previous.slice();
+        }
+        next[index] = { ...annotation, metadata };
+      }
+      return next;
+    });
+  }
+
   function syncNativeLintState(reason) {
     if (!isPageLinterEnabled()) {
       return false;
@@ -2863,6 +2960,7 @@ export function initLinterBridge() {
 
     const dispatchPatched = patchNativeLintDispatch(hooks, reason);
     const annotations = hooks.annotationHook.hook.memoizedState;
+    reconcileNativeHighlightedWordAcknowledgements(hooks, annotations);
     const nativeIssues = Array.isArray(
       hooks.lintHook.hook.queue.lastRenderedState,
     )
@@ -2894,7 +2992,7 @@ export function initLinterBridge() {
     debugState.nativeLint.annotationHookIndex = hooks.annotationHook.index;
     debugState.nativeLint.lintHookIndex = hooks.lintHook.index;
     debugState.nativeLint.dispatchPatched = dispatchPatched;
-    return false;
+    return true;
   }
 
   function scheduleNativeLintStateSync(reason) {
@@ -4279,21 +4377,7 @@ export function initLinterBridge() {
 
   let currentRouteKey = getRouteKey();
 
-  function getRouteLintCallCount(routeKey) {
-    if (!routeKey) {
-      return 0;
-    }
 
-    return routeLintCallCounts.get(routeKey) || 0;
-  }
-
-  function recordLintCallForRoute(routeKey) {
-    if (!routeKey) {
-      return;
-    }
-
-    routeLintCallCounts.set(routeKey, getRouteLintCallCount(routeKey) + 1);
-  }
 
   function isElementVisible(element) {
     if (!(element instanceof HTMLElement)) {
@@ -4304,40 +4388,6 @@ export function initLinterBridge() {
     return rect.width > 0 && rect.height > 0;
   }
 
-  function findLintTriggerTextarea() {
-    const activeElement = document.activeElement;
-    if (
-      activeElement instanceof HTMLTextAreaElement &&
-      activeElement.matches(ROW_TEXTAREA_SELECTOR) &&
-      isElementVisible(activeElement)
-    ) {
-      return activeElement;
-    }
-
-    const activeRowTextarea = document.querySelector(
-      `tbody tr.bg-neutral-100.ring-1.ring-neutral-300 ${ROW_TEXTAREA_SELECTOR}`,
-    );
-    if (
-      activeRowTextarea instanceof HTMLTextAreaElement &&
-      isElementVisible(activeRowTextarea)
-    ) {
-      return activeRowTextarea;
-    }
-
-    const visibleTextarea = Array.from(
-      document.querySelectorAll(ROW_TEXTAREA_SELECTOR),
-    ).find(
-      (node) => node instanceof HTMLTextAreaElement && isElementVisible(node),
-    );
-    if (visibleTextarea instanceof HTMLTextAreaElement) {
-      return visibleTextarea;
-    }
-
-    const fallbackTextarea = document.querySelector(ROW_TEXTAREA_SELECTOR);
-    return fallbackTextarea instanceof HTMLTextAreaElement
-      ? fallbackTextarea
-      : null;
-  }
 
   function stopTextareaVisibilityObservers() {
     if (
@@ -4518,103 +4568,7 @@ export function initLinterBridge() {
     });
   }
 
-  function dispatchInputEvent(target, inputType, data) {
-    try {
-      target.dispatchEvent(
-        new InputEvent("input", { bubbles: true, inputType, data }),
-      );
-    } catch (_error) {
-      target.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-  }
 
-  function triggerLintViaNoOpInput() {
-    const textarea = findLintTriggerTextarea();
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      return {
-        ok: false,
-        reason: "textarea-not-found",
-      };
-    }
-
-    const valueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      "value",
-    )?.set;
-    if (typeof valueSetter !== "function") {
-      return {
-        ok: false,
-        reason: "value-setter-unavailable",
-      };
-    }
-
-    const activeBefore = document.activeElement;
-    const originalValue = textarea.value;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-
-    try {
-      try {
-        textarea.focus({ preventScroll: true });
-      } catch (_error) {
-        textarea.focus();
-      }
-
-      valueSetter.call(textarea, originalValue + " ");
-      dispatchInputEvent(textarea, "insertText", " ");
-
-      valueSetter.call(textarea, originalValue);
-      dispatchInputEvent(textarea, "deleteContentBackward", null);
-      textarea.dispatchEvent(new Event("change", { bubbles: true }));
-
-      if (typeof start === "number" && typeof end === "number") {
-        textarea.setSelectionRange(start, end);
-      }
-
-      textarea.blur();
-
-      if (activeBefore instanceof HTMLElement && activeBefore !== textarea) {
-        try {
-          activeBefore.focus({ preventScroll: true });
-        } catch (_error) {
-          activeBefore.focus();
-        }
-      }
-
-      if (document.activeElement === textarea) {
-        const sink = document.body || document.documentElement;
-        if (sink instanceof HTMLElement) {
-          const hadTabIndex = sink.hasAttribute("tabindex");
-          if (!hadTabIndex) {
-            sink.setAttribute("tabindex", "-1");
-          }
-
-          try {
-            sink.focus({ preventScroll: true });
-          } catch (_error) {
-            sink.focus();
-          }
-
-          if (!hadTabIndex) {
-            sink.removeAttribute("tabindex");
-          }
-        }
-
-        textarea.blur();
-      }
-
-      return {
-        ok: true,
-        reason: "textarea-noop-input",
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        reason: "textarea-noop-throw",
-        error: String(error && error.message ? error.message : error),
-      };
-    }
-  }
 
   function scheduleInitialNativeLintTrigger(reason) {
     if (!isPageLinterEnabled()) {
@@ -4630,72 +4584,40 @@ export function initLinterBridge() {
       window.clearTimeout(autoLintTimer);
       autoLintTimer = 0;
     }
-
     stopTextareaVisibilityObservers();
 
     const attempt = () => {
-      if (!isPageLinterEnabled()) {
-        return;
-      }
-
-      const activeRouteKey = getRouteKey();
-      if (!activeRouteKey || autoLintTriggeredRoutes.has(activeRouteKey)) {
-        return;
-      }
-
-      if (getRouteLintCallCount(activeRouteKey) > 0) {
-        autoLintTriggeredRoutes.add(activeRouteKey);
-        stopTextareaVisibilityObservers();
-        debugState.autoLint = {
-          changed: true,
-          reason: "already-linted",
-          route: activeRouteKey,
-          attempts: autoLintAttemptCount,
-          source: reason,
-        };
+      autoLintTimer = 0;
+      if (
+        !isPageLinterEnabled() ||
+        getRouteKey() !== routeKey ||
+        autoLintTriggeredRoutes.has(routeKey)
+      ) {
         return;
       }
 
       autoLintAttemptCount += 1;
-      const kick = triggerLintViaNoOpInput();
-      if (kick.ok) {
-        debugState.autoLint = {
-          changed: false,
-          reason: kick.reason,
-          route: activeRouteKey,
-          attempts: autoLintAttemptCount,
-          source: reason,
-        };
-      } else {
-        debugState.autoLint = {
-          changed: false,
-          reason: kick.reason,
-          route: activeRouteKey,
-          attempts: autoLintAttemptCount,
-          source: reason,
-          error: kick.error,
-        };
-      }
+      // Babel lints locally. Synchronize its real issue state without fabricating
+      // text edits, undo entries, selection changes, or focus/blur events.
+      const synced = syncNativeLintState("initial-native-lint");
+      debugState.autoLint = {
+        changed: synced && debugState.nativeLint.dispatched,
+        reason: synced
+          ? "native-lint-state-synchronized"
+          : debugState.nativeLint?.reason || "native-react-hooks-not-found",
+        route: routeKey,
+        attempts: autoLintAttemptCount,
+        source: reason,
+      };
 
-      if (autoLintAttemptCount >= AUTO_LINT_MAX_ATTEMPTS) {
-        syncNativeLintState("native-lint-fallback");
-        autoLintTriggeredRoutes.add(activeRouteKey);
-        debugState.autoLint = {
-          changed: false,
-          reason: "native-lint-fallback",
-          route: activeRouteKey,
-          attempts: autoLintAttemptCount,
-          source: reason,
-          helperIssueCount:
-            debugState.nativeLint && debugState.nativeLint.issueCount,
-          mergedIssueCount:
-            debugState.nativeLint && debugState.nativeLint.mergedIssueCount,
-        };
-        stopTextareaVisibilityObservers();
+      if (synced) {
+        autoLintTriggeredRoutes.add(routeKey);
         return;
       }
 
-      autoLintTimer = window.setTimeout(attempt, AUTO_LINT_RETRY_DELAY_MS);
+      if (autoLintAttemptCount < AUTO_LINT_MAX_ATTEMPTS) {
+        autoLintTimer = window.setTimeout(attempt, AUTO_LINT_RETRY_DELAY_MS);
+      }
     };
 
     autoLintAttemptCount = 0;
@@ -4753,7 +4675,6 @@ export function initLinterBridge() {
     routeKey,
   ) {
     debugState.totalLintCalls += 1;
-    recordLintCallForRoute(routeKey);
     if (!(response instanceof Response)) {
       debugState.last = {
         changed: false,
@@ -4911,7 +4832,7 @@ export function initLinterBridge() {
     return [];
   }
 
-  function stripHelperAssertedWarningsFromPayload(payload, options = {}) {
+  function stripHelperAssertedWarningsFromPayload(payload) {
     let changed = false;
     const strippedReviewActionIds = new Set();
     const seen = new Set();
@@ -4952,9 +4873,6 @@ export function initLinterBridge() {
           if (strippedReviewActionId) {
             strippedReviewActionIds.add(strippedReviewActionId);
           }
-          if (options.recordClearance && entry) {
-            markHighlightedWordCleared(entry);
-          }
           if (nextWarnings.length) {
             metadata.assertedWarnings = nextWarnings;
           } else {
@@ -4977,7 +4895,6 @@ export function initLinterBridge() {
   async function sanitizeHelperAssertedWarningsRequest(
     input,
     init,
-    options = {},
   ) {
     const bodyText = await readRequestBodyText(input, init);
     const bodyPayload = safeJsonParse(bodyText);
@@ -4985,7 +4902,7 @@ export function initLinterBridge() {
       return { input, init, changed: false, payload: null };
     }
 
-    const result = stripHelperAssertedWarningsFromPayload(bodyPayload, options);
+    const result = stripHelperAssertedWarningsFromPayload(bodyPayload);
     if (!result.changed) {
       return { input, init, changed: false, payload: bodyPayload };
     }
@@ -4997,12 +4914,357 @@ export function initLinterBridge() {
     };
   }
 
-  async function callUpstreamFetch(input, init) {
+  function callUpstreamFetch(input, init) {
     forwardingFetch += 1;
     try {
-      return await upstreamFetch(input, init);
+      return upstreamFetch(input, init);
     } finally {
       forwardingFetch = Math.max(0, forwardingFetch - 1);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Feedback draft restore
+  //
+  // Babel's L2 feedback hook fires getOrCreateDraft and getFormInputsByStepId
+  // concurrently and maps the draft's input responses exactly once, in the
+  // mutation's onSuccess, through `w2.current ?? N2 ?? null`. When the draft
+  // lands first that map is null and the persisted ratings/comments are
+  // dropped. The wrapper below holds the draft Response, untouched, until the
+  // hook's fiber shows the definitions committed (query data present and the
+  // label ref populated from it), or a bounded fallback releases it as-is.
+  // ---------------------------------------------------------------------------
+
+  function getTrpcProcedures(input) {
+    const rawUrl = getRequestUrl(input);
+    const start = rawUrl.indexOf(TRPC_PATH_PREFIX);
+    if (start === -1) {
+      return null;
+    }
+
+    let path = rawUrl.slice(start + TRPC_PATH_PREFIX.length);
+    const end = path.search(/[?#]/);
+    if (end !== -1) {
+      path = path.slice(0, end);
+    }
+
+    return path ? path.split(",") : null;
+  }
+
+  // tRPC inputs arrive as `{ json: input }` unbatched or `{ "0": { json: input } }`
+  // batched, and without the `json` wrapper when no transformer is configured.
+  function readTrpcProcedureInput(payload, index) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    let entry = Object.prototype.hasOwnProperty.call(payload, String(index))
+      ? payload[String(index)]
+      : payload;
+    if (entry && typeof entry === "object" && entry.json && typeof entry.json === "object") {
+      entry = entry.json;
+    }
+
+    return entry && typeof entry === "object" ? entry : null;
+  }
+
+  function classifyFeedbackDraftRequest(input) {
+    const procedures = getTrpcProcedures(input);
+    if (!procedures) {
+      return null;
+    }
+
+    const definitionsIndex = procedures.indexOf(FEEDBACK_DEFINITIONS_PROCEDURE);
+    const draftIndex = procedures.indexOf(FEEDBACK_DRAFT_PROCEDURE);
+    if (definitionsIndex !== -1 && draftIndex !== -1) {
+      // One batch carrying both would hold the draft on its own response.
+      return null;
+    }
+    if (draftIndex !== -1) {
+      return { kind: "draft", index: draftIndex };
+    }
+
+    return definitionsIndex === -1
+      ? null
+      : { kind: "definitions", index: definitionsIndex };
+  }
+
+  function isFeedbackInputLabelArray(value) {
+    return (
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          typeof entry.id === "string" &&
+          typeof entry.label === "string" &&
+          Object.keys(entry).length === 2,
+      )
+    );
+  }
+
+  // Matches both tRPC key shapes: `[["forms","getFormInputsByStepId"], {input}]`
+  // and the recreation's `["forms.getFormInputsByStepId", input]`.
+  function feedbackQueryKeyMatches(key, procedure, stepId) {
+    if (!Array.isArray(key)) {
+      return false;
+    }
+
+    let text = "";
+    try {
+      text = JSON.stringify(key);
+    } catch {
+      return false;
+    }
+
+    const method = procedure.slice(procedure.lastIndexOf(".") + 1);
+    return (
+      typeof text === "string" &&
+      text.indexOf(method) !== -1 &&
+      (!stepId || text.indexOf(JSON.stringify(stepId)) !== -1)
+    );
+  }
+
+  // Walks page-owned React internals; a throw there must never fail the fetch,
+  // so it degrades to the same fallback as a missing fiber.
+  function inspectFeedbackDraftCommit(stepId) {
+    try {
+      return inspectFeedbackDraftHookState(stepId);
+    } catch (error) {
+      return {
+        status: "no-fiber",
+        detail: String(error && error.message ? error.message : error),
+      };
+    }
+  }
+
+  function inspectFeedbackDraftHookState(stepId) {
+    const fiber = findNativeReviewFiber();
+    if (!fiber) {
+      return { status: "no-fiber" };
+    }
+
+    let hook = fiber.memoizedState;
+    const seenHooks = new Set();
+    let draftMutation = false;
+    let definitions = null;
+    let labels = null;
+    while (hook && typeof hook === "object" && !seenHooks.has(hook)) {
+      seenHooks.add(hook);
+      const state = hook.memoizedState;
+      if (state && typeof state === "object") {
+        const options = state.options;
+        if (options && typeof options === "object") {
+          if (
+            !draftMutation &&
+            feedbackQueryKeyMatches(options.mutationKey, FEEDBACK_DRAFT_PROCEDURE, null)
+          ) {
+            draftMutation = true;
+          } else if (
+            !definitions &&
+            typeof state.getCurrentResult === "function" &&
+            feedbackQueryKeyMatches(options.queryKey, FEEDBACK_DEFINITIONS_PROCEDURE, stepId)
+          ) {
+            const result = state.getCurrentResult();
+            if (result && Array.isArray(result.data)) {
+              definitions = result.data;
+            }
+          }
+        } else if (!labels && isFeedbackInputLabelArray(state.current)) {
+          labels = state.current;
+        }
+      }
+      hook = hook.next;
+    }
+
+    if (!draftMutation) {
+      return { status: "no-draft-hook" };
+    }
+    if (!definitions) {
+      return { status: "pending", detail: "definitions-query-empty" };
+    }
+    const committed =
+      labels &&
+      labels.length === definitions.length &&
+      labels.every(
+        (entry, index) =>
+          definitions[index] && entry.id === definitions[index].id,
+      );
+    return committed
+      ? { status: "committed" }
+      : { status: "pending", detail: labels ? "labels-stale" : "labels-unset" };
+  }
+
+  function findFeedbackDefinitionsRequest(stepId) {
+    let latest = null;
+    for (const entry of feedbackDefinitionsRequests.values()) {
+      if (
+        (!stepId || !entry.stepId || entry.stepId === stepId) &&
+        (!latest || entry.startedAt >= latest.startedAt)
+      ) {
+        latest = entry;
+      }
+    }
+
+    return latest;
+  }
+
+  function trackFeedbackDefinitionsRequest(stepId, responsePromise) {
+    const entry = {
+      stepId,
+      status: "pending",
+      startedAt: Date.now(),
+      settledAt: 0,
+    };
+    feedbackDefinitionsRequests.set(stepId || "", entry);
+    const settle = (status) => {
+      entry.status = status;
+      entry.settledAt = Date.now();
+      debugState.feedbackDraftRestore.definitions = {
+        stepId,
+        status,
+        elapsedMs: entry.settledAt - entry.startedAt,
+      };
+      pumpFeedbackDraftHolds();
+    };
+    responsePromise.then(
+      (response) =>
+        settle(response && response.ok === false ? "failed" : "delivered"),
+      () => settle("failed"),
+    );
+  }
+
+  // Returns the release reason, or null while the hold must stay in place.
+  function evaluateFeedbackDraftHold(hold) {
+    if (!feedbackDraftRestoreEnabled) {
+      return "disabled";
+    }
+
+    const commit = inspectFeedbackDraftCommit(hold.stepId);
+    hold.commit = commit;
+    if (commit.status === "committed") {
+      return "committed";
+    }
+
+    const now = Date.now();
+    const definitions = findFeedbackDefinitionsRequest(hold.stepId);
+    if (!definitions) {
+      // Nothing in flight: without a confirmed hook there is no race to wait out.
+      if (commit.status !== "pending") {
+        return "no-definitions-request";
+      }
+    } else if (definitions.status === "failed") {
+      return "definitions-failed";
+    } else if (definitions.status === "delivered") {
+      return now - definitions.settledAt >= FEEDBACK_DRAFT_COMMIT_GRACE_MS
+        ? "commit-grace-elapsed"
+        : null;
+    }
+
+    return now - hold.startedAt >= FEEDBACK_DRAFT_HOLD_TIMEOUT_MS ? "timeout" : null;
+  }
+
+  function recordFeedbackDraftRelease(hold, reason) {
+    debugState.feedbackDraftRestore.pendingHolds = feedbackDraftHolds.size;
+    debugState.feedbackDraftRestore.last = {
+      stepId: hold.stepId,
+      reason,
+      heldMs: Date.now() - hold.startedAt,
+      commit: hold.commit,
+      releasedAt: Date.now(),
+    };
+  }
+
+  function releaseFeedbackDraftHold(hold, reason) {
+    feedbackDraftHolds.delete(hold);
+    recordFeedbackDraftRelease(hold, reason);
+    hold.resolve(hold.response);
+  }
+
+  function releaseAllFeedbackDraftHolds(reason) {
+    for (const hold of feedbackDraftHolds) {
+      releaseFeedbackDraftHold(hold, reason);
+    }
+    if (feedbackDraftPollTimer) {
+      window.clearTimeout(feedbackDraftPollTimer);
+      feedbackDraftPollTimer = 0;
+    }
+  }
+
+  function scheduleFeedbackDraftPoll() {
+    if (feedbackDraftPollTimer || !feedbackDraftHolds.size) {
+      return;
+    }
+
+    feedbackDraftPollTimer = window.setTimeout(() => {
+      feedbackDraftPollTimer = 0;
+      pumpFeedbackDraftHolds();
+    }, FEEDBACK_DRAFT_POLL_MS);
+  }
+
+  function pumpFeedbackDraftHolds() {
+    for (const hold of feedbackDraftHolds) {
+      const reason = evaluateFeedbackDraftHold(hold);
+      if (reason) {
+        releaseFeedbackDraftHold(hold, reason);
+      }
+    }
+    scheduleFeedbackDraftPoll();
+  }
+
+  function holdFeedbackDraftResponse(response, stepId) {
+    const hold = {
+      stepId,
+      response,
+      startedAt: Date.now(),
+      commit: null,
+      resolve: null,
+    };
+    const reason = evaluateFeedbackDraftHold(hold);
+    if (reason) {
+      recordFeedbackDraftRelease(hold, reason);
+      return response;
+    }
+
+    const { promise, resolve } = Promise.withResolvers();
+    hold.resolve = resolve;
+    feedbackDraftHolds.add(hold);
+    debugState.feedbackDraftRestore.pendingHolds = feedbackDraftHolds.size;
+    scheduleFeedbackDraftPoll();
+    return promise;
+  }
+
+  async function runFeedbackDraftRestoreFetch(request, input, init) {
+    if (request.kind === "definitions") {
+      const payload = readTrpcProcedureInput(
+        readQueryInputPayload(getRequestUrl(input)),
+        request.index,
+      );
+      const responsePromise = runLinterFetchPipeline(input, init);
+      trackFeedbackDefinitionsRequest(
+        readStringProp(payload, ["stepId"]),
+        responsePromise,
+      );
+      return responsePromise;
+    }
+
+    const payload = readTrpcProcedureInput(
+      safeJsonParse(await readRequestBodyText(input, init)),
+      request.index,
+    );
+    const response = await runLinterFetchPipeline(input, init);
+    return holdFeedbackDraftResponse(
+      response,
+      readStringProp(payload, ["formStepId"]),
+    );
+  }
+
+  function setFeedbackDraftRestoreEnabled(nextEnabled) {
+    feedbackDraftRestoreEnabled = Boolean(nextEnabled);
+    debugState.feedbackDraftRestore.enabled = feedbackDraftRestoreEnabled;
+    if (!feedbackDraftRestoreEnabled) {
+      releaseAllFeedbackDraftHolds("disabled");
     }
   }
 
@@ -5011,6 +5273,17 @@ export function initLinterBridge() {
       return fallbackFetch(input, init);
     }
 
+    const feedbackRequest = feedbackDraftRestoreEnabled
+      ? classifyFeedbackDraftRequest(input)
+      : null;
+    if (feedbackRequest) {
+      return runFeedbackDraftRestoreFetch(feedbackRequest, input, init);
+    }
+
+    return runLinterFetchPipeline(input, init);
+  }
+
+  async function runLinterFetchPipeline(input, init) {
     if (!isPageLinterEnabled()) {
       return callUpstreamFetch(input, init);
     }
@@ -5019,9 +5292,6 @@ export function initLinterBridge() {
       const sanitized = await sanitizeHelperAssertedWarningsRequest(
         input,
         init,
-        {
-          recordClearance: true,
-        },
       );
       const response = await callUpstreamFetch(sanitized.input, sanitized.init);
       return maybeAugmentHighlightedWordClearanceResponse(response);
@@ -5044,39 +5314,35 @@ export function initLinterBridge() {
     const annotationEntries = requestAnnotationEntries.length
       ? requestAnnotationEntries
       : getNativeAnnotationEntriesFromState();
-    const sanitized = await sanitizeHelperAssertedWarningsRequest(input, init, {
-      recordClearance: true,
-    });
+    const sanitized = await sanitizeHelperAssertedWarningsRequest(input, init);
     const response = await callUpstreamFetch(sanitized.input, sanitized.init);
     return maybeAugmentLintResponse(response, annotationEntries, routeKey);
   }
 
-  function installFetchPatch(reason) {
+  function installFetchPatch() {
     const currentFetch = window.fetch;
-    if (
-      currentFetch === babelHelperLinterPatchedFetch ||
-      currentFetch?.__babelHelperLinterPatched ||
-      typeof currentFetch !== "function"
-    ) {
-      return false;
+    if (typeof currentFetch !== "function") {
+      return;
     }
 
+    // Bound exactly once, at install. A wrapper stacked on top of us later
+    // (another page bridge) captures our wrapper as its original, so
+    // re-binding upstream from window.fetch afterwards would close a cycle.
+    // Installation therefore happens here only: never on a timer, never on
+    // re-enable.
     upstreamFetch = currentFetch.bind(window);
     window.fetch = babelHelperLinterPatchedFetch;
     window.fetch.__babelHelperLinterPatched = true;
     window.fetch.__babelHelperLinterOriginal = upstreamFetch;
+    fetchPatchInstalled = true;
     debugState.fetchPatch = {
-      reason,
+      reason: "init",
       upstreamName: currentFetch.name || "",
       patchedAt: Date.now(),
     };
-    return true;
   }
 
-  installFetchPatch("init");
-  fetchPatchTimer = window.setInterval(() => {
-    installFetchPatch("watchdog");
-  }, 1000);
+  installFetchPatch();
 
   function setBuiltInEnabled(nextEnabled) {
     enabled = Boolean(nextEnabled);
@@ -5091,7 +5357,6 @@ export function initLinterBridge() {
     }
     if (enabled) {
       installNativeLinterWebpackPatch();
-      installFetchPatch("toggle-enable");
       startNativeLintStateObserver();
       startTextareaVisibilityObserver("toggle-enable-textarea-visible");
       scheduleInitialNativeLintTrigger("toggle-enable");
@@ -5121,6 +5386,7 @@ export function initLinterBridge() {
 
   function handleConfig(event) {
     const detail = event && event.detail ? event.detail : {};
+    setFeedbackDraftRestoreEnabled(detail.feedbackDraftRestoreEnabled !== false);
     invokePageLinter("configure", [detail], configureBuiltInLinter);
   }
 
@@ -5130,13 +5396,10 @@ export function initLinterBridge() {
 
   function dispose() {
     enabled = false;
+    setFeedbackDraftRestoreEnabled(false);
     if (autoLintTimer) {
       window.clearTimeout(autoLintTimer);
       autoLintTimer = 0;
-    }
-    if (fetchPatchTimer) {
-      window.clearInterval(fetchPatchTimer);
-      fetchPatchTimer = 0;
     }
     stopTextareaVisibilityObservers();
     stopNativeLintStateObserver();
@@ -5157,13 +5420,12 @@ export function initLinterBridge() {
         chunk[NATIVE_LINT_PATCH_MARK] = false;
       }
     }
-    const restoreFetch = upstreamFetch;
-    upstreamFetch = fallbackFetch;
-    if (
-      window.fetch === babelHelperLinterPatchedFetch ||
-      window.fetch?.__babelHelperLinterPatched
-    ) {
-      window.fetch = restoreFetch;
+    // Only unwrap when we are on top. A foreign wrapper above us holds our
+    // wrapper as its original, so we must stay in the chain; disabled state
+    // already passes requests straight through to upstreamFetch.
+    if (fetchPatchInstalled && window.fetch === babelHelperLinterPatchedFetch) {
+      window.fetch = upstreamFetch;
+      fetchPatchInstalled = false;
     }
     window.removeEventListener(TOGGLE_EVENT, handleToggle, true);
     window.removeEventListener(CONFIG_EVENT, handleConfig, true);

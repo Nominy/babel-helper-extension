@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { createMagnifierBridgeClient } from './bridge-client-service';
+
 export function registerMinimapService(helper: any) {
   if (!helper || helper.__minimapRegistered) {
     return;
@@ -8,17 +10,11 @@ export function registerMinimapService(helper: any) {
 
   const MINIMAP_ATTR = 'data-babel-helper-minimap';
   const HOST_ATTR = 'data-babel-helper-minimap-host';
-  const BRIDGE_REQUEST_EVENT = 'babel-helper-magnifier-request';
-  const BRIDGE_RESPONSE_EVENT = 'babel-helper-magnifier-response';
-  const BRIDGE_SCRIPT_PATH = 'dist/content/magnifier-bridge.js';
-  const BRIDGE_TIMEOUT_MS = 700;
   const MINIMAP_HEIGHT = 44;
   const MINIMAP_MAX_TRACKS = 2;
   const MUTATION_DEBOUNCE_MS = 220;
 
-  let bridgeInjected = false;
-  let bridgeLoadPromise = null;
-  let bridgeRequestId = 0;
+  const callBridge = createMagnifierBridgeClient('minimap-request-');
   let markerId = 0;
 
   helper.state.minimap = null;
@@ -30,102 +26,6 @@ export function registerMinimapService(helper: any) {
   function nextMarker(prefix) {
     markerId += 1;
     return prefix + '-' + Date.now() + '-' + markerId;
-  }
-
-  function injectBridge() {
-    if (window.__babelHelperMagnifierBridge) {
-      bridgeInjected = true;
-      return Promise.resolve(true);
-    }
-
-    if (bridgeInjected) {
-      return Promise.resolve(true);
-    }
-
-    if (bridgeLoadPromise) {
-      return bridgeLoadPromise;
-    }
-
-    bridgeLoadPromise = new Promise((resolve) => {
-      const parent = document.documentElement || document.head || document.body;
-      if (
-        !parent ||
-        typeof chrome === 'undefined' ||
-        !chrome.runtime ||
-        typeof chrome.runtime.getURL !== 'function'
-      ) {
-        bridgeLoadPromise = null;
-        resolve(false);
-        return;
-      }
-
-      const script = document.createElement('script');
-      try {
-        script.src = chrome.runtime.getURL(BRIDGE_SCRIPT_PATH);
-      } catch (_error) {
-        script.remove();
-        bridgeLoadPromise = null;
-        resolve(false);
-        return;
-      }
-      script.async = false;
-      script.onload = () => {
-        script.remove();
-        bridgeInjected = true;
-        resolve(true);
-      };
-      script.onerror = () => {
-        script.remove();
-        bridgeLoadPromise = null;
-        resolve(false);
-      };
-      parent.appendChild(script);
-    });
-
-    return bridgeLoadPromise;
-  }
-
-  async function callBridge(operation, payload) {
-    const ready = await injectBridge();
-    if (!ready) {
-      return null;
-    }
-
-    return new Promise((resolve) => {
-      bridgeRequestId += 1;
-      const id = 'minimap-request-' + bridgeRequestId;
-      let settled = false;
-
-      const finish = (result) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-        window.clearTimeout(timeoutId);
-        resolve(result || null);
-      };
-
-      const handleResponse = (event) => {
-        const detail = event.detail || {};
-        if (detail.id !== id) {
-          return;
-        }
-        finish(detail.result || null);
-      };
-
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
-      window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-      window.dispatchEvent(
-        new CustomEvent(BRIDGE_REQUEST_EVENT, {
-          detail: {
-            id,
-            operation,
-            payload: payload || {}
-          }
-        })
-      );
-    });
   }
 
   function discoverWaveformHosts() {

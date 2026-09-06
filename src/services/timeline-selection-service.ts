@@ -22,10 +22,10 @@ import {
 } from './l0-timing-identity';
 import {
   hasL0SegmentBrokerCapability,
-  isL0SegmentLegacyFallbackAllowed,
   transcribeEmptySegmentWithL0
 } from './l0-segment-transcription';
 import { requestGoldDraftingAiBroker } from './gold-drafting-ai-broker';
+import { parseTimeValue } from '../hooks/parsing';
 
 export function registerTimelineSelectionService(helper: any) {
   if (!helper || helper.__cutRegistered) {
@@ -178,66 +178,6 @@ export function registerTimelineSelectionService(helper: any) {
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
-  }
-
-  function parseTimeValue(value) {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const normalized = trimmed.toLowerCase();
-
-    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
-    if (timestampMatch) {
-      const parts = timestampMatch[0].split(':');
-      let total = 0;
-      for (const part of parts) {
-        const numeric = Number(part);
-        if (!Number.isFinite(numeric)) {
-          return null;
-        }
-        total = total * 60 + numeric;
-      }
-
-      return total;
-    }
-
-    let total = 0;
-    let foundUnit = false;
-    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
-    for (const match of normalized.matchAll(unitPattern)) {
-      const numeric = Number(match[1]);
-      if (!Number.isFinite(numeric)) {
-        return null;
-      }
-
-      foundUnit = true;
-      const unit = match[2];
-      if (unit === 'h') {
-        total += numeric * 3600;
-      } else if (unit === 'm') {
-        total += numeric * 60;
-      } else {
-        total += numeric;
-      }
-    }
-
-    if (foundUnit) {
-      return total;
-    }
-
-    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
-    if (!numericMatch) {
-      return null;
-    }
-
-    const numeric = Number(numericMatch[0]);
-    return Number.isFinite(numeric) ? numeric : null;
   }
 
   function ensureLongTaskProgress() {
@@ -1033,7 +973,17 @@ export function registerTimelineSelectionService(helper: any) {
     }
 
     zoomPersistenceApplying = true;
+    clearZoomPersistenceTimer();
     try {
+      const ready = await callSelectionBridge('zoom-ready', { timeoutMs: 30000 });
+      if (
+        !ready?.ok ||
+        !slider.isConnected ||
+        !isFeatureEnabled('timelineZoomDefaults')
+      ) {
+        return false;
+      }
+
       return await applyZoomValueToSlider(targetValue);
     } finally {
       window.setTimeout(() => {
@@ -2663,6 +2613,14 @@ export function registerTimelineSelectionService(helper: any) {
         (node === helper.state.cutLastContainer || helper.state.cutLastContainer.contains(node))
       ) {
         container = helper.state.cutLastContainer;
+      }
+    }
+
+    if (!(container instanceof HTMLElement)) {
+      const lane = getTimelineLaneFromEvent(event);
+      if (lane) {
+        container = lane.container;
+        sourceRegion = lane.sourceRegion;
       }
     }
 
@@ -5835,121 +5793,6 @@ export function registerTimelineSelectionService(helper: any) {
     }
   };
 
-  async function transcribeCurrentSegmentWithLegacyModel() {
-    const target = findCurrentSegmentTarget();
-    if (!target) return { ok: false, reason: 'missing-current-segment' };
-    const textarea = helper.getRowTextarea(target.row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      return { ok: false, reason: 'missing-current-textarea' };
-    }
-    if (normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row))) {
-      return { ok: false, reason: 'segment-not-empty' };
-    }
-    const range = getRowTimeRange(target.row);
-    if (!range) return { ok: false, reason: 'missing-current-range' };
-    const targetSpeakerKey =
-      target.speakerKey ||
-      getSpeakerKeyForContainer(target.container) ||
-      helper.getRowSpeakerKey(target.row);
-    if (!targetSpeakerKey) return { ok: false, reason: 'missing-current-speaker' };
-
-    const hostMarker = ensureSelectionHostMarker(target.container);
-    updateCurrentSegmentTranscriptionProgress({ phase: 'preparing-audio', percent: 5 }, range);
-    let keepTroubleshootingProgress = false;
-    let brokerFailure = null;
-    try {
-      const rowIdentity =
-        target.rowIdentity ||
-        (typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(target.row) : null);
-      const brokerResult = await requestGoldDraftingAiBroker({
-        operation: 'transcribeSegment',
-        segment: {
-          rowId:
-            rowIdentity && typeof rowIdentity.annotationId === 'string' && rowIdentity.annotationId
-              ? rowIdentity.annotationId
-              : [
-                  targetSpeakerKey,
-                  Math.round(range.startSeconds * 1000),
-                  Math.round(range.endSeconds * 1000)
-                ].join(':'),
-          speakerKey: target.speakerKey || targetSpeakerKey,
-          startSeconds: range.startSeconds,
-          endSeconds: range.endSeconds
-        }
-      }, {
-        onEvent: (event) => updateGoldDraftingBrokerProgress(event, range)
-      });
-      if (brokerResult && !brokerResult.ok) brokerFailure = brokerResult;
-      if (brokerResult && !brokerResult.ok && brokerResult.fallbackAllowed === false) {
-        showGoldDraftingBrokerFailure(brokerResult, 'Gold Drafting remote transcription');
-        keepTroubleshootingProgress = true;
-        return {
-          ok: false,
-          reason: brokerResult.reason || 'gold-drafting-broker-failed',
-          bridge: brokerResult
-        };
-      }
-
-      const bridgeResult =
-        brokerResult && brokerResult.ok
-          ? brokerResult
-          : await callSelectionBridge(
-              'transcribe-segment-audio',
-              {
-                hostMarker,
-                speakerKey: target.speakerKey || targetSpeakerKey,
-                startSeconds: range.startSeconds,
-                endSeconds: range.endSeconds,
-                timeoutMs: 300000
-              },
-              {
-                onProgress: (progress) =>
-                  updateCurrentSegmentTranscriptionProgress(progress, range)
-              }
-            );
-      if (!bridgeResult || !bridgeResult.ok) {
-        const troubleshooting = createPromptApiTroubleshooting(
-          bridgeResult,
-          'Gemini Nano segment transcription'
-        );
-        if (troubleshooting) {
-          showPromptApiTroubleshootingFailure(troubleshooting);
-          keepTroubleshootingProgress = true;
-        } else if (brokerFailure) {
-          showGoldDraftingBrokerFailure(brokerFailure, 'Gold Drafting remote transcription');
-          keepTroubleshootingProgress = true;
-        }
-        return {
-          ok: false,
-          reason:
-            bridgeResult && bridgeResult.reason
-              ? bridgeResult.reason
-              : 'transcription-failed',
-          bridge: bridgeResult,
-          troubleshooting
-        };
-      }
-
-      const text = normalizeAutoSegmentRedistributionText(
-        bridgeResult.text || bridgeResult.result?.text
-      );
-      if (!text) return { ok: false, reason: 'empty-transcription', bridge: bridgeResult };
-      if (
-        normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row)) ||
-        normalizeAutoSegmentRedistributionText(textarea.value || '')
-      ) {
-        return { ok: false, reason: 'segment-no-longer-empty' };
-      }
-      if (!helper.setEditableValue(textarea, text)) {
-        return { ok: false, reason: 'transcription-write-failed' };
-      }
-      updateCurrentSegmentTranscriptionProgress({ phase: 'applying', percent: 100 }, range);
-      return { ok: true, changed: true, textLength: text.length };
-    } finally {
-      if (!keepTroubleshootingProgress) dismissLongTaskProgress();
-    }
-  }
-
   helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0() {
     const target = findCurrentSegmentTarget();
     if (!target) {
@@ -6014,15 +5857,17 @@ export function registerTimelineSelectionService(helper: any) {
           }),
         getCurrentTaskId: () => buildCurrentL0TimingTaskId(helper),
         resolveCurrentRow: (identity) => {
-          const currentTarget = findCurrentSegmentTarget();
-          if (!(currentTarget?.row instanceof HTMLTableRowElement)) return null;
+          const currentRow = typeof helper.getCurrentActionRow === 'function'
+            ? helper.getCurrentActionRow({ allowFallback: false })
+            : findCurrentSegmentTarget()?.row;
+          if (!(currentRow instanceof HTMLTableRowElement)) return null;
           if (
             typeof helper.rowMatchesIdentity === 'function' &&
-            !helper.rowMatchesIdentity(currentTarget.row, identity)
+            !helper.rowMatchesIdentity(currentRow, identity)
           ) {
             return null;
           }
-          return currentTarget.row;
+          return currentRow;
         },
         isRowEmpty: (row) =>
           !normalizeAutoSegmentRedistributionText(helper.getRowTextValue(row)) &&
@@ -6037,18 +5882,8 @@ export function registerTimelineSelectionService(helper: any) {
 
       if (!result || !result.ok) {
         keepFailureProgress = true;
-        if (!isL0SegmentLegacyFallbackAllowed(result)) {
-          const brokerFailure =
-            result && result.broker && typeof result.broker === 'object'
-              ? result.broker
-              : result;
-          showGoldDraftingBrokerFailure(
-            brokerFailure,
-            'Gold Drafting local L0 transcription'
-          );
-          return result;
-        }
-        return await transcribeCurrentSegmentWithLegacyModel();
+        showL0SegmentTranscriptionFailure(result);
+        return result;
       }
       updateLongTaskProgress({
         label: 'Transcribing current segment',

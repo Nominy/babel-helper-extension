@@ -57,21 +57,3 @@ test('page-world bridges expose teardown cleanup hooks', () => {
   }
 });
 
-test('bridge injection handles invalidated extension context', () => {
-  const injectors = [
-    '../src/features/custom-linter/feature.ts',
-    '../src/features/quick-region-autocomplete-feature.ts',
-    '../src/services/row-service.ts',
-    '../src/services/timestamp-edit-service.ts',
-    '../src/services/waveform-scale-service.ts',
-    '../src/services/magnifier-service.ts',
-    '../src/services/minimap-service.ts',
-    '../src/services/timeline-selection-service.ts'
-  ];
-
-  for (const injector of injectors) {
-    const source = fs.readFileSync(new URL(injector, import.meta.url), 'utf8');
-    assert.match(source, /try\s*{[\s\S]*runtime\.getURL/, injector);
-    assert.match(source, /catch\s*\(_error\)/, injector);
-  }
-});

@@ -314,6 +314,13 @@ export function registerLifecycle(helper: any) {
     );
   }
 
+  function isDialogKeyboardEvent(event) {
+    // Nonmodal dialogs (for example an onboarding notice) do not own the
+    // editor's keys. Only yield when this keyboard event originated in a dialog.
+    return event.composedPath().some((node) =>
+      node instanceof HTMLElement && node.matches('[role="dialog"], [role="alertdialog"], dialog[open]'));
+  }
+
   function shouldSuppressNativeArrowHotkey(event) {
     if (!isFeatureEnabled('disableNativeArrowSeek')) {
       return false;
@@ -344,6 +351,21 @@ export function registerLifecycle(helper: any) {
 
   function handleNativeArrowSuppress(event) {
     updateRightShiftState(event);
+    if (isDialogKeyboardEvent(event)) {
+      return;
+    }
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      const control = event.composedPath().find((node) =>
+        node instanceof HTMLElement && node.matches(
+          'input, textarea, select, [contenteditable="true"], [role="slider"], [role="spinbutton"], [role="combobox"], [role="listbox"], [role="menu"], [role="tablist"], [role="tree"], [role="grid"]'
+        ));
+      // Suppress Babel's global seek, not a focused control's own navigation.
+      // Transcript editors retain Helper's caret/segment-navigation behavior.
+      if (control && !control.matches(helper.config.rowTextareaSelector)) {
+        return;
+      }
+    }
+
 
     if (isGhostCursorLaneToggleShortcut(event) && typeof helper.toggleGhostCursorLane === 'function') {
       const handled = helper.toggleGhostCursorLane();
@@ -438,6 +460,10 @@ export function registerLifecycle(helper: any) {
 
   function handleGlobalKeyup(event) {
     updateRightShiftState(event);
+    if (isDialogKeyboardEvent(event)) {
+      return;
+    }
+
 
     const timelineHotkeyResult =
       helper.runtime.isSessionInteractive() &&
@@ -547,7 +573,7 @@ export function registerLifecycle(helper: any) {
   }
 
   helper.handleKeydown = function handleKeydown(event) {
-    if (!helper.runtime.isSessionInteractive()) {
+    if (!helper.runtime.isSessionInteractive() || isDialogKeyboardEvent(event)) {
       return;
     }
 
@@ -1007,7 +1033,7 @@ export function registerLifecycle(helper: any) {
     document.addEventListener('input', handleCursorBaselineUpdate, true);
     document.addEventListener('keyup', handleCursorBaselineUpdate, true);
     document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
-    document.addEventListener('click', handleTimestampWordSeekClick);
+    document.addEventListener('click', handleTimestampWordSeekClick, true);
     helper.state.rowTrackingBound = true;
     schedulePlaybackRowSync();
     helper.perf?.count?.('row-tracking.bound');
@@ -1023,7 +1049,7 @@ export function registerLifecycle(helper: any) {
     document.removeEventListener('input', handleCursorBaselineUpdate, true);
     document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
     document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
-    document.removeEventListener('click', handleTimestampWordSeekClick);
+    document.removeEventListener('click', handleTimestampWordSeekClick, true);
     clearPlaybackRowSyncTimer();
     helper.state.playbackRowSyncInFlight = false;
     helper.state.lastPlaybackRow = null;

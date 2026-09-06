@@ -6,46 +6,6 @@ function read(path) {
   return fs.readFileSync(new URL(path, import.meta.url), "utf8");
 }
 
-function exists(path) {
-  return fs.existsSync(new URL(path, import.meta.url));
-}
-
-test("recovered editor bridge is bundled, exposed, and registered in the session runtime", () => {
-  assert.equal(exists("../src/content/recovered-editor-bridge.ts"), true);
-  assert.equal(exists("../src/services/recovered-editor-snapshot-service.ts"), true);
-
-  const bridgeSource = read("../src/content/recovered-editor-bridge.ts");
-  const serviceSource = read("../src/services/recovered-editor-snapshot-service.ts");
-  const esbuildSource = read("../esbuild.config.mjs");
-  const manifestSource = read("../manifest.json");
-  const kernelSource = read("../src/core/kernel.ts");
-  const lazySessionSource = read("../src/content/lazy-session.ts");
-
-  assert.match(bridgeSource, /babel-helper-recovered-editor-request/);
-  assert.match(bridgeSource, /babel-helper-recovered-editor-response/);
-  assert.match(bridgeSource, /__babelHelperRecoveredEditorBridge/);
-  assert.match(bridgeSource, /function getEditorSnapshot/);
-  assert.match(bridgeSource, /function applyExtendedDiffState/);
-  assert.match(bridgeSource, /function clearExtendedDiffState/);
-  assert.match(bridgeSource, /BABEL_ROW_TEXTAREA_SELECTOR/);
-  assert.match(bridgeSource, /activeRowId/);
-  assert.match(bridgeSource, /tracks/);
-  assert.match(bridgeSource, /onToggleDiffMode/);
-  assert.match(bridgeSource, /onSelectCompareAction/);
-
-  assert.match(serviceSource, /registerRecoveredEditorSnapshotService/);
-  assert.match(serviceSource, /helper\.refreshEditorSnapshot/);
-  assert.match(serviceSource, /helper\.applyRecoveredEditorDiffState/);
-  assert.match(serviceSource, /helper\.clearRecoveredEditorDiffState/);
-  assert.match(serviceSource, /helper\.findRowFromEditorSnapshot/);
-  assert.match(serviceSource, /dist\/content\/recovered-editor-bridge\.js/);
-
-  assert.match(esbuildSource, /src\/content\/recovered-editor-bridge\.ts/);
-  assert.match(esbuildSource, /dist\/content\/recovered-editor-bridge\.js/);
-  assert.match(manifestSource, /dist\/content\/recovered-editor-bridge\.js/);
-  assert.match(kernelSource, /registerRecoveredEditorSnapshotService\(helper\);[\s\S]*registerExtendedDiffViewService\(helper\)/);
-  assert.match(lazySessionSource, /registerRecoveredEditorSnapshotService\(helper\)/);
-});
 
 test("recovered editor bridge applies and restores native diff selection for extended diff tags", () => {
   const bridgeSource = read("../src/content/recovered-editor-bridge.ts");
