@@ -45,18 +45,32 @@ function watchWebsiteAppearanceStylesheet() {
   return enqueueCopy;
 }
 
+const fsShimPlugin = {
+  name: 'fs-browser-shim',
+  setup(buildApi) {
+    buildApi.onResolve({ filter: /^fs$/ }, () => ({
+      path: path.join(rootDir, 'src/build/fs-browser-shim.js')
+    }));
+  }
+};
+
 const shared = {
   bundle: true,
   minify: false,
   sourcemap: true,
   target: 'chrome114',
   format: 'iife',
-  logLevel: 'info'
+  logLevel: 'info',
+  banner: {
+    js: 'var __dirname = typeof __dirname === "string" ? __dirname : "/virtual";'
+  },
+  plugins: [fsShimPlugin]
 };
 
 const sharedModule = {
   ...shared,
-  format: 'esm'
+  format: 'esm',
+  banner: {}
 };
 
 const tasks = [
@@ -120,6 +134,7 @@ const tasks = [
   },
   {
     ...shared,
+    banner: {},
     entryPoints: ['src/content/waveform-theme-bridge.ts'],
     outfile: 'dist/content/waveform-theme-bridge.js'
   },

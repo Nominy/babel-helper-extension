@@ -315,6 +315,69 @@ test('automatic segment insertion bridge finds nearest uncovered speech island f
   assert.match(bridgeSource, /track\.processedRecordingId != null/);
 });
 
+test('automatic segment insertion defaults native annotation content to empty text', () => {
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+  const timestampBridgeSource = read('../src/content/timestamp-bridge.ts');
+
+  assert.match(timestampServiceSource, /helper\.createSegmentWithNativeAction = async function createSegmentWithNativeAction/);
+  assert.match(timestampServiceSource, /callTimestampBridge\('create-segment'/);
+  assert.match(timestampServiceSource, /processedRecordingId: settings\.processedRecordingId/);
+  assert.match(timestampServiceSource, /text: typeof settings\.text === 'string' \? settings\.text : ''/);
+
+  assert.match(timestampBridgeSource, /function resolveCreateAnnotationBinding/);
+  assert.match(timestampBridgeSource, /typeof props\.onCreateAnnotation === 'function'/);
+  assert.match(timestampBridgeSource, /onCreateAnnotation\(\{/);
+  assert.match(timestampBridgeSource, /type: 'transcription'/);
+  assert.match(timestampBridgeSource, /const content = typeof payload\?\.text === 'string' \? payload\.text : ''/);
+  assert.match(timestampBridgeSource, /\scontent,/);
+  assert.match(timestampBridgeSource, /processedRecordingId/);
+  assert.match(timestampBridgeSource, /startTimeInSeconds/);
+  assert.match(timestampBridgeSource, /endTimeInSeconds/);
+  assert.match(timestampBridgeSource, /operation === 'create-segment'/);
+  assert.match(timestampBridgeSource, /typeof existingBridge\.createSegment === 'function'/);
+});
+
+test('automatic segment insertion trim moves created annotation boundaries by row identity', () => {
+  const timelineSource = read('../src/services/timeline-selection-service.ts');
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+
+  const moveStart = timelineSource.indexOf('async function moveSegmentBoundary');
+  const moveEnd = timelineSource.indexOf('function getCurrentMoveLabels', moveStart);
+  const moveBlock = timelineSource.slice(moveStart, moveEnd);
+  assert.ok(moveStart >= 0 && moveEnd > moveStart, 'expected segment boundary move helper');
+  assert.match(moveBlock, /async function moveSegmentBoundary\(side, labels, speakerKey, targetSeconds, row\)/);
+  assert.match(moveBlock, /const rowIdentity =[\s\S]*helper\.getRowIdentity\(row\)/);
+  assert.match(moveBlock, /annotationId:[\s\S]*rowIdentity\.annotationId/);
+  assert.match(moveBlock, /rowIdentity/);
+  assert.match(moveBlock, /startSeconds: parseTimeValue\(labels\.startText\)/);
+  assert.match(moveBlock, /endSeconds: parseTimeValue\(labels\.endText\)/);
+
+  const inwardStart = timelineSource.indexOf('async function applyInwardTrimToRow');
+  const inwardEnd = timelineSource.indexOf('async function requestTrimTargetsForRow', inwardStart);
+  const inwardBlock = timelineSource.slice(inwardStart, inwardEnd);
+  assert.match(inwardBlock, /moveSegmentBoundary\('right', labels, speakerKey, nextEndSeconds, row\)/);
+  assert.match(inwardBlock, /moveSegmentBoundary\('left', getCurrentMoveLabels\(row, labels\), speakerKey, nextStartSeconds, row\)/);
+
+  const trimStart = timelineSource.indexOf('async function trimSegmentTarget');
+  const trimEnd = timelineSource.indexOf('helper.transcribeCurrentSegmentWithL0', trimStart);
+  const trimBlock = timelineSource.slice(trimStart, trimEnd);
+  assert.match(trimBlock, /moveSegmentBoundary\('right', labels, speakerKey, cappedExtendEndSeconds, row\)/);
+  assert.match(trimBlock, /moveSegmentBoundary\('left', getCurrentMoveLabels\(row, labels\), speakerKey, cappedExtendStartSeconds, row\)/);
+
+  const setBoundaryStart = timestampServiceSource.indexOf('helper.setSegmentBoundaryTime = async function setSegmentBoundaryTime');
+  const setBoundaryEnd = timestampServiceSource.indexOf('helper.splitSegmentAtTime = async function splitSegmentAtTime', setBoundaryStart);
+  const setBoundaryBlock = timestampServiceSource.slice(setBoundaryStart, setBoundaryEnd);
+  assert.ok(setBoundaryStart >= 0 && setBoundaryEnd > setBoundaryStart, 'expected timestamp boundary setter');
+  assert.match(setBoundaryBlock, /helper\.findRowByIdentity[\s\S]*settings\.rowIdentity/);
+  assert.ok(
+    setBoundaryBlock.indexOf('helper.findRowByIdentity') < setBoundaryBlock.indexOf('findRowByTimeLabels'),
+    'row identity lookup must run before label lookup'
+  );
+  assert.match(setBoundaryBlock, /annotationId:[\s\S]*settings\.annotationId[\s\S]*rowIdentity\.annotationId/);
+  assert.match(setBoundaryBlock, /rowIdentity/);
+  assert.match(setBoundaryBlock, /startSeconds: settings\.startSeconds/);
+  assert.match(setBoundaryBlock, /endSeconds: settings\.endSeconds/);
+});
 
 test('Alt-click timeline edge adjustment is click-only and reuses native boundary moves', () => {
   const timelineSource = read('../src/services/timeline-selection-service.ts');
@@ -461,6 +524,27 @@ test('Alt-click timeline edge adjustment suppresses native click and double-clic
   assert.match(unbindBlock, /document\.removeEventListener\('mouseup', handleAltTimelineEdgeMouseEvent, true\)/);
 });
 
+test('free L0 transcription streams progress and keeps failures visible temporarily', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const transcribeStart = source.indexOf('helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0()');
+  const transcribeEnd = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', transcribeStart);
+  const transcribeBlock = source.slice(transcribeStart, transcribeEnd);
+  const progressStart = source.indexOf('function updateL0SegmentTranscriptionProgress(event, range)');
+  const progressEnd = source.indexOf('function parseSecondsLabel', progressStart);
+  const progressBlock = source.slice(progressStart, progressEnd);
+
+  assert.ok(transcribeStart >= 0 && transcribeEnd > transcribeStart);
+  assert.match(progressBlock, /capturing-audio/);
+  assert.match(progressBlock, /calling-backend/);
+  assert.match(progressBlock, /backend-waiting/);
+  assert.match(progressBlock, /free L0/);
+  assert.match(transcribeBlock, /onEvent: \(event\) => updateL0SegmentTranscriptionProgress\(event, range\)/);
+  assert.match(transcribeBlock, /transcribeCurrentSegmentWithLegacyModel\(\)/);
+  assert.match(source, /L0_TRANSCRIPTION_FAILURE_DISMISS_MS = 18000/);
+  assert.match(source, /progress\.fill\.style\.background = '#dc2626'/);
+  assert.match(source, /babelHelperL0TranscriptionFailureToken/);
+});
+
 test('current segment transcription bridge streams full speaker segment audio and asks for Russian text', () => {
   const bridgeSource = read('../src/content/magnifier-bridge.ts');
   const start = bridgeSource.indexOf('async function transcribeSegmentAudio(payload, onProgress)');
@@ -506,6 +590,54 @@ test('auto-segmentation asks the bridge for silence runs over one second', () =>
   assert.match(bridgeSource, /operation === 'find-segment-silence-runs'/);
 });
 
+test('auto-segmentation pre-trims, merges one-second same-speaker gaps, splits, and post-trims', () => {
+  const source = read('../src/services/timeline-selection-service.ts');
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+  const timestampBridgeSource = read('../src/content/timestamp-bridge.ts');
+
+  const autoStart = source.indexOf('helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences()');
+  const autoEnd = source.indexOf('async function trimSegmentTarget', autoStart);
+  const autoBlock = source.slice(autoStart, autoEnd);
+  const preTrimIndex = autoBlock.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio');
+  const mergeIndex = autoBlock.indexOf('const mergeResult = await mergeAutoSegmentCloseRows');
+  const collectIndex = autoBlock.indexOf('const targets = collectAutoSegmentTargets()');
+  const splitIndex = autoBlock.indexOf('const splitPlans = collectAutoSegmentSplitPlans(targets, silenceResults)');
+  const postTrimIndex = autoBlock.indexOf('const postTrimResult = await helper.trimAllSegmentsToAudio');
+
+  assert.ok(preTrimIndex >= 0, 'expected pre-trim before collecting split targets');
+  assert.ok(mergeIndex > preTrimIndex, 'expected merge pass after pre-trim');
+  assert.ok(collectIndex > mergeIndex, 'expected target collection after merge pass');
+  assert.ok(splitIndex > collectIndex, 'expected split plans after re-collecting targets');
+  assert.ok(postTrimIndex > splitIndex, 'expected post-trim after splitting');
+  assert.match(autoBlock, /preTrimResult && preTrimResult\.ok/);
+  assert.match(autoBlock, /postTrimResult && postTrimResult\.ok/);
+  assert.match(autoBlock, /amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD/);
+  assert.doesNotMatch(autoBlock, /const trimResult = await helper\.trimAllSegmentsToAudio\(\)/);
+
+  assert.match(source, /async function mergeAutoSegmentCloseRows\(options\)/);
+  assert.match(source, /const rowsBySpeaker = new Map\(\)/);
+  assert.match(source, /gapSeconds > AUTO_SEGMENT_MERGE_GAP_SECONDS/);
+  assert.match(source, /helper\.mergeSegmentWithNativeAction\(\{/);
+  assert.match(source, /direction: 'below'/);
+
+  assert.match(source, /const splitPlans = collectAutoSegmentSplitPlans\(targets, silenceResults\)/);
+  assert.match(source, /sort\(\(left, right\) => right\.splitSeconds - left\.splitSeconds\)/);
+  assert.match(source, /helper\.splitSegmentAtTime\(\{/);
+  assert.match(source, /annotationId: plan\.annotationId/);
+  assert.match(source, /splitSeconds: plan\.splitSeconds/);
+  assert.doesNotMatch(source, /const plan = await resolveAutoSegmentSplitPlan\(splitPlans\[index\]\)/);
+  assert.match(source, /await helper\.sleep\(AUTO_SEGMENT_SPLIT_SETTLE_MS\)/);
+  assert.match(source, /const postTrimResult = await helper\.trimAllSegmentsToAudio\(\{/);
+  assert.match(source, /const finalPhaseOk =[\s\S]*silentCleanupResult[\s\S]*redistributionResult/);
+  assert.match(source, /const result = \{\s*ok: finalPhaseOk,\s*reason: finalPhaseOk \? null : 'finalize-failed',\s*changed: splitCount > 0 \|\| Boolean\(postTrimResult && postTrimResult\.changedCount\) \|\| Boolean\(mergeResult && mergeResult\.mergeCount\)/);
+  assert.match(source, /return result/);
+
+  assert.match(timestampServiceSource, /callTimestampBridge\('split-segment-at-time'/);
+  assert.match(timestampBridgeSource, /function resolveRowSplitBinding/);
+  assert.match(timestampBridgeSource, /findSplitAnnotationCallback/);
+  assert.match(timestampBridgeSource, /splitAnnotation\(binding\.annotationId, splitSeconds\)/);
+  assert.match(timestampBridgeSource, /operation === 'split-segment-at-time'/);
+});
 
 test('auto-segmentation keeps one staged interactive progress bar across all phases', () => {
   const source = read('../src/services/timeline-selection-service.ts');
@@ -555,6 +687,26 @@ test('auto-segmentation merge pass compares consecutive rows per speaker lane', 
   assert.match(block, /rowsBySpeaker\.get\(snapshot\.speakerKey\)/);
   assert.match(block, /speakerRows\.sort\(\(left, right\) => left\.startSeconds - right\.startSeconds\)/);
   assert.doesNotMatch(block, /rows\[index \+ 1\]/);
+});
+
+test('auto-segmentation can use native row merge and delete callbacks through the page bridge', () => {
+  const timestampServiceSource = read('../src/services/timestamp-edit-service.ts');
+  const timestampBridgeSource = read('../src/content/timestamp-bridge.ts');
+
+  assert.match(timestampBridgeSource, /function resolveRowActionBinding/);
+  assert.match(timestampBridgeSource, /typeof props\.onMergeAbove === 'function'/);
+  assert.match(timestampBridgeSource, /typeof props\.onMergeBelow === 'function'/);
+  assert.match(timestampBridgeSource, /typeof props\.onDelete === 'function'/);
+  assert.match(timestampBridgeSource, /binding\.onMergeAbove\(binding\.annotationId\)/);
+  assert.match(timestampBridgeSource, /binding\.onMergeBelow\(binding\.annotationId\)/);
+  assert.match(timestampBridgeSource, /binding\.onDelete\(binding\.annotationId\)/);
+  assert.match(timestampBridgeSource, /operation === 'merge-segment'/);
+  assert.match(timestampBridgeSource, /operation === 'delete-segment'/);
+
+  assert.match(timestampServiceSource, /callTimestampBridge\('merge-segment'/);
+  assert.match(timestampServiceSource, /callTimestampBridge\('delete-segment'/);
+  assert.match(timestampServiceSource, /helper\.mergeSegmentWithNativeAction/);
+  assert.match(timestampServiceSource, /helper\.deleteSegmentWithNativeAction/);
 });
 
 test('auto-segmentation removes fully silent same-speaker rows after final trim', () => {

@@ -4559,61 +4559,6 @@ export function initMagnifierBridge() {
     };
   }
 
-  function waitForZoomReady(timeoutMs) {
-    const slider = getZoomSliderElement();
-    if (!(slider instanceof HTMLElement)) {
-      return Promise.resolve({ ok: false, reason: 'missing-slider' });
-    }
-
-    const { promise, resolve } = Promise.withResolvers();
-    const subscriptions = new Map();
-    let settled = false;
-    const observer = new MutationObserver(checkReady);
-    const timeout = window.setTimeout(
-      () => finish({ ok: false, reason: 'waveform-ready-timeout' }),
-      timeoutMs
-    );
-
-    function finish(result) {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      observer.disconnect();
-      for (const unsubscribe of subscriptions.values()) unsubscribe();
-      resolve(result);
-    }
-
-    function checkReady() {
-      if (settled) return;
-      if (!slider.isConnected) {
-        finish({ ok: false, reason: 'missing-slider' });
-        return;
-      }
-
-      // Native zoom updates the entire registry, including collapsed tracks.
-      // Duration and rendered canvases can exist before WaveSurfer can zoom.
-      const records = collectRegistryCandidates(slider);
-      let ready = records.length > 0;
-      for (const { value: wave } of records) {
-        if (typeof wave.getDecodedData === 'function' && wave.getDecodedData()) continue;
-        ready = false;
-        if (!subscriptions.has(wave) && typeof wave.on === 'function') {
-          const offReady = wave.on('ready', checkReady);
-          const offDestroy = wave.on('destroy', () => finish({ ok: false, reason: 'waveform-destroyed' }));
-          subscriptions.set(wave, () => {
-            offReady();
-            offDestroy();
-          });
-        }
-      }
-      if (ready) finish({ ok: true });
-    }
-
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    checkReady();
-    return promise;
-  }
-
   function setZoomValue(value) {
     const slider = getZoomSliderElement();
     if (!(slider instanceof HTMLElement)) {
@@ -4743,7 +4688,6 @@ export function initMagnifierBridge() {
     findTrimTargetsForSpeaker,
     findExtendTargets,
     findExtendTargetsForSpeaker,
-    waitForZoomReady,
     setZoomValue,
     enableWaveformScaleUnlock,
     disableWaveformScaleUnlock: unbindWaveformScaleUnlock,
@@ -5001,12 +4945,6 @@ export function initMagnifierBridge() {
           payload.stepSeconds
         )
       );
-      return;
-    }
-
-    if (operation === 'zoom-ready') {
-      Promise.resolve(invokeMagnifierService('waitForZoomReady', payload.timeoutMs))
-        .then((result) => respond(id, result));
       return;
     }
 

@@ -4,19 +4,11 @@ Refactored MV3 extension with TypeScript + esbuild and plugin-oriented internal 
 
 ## Build
 
-Requires Node.js 22 or newer. Shared runtime and build tooling are local `file:` dependencies at `../shared/babel-extension-platform`; install that workspace before this extension.
-
-1. Provision the shared platform:
-   - In the aggregator checkout, run `git submodule update --init shared/babel-extension-platform` from the aggregator root.
-   - For a standalone helper checkout, run `git clone https://github.com/Nominy/babel-extension-platform.git ../shared/babel-extension-platform` from this repository root (create `../shared` first if needed).
-2. Install dependencies from this repository root:
-   - `npm --prefix ../shared/babel-extension-platform ci`
-   - `npm ci`
-3. Build extension bundles:
+1. Install dependencies:
+   - `npm install`
+2. Build extension bundles:
    - `npm run build`
-4. Load unpacked extension from `babel-helper-extension/` in `chrome://extensions`.
-
-CI provisions the same sibling checkout and installs its workspace dependencies before installing the helper. Shared runtime code is bundled into each consuming extension entry point; users loading the unpacked extension do not need a separate platform checkout.
+3. Load unpacked extension from `babel-helper-extension/` in `chrome://extensions`.
 
 Versioning:
 - `npm run build` bumps the patch version, rebuilds, and syncs `babel-helper-extension/` so Chrome's extension card shows a new version after you press Reload.
@@ -105,22 +97,15 @@ Custom linter notes:
 - The highlighted words dictionary is editable in extension options and defaults to the built-in list in `src/core/highlighted-words.ts`. Highlighted-word warnings are injected into Babel's native warning list; Babel's own warning click handler controls the yellow/green state, while the helper strips the helper-only asserted warning from outgoing save/lint payloads and restores task-scoped clearance from local storage.
 - Rule injection bridge lives in `src/content/linter-bridge.ts`.
 
-Feedback draft restore notes:
-- `Feedback Draft Restore` is enabled by default. Babel's L2 feedback hook requests `transcriptionFeedbackForm.getOrCreateDraft` and `forms.getFormInputsByStepId` concurrently and maps the draft's persisted ratings and comments exactly once, in the mutation's success callback; when the draft response lands first the mapping has no input definitions and the saved feedback is discarded, which is reproducible on a cold reload.
-- The linter bridge's page-world fetch wrapper holds the draft `Response` untouched until the native draft hook's React fiber shows the definitions committed (the definitions query has data and the hook's label ref was filled from it), then releases it. The draft is released as-is after a bounded fallback: `8s` while the definitions request is still in flight, `1.5s` after it was delivered without an observable commit, immediately when it failed, when no definitions request is in flight and no hook can be found, or when the feature is disabled.
-- Only these two tRPC procedures are matched, by path segment, so batched requests are recognized; a batch carrying other procedures alongside the draft is held with it. Bodies are never altered. `window.__babelHelperLinterBridge.debug.feedbackDraftRestore` records the last release reason (`committed`, `timeout`, `commit-grace-elapsed`, `definitions-failed`, `no-definitions-request`, `disabled`).
-
 ## Validation
 
 - `npm run typecheck`
 - `npm run build:core` (builds without bumping the extension version or syncing unpacked files)
 - `npm run test`
-- `npm run test:e2e:native` runs the shared native-editor browser suite against the pinned recovered snapshot; `-- --list` lists it without building or launching a browser. See [shared E2E prerequisites and all-product commands](../shared/babel-extension-platform/README.md#native-editor-and-extension-browser-e2e). This replaces the old row-count-only recreation smoke and uses no user Chrome profile.
 
 ## Deployment
 
 - `npm run build:zip` rebuilds the extension and writes `.artifacts/babel-helper-extension-<version>.zip`.
-- `npm run build:zip -- --no-build` packages existing bundles without rebuilding or changing the version. `BABEL_EXTENSION_ZIP_DIR` overrides the output directory and `BABEL_EXTENSION_ZIP_PATH` overrides the complete ZIP path; relative paths resolve from this repository root.
 - The deploy workflow validates, runs `npm run build:zip` (which bumps through `npm run build`), publishes to Chrome Web Store, and commits the bumped version files.
 - `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, commits the bumped version files back to the selected branch, and then creates or updates the matching GitHub Release asset tagged as `v<version>`.
 - Required GitHub Actions secrets:

@@ -1,6 +1,5 @@
 // @ts-nocheck
 import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
-import { parseTimeValue } from '../hooks/parsing';
 
 export function initTimestampBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -85,6 +84,65 @@ export function initTimestampBridge() {
 
   function getReactFiber(element) {
     return getReactInternalValue(element, '__reactFiber$');
+  }
+
+  function parseTimeValue(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
+    if (timestampMatch) {
+      const parts = timestampMatch[0].split(':');
+      let total = 0;
+      for (const part of parts) {
+        const numeric = Number(part);
+        if (!Number.isFinite(numeric)) {
+          return null;
+        }
+        total = total * 60 + numeric;
+      }
+
+      return total;
+    }
+
+    let total = 0;
+    let foundUnit = false;
+    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
+    for (const match of normalized.matchAll(unitPattern)) {
+      const numeric = Number(match[1]);
+      if (!Number.isFinite(numeric)) {
+        return null;
+      }
+
+      foundUnit = true;
+      const unit = match[2];
+      if (unit === 'h') {
+        total += numeric * 3600;
+      } else if (unit === 'm') {
+        total += numeric * 60;
+      } else {
+        total += numeric;
+      }
+    }
+
+    if (foundUnit) {
+      return total;
+    }
+
+    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!numericMatch) {
+      return null;
+    }
+
+    const numeric = Number(numericMatch[0]);
+    return Number.isFinite(numeric) ? numeric : null;
   }
 
   function getTranscriptRows() {
@@ -374,50 +432,20 @@ export function initTimestampBridge() {
     return null;
   }
 
-  function getCommittedReactPath(element) {
-    let fiber = getReactFiber(element);
-    if (!fiber) {
-      return [];
-    }
-    const ancestry = [];
-    while (fiber.return) {
-      ancestry.push(fiber);
-      fiber = fiber.return;
-    }
-    let current = fiber.stateNode?.current;
-    if (!current) {
-      return [];
-    }
-    const committed = [current];
-    // Host nodes retain a fiber from either render branch. Follow the committed
-    // root's child links instead of walking potentially stale return pointers.
-    for (let index = ancestry.length - 1; index >= 0; index -= 1) {
-      const expected = ancestry[index];
-      let child = current.child;
-      while (child && child !== expected && child !== expected.alternate) {
-        child = child.sibling;
-      }
-      if (!child) {
-        return [];
-      }
-      committed.push(child);
-      current = child;
-    }
-    return committed;
-  }
-
   function resolveRowActionBinding(row) {
     if (!(row instanceof HTMLTableRowElement)) {
       return null;
     }
 
-    let path = getCommittedReactPath(row);
-    if (!path.length) {
-      path = getCommittedReactPath(row.querySelector(ROW_TEXTAREA_SELECTOR));
+    let fiber = getReactFiber(row);
+    if (!fiber) {
+      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
     }
 
-    for (let index = path.length - 1; index >= Math.max(0, path.length - 24); index -= 1) {
-      const props = path[index].memoizedProps;
+    let current = fiber;
+    let depth = 0;
+    while (current && typeof current === 'object' && depth < 24) {
+      const props = current.memoizedProps;
       const annotation =
         props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
           ? props.annotation
@@ -449,6 +477,9 @@ export function initTimestampBridge() {
           };
         }
       }
+
+      current = current.return;
+      depth += 1;
     }
 
     return null;
@@ -732,42 +763,6 @@ export function initTimestampBridge() {
     };
   }
 
-  async function commitMergeEdits(row, direction) {
-    const speaker = getRowSpeakerKey(row);
-    const laneRows = getTranscriptRows().filter((candidate) => getRowSpeakerKey(candidate) === speaker);
-    const index = laneRows.indexOf(row);
-    const adjacent = laneRows[index + (direction === 'below' ? 1 : -1)];
-    if (!adjacent) {
-      return true;
-    }
-    const edits = [row, adjacent].map((candidate) => {
-      const textarea = candidate.querySelector(ROW_TEXTAREA_SELECTOR);
-      const binding = resolveRowActionBinding(candidate);
-      return { row: candidate, textarea, annotationId: binding?.annotationId, text: textarea?.value };
-    });
-    const deadline = Date.now() + 1000;
-    for (const edit of edits) {
-      if (!(edit.textarea instanceof HTMLTextAreaElement) || !edit.annotationId) {
-        return false;
-      }
-      const isCommitted = () => {
-        const binding = resolveRowActionBinding(edit.row);
-        return binding?.annotationId === edit.annotationId && binding.annotation.content === edit.text;
-      };
-      if (isCommitted()) {
-        continue;
-      }
-      // Native blur flushes the row's debounced label update. Commit each row
-      // before the next so its callback observes the latest annotation state.
-      edit.textarea.focus({ preventScroll: true });
-      edit.textarea.blur();
-      if (!await waitFor(isCommitted, Math.max(0, deadline - Date.now()), 16)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   async function mergeSegment(payload) {
     const direction = payload && payload.direction === 'below' ? 'below' : 'above';
     const row = resolveRowFromPayload(payload);
@@ -779,14 +774,6 @@ export function initTimestampBridge() {
       };
     }
 
-    if (!await commitMergeEdits(row, direction)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'pending-edit-commit-timeout'
-      };
-    }
-    // Never retain a merge closure across the native label-update commits.
     const binding = resolveRowActionBinding(row);
     const action = direction === 'below' ? binding?.onMergeBelow : binding?.onMergeAbove;
     const canMerge = direction === 'below' ? binding?.canMergeBelow : binding?.canMergeAbove;

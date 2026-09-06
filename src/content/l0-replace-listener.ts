@@ -7,8 +7,6 @@ type TranscriptHelper = Parameters<typeof replaceTranscriptSegmentation>[0];
 type ProtocolWindow = Pick<Window, 'addEventListener' | 'removeEventListener' | 'postMessage'>;
 
 const REQUEST_TYPE = 'babel-gold-drafting:l0-replace-request';
-const READY_REQUEST_TYPE = 'babel-gold-drafting:l0-replace-ready-request';
-const READY_RESPONSE_TYPE = 'babel-gold-drafting:l0-replace-ready-response';
 const listeners = new WeakMap<ProtocolWindow, () => void>();
 
 export function registerL0ReplaceListener(
@@ -25,17 +23,7 @@ export function registerL0ReplaceListener(
   const onMessage = (event: MessageEvent) => {
     if (disposed || event.source !== protocolWindow) return;
     const data = event.data;
-    if (!data || typeof data !== 'object') return;
-    if (data.type === READY_REQUEST_TYPE) {
-      if (data.version !== 1 || typeof data.requestId !== 'string' || !data.requestId.trim()) return;
-      protocolWindow.postMessage({
-        type: READY_RESPONSE_TYPE,
-        version: 1,
-        requestId: data.requestId
-      }, '*');
-      return;
-    }
-    if (data.type !== REQUEST_TYPE) return;
+    if (!data || typeof data !== 'object' || data.type !== REQUEST_TYPE) return;
 
     mutationQueue = mutationQueue
       .catch(() => undefined)

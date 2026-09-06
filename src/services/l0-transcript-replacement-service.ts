@@ -1,5 +1,3 @@
-import { captureL0TaskGuard } from './l0-timing-identity';
-
 type ReplacementRow = {
   id: string;
   lane: string;
@@ -341,11 +339,7 @@ function findRowByAnnotationId(
   );
 }
 
-function restoreText(
-  helper: TranscriptReplacementHelper,
-  row: SnapshotRow,
-  isCurrentTask: () => boolean
-): boolean {
+function restoreText(helper: TranscriptReplacementHelper, row: SnapshotRow): boolean {
   const current =
     (typeof helper.findRowByIdentity === 'function'
       ? helper.findRowByIdentity(row.rowIdentity)
@@ -353,54 +347,45 @@ function restoreText(
   const textarea = current ? helper.getRowTextarea(current) : null;
   if (!textarea) return false;
   if (textarea.value === row.text) return true;
-  return isCurrentTask() && helper.setEditableValue(textarea, row.text);
+  return helper.setEditableValue(textarea, row.text);
 }
 
 async function rollback(
   helper: TranscriptReplacementHelper,
   original: SnapshotRow[],
   created: Array<PreparedRow & { annotationId: string }>,
-  deletedOriginalIds: Set<string>,
-  isCurrentTask: () => boolean
-): Promise<string[] | null> {
+  deletedOriginalIds: Set<string>
+): Promise<string[]> {
   const errors: string[] = [];
   for (let index = created.length - 1; index >= 0; index -= 1) {
-    if (!isCurrentTask()) return null;
     try {
       await helper.deleteSegmentWithNativeAction(deleteOptions(created[index]));
     } catch {
       // The live transcript scan below retries cleanup by annotation identity.
     }
-    if (!isCurrentTask()) return null;
   }
 
   const originalIds = new Set(original.map((row) => row.annotationId));
   let present = new Set<string>();
   let authoritativeCurrent = false;
-  let current: SnapshotRow[] = [];
-  if (!isCurrentTask()) return null;
   try {
-    current = await snapshotTranscript(helper, true);
+    const current = await snapshotTranscript(helper, true);
     authoritativeCurrent = true;
     present = new Set(current.map((row) => row.annotationId));
+    for (let index = current.length - 1; index >= 0; index -= 1) {
+      const stray = current[index];
+      if (originalIds.has(stray.annotationId)) continue;
+      try {
+        const result = await helper.deleteSegmentWithNativeAction(deleteOptions(stray));
+        if (!result?.ok) errors.push(`could not remove new annotation ${stray.annotationId}`);
+      } catch {
+        errors.push(`could not remove new annotation ${stray.annotationId}`);
+      }
+    }
   } catch {
     errors.push('could not inspect transcript during rollback');
   }
-  if (!isCurrentTask()) return null;
-  for (let index = current.length - 1; index >= 0; index -= 1) {
-    const stray = current[index];
-    if (originalIds.has(stray.annotationId)) continue;
-    if (!isCurrentTask()) return null;
-    try {
-      const result = await helper.deleteSegmentWithNativeAction(deleteOptions(stray));
-      if (!result?.ok) errors.push(`could not remove new annotation ${stray.annotationId}`);
-    } catch {
-      errors.push(`could not remove new annotation ${stray.annotationId}`);
-    }
-    if (!isCurrentTask()) return null;
-  }
   for (const row of original) {
-    if (!isCurrentTask()) return null;
     const shouldRecreate = authoritativeCurrent
       ? !present.has(row.annotationId)
       : deletedOriginalIds.has(row.annotationId);
@@ -418,7 +403,6 @@ async function rollback(
       } catch {
         recreated = { ok: false };
       }
-      if (!isCurrentTask()) return null;
       if (!recreated?.ok) {
         errors.push(`could not recreate original annotation ${row.annotationId}`);
         continue;
@@ -426,13 +410,12 @@ async function rollback(
       present.add(row.annotationId);
     }
     try {
-      if (!restoreText(helper, row, isCurrentTask)) {
+      if (!restoreText(helper, row)) {
         errors.push(`could not restore text for original annotation ${row.annotationId}`);
       }
     } catch {
       errors.push(`could not restore text for original annotation ${row.annotationId}`);
     }
-    if (!isCurrentTask()) return null;
   }
   return errors;
 }
@@ -456,24 +439,16 @@ export async function replaceTranscriptSegmentation(
     });
   }
   const helper = helperValue;
-  const isCurrentTask = captureL0TaskGuard(helper);
-  const staleTaskResponse = () => response(request.requestId, false, {
-    reason: 'stale-task',
-    message: 'The task changed during transcript replacement. No further changes or rollback were attempted.'
-  });
 
   let original: SnapshotRow[];
   try {
-    if (!isCurrentTask()) return staleTaskResponse();
     original = await snapshotTranscript(helper);
   } catch (error) {
-    if (!isCurrentTask()) return staleTaskResponse();
     return response(request.requestId, false, {
       reason: 'snapshot-invalid',
       message: error instanceof Error ? error.message : 'Could not snapshot the current transcript.'
     });
   }
-  if (!isCurrentTask()) return staleTaskResponse();
   const prepared = prepareRows(request.rows, original);
   if (!prepared.ok) {
     return response(request.requestId, false, {
@@ -488,14 +463,12 @@ export async function replaceTranscriptSegmentation(
   let mutationMessage = '';
 
   for (let index = original.length - 1; index >= 0; index -= 1) {
-    if (!isCurrentTask()) return staleTaskResponse();
     let result: MutationResult;
     try {
       result = await helper.deleteSegmentWithNativeAction(deleteOptions(original[index]));
     } catch (error) {
       result = { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
-    if (!isCurrentTask()) return staleTaskResponse();
     if (!result?.ok) {
       mutationReason = 'delete-failed';
       mutationMessage = failureMessage(
@@ -509,7 +482,6 @@ export async function replaceTranscriptSegmentation(
 
   if (!mutationReason) {
     for (const row of prepared.rows) {
-      if (!isCurrentTask()) return staleTaskResponse();
       let result: MutationResult;
       try {
         result = await helper.createSegmentWithNativeAction({
@@ -522,7 +494,6 @@ export async function replaceTranscriptSegmentation(
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       }
-      if (!isCurrentTask()) return staleTaskResponse();
       const annotationId = result?.ok ? annotationIdFrom(result) : '';
       if (!result?.ok || !annotationId) {
         mutationReason = 'create-failed';
@@ -536,8 +507,7 @@ export async function replaceTranscriptSegmentation(
   }
 
   if (mutationReason) {
-    const rollbackErrors = await rollback(helper, original, created, deletedOriginalIds, isCurrentTask);
-    if (!rollbackErrors || !isCurrentTask()) return staleTaskResponse();
+    const rollbackErrors = await rollback(helper, original, created, deletedOriginalIds);
     if (rollbackErrors.length) {
       mutationMessage += ` Rollback incomplete: ${rollbackErrors.join('; ')}.`;
     } else {
@@ -548,7 +518,6 @@ export async function replaceTranscriptSegmentation(
       message: mutationMessage
     });
   }
-  if (!isCurrentTask()) return staleTaskResponse();
 
   const createdByRequestIndex = [...created].sort(
     (left, right) => left.requestIndex - right.requestIndex

@@ -12,8 +12,7 @@ import {
   normalizeWebsiteAppearanceSettings,
   saveExtensionSettings
 } from './settings';
-import { isEditable, isVisible, dispatchClick, sleep } from '@nominy/babel-babel-runtime';
-import { normalizeText, setEditableValue, waitFor } from '../hooks/dom';
+import { isEditable, isVisible, normalizeText, setEditableValue, dispatchClick, sleep, waitFor } from '../hooks/dom';
 import { registerLifecycle } from './lifecycle';
 import type { FeatureContext } from './types';
 import { createBuiltinServiceRegistry } from './service-registry';
@@ -32,7 +31,6 @@ import {
 } from '../content/website-appearance-panel';
 import { registerL0ReplaceListener } from '../content/l0-replace-listener';
 import { registerL0TimingListener } from '../content/l0-timing-listener';
-import { registerCustomLinterSettingsForwarding } from '../features/custom-linter/feature';
 
 type LoadedSessionRuntimeModule = typeof SessionRuntimeModule;
 
@@ -121,7 +119,6 @@ export function createHelperKernel() {
   let storedSettingsLoaded = false;
   let startPromise: Promise<void> | null = null;
   let settingsListenerBound = false;
-  let kernelViewServicesReady = false;
 
   const helper: any = {
     config,
@@ -266,17 +263,6 @@ export function createHelperKernel() {
     websiteAppearanceController.dispose();
   });
 
-  function reconcileKernelViewServices() {
-    if (!kernelViewServicesReady || kernelScope.disposed) {
-      return;
-    }
-    if (helper.isFeatureEnabled('extendedDiffView')) {
-      registerExtendedDiffViewService(helper);
-    } else if (typeof helper.unbindExtendedDiffView === 'function') {
-      helper.unbindExtendedDiffView();
-    }
-  }
-
   function applySettings(nextSettings: ExtensionSettings, reason?: string) {
     settings = cloneSettings(nextSettings);
     helper.settings = settings;
@@ -287,7 +273,6 @@ export function createHelperKernel() {
 
     const nextConfig = createConfig(settings.features);
     Object.assign(helper.config, nextConfig);
-    reconcileKernelViewServices();
     if (reason) {
       modController.updateSettings(settings, reason);
     }
@@ -453,7 +438,6 @@ export function createHelperKernel() {
     modController.start('kernel-start');
     startPromise = (async () => {
       try {
-        kernelScope.defer(registerCustomLinterSettingsForwarding({ helper }));
         const loadedSettings = await loadExtensionSettings();
         storedSettingsLoaded = loadedSettings.loaded;
         reconcileStoredSettings(loadedSettings.settings, 'settings-loaded');
@@ -471,14 +455,14 @@ export function createHelperKernel() {
         const disposeL0TimingListener = registerL0TimingListener(helper.state, helper);
         kernelScope.defer(disposeL0TimingListener);
         registerRecoveredEditorSnapshotService(helper);
-        kernelViewServicesReady = true;
-        kernelScope.defer(() => {
-          kernelViewServicesReady = false;
-          if (typeof helper.unbindExtendedDiffView === 'function') {
-            helper.unbindExtendedDiffView();
-          }
-        });
-        reconcileKernelViewServices();
+        if (helper.isFeatureEnabled('extendedDiffView')) {
+          registerExtendedDiffViewService(helper);
+          kernelScope.defer(() => {
+            if (typeof helper.unbindExtendedDiffView === 'function') {
+              helper.unbindExtendedDiffView();
+            }
+          });
+        }
         modController.ready('kernel-ready');
       } catch (error: unknown) {
         await stopKernel('kernel-start-error');

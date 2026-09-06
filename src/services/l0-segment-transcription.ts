@@ -56,6 +56,10 @@ export function hasL0SegmentBrokerCapability(response: L0SegmentBrokerResult | n
   );
 }
 
+export function isL0SegmentLegacyFallbackAllowed(result: Record<string, unknown> | null): boolean {
+  return result?.fallbackAllowed !== false;
+}
+
 export async function transcribeEmptySegmentWithL0<Row, Identity>(
   options: L0SegmentTranscriptionOptions<Row, Identity>
 ): Promise<Record<string, unknown>> {

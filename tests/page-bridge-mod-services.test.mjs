@@ -104,13 +104,11 @@ class TestTextArea extends TestElement {
     this.value = '';
     this.selectionStart = 0;
     this.selectionEnd = 0;
-    this.selectionDirection = 'none';
   }
 
-  setSelectionRange(start, end, direction = 'none') {
-    this.selectionEnd = Math.min(end, this.value.length);
-    this.selectionStart = Math.min(start, this.selectionEnd);
-    this.selectionDirection = direction;
+  setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
   }
 }
 
@@ -370,130 +368,4 @@ test('quick autocomplete toggle and bound DOM handlers resolve the live mod serv
   assert.equal(provider.disposed, true);
   assert.equal(listbox.removed, true);
   assert.equal(window.__babelHelperQuickRegionAutocompleteBridge, undefined);
-});
-
-async function createAutocompleteRestoreHarness(t) {
-  const { window, document } = installPageEnvironment();
-  const frames = new Map();
-  let nextFrame = 0;
-  window.requestAnimationFrame = (callback) => {
-    const id = ++nextFrame;
-    frames.set(id, callback);
-    return id;
-  };
-  window.cancelAnimationFrame = (id) => frames.delete(id);
-  await importBundledBridge('src/content/quick-region-autocomplete-bridge.ts');
-  const bridge = window.__babelHelperQuickRegionAutocompleteBridge;
-  t.after(() => bridge.dispose());
-  const textarea = document.createElement('textarea');
-  document.body.appendChild(textarea);
-  textarea.focus = () => { document.activeElement = textarea; };
-  textarea.focus();
-  const expectedValue = '<emphasis> word </emphasis> tail';
-  const expectedCaret = '<emphasis> word </emphasis>'.length;
-  return {
-    window, document, textarea, expectedValue, expectedCaret, frames,
-    wrap() {
-      textarea.value = 'word tail';
-      textarea.setSelectionRange(0, 4);
-      const raw = bridge.implementation;
-      raw.state.suggestions = [{ label: 'emphasis', insertText: '<emphasis> </emphasis>', type: 'style' }];
-      raw.contextState.current = {
-        context: { type: 'style', open: '<', close: '>' },
-        partial: '',
-        triggerIndex: 0,
-        cursorPosition: 0,
-        fullText: textarea.value,
-        wrapSelection: {
-          textarea, fullText: textarea.value, selectionStart: 0, selectionEnd: 4, selectedText: 'word'
-        }
-      };
-      assert.equal(raw.insertSuggestion(textarea, 0), true);
-    },
-    runFrames() {
-      while (frames.size) {
-        const pending = [...frames];
-        frames.clear();
-        for (const [, callback] of pending) callback();
-      }
-    }
-  };
-}
-
-test('autocomplete restoration leaves a subsequent select-all intact before selection events arrive', async (t) => {
-  const harness = await createAutocompleteRestoreHarness(t);
-  const { textarea, expectedValue, expectedCaret } = harness;
-  harness.wrap();
-  assert.equal(textarea.value, expectedValue);
-  assert.equal(textarea.selectionStart, expectedCaret);
-  textarea.setSelectionRange(0, textarea.value.length);
-  harness.runFrames();
-  assert.equal(textarea.selectionStart, 0);
-  assert.equal(textarea.selectionEnd, expectedValue.length);
-  textarea.value = textarea.value.slice(0, textarea.selectionStart) + textarea.value.slice(textarea.selectionEnd);
-  assert.equal(textarea.value, '', 'the following replacement consumes the entire wrapped value');
-});
-
-test('autocomplete restoration cancels queued work on new editing and focus intent', async (t) => {
-  const harness = await createAutocompleteRestoreHarness(t);
-  const { document, textarea, expectedValue, frames } = harness;
-  textarea.addEventListener('input', () => {
-    textarea.value = 'word tail';
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  });
-  for (const type of ['keydown', 'pointerdown', 'beforeinput', 'input', 'focusout']) {
-    harness.wrap();
-    const staleCallbacks = [...frames.values()];
-    document.dispatchEvent(new TestEvent(type, { target: textarea, key: 'ArrowLeft' }));
-    textarea.value = expectedValue;
-    textarea.setSelectionRange(expectedValue.length, expectedValue.length);
-    const nextFocus = type === 'focusout' ? document.createElement('button') : textarea;
-    document.activeElement = nextFocus;
-    assert.equal(frames.size, 0, `${type} cancels the scheduled frame`);
-    for (const callback of staleCallbacks) callback();
-    assert.equal(document.activeElement, nextFocus, `${type} cannot steal focus`);
-    assert.equal(textarea.selectionStart, expectedValue.length, `${type} cannot overwrite the next caret`);
-  }
-});
-
-test('deferred autocomplete repair yields to selection intent before its queued event', async (t) => {
-  const harness = await createAutocompleteRestoreHarness(t);
-  const { textarea, expectedValue, frames } = harness;
-  textarea.addEventListener('input', () => {
-    textarea.value = 'word tail';
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  });
-  harness.wrap();
-  const staleCallbacks = [...frames.values()];
-  textarea.setSelectionRange(0, textarea.value.length);
-  harness.runFrames();
-  assert.equal(textarea.selectionStart, 0);
-  assert.equal(textarea.selectionEnd, 'word tail'.length);
-  textarea.value = expectedValue;
-  textarea.setSelectionRange(expectedValue.length, expectedValue.length);
-  for (const callback of staleCallbacks) callback();
-  assert.equal(textarea.selectionStart, expectedValue.length, 'a later commit cannot revive the cancelled restore');
-});
-
-test('autocomplete ignores its queued selection events and repairs a deferred controlled commit', async (t) => {
-  const harness = await createAutocompleteRestoreHarness(t);
-  const { document, textarea, expectedValue, expectedCaret, frames } = harness;
-  // A controlled input can first restore its old value during input dispatch,
-  // then commit the intended value on the next render, resetting the caret.
-  textarea.addEventListener('input', () => {
-    textarea.value = 'word tail';
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  });
-  harness.wrap();
-  assert.equal(textarea.value, 'word tail');
-  document.dispatchEvent(new TestEvent('select', { target: textarea }));
-  document.dispatchEvent(new TestEvent('selectionchange'));
-  textarea.value = expectedValue;
-  textarea.setSelectionRange(expectedValue.length, expectedValue.length);
-  document.dispatchEvent(new TestEvent('selectionchange'));
-  harness.runFrames();
-  assert.equal(textarea.value, expectedValue);
-  assert.equal(textarea.selectionStart, expectedCaret);
-  assert.equal(textarea.selectionEnd, expectedCaret);
-  assert.equal(frames.size, 0);
 });

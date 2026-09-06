@@ -951,9 +951,7 @@ function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?
 
 function clearRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   const helper = state.helper;
-  const shouldClearRecoveredDiff = Boolean(
-    state.appliedRecoveredDiffActionId || state.pendingRecoveredDiffActionId
-  );
+  const shouldClearRecoveredDiff = Boolean(state.appliedRecoveredDiffActionId);
   state.appliedRecoveredDiffActionId = '';
   state.pendingRecoveredDiffActionId = '';
   state.appliedRecoveredDiffSignature = '';

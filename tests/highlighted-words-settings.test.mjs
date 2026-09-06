@@ -30,6 +30,18 @@ const settingsSource = fs.readFileSync(
   new URL('../src/core/settings.ts', import.meta.url),
   'utf8'
 );
+const customLinterFeatureSource = fs.readFileSync(
+  new URL('../src/features/custom-linter/feature.ts', import.meta.url),
+  'utf8'
+);
+const entrySource = fs.readFileSync(
+  new URL('../src/content/entry.ts', import.meta.url),
+  'utf8'
+);
+const manifestSource = fs.readFileSync(
+  new URL('../manifest.json', import.meta.url),
+  'utf8'
+);
 const optionsSource = fs.readFileSync(
   new URL('../src/options/options.ts', import.meta.url),
   'utf8'
@@ -250,3 +262,29 @@ test('options saves the current custom linter defaults version', () => {
   assert.match(optionsHtml, /data-role="custom-linter-rule-page"/);
 });
 
+test('custom linter feature sends highlighted words into the page bridge', () => {
+  assert.match(customLinterFeatureSource, /CONFIG_EVENT/);
+  assert.match(customLinterFeatureSource, /highlightedWordsEnabled/);
+  assert.match(customLinterFeatureSource, /highlightedWords/);
+  assert.match(customLinterFeatureSource, /disabledCustomLinterRuleIds/);
+  assert.match(customLinterFeatureSource, /setBridgeConfig/);
+  assert.match(customLinterFeatureSource, /bootstrapCustomLinterBridge/);
+  assert.match(entrySource, /bootstrapCustomLinterBridge/);
+  assert.match(manifestSource, /"run_at": "document_start"/);
+});
+
+test('custom linter bridge preloads before kernel start for native lint patching', () => {
+  assert.match(customLinterFeatureSource, /export function preloadCustomLinterBridge/);
+  assert.match(customLinterFeatureSource, /bridgeLoadPromise/);
+  assert.match(entrySource, /preloadCustomLinterBridge/);
+
+  const preloadIndex = entrySource.indexOf('preloadCustomLinterBridge()');
+  const kernelStartIndex = entrySource.indexOf('await kernel.start()');
+  const bootstrapIndex = entrySource.indexOf('bootstrapCustomLinterBridge');
+
+  assert.ok(preloadIndex > -1, 'entry should start linter bridge preload');
+  assert.ok(kernelStartIndex > -1, 'entry should start the kernel');
+  assert.ok(bootstrapIndex > -1, 'entry should still send config and enable after settings load');
+  assert.ok(preloadIndex < kernelStartIndex, 'linter bridge should preload before kernel startup');
+  assert.ok(/linterBridgePreload[\s\S]*?\.then\s*\([\s\S]*?bootstrapCustomLinterBridge[\s\S]*?,[\s\S]*?bootstrapCustomLinterBridge/s.test(entrySource), 'entry should call preload promise with fallback path');
+});

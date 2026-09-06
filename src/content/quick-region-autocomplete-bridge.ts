@@ -17,9 +17,6 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
   const LISTBOX_ATTR = 'data-babel-helper-quick-region-listbox';
   const DISMISS_DELAY_MS = 150;
   const MAX_SUGGESTIONS = 100;
-  const SELECTION_RESTORE_INTENT_EVENTS = [
-    'keydown', 'pointerdown', 'mousedown', 'beforeinput', 'input', 'focusin', 'focusout'
-  ] as const;
 
   let enabled = false;
   let bound = false;
@@ -63,7 +60,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
   };
 
   const selectionRestoreState = {
-    cancel: null as null | (() => void)
+    token: 0
   };
 
   const pendingNativeRowAutocomplete = {
@@ -314,7 +311,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     textarea.focus({ preventScroll: true });
     setTextareaSelection(textarea, edit.selectionStart, edit.selectionEnd);
     dispatchInputEvent(textarea, 'deleteContentBackward');
-    restoreSelectionStably(textarea, edit.selectionStart, edit.selectionEnd, edit.nextValue);
+    restoreSelectionStably(textarea, edit.selectionStart, edit.selectionEnd);
     writeRemovedTagPartToClipboard(edit.removedText, textarea, edit.selectionStart, edit.selectionEnd);
     dismiss();
     return true;
@@ -337,90 +334,27 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     textarea: HTMLTextAreaElement,
     start: number,
     end: number,
-    expectedValue: string,
     direction: TextareaSelectionDirection = 'none',
     attempts = 6
   ) {
-    selectionRestoreState.cancel?.();
-    if (!textarea.isConnected || document.activeElement !== textarea) {
-      return;
-    }
+    selectionRestoreState.token += 1;
+    const token = selectionRestoreState.token;
+    let remaining = Math.max(1, attempts);
 
-    // The input dispatch may synchronously commit a controlled value and move
-    // the caret. Correct that commit, but never reclaim focus from another edit.
-    setTextareaSelection(textarea, start, end, direction);
-    const value = textarea.value;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-    const selectionDirection = textarea.selectionDirection;
-    let remaining = Math.max(1, attempts) - 1;
-    if (value === expectedValue || remaining === 0) {
-      return;
-    }
-
-    let frame = 0;
-    const cancel = () => {
-      window.cancelAnimationFrame(frame);
-      for (const type of SELECTION_RESTORE_INTENT_EVENTS) {
-        document.removeEventListener(type, cancel, true);
-      }
-      document.removeEventListener('select', onSelectionChange, true);
-      document.removeEventListener('selectionchange', onSelectionChange, true);
-      if (selectionRestoreState.cancel === cancel) {
-        selectionRestoreState.cancel = null;
-      }
-    };
-    const canRestore = () => {
-      if (!textarea.isConnected || document.activeElement !== textarea) {
-        return false;
-      }
-      if (textarea.value !== value) {
-        // A deferred controlled commit sets the intended value and collapses
-        // selection at its end. An intervening input event cancels this first.
-        return textarea.value === expectedValue &&
-          textarea.selectionStart === expectedValue.length &&
-          textarea.selectionEnd === expectedValue.length;
-      }
-      return textarea.selectionStart === selectionStart &&
-        textarea.selectionEnd === selectionEnd &&
-        textarea.selectionDirection === selectionDirection;
-    };
-    const onSelectionChange = () => {
-      // Selection events are queued, including our own setSelectionRange calls.
-      // Compare the live range, not event trust or a timeout-based suppression.
-      if (!canRestore()) {
-        cancel();
-      }
-    };
     const apply = () => {
-      if (selectionRestoreState.cancel !== cancel) {
+      if (selectionRestoreState.token !== token || !textarea.isConnected) {
         return;
       }
-      // Check before writing too: select-all may precede its selection event.
-      if (!canRestore()) {
-        cancel();
-        return;
-      }
-      if (textarea.value !== value) {
-        cancel();
-        setTextareaSelection(textarea, start, end, direction);
-        return;
-      }
+
+      textarea.focus({ preventScroll: true });
+      setTextareaSelection(textarea, start, end, direction);
       remaining -= 1;
       if (remaining > 0) {
-        frame = window.requestAnimationFrame(apply);
-      } else {
-        cancel();
+        window.requestAnimationFrame(apply);
       }
     };
 
-    selectionRestoreState.cancel = cancel;
-    for (const type of SELECTION_RESTORE_INTENT_EVENTS) {
-      document.addEventListener(type, cancel, true);
-    }
-    document.addEventListener('select', onSelectionChange, true);
-    document.addEventListener('selectionchange', onSelectionChange, true);
-    frame = window.requestAnimationFrame(apply);
+    apply();
   }
 
   function getInsertedSuggestionCursorPosition(
@@ -743,31 +677,22 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     return null;
   }
 
-  function renderListbox(textarea = getActiveSupportedTextarea()) {
-    if (!state.isOpen || !state.position || !state.suggestions.length || !textarea) {
-      listboxRoot?.remove();
-      listboxRoot = null;
+  function renderListbox() {
+    if (!listboxRoot) {
+      return;
+    }
+
+    if (!state.isOpen || !state.position || !state.suggestions.length) {
+      listboxRoot.replaceChildren();
+      listboxRoot.style.display = 'none';
       unbindMouseMove();
       return;
     }
 
-    const root = ensureListboxRoot(textarea);
-    const host = root.parentElement;
-    let { top, left } = state.position;
-    if (host && host !== document.body) {
-      // Native dialogs are translated (and animate with scale), so their
-      // absolute children use local padding-box rather than viewport coordinates.
-      const rect = host.getBoundingClientRect();
-      const scaleX = host.offsetWidth ? rect.width / host.offsetWidth : 1;
-      const scaleY = host.offsetHeight ? rect.height / host.offsetHeight : 1;
-      left = (left - rect.left) / (scaleX || 1) + host.scrollLeft - host.clientLeft;
-      top = (top - rect.top) / (scaleY || 1) + host.scrollTop - host.clientTop;
-    }
-
     bindMouseMove();
-    root.style.display = 'block';
-    root.style.top = `${top}px`;
-    root.style.left = `${left}px`;
+    listboxRoot.style.display = 'block';
+    listboxRoot.style.top = `${state.position.top}px`;
+    listboxRoot.style.left = `${state.position.left}px`;
 
     const fragment = document.createDocumentFragment();
     state.suggestions.forEach((suggestion, index) => {
@@ -787,17 +712,13 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
       fragment.appendChild(item);
     });
 
-    root.replaceChildren(fragment);
+    listboxRoot.replaceChildren(fragment);
   }
 
-  function ensureListboxRoot(textarea: HTMLTextAreaElement | null = null) {
-    const host = textarea?.closest<HTMLElement>('[role="dialog"], dialog') ?? document.body;
-    if (listboxRoot?.parentElement === host && listboxRoot.isConnected) {
+  function ensureListboxRoot() {
+    if (listboxRoot) {
       return listboxRoot;
     }
-    // A body-hosted root may have been hidden by the native modal manager.
-    // Recreate it in the new owner instead of carrying aria-hidden across hosts.
-    listboxRoot?.remove();
 
     const root = document.createElement('ul');
     root.setAttribute('role', 'listbox');
@@ -805,13 +726,12 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     root.className =
       'fixed z-[9999] max-h-[140px] min-w-[180px] overflow-y-auto rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-lg';
     root.style.display = 'none';
-    root.style.position = host === document.body ? 'fixed' : 'absolute';
-    root.style.pointerEvents = 'auto';
+    root.style.position = 'fixed';
     root.style.zIndex = '2147483647';
     root.style.maxHeight = '140px';
     root.style.minWidth = '180px';
     root.style.overflowY = 'auto';
-    host.appendChild(root);
+    document.body.appendChild(root);
     listboxRoot = root;
     return root;
   }
@@ -845,7 +765,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
       fullText: wrapSelection.fullText,
       wrapSelection
     };
-    renderListbox(textarea);
+    renderListbox();
   }
 
   function openForTextarea(textarea: HTMLTextAreaElement) {
@@ -897,7 +817,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
     if (trigger.context.type !== 'style') {
       pendingWrapSelection.current = null;
     }
-    renderListbox(textarea);
+    renderListbox();
   }
 
   function insertSuggestion(textarea: HTMLTextAreaElement, suggestionIndex: number) {
@@ -928,12 +848,11 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
       nextCursorPosition = context.triggerIndex + insertText.length - 1;
     }
 
-    const nextValue = `${before}${insertText}${after}`;
-    setNativeTextareaValue(textarea, nextValue);
+    setNativeTextareaValue(textarea, `${before}${insertText}${after}`);
     textarea.focus({ preventScroll: true });
     setTextareaSelection(textarea, nextCursorPosition, nextCursorPosition);
     dispatchInputEvent(textarea);
-    restoreSelectionStably(textarea, nextCursorPosition, nextCursorPosition, nextValue);
+    restoreSelectionStably(textarea, nextCursorPosition, nextCursorPosition);
     pendingWrapSelection.current = null;
     dismiss();
     return true;
@@ -1111,7 +1030,6 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
   }
 
   function unbind() {
-    selectionRestoreState.cancel?.();
     if (!bound) {
       return;
     }

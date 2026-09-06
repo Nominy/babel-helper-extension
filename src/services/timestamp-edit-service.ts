@@ -1,6 +1,4 @@
 // @ts-nocheck
-import { parseTimeValue } from '../hooks/parsing';
-import { captureL0TaskGuard } from './l0-timing-identity';
 
 export function registerTimestampEditService(helper: any) {
   if (!helper || helper.__timestampEditRegistered) {
@@ -20,6 +18,65 @@ export function registerTimestampEditService(helper: any) {
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
+  }
+
+  function parseTimeValue(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
+    if (timestampMatch) {
+      const parts = timestampMatch[0].split(':');
+      let total = 0;
+      for (const part of parts) {
+        const numeric = Number(part);
+        if (!Number.isFinite(numeric)) {
+          return null;
+        }
+        total = total * 60 + numeric;
+      }
+
+      return total;
+    }
+
+    let total = 0;
+    let foundUnit = false;
+    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
+    for (const match of normalized.matchAll(unitPattern)) {
+      const numeric = Number(match[1]);
+      if (!Number.isFinite(numeric)) {
+        return null;
+      }
+
+      foundUnit = true;
+      const unit = match[2];
+      if (unit === 'h') {
+        total += numeric * 3600;
+      } else if (unit === 'm') {
+        total += numeric * 60;
+      } else {
+        total += numeric;
+      }
+    }
+
+    if (foundUnit) {
+      return total;
+    }
+
+    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!numericMatch) {
+      return null;
+    }
+
+    const numeric = Number(numericMatch[0]);
+    return Number.isFinite(numeric) ? numeric : null;
   }
 
   function getRowTimeLabels(row) {
@@ -233,10 +290,8 @@ export function registerTimestampEditService(helper: any) {
     return bridgeLoadPromise;
   }
 
-  async function callTimestampBridge(operation, payload, isCurrentTask) {
-    if (isCurrentTask && !isCurrentTask()) return null;
+  async function callTimestampBridge(operation, payload) {
     const ready = await injectTimestampBridge();
-    if (isCurrentTask && !isCurrentTask()) return null;
     if (!ready) {
       return null;
     }
@@ -280,63 +335,6 @@ export function registerTimestampEditService(helper: any) {
     });
   }
 
-  async function retryTimestampMutation(settings, operation, backend, buildPayload) {
-    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
-    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
-    const isCurrentTask = captureL0TaskGuard(helper);
-    const staleTaskResult = (attempts) => ({
-      ok: false, reason: 'stale-task', attempts, backend, verification: null
-    });
-
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (!isCurrentTask()) return staleTaskResult(attempt);
-      const bridgeResult = await callTimestampBridge(operation, buildPayload(), isCurrentTask);
-      if (!isCurrentTask()) return staleTaskResult(attempt + 1);
-      if (bridgeResult && bridgeResult.ok) {
-        return {
-          ok: true,
-          attempts: attempt + 1,
-          backend:
-            typeof bridgeResult.backend === 'string' && bridgeResult.backend
-              ? bridgeResult.backend
-              : backend,
-          verification: bridgeResult
-        };
-      }
-      if (attempt < attempts - 1 && retryDelayMs > 0) {
-        await helper.sleep(retryDelayMs);
-        if (!isCurrentTask()) return staleTaskResult(attempt + 1);
-      }
-    }
-
-    return { ok: false, attempts, backend, verification: null };
-  }
-
-  function resolveRowMutationPayload(settings) {
-    const row =
-      (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
-        ? helper.findRowByIdentity(settings.rowIdentity)
-        : null) ||
-      findRowByTimeLabels(settings.startText, settings.endText, {
-        speakerKey: settings.speakerKey
-      }) ||
-      findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
-        speakerKey: settings.speakerKey
-      });
-    const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
-    return {
-      startText: settings.startText,
-      endText: settings.endText,
-      startSeconds: settings.startSeconds,
-      endSeconds: settings.endSeconds,
-      speakerKey: settings.speakerKey,
-      annotationId:
-        (typeof settings.annotationId === 'string' && settings.annotationId) ||
-        (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
-      rowIdentity
-    };
-  }
-
   helper.parseTimestampEditTimeValue = parseTimeValue;
   helper.getTimestampEditRowTimeLabels = getRowTimeLabels;
   helper.getTimestampEditRowTimeRange = getRowTimeRange;
@@ -360,7 +358,10 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'set-boundary-time', 'page-react-row-time-change', () => {
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const row =
         (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
           ? helper.findRowByIdentity(settings.rowIdentity)
@@ -372,7 +373,7 @@ export function registerTimestampEditService(helper: any) {
           speakerKey: settings.speakerKey
         });
       const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
-      return {
+      const bridgeResult = await callTimestampBridge('set-boundary-time', {
         side,
         startText: settings.startText,
         endText: settings.endText,
@@ -384,8 +385,31 @@ export function registerTimestampEditService(helper: any) {
           (typeof settings.annotationId === 'string' && settings.annotationId) ||
           (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
         rowIdentity
-      };
-    });
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-row-time-change',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-row-time-change',
+      verification: null
+    };
   };
 
   helper.splitSegmentAtTime = async function splitSegmentAtTime(options) {
@@ -399,21 +423,113 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'split-segment-at-time', 'page-react-split-annotation', () => {
-      const payload = resolveRowMutationPayload(settings);
-      payload.splitSeconds = splitSeconds;
-      return payload;
-    });
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const row =
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
+        findRowByTimeLabels(settings.startText, settings.endText, {
+          speakerKey: settings.speakerKey
+        }) ||
+        findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
+          speakerKey: settings.speakerKey
+        });
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
+      const bridgeResult = await callTimestampBridge('split-segment-at-time', {
+        startText: settings.startText,
+        endText: settings.endText,
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.endSeconds,
+        speakerKey: settings.speakerKey,
+        splitSeconds,
+        annotationId:
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
+        rowIdentity
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-split-annotation',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-split-annotation',
+      verification: null
+    };
   };
 
   helper.mergeSegmentWithNativeAction = async function mergeSegmentWithNativeAction(options) {
     const settings = options || {};
     const direction = settings.direction === 'below' ? 'below' : 'above';
-    return retryTimestampMutation(settings, 'merge-segment', 'page-react-row-action', () => {
-      const payload = resolveRowMutationPayload(settings);
-      payload.direction = direction;
-      return payload;
-    });
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const row =
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
+        findRowByTimeLabels(settings.startText, settings.endText, {
+          speakerKey: settings.speakerKey
+        }) ||
+        findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
+          speakerKey: settings.speakerKey
+        });
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
+      const bridgeResult = await callTimestampBridge('merge-segment', {
+        direction,
+        startText: settings.startText,
+        endText: settings.endText,
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.endSeconds,
+        speakerKey: settings.speakerKey,
+        annotationId:
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
+        rowIdentity
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-row-action',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-row-action',
+      verification: null
+    };
   };
 
   helper.createSegmentWithNativeAction = async function createSegmentWithNativeAction(options) {
@@ -430,7 +546,11 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'create-segment', 'page-react-create-annotation', () => ({
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const bridgeResult = await callTimestampBridge('create-segment', {
         annotationId:
           typeof settings.annotationId === 'string' && settings.annotationId
             ? settings.annotationId
@@ -440,13 +560,84 @@ export function registerTimestampEditService(helper: any) {
         text: typeof settings.text === 'string' ? settings.text : '',
         startSeconds,
         endSeconds
-    }));
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-create-annotation',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-create-annotation',
+      verification: null
+    };
   };
 
   helper.deleteSegmentWithNativeAction = async function deleteSegmentWithNativeAction(options) {
     const settings = options || {};
-    return retryTimestampMutation(settings, 'delete-segment', 'page-react-row-action', () =>
-      resolveRowMutationPayload(settings)
-    );
+    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
+    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const row =
+        (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
+          ? helper.findRowByIdentity(settings.rowIdentity)
+          : null) ||
+        findRowByTimeLabels(settings.startText, settings.endText, {
+          speakerKey: settings.speakerKey
+        }) ||
+        findRowByTimeRange(Number(settings.startSeconds), Number(settings.endSeconds), {
+          speakerKey: settings.speakerKey
+        });
+      const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
+      const bridgeResult = await callTimestampBridge('delete-segment', {
+        startText: settings.startText,
+        endText: settings.endText,
+        startSeconds: settings.startSeconds,
+        endSeconds: settings.endSeconds,
+        speakerKey: settings.speakerKey,
+        annotationId:
+          (typeof settings.annotationId === 'string' && settings.annotationId) ||
+          (rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : ''),
+        rowIdentity
+      });
+
+      if (bridgeResult && bridgeResult.ok) {
+        return {
+          ok: true,
+          attempts: attempt + 1,
+          backend:
+            typeof bridgeResult.backend === 'string' && bridgeResult.backend
+              ? bridgeResult.backend
+              : 'page-react-row-action',
+          verification: bridgeResult
+        };
+      }
+
+      if (attempt < attempts - 1 && retryDelayMs > 0) {
+        await helper.sleep(retryDelayMs);
+      }
+    }
+
+    return {
+      ok: false,
+      attempts,
+      backend: 'page-react-row-action',
+      verification: null
+    };
   };
 }

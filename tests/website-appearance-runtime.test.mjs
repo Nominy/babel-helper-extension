@@ -30,8 +30,12 @@ async function importKernelHarness() {
     ['./logger', `export const createLogger = () => ({});`],
     [
       '../hooks/dom',
-      `export const normalizeText = (value) => String(value);
+      `export const isEditable = () => false;
+       export const isVisible = () => true;
+       export const normalizeText = (value) => String(value);
        export const setEditableValue = () => {};
+       export const dispatchClick = () => {};
+       export const sleep = async () => {};
        export const waitFor = async () => null;`
     ],
     ['./lifecycle', `export const registerLifecycle = () => {};`],
@@ -59,10 +63,6 @@ async function importKernelHarness() {
          measure() {},
          setPhase() {}
        });`
-    ],
-    [
-      '../features/custom-linter/feature',
-      `export const registerCustomLinterSettingsForwarding = () => () => {};`
     ],
     [
       '../services/extended-diff-view-service',

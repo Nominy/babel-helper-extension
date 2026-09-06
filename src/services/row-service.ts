@@ -1650,10 +1650,10 @@ export function registerRowService(helper: any) {
 
     const label = (button.getAttribute('aria-label') || '').trim().toLowerCase();
     if (label === 'solo track') {
-      return 'unmuted';
+      return 'muted';
     }
     if (label === 'unsolo track') {
-      return 'muted';
+      return 'unmuted';
     }
 
     return '';
@@ -2575,22 +2575,40 @@ export function registerRowService(helper: any) {
     }
 
     const caret = Math.max(0, Math.min(textarea.value.length, Number(caretOffset) || 0));
-    helper.state.lastBlur = {
-      row,
-      selectionStart: caret,
-      selectionEnd: caret,
-      direction: 'none'
+    const applySelection = () => {
+      helper.state.lastBlur = {
+        row,
+        selectionStart: caret,
+        selectionEnd: caret,
+        direction: 'none'
+      };
+      helper.state.blurRestorePending = true;
+      textarea.focus({
+        preventScroll: true
+      });
+
+      try {
+        textarea.setSelectionRange(caret, caret, 'none');
+      } catch (_error) {
+        // Ignore selection errors from browsers that reject the call mid-render.
+      }
     };
-    helper.state.blurRestorePending = true;
-    // The native merge has already committed. Restore once; deferred focus
-    // replays would steal a subsequent edit or Escape/Delete workflow.
-    return helper.focusRow(row, {
+
+    helper.focusRow(row, {
       activateRow: false,
       scroll: false,
       selectionStart: caret,
       selectionEnd: caret
     });
 
+    window.requestAnimationFrame(() => {
+      applySelection();
+      window.requestAnimationFrame(applySelection);
+    });
+    window.setTimeout(applySelection, 80);
+    window.setTimeout(applySelection, 180);
+
+    return true;
   }
 
   function getNativeRowActionPayload(row) {
@@ -3108,8 +3126,8 @@ export function registerRowService(helper: any) {
       return false;
     }
 
-    // Snapshot the visible ghost target before teardown, including a lane
-    // selected with Tab rather than the originally blurred row.
+    // Snapshot the ghost target before teardown so fallback restore can still
+    // use the last visible ghost position if the remembered row went stale.
     const preservedGhostTarget = getGhostCursorTarget();
 
     // Tear down the ghost cursor as soon as we begin restoring focus.
@@ -3141,8 +3159,7 @@ export function registerRowService(helper: any) {
       rememberedRow &&
       rememberedRow.isConnected &&
       currentRow &&
-      currentRow === rememberedRow &&
-      (!preservedGhostTarget || preservedGhostTarget.row === rememberedRow);
+      currentRow === rememberedRow;
 
     if (rememberedRowStillCurrent) {
       let selectionStart = remembered.selectionStart;

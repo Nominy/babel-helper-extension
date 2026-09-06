@@ -84,13 +84,12 @@ function getReviewActionIdFromFiber(element: unknown): string {
 
 function getReviewActionIdFromRows(
   helper: TimingIdentityHelper,
-  rows: readonly unknown[],
-  resolveReviewActionId: (element: unknown) => string | null = getReviewActionIdFromFiber
+  rows: readonly unknown[]
 ): string {
   for (const row of rows) {
-    const rowReviewActionId = resolveReviewActionId(row);
+    const rowReviewActionId = getReviewActionIdFromFiber(row);
     if (rowReviewActionId) return rowReviewActionId;
-    const textareaReviewActionId = resolveReviewActionId(getRowTextarea(helper, row));
+    const textareaReviewActionId = getReviewActionIdFromFiber(getRowTextarea(helper, row));
     if (textareaReviewActionId) return textareaReviewActionId;
   }
   return '';
@@ -194,62 +193,6 @@ export function buildCurrentL0TimingTaskId(
   const baseTaskId = scopedTaskId || buildL0TimingBaseTaskId(currentLocation);
   const rowIdentities = scopedTaskId || !helper ? [] : getL0TimingRowIdentities(helper, rows);
   return serializeL0TimingTaskId(baseTaskId, rowIdentities);
-}
-
-function getCommittedReviewActionId(element: unknown): string | null {
-  let fiber = getReactFiber(element);
-  if (!fiber) return null;
-  const ancestry: Record<string, unknown>[] = [];
-  while (fiber.return && ancestry.length < 90) {
-    ancestry.push(fiber);
-    const parent = asRecord(fiber.return);
-    if (!parent) return '';
-    fiber = parent;
-  }
-  let current = asRecord(asRecord(fiber.stateNode)?.current);
-  if (!current) return '';
-  let reviewActionId = trimmedString(asRecord(current.memoizedProps)?.reviewActionId);
-  // Match the timestamp bridge's committed path: DOM expandos can retain the
-  // previous render branch even when the same native editor hosts a new task.
-  for (let index = ancestry.length - 1; index >= 0; index -= 1) {
-    const expected = ancestry[index];
-    let child = asRecord(current.child);
-    while (child && child !== expected && child !== expected.alternate) {
-      child = asRecord(child.sibling);
-    }
-    if (!child) return '';
-    current = child;
-    reviewActionId = trimmedString(asRecord(current.memoizedProps)?.reviewActionId) || reviewActionId;
-  }
-  return reviewActionId;
-}
-
-export function captureL0TaskGuard(helper: TimingIdentityHelper): () => boolean {
-  const taskHref = typeof location === 'undefined' ? '' : location.href;
-  const readReviewActionId = () => {
-    let nativeAvailable = false;
-    // These native editor anchors also back create-annotation resolution and
-    // remain mounted when a replacement removes the last transcript row.
-    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
-      const seeds = document.querySelectorAll('tbody, table, main');
-      for (let index = 0; index < seeds.length; index += 1) {
-        const reviewActionId = getCommittedReviewActionId(seeds[index]);
-        nativeAvailable ||= reviewActionId !== null;
-        if (reviewActionId) return reviewActionId;
-      }
-    }
-    const rowReviewActionId = getReviewActionIdFromRows(helper, getCurrentL0TimingRows(helper), (element) => {
-      const reviewActionId = getCommittedReviewActionId(element);
-      nativeAvailable ||= reviewActionId !== null;
-      return reviewActionId;
-    });
-    return rowReviewActionId || (nativeAvailable ? '' : getPublishedReviewActionId());
-  };
-  const reviewActionId = readReviewActionId();
-  return () =>
-    Boolean(reviewActionId) &&
-    (typeof location === 'undefined' ? '' : location.href) === taskHref &&
-    readReviewActionId() === reviewActionId;
 }
 
 export function buildL0TimingLaneAliases(

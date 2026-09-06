@@ -39,21 +39,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check out shared extension platform
-        run: |
-          mkdir -p ../shared
-          git clone --depth 1 https://github.com/Nominy/babel-extension-platform.git ../shared/babel-extension-platform
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-
-      - name: Install shared platform dependencies
-        working-directory: ../shared/babel-extension-platform
-        run: npm ci
 
       - name: Install dependencies
         run: npm ci
