@@ -3,7 +3,7 @@
 import { readFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { getDefaultEnvFiles, loadCwsEnvironment, parseItemUrl } from './cws-env.mjs';
+import { getDefaultEnvFiles, loadCwsEnvironment, parseItemUrl } from '@nominy/babel-extension-build';
 
 const rootDir = resolve(import.meta.dirname, '..');
 const args = parseArgs(process.argv.slice(2));

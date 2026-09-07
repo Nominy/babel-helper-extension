@@ -1,3 +1,4 @@
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
 import type {
   L0TimingIndex,
   L0WordTimingToken,
@@ -113,6 +114,8 @@ export function showL0TimingReadyNotification(
     ?.remove();
   const notification = targetDocument.createElement('div');
   notification.setAttribute('data-babel-helper-l0-timing-ready', '');
+  themeRoot(notification, 'white');
+  applyComponent(notification, 'toast', { tone: 'success' });
   notification.setAttribute('role', 'status');
   notification.setAttribute('aria-live', 'polite');
   notification.textContent = 'Timestamped transcription ready';
@@ -120,13 +123,9 @@ export function showL0TimingReadyNotification(
   notification.style.right = '18px';
   notification.style.bottom = '18px';
   notification.style.padding = '7px 10px';
-  notification.style.borderRadius = '7px';
-  notification.style.background = 'rgba(15, 23, 42, 0.92)';
-  notification.style.color = '#f8fafc';
-  notification.style.font = '600 12px/1.3 system-ui, sans-serif';
-  notification.style.boxShadow = '0 6px 18px rgba(15, 23, 42, 0.2)';
+
+
   notification.style.pointerEvents = 'none';
-  notification.style.zIndex = '2147483647';
   notification.style.opacity = '1';
   notification.style.transition = 'opacity 120ms ease';
   parent.appendChild(notification);

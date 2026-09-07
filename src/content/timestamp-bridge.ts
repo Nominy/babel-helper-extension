@@ -1,5 +1,7 @@
 // @ts-nocheck
+import { readBabelEditorState } from '@nominy/babel-babel-runtime';
 import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
+import { parseTimeValue } from '../hooks/parsing';
 
 export function initTimestampBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -86,65 +88,6 @@ export function initTimestampBridge() {
     return getReactInternalValue(element, '__reactFiber$');
   }
 
-  function parseTimeValue(value) {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const normalized = trimmed.toLowerCase();
-    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
-    if (timestampMatch) {
-      const parts = timestampMatch[0].split(':');
-      let total = 0;
-      for (const part of parts) {
-        const numeric = Number(part);
-        if (!Number.isFinite(numeric)) {
-          return null;
-        }
-        total = total * 60 + numeric;
-      }
-
-      return total;
-    }
-
-    let total = 0;
-    let foundUnit = false;
-    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
-    for (const match of normalized.matchAll(unitPattern)) {
-      const numeric = Number(match[1]);
-      if (!Number.isFinite(numeric)) {
-        return null;
-      }
-
-      foundUnit = true;
-      const unit = match[2];
-      if (unit === 'h') {
-        total += numeric * 3600;
-      } else if (unit === 'm') {
-        total += numeric * 60;
-      } else {
-        total += numeric;
-      }
-    }
-
-    if (foundUnit) {
-      return total;
-    }
-
-    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
-    if (!numericMatch) {
-      return null;
-    }
-
-    const numeric = Number(numericMatch[0]);
-    return Number.isFinite(numeric) ? numeric : null;
-  }
-
   function getTranscriptRows() {
     return Array.from(document.querySelectorAll('tbody tr')).filter(
       (row) => row instanceof HTMLTableRowElement && row.querySelector(ROW_TEXTAREA_SELECTOR)
@@ -219,6 +162,10 @@ export function initTimestampBridge() {
 
   function snapshotTranscript() {
     resolveCreateAnnotationBinding();
+    const lanes = (readBabelEditorState()?.tracks || []).map((track) => ({
+      processedRecordingId: track.id, speakerKey: track.id,
+      trackLabel: track.label, lane: track.label
+    }));
     const rows = getTranscriptRows().map((row, index) => {
       const annotation = resolveRowAnnotation(row);
       const labels = getRowTimeLabels(row);
@@ -262,7 +209,8 @@ export function initTimestampBridge() {
     return {
       ok: true,
       backend: 'page-react-transcript-snapshot',
-      rows
+      rows,
+      lanes
     };
   }
 
@@ -432,20 +380,70 @@ export function initTimestampBridge() {
     return null;
   }
 
+  function getCommittedReactPath(fiber) {
+    const ancestry = [];
+    while (fiber.return) {
+      ancestry.push(fiber);
+      fiber = fiber.return;
+      if (ancestry.length > 256) {
+        return [];
+      }
+    }
+    let current = fiber.stateNode?.current;
+    if (!current) {
+      return [];
+    }
+    const committed = [current];
+    for (let index = ancestry.length - 1; index >= 0; index -= 1) {
+      const expected = ancestry[index];
+      let child = current.child;
+      while (child && child !== expected && child !== expected.alternate) {
+        child = child.sibling;
+      }
+      if (!child) {
+        return [];
+      }
+      committed.push(child);
+      current = child;
+    }
+    return committed;
+  }
+
+  // Host nodes retain a fiber from either render branch. Prefer the committed
+  // root's child links over potentially stale return pointers; when that
+  // descent cannot be resolved (root unreachable, path mismatch), fall back to
+  // the bounded `.return` walk so a fiber-read miss never strips a binding.
+  // Returns fibers leaf-first, at most `maxDepth` of them.
+  function getReactAncestry(element, maxDepth) {
+    const fiber = getReactFiber(element);
+    if (!fiber || typeof fiber !== 'object') {
+      return [];
+    }
+    const committed = getCommittedReactPath(fiber);
+    if (committed.length) {
+      return committed.slice(Math.max(0, committed.length - maxDepth)).reverse();
+    }
+    const ancestry = [];
+    let current = fiber;
+    while (current && typeof current === 'object' && ancestry.length < maxDepth) {
+      ancestry.push(current);
+      current = current.return;
+    }
+    return ancestry;
+  }
+
   function resolveRowActionBinding(row) {
     if (!(row instanceof HTMLTableRowElement)) {
       return null;
     }
 
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
+    let path = getReactAncestry(row, 24);
+    if (!path.length) {
+      path = getReactAncestry(row.querySelector(ROW_TEXTAREA_SELECTOR), 24);
     }
 
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 24) {
-      const props = current.memoizedProps;
+    for (const fiber of path) {
+      const props = fiber.memoizedProps;
       const annotation =
         props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
           ? props.annotation
@@ -477,9 +475,6 @@ export function initTimestampBridge() {
           };
         }
       }
-
-      current = current.return;
-      depth += 1;
     }
 
     return null;
@@ -590,10 +585,8 @@ export function initTimestampBridge() {
     }
 
     for (const seed of seeds) {
-      let current = getReactFiber(seed);
-      let depth = 0;
-      while (current && typeof current === 'object' && depth < 90) {
-        const props = current.memoizedProps;
+      for (const fiber of getReactAncestry(seed, 90)) {
+        const props = fiber.memoizedProps;
         const onCreateAnnotation =
           props && typeof props === 'object' && typeof props.onCreateAnnotation === 'function'
             ? props.onCreateAnnotation
@@ -606,9 +599,6 @@ export function initTimestampBridge() {
           };
           return cachedCreateAnnotationBinding;
         }
-
-        current = current.return;
-        depth += 1;
       }
     }
 
@@ -763,6 +753,48 @@ export function initTimestampBridge() {
     };
   }
 
+  // Flushes pending native label edits on the merged rows so the merge closure
+  // observes the latest content. A commit timeout must prevent the merge from
+  // discarding text that is still present only in the editor.
+  async function commitMergeEdits(row, direction) {
+    const warnings = [];
+    const speaker = getRowSpeakerKey(row);
+    const laneRows = getTranscriptRows().filter((candidate) => getRowSpeakerKey(candidate) === speaker);
+    const index = laneRows.indexOf(row);
+    const adjacent = laneRows[index + (direction === 'below' ? 1 : -1)];
+    if (!adjacent) {
+      return warnings;
+    }
+    const edits = [row, adjacent].map((candidate) => {
+      const textarea = candidate.querySelector(ROW_TEXTAREA_SELECTOR);
+      const binding = resolveRowActionBinding(candidate);
+      return { row: candidate, textarea, annotationId: binding?.annotationId, text: textarea?.value };
+    });
+    const deadline = Date.now() + 1000;
+    for (const edit of edits) {
+      // Rows without a plain textarea (low-confidence, TTS, diff modes) have
+      // no debounced label edit to flush.
+      if (!(edit.textarea instanceof HTMLTextAreaElement) || !edit.annotationId) {
+        continue;
+      }
+      const isCommitted = () => {
+        const binding = resolveRowActionBinding(edit.row);
+        return binding?.annotationId === edit.annotationId && binding.annotation.content === edit.text;
+      };
+      if (isCommitted()) {
+        continue;
+      }
+      // Native blur flushes the row's debounced label update. Commit each row
+      // before the next so its callback observes the latest annotation state.
+      edit.textarea.focus({ preventScroll: true });
+      edit.textarea.blur();
+      if (!await waitFor(isCommitted, Math.max(0, deadline - Date.now()), 16)) {
+        warnings.push('pending-edit-commit-timeout:' + edit.annotationId);
+      }
+    }
+    return warnings;
+  }
+
   async function mergeSegment(payload) {
     const direction = payload && payload.direction === 'below' ? 'below' : 'above';
     const row = resolveRowFromPayload(payload);
@@ -774,6 +806,16 @@ export function initTimestampBridge() {
       };
     }
 
+    const warnings = await commitMergeEdits(row, direction);
+    if (warnings.length) {
+      return {
+        ok: false,
+        backend: 'page-react-row-action',
+        reason: 'pending-edit-commit-timeout',
+        warning: warnings.join(',')
+      };
+    }
+    // Never retain a merge closure across the native label-update commits.
     const binding = resolveRowActionBinding(row);
     const action = direction === 'below' ? binding?.onMergeBelow : binding?.onMergeAbove;
     const canMerge = direction === 'below' ? binding?.canMergeBelow : binding?.canMergeAbove;

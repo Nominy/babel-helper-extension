@@ -24,6 +24,10 @@ function getExtensionStorage() {
 }
 
 export function normalizeZoomValue(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return null;
@@ -33,6 +37,10 @@ export function normalizeZoomValue(value: unknown): number | null {
 }
 
 export function normalizeWaveformScaleValue(value: unknown): number | null {
+  if (value == null) {
+    return null;
+  }
+
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return null;

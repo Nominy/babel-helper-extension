@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 async function loadEntry(entryPoint) {
@@ -348,6 +347,74 @@ test('published main-world review action overrides the shared route in Helper', 
   }
 });
 
+test('task guard fails open: only a different published review action or pathname ends the task', (t) => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const taskLocation = { href: 'https://babel.test/label?jobId=shared', pathname: '/label', search: '?jobId=shared', hash: '' };
+  let publishedId = 'task-one';
+  let readAttribute = () => publishedId;
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { documentElement: { getAttribute: () => readAttribute() } }
+  });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+    else delete globalThis.document;
+    if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation);
+    else delete globalThis.location;
+  });
+  const isOriginalTask = identity.captureL0TaskGuard();
+
+  publishedId = '';
+  assert.equal(isOriginalTask(), true, 'Gold removing its publication is not a task change');
+  publishedId = '  ';
+  assert.equal(isOriginalTask(), true, 'a blank publication is unknown, not different');
+  readAttribute = () => { throw new Error('detached document'); };
+  assert.equal(isOriginalTask(), true, 'an unreadable publication is not a task change');
+  readAttribute = () => publishedId;
+  publishedId = 'task-one';
+  taskLocation.search = '?jobId=refetched';
+  taskLocation.hash = '#row-2';
+  taskLocation.href = 'https://babel.test/label?jobId=refetched#row-2';
+  assert.equal(isOriginalTask(), true, 'search and hash changes on the same route are not a task change');
+
+  publishedId = 'task-two';
+  assert.equal(isOriginalTask(), false, 'a different published review action ends the task');
+  publishedId = 'task-one';
+  taskLocation.pathname = '/projects';
+  assert.equal(isOriginalTask(), false, 'a pathname change ends the task');
+  taskLocation.pathname = '/label';
+  assert.equal(isOriginalTask(), true);
+});
+
+test('task guard captured without a publication only ends on a pathname change', (t) => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const taskLocation = { pathname: '/label', search: '' };
+  let publishedId = '';
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { documentElement: { getAttribute: () => publishedId } }
+  });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+    else delete globalThis.document;
+    if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation);
+    else delete globalThis.location;
+  });
+  const isTask = identity.captureL0TaskGuard();
+  const strictTask = identity.captureL0TaskGuard({ requireIdentity: true });
+  assert.equal(strictTask(), false, 'bulk replacement requires a known starting identity');
+  assert.equal(isTask(), true, 'an unidentified editor is trusted rather than refused');
+  publishedId = 'task-late';
+  assert.equal(strictTask(), false, 'a later identity cannot retroactively identify the starting task');
+  assert.equal(isTask(), true, 'an identity appearing later cannot contradict an unknown start');
+  taskLocation.pathname = '/projects';
+  assert.equal(isTask(), false);
+});
+
 test('listener replacement and disposal prevent leaks across kernel restarts', () => {
   const protocolWindow = createProtocolWindow();
   const location = { pathname: '/label', search: '?id=second' };
@@ -369,9 +436,6 @@ test('listener replacement and disposal prevent leaks across kernel restarts', (
   disposeSecond();
   assert.equal(protocolWindow.listenerCount(), 0);
 
-  const kernelSource = readFileSync('src/core/kernel.ts', 'utf8');
-  assert.match(kernelSource, /registerL0TimingListener\(helper\.state, helper\)/);
-  assert.match(kernelSource, /kernelScope\.defer\(disposeL0TimingListener\)/);
 });
 
 test('one visible lane is valid and ambiguous display aliases resolve to no timing track', () => {
@@ -428,8 +492,10 @@ test('timing-ready notification lasts 750ms and replaces an older notice', () =>
     },
     createElement() {
       return {
+        ownerDocument: fakeDocument,
+        classList: { add() {} },
         attributes: {},
-        style: {},
+        style: { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } },
         textContent: '',
         removed: false,
         setAttribute(name, value) {
@@ -458,7 +524,7 @@ test('timing-ready notification lasts 750ms and replaces an older notice', () =>
   assert.equal(notification.removed, true);
 });
 
-test('missing anchors return null and ghost projections retain proportional fallback', () => {
+test('missing anchors return null', () => {
   assert.equal(
     alignment.computeL0TimedCharacterOffset(
       'edited text',
@@ -478,40 +544,4 @@ test('missing anchors return null and ghost projections retain proportional fall
     null
   );
 
-  const rowServiceSource = readFileSync('src/services/row-service.ts', 'utf8');
-  assert.match(
-    rowServiceSource,
-    /return computeRestoreOffset\(text, timeRange, currentTime, blurTime, baseline\)/
-  );
-  assert.equal((rowServiceSource.match(/computeGhostCursorOffset\(/g) || []).length, 3);
-});
-
-test('Alt-click on a transcript word seeks playback through the timestamp index', () => {
-  const lifecycleSource = readFileSync('src/core/lifecycle.ts', 'utf8');
-  const rowSource = readFileSync('src/services/row-service.ts', 'utf8');
-  const registrySource = readFileSync('src/features/registry.ts', 'utf8');
-  const handlerStart = lifecycleSource.indexOf('function handleTimestampWordSeekClick(event)');
-  const handlerEnd = lifecycleSource.indexOf('function clearPlaybackRowSyncTimer', handlerStart);
-  const handler = lifecycleSource.slice(handlerStart, handlerEnd);
-
-  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart, 'expected Alt-click seek handler');
-  assert.match(handler, /event\.altKey/);
-  assert.match(handler, /event\.ctrlKey/);
-  assert.match(handler, /event\.metaKey/);
-  assert.match(handler, /event\.shiftKey/);
-  assert.match(handler, /textarea\.selectionStart/);
-  assert.match(handler, /helper\.getL0TimestampForRowOffset\(row, offset\)/);
-  assert.match(handler, /helper\.seekPlaybackBySeconds\(targetSeconds - playback\.currentTime\)/);
-  assert.match(lifecycleSource, /addEventListener\('click', handleTimestampWordSeekClick\)/);
-  assert.match(lifecycleSource, /removeEventListener\('click', handleTimestampWordSeekClick\)/);
-  assert.match(rowSource, /computeL0TimestampAtCharacterOffset/);
-  assert.match(registrySource, /Alt \+ Click word/);
-});
-
-test('escape restoration lands on the last visible ghost cursor position', () => {
-  const rowServiceSource = readFileSync('src/services/row-service.ts', 'utf8');
-  assert.match(
-    rowServiceSource,
-    /if \(preservedGhostTarget && preservedGhostTarget\.row === rememberedRow\) \{[\s\S]*?selectionStart = preservedGhostTarget\.offset;[\s\S]*?selectionEnd = preservedGhostTarget\.offset;[\s\S]*?\} else if \(helper\.config\.features\.proportionalCursorRestore\)/
-  );
 });

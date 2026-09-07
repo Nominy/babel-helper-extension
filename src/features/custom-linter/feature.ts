@@ -1,6 +1,8 @@
 import type { FeatureContext, FeatureModule } from '../../core/types';
-
 import { normalizeHighlightedWords } from '../../core/highlighted-words';
+import { BABEL_MOD_CONTROLLER_EVENT, isControllerTransition } from '../../mod-platform/protocol';
+import type { EditorHooks } from '../../core/editor-hooks';
+import type { EditorInputState } from '../editor-input';
 
 const BRIDGE_SCRIPT_PATH = 'dist/content/linter-bridge.js';
 const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
@@ -31,10 +33,24 @@ function setBridgeConfig(ctx: Pick<FeatureContext, 'helper'>): void {
         highlightedWords: normalizeHighlightedWords(ctx.helper?.settings?.highlightedWords),
         disabledCustomLinterRuleIds: Array.isArray(ctx.helper?.settings?.disabledCustomLinterRuleIds)
           ? ctx.helper.settings.disabledCustomLinterRuleIds
-          : []
+          : [],
+        feedbackDraftRestoreEnabled: ctx.helper?.settings?.features?.feedbackDraftRestore !== false
       }
     })
   );
+}
+
+export function registerCustomLinterSettingsForwarding(
+  ctx: Pick<FeatureContext, 'helper'>
+): () => void {
+  const onControllerTransition = (event: Event) => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (isControllerTransition(detail) && detail.type === 'settings:update') {
+      setBridgeConfig(ctx);
+    }
+  };
+  window.addEventListener(BABEL_MOD_CONTROLLER_EVENT, onControllerTransition);
+  return () => window.removeEventListener(BABEL_MOD_CONTROLLER_EVENT, onControllerTransition);
 }
 
 function injectBridge(): Promise<boolean> {
@@ -91,8 +107,15 @@ export function preloadCustomLinterBridge(): Promise<boolean> {
   return injectBridge();
 }
 
+/**
+ * The bridge script and the stored settings load concurrently, so the config
+ * that `settings:update` already forwarded may have been dispatched before the
+ * bridge could listen. Re-send it once the bridge is up; the linter itself is
+ * only switched on when its feature is enabled.
+ */
 export async function bootstrapCustomLinterBridge(
-  ctx: Pick<FeatureContext, 'helper'>
+  ctx: Pick<FeatureContext, 'helper'>,
+  options: { enableLinter: boolean }
 ): Promise<boolean> {
   const ready = await injectBridge();
   if (!ready) {
@@ -100,11 +123,13 @@ export async function bootstrapCustomLinterBridge(
   }
 
   setBridgeConfig(ctx);
-  setBridgeEnabled(true);
+  if (options.enableLinter) {
+    setBridgeEnabled(true);
+  }
   return true;
 }
 
-export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean; [key: string]: unknown }> {
+export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean;[key: string]: unknown }> {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -197,4 +222,31 @@ export function createCustomLinterFeature(): FeatureModule {
       }
     }
   };
+}
+
+export function registerLinterInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
+  const { isFeatureEnabled } = input;
+
+  hooks.on('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
+    let handled = false;
+    if (isFeatureEnabled('customLinter') && event.code === 'KeyF') {
+      handled = true;
+      const scope = event.shiftKey ? 'all' : 'current';
+      const requestAutoFix =
+        typeof helper.requestAutoFix === 'function'
+          ? helper.requestAutoFix
+          : null;
+      void (requestAutoFix
+        ? requestAutoFix(scope)
+        : Promise.resolve({ ok: false, reason: 'linter-not-ready' })
+      ).then((result: Record<string, unknown>) => {
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:lint-autofix', { scope, ...result });
+        }
+      });
+    }
+    if (handled) { event.preventDefault(); event.stopPropagation(); }
+    return handled;
+  }, 97);
 }

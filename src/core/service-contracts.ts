@@ -6,6 +6,21 @@ export interface SessionService {
 
 export interface RowService {
   getTranscriptRows(): HTMLTableRowElement[];
+  getCurrentActionRow(options?: { allowFallback?: boolean }): HTMLElement | null;
+  getRowIdentity(row: HTMLElement): RowIdentity | null;
+  findRowByIdentity(identity: RowIdentity): HTMLElement | null;
+  getRowTextarea(row: HTMLElement): HTMLTextAreaElement | null;
+  getRowTextValue(row: HTMLElement): string;
+}
+
+export interface RowIdentity {
+  annotationId: string | null;
+  processedRecordingId: string | null;
+  trackLabel: string;
+  speakerKey: string;
+  isActive: boolean;
+  startText: string;
+  endText: string;
 }
 
 export interface ActionMenuService {

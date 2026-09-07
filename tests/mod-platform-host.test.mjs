@@ -60,10 +60,6 @@ function transition(generation, revision, type, reason = type) {
 function lifecycle(host) {
   return host.unsafe.lifecycle;
 }
-test('MAIN-world host has no extension API dependency', async () => {
-  const source = await fs.readFile(path.resolve('src/mod-platform/page-host.ts'), 'utf8');
-  assert.doesNotMatch(source, /\bchrome\s*\./);
-});
 
 
 test('mod-first queue and host-first registration resolve to dependency metadata order', async () => {

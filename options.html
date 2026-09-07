@@ -1,538 +1,112 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+<html lang="en" class="bui-settings-document">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Babel Helper Settings</title>
-    <style>
-      :root {
-        --bg: #f4f5f8;
-        --surface: #ffffff;
-        --surface-border: #dde2ea;
-        --ink: #172034;
-        --muted: #5f6f86;
-        --accent: #0f7a67;
-        --accent-soft: #e6f3f0;
-        --focus-ring: rgba(15, 122, 103, 0.24);
-      }
 
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        color: var(--ink);
-        background:
-          radial-gradient(circle at top right, #d9f0ff 0%, transparent 42%),
-          radial-gradient(circle at bottom left, #ffeecd 0%, transparent 48%),
-          var(--bg);
-      }
-
-      .page {
-        max-width: 840px;
-        margin: 0 auto;
-        padding: 28px 20px 24px;
-      }
-
-      .hero {
-        margin-bottom: 18px;
-      }
-
-      .title {
-        margin: 0;
-        font-size: 30px;
-        line-height: 1.15;
-        font-weight: 700;
-        letter-spacing: -0.02em;
-      }
-
-      .subtitle {
-        margin: 10px 0 0;
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.45;
-      }
-
-      .panel {
-        background: var(--surface);
-        border: 1px solid var(--surface-border);
-        border-radius: 18px;
-        padding: 16px;
-        box-shadow: 0 10px 24px rgba(15, 30, 55, 0.06);
-      }
-
-      .feature-list {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 12px;
-      }
-
-      .feature-card {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        align-items: start;
-        gap: 12px;
-        padding: 13px;
-        border: 1px solid #dce3ed;
-        border-radius: 12px;
-        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-        cursor: pointer;
-      }
-
-      .feature-card:hover {
-        border-color: #bbc8db;
-      }
-
-      .feature-toggle {
-        width: 18px;
-        height: 18px;
-        margin-top: 3px;
-        accent-color: var(--accent);
-      }
-
-      .feature-title {
-        font-size: 15px;
-        font-weight: 700;
-      }
-
-      .feature-description {
-        margin-top: 4px;
-        font-size: 13px;
-        color: var(--muted);
-        line-height: 1.45;
-      }
-
-      .feature-actions {
-        margin-top: 10px;
-      }
-
-      .link-btn {
-        appearance: none;
-        border: 1px solid var(--accent);
-        background: var(--accent-soft);
-        color: var(--accent);
-        font-weight: 700;
-        font-size: 12px;
-        border-radius: 10px;
-        padding: 7px 10px;
-        cursor: pointer;
-      }
-
-      .link-btn:hover {
-        background: #d9eee8;
-      }
-
-      .custom-linter-rule-page[hidden],
-      .ghost-cursor-page[hidden],
-      .settings-home[hidden] {
-        display: none;
-      }
-
-      .rule-page-header {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 14px;
-      }
-
-      .rule-page-title {
-        margin: 0;
-        font-size: 20px;
-        line-height: 1.2;
-      }
-
-      .rule-list {
-        display: grid;
-        gap: 10px;
-      }
-
-      .rule-card {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 10px;
-        padding: 12px;
-        border: 1px solid #dce3ed;
-        border-radius: 12px;
-        background: #fff;
-        cursor: pointer;
-      }
-
-      .rule-card:hover {
-        border-color: #bbc8db;
-      }
-
-      .rule-toggle {
-        width: 18px;
-        height: 18px;
-        margin-top: 2px;
-        accent-color: var(--accent);
-      }
-
-      .rule-title {
-        display: block;
-        font-size: 14px;
-        font-weight: 700;
-      }
-
-      .rule-description {
-        display: block;
-        margin-top: 3px;
-        font-size: 13px;
-        line-height: 1.4;
-        color: var(--muted);
-      }
-
-      .dictionary-settings {
-        margin-top: 16px;
-        padding-top: 16px;
-        border-top: 1px solid #e5ebf3;
-      }
-
-      .dictionary-title {
-        font-size: 15px;
-        font-weight: 700;
-      }
-
-      .dictionary-toggle {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 10px;
-        align-items: start;
-        margin: 0 0 12px;
-        cursor: pointer;
-      }
-
-      .dictionary-toggle input {
-        width: 18px;
-        height: 18px;
-        margin-top: 2px;
-        accent-color: var(--accent);
-      }
-
-      .dictionary-toggle-title {
-        font-size: 14px;
-        font-weight: 700;
-      }
-
-      .dictionary-toggle-description {
-        margin-top: 3px;
-        font-size: 13px;
-        line-height: 1.4;
-        color: var(--muted);
-      }
-
-      .dictionary-description {
-        margin: 4px 0 10px;
-        font-size: 13px;
-        color: var(--muted);
-        line-height: 1.45;
-      }
-
-      .dictionary-textarea {
-        display: block;
-        width: 100%;
-        min-height: 150px;
-        resize: vertical;
-        border: 1px solid #cfd8e6;
-        border-radius: 12px;
-        padding: 10px 12px;
-        color: var(--ink);
-        background: #fff;
-        font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-      }
-
-      .dictionary-textarea:focus {
-        outline: 2px solid rgba(15, 122, 103, 0.22);
-        border-color: var(--accent);
-      }
-
-      .ghost-cursor-settings {
-        margin-top: 16px;
-        padding: 16px;
-        border: 1px solid #dce3ed;
-        border-radius: 14px;
-        background: linear-gradient(145deg, #ffffff 0%, #f7fbff 100%);
-      }
-
-      .ghost-cursor-title {
-        margin: 0;
-        font-size: 16px;
-        line-height: 1.25;
-      }
-
-      .ghost-cursor-description {
-        margin: 5px 0 14px;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.45;
-      }
-
-      .ghost-cursor-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px;
-      }
-
-      .ghost-cursor-field {
-        display: grid;
-        gap: 6px;
-        min-width: 0;
-        color: var(--ink);
-        font-size: 13px;
-        font-weight: 600;
-      }
-
-      .ghost-cursor-field select,
-      .ghost-cursor-field input[type='color'] {
-        width: 100%;
-        min-height: 36px;
-        border: 1px solid #cfd8e6;
-        border-radius: 9px;
-        padding: 6px 8px;
-        color: var(--ink);
-        background: #fff;
-        font: inherit;
-      }
-
-      .ghost-cursor-field input[type='color'] {
-        padding: 3px;
-        cursor: pointer;
-      }
-
-      .ghost-cursor-field input[type='range'] {
-        width: 100%;
-        accent-color: var(--accent);
-      }
-
-      .ghost-cursor-field:focus-within select,
-      .ghost-cursor-field:focus-within input {
-        outline: 2px solid rgba(15, 122, 103, 0.22);
-        border-color: var(--accent);
-      }
-
-      .ghost-cursor-toggle {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 36px;
-        cursor: pointer;
-      }
-
-      .ghost-cursor-toggle input {
-        width: 18px;
-        height: 18px;
-        accent-color: var(--accent);
-      }
-
-      .ghost-cursor-range-label {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-      }
-
-      .ghost-cursor-range-value {
-        color: var(--accent);
-        font-variant-numeric: tabular-nums;
-      }
-
-      button,
-      input,
-      select,
-      textarea {
-        font: inherit;
-      }
-
-      button:focus-visible,
-      input:focus-visible,
-      select:focus-visible,
-      textarea:focus-visible,
-      summary:focus-visible,
-      a:focus-visible {
-        outline: 3px solid var(--focus-ring);
-        outline-offset: 2px;
-      }
-
-      .features-title {
-        margin: 0 0 10px;
-        font-size: 16px;
-        line-height: 1.25;
-      }
-
-      .footer {
-        margin-top: 14px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        align-items: center;
-        justify-content: space-between;
-      }
-
-      .status {
-        font-size: 13px;
-        color: #25455f;
-        background: var(--accent-soft);
-        border: 1px solid #c2e4dc;
-        border-radius: 999px;
-        padding: 7px 12px;
-      }
-
-      .reset-btn,
-      .download-btn {
-        appearance: none;
-        border: 1px solid #cfd8e6;
-        background: #fff;
-        color: var(--ink);
-        font-weight: 600;
-        font-size: 13px;
-        border-radius: 10px;
-        padding: 8px 12px;
-        cursor: pointer;
-      }
-
-      .reset-btn:hover,
-      .download-btn:hover {
-        background: #f3f7fc;
-      }
-
-      .download-btn {
-        border-color: var(--accent);
-        color: var(--accent);
-      }
-
-      .download-btn:hover {
-        background: var(--accent-soft);
-      }
-
-      .support-footer {
-        margin: 14px 0 0;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: center;
-        justify-content: center;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.4;
-        text-align: center;
-      }
-
-      .support-link {
-        color: var(--accent);
-        font-weight: 700;
-        text-decoration: none;
-      }
-
-      .support-link:hover {
-        text-decoration: underline;
-      }
-
-      @media (max-width: 560px) {
-        .page {
-          padding: 20px 14px 18px;
-        }
-
-        .title {
-          font-size: 25px;
-        }
-
-        .ghost-cursor-grid {
-          grid-template-columns: 1fr;
-        }
-      }
-    </style>
   </head>
-  <body>
-    <main class="page">
-      <section class="hero">
-        <h1 class="title">Babel Helper Settings</h1>
-        <p class="subtitle">Enable only the features your team needs. Changes are saved automatically.</p>
-      </section>
-
-      <section class="panel">
-        <div class="settings-home" data-role="settings-home">
-          <h2 id="features-title" class="features-title">Features</h2>
-          <div class="feature-list" data-role="feature-list" aria-labelledby="features-title"></div>
-          <div class="dictionary-settings">
-            <label for="highlighted-words" class="dictionary-title">Highlighted Words</label>
-            <label class="dictionary-toggle">
-              <input type="checkbox" data-role="highlighted-words-enabled" />
+  <body data-bui-accent="white" class="bui-page bui-root">
+    <main class="bui-settings-shell">
+<section class="bui-surface">
+<header class="bui-header">
+<div>
+<h1 class="bui-title">Babel Helper Settings</h1>
+<p class="bui-hint">Configure features. Changes are saved automatically.</p>
+</div>
+</header>
+<div class="bui-body">
+<div class="bui-stack">
+<div class="settings-home bui-stack" data-role="settings-home">
+          <h2 id="features-title" class="features-title bui-title">Features</h2>
+          <div class="feature-list bui-stack" data-role="feature-list" aria-labelledby="features-title">
+</div>
+          <div class="dictionary-settings bui-card">
+            <label for="highlighted-words" class="dictionary-title bui-label">Highlighted Words</label>
+            <label class="dictionary-toggle bui-label bui-setting-toggle">
+              <input type="checkbox" data-role="highlighted-words-enabled" class="bui-checkbox">
               <span>
                 <span class="dictionary-toggle-title">Enable highlighted-word warnings</span>
-                <span class="dictionary-toggle-description">When disabled, the custom linter leaves this dictionary out of Babel warnings.</span>
+                <span class="dictionary-toggle-description bui-hint">When disabled, the custom linter leaves this dictionary out of Babel warnings.</span>
               </span>
             </label>
-            <p class="dictionary-description">Rows containing these words are raised by the custom linter for clearance review. Use one word or phrase per line.</p>
-            <textarea id="highlighted-words" class="dictionary-textarea" data-role="highlighted-words" spellcheck="false"></textarea>
+            <p class="dictionary-description bui-hint">Rows containing these words are raised by the custom linter for clearance review. Use one word or phrase per line.</p>
+            <textarea id="highlighted-words" class="dictionary-textarea bui-textarea" data-role="highlighted-words" spellcheck="false" rows="6">
+</textarea>
           </div>
         </div>
-        <div class="custom-linter-rule-page" data-role="custom-linter-rule-page" hidden>
-          <div class="rule-page-header">
-            <h2 class="rule-page-title">Custom Linter Rules</h2>
-            <button class="reset-btn" type="button" data-role="back-to-settings">Back</button>
+<div class="custom-linter-rule-page bui-stack" data-role="custom-linter-rule-page" hidden="">
+          <div class="rule-page-header bui-row" data-align="between">
+            <h2 class="rule-page-title bui-title">Custom Linter Rules</h2>
+            <button class="reset-btn bui-button" type="button" data-role="back-to-settings">Back</button>
           </div>
-          <div class="rule-list" data-role="custom-linter-rule-list"></div>
+          <div class="rule-list bui-stack" data-role="custom-linter-rule-list">
+</div>
         </div>
-        <div class="ghost-cursor-page" data-role="ghost-cursor-page" hidden>
-          <div class="rule-page-header">
-            <h2 id="ghost-cursor-title" class="rule-page-title">Ghost Cursor</h2>
-            <button class="reset-btn" type="button" data-role="back-from-ghost-cursor">Back</button>
+<div class="ghost-cursor-page bui-stack" data-role="ghost-cursor-page" hidden="">
+          <div class="rule-page-header bui-row" data-align="between">
+            <h2 id="ghost-cursor-title" class="rule-page-title bui-title">Ghost Cursor</h2>
+            <button class="reset-btn bui-button" type="button" data-role="back-from-ghost-cursor">Back</button>
           </div>
-          <p class="ghost-cursor-description">Customize the solid cursor bar used while navigating dashboard rows.</p>
-          <div class="ghost-cursor-grid" aria-labelledby="ghost-cursor-title">
-            <label class="ghost-cursor-field ghost-cursor-toggle">
-              <input type="checkbox" data-role="ghost-cursor-gradient-enabled" />
+          <p class="ghost-cursor-description bui-hint">Customize the solid cursor bar used while navigating dashboard rows.</p>
+          <div class="ghost-cursor-grid bui-grid" aria-labelledby="ghost-cursor-title">
+            <label class="ghost-cursor-field ghost-cursor-toggle bui-label bui-card bui-setting-toggle">
+              <input type="checkbox" data-role="ghost-cursor-gradient-enabled" class="bui-checkbox">
               <span>Enable animated gradient</span>
             </label>
-            <label class="ghost-cursor-field">
+            <label class="ghost-cursor-field bui-label bui-card">
               <span>Primary color</span>
-              <input type="color" data-role="ghost-cursor-color" value="#f59e0b" />
+              <input type="color" data-role="ghost-cursor-color" value="#f59e0b" class="bui-color">
             </label>
-            <label class="ghost-cursor-field">
+            <label class="ghost-cursor-field bui-label bui-card">
               <span>Gradient color</span>
-              <input type="color" data-role="ghost-cursor-gradient-color" value="#fb7185" />
+              <input type="color" data-role="ghost-cursor-gradient-color" value="#fb7185" class="bui-color">
             </label>
-            <label class="ghost-cursor-field">
-              <span class="ghost-cursor-range-label"><span>Thickness</span><output class="ghost-cursor-range-value" data-role="ghost-cursor-thickness-value">2 px</output></span>
-              <input type="range" data-role="ghost-cursor-thickness" min="1" max="8" step="1" value="2" />
+            <label class="ghost-cursor-field bui-label bui-card">
+              <span class="ghost-cursor-range-label bui-row" data-align="between">
+<span>Thickness</span>
+<output class="ghost-cursor-range-value" data-role="ghost-cursor-thickness-value">2 px</output>
+</span>
+              <input type="range" data-role="ghost-cursor-thickness" min="1" max="8" step="1" value="2" class="bui-range">
             </label>
-            <label class="ghost-cursor-field">
+            <label class="ghost-cursor-field bui-label bui-card">
               <span>Gradient motion</span>
-              <select data-role="ghost-cursor-motion">
+              <select data-role="ghost-cursor-motion" class="bui-select">
                 <option value="slow">Slow</option>
                 <option value="balanced">Balanced</option>
                 <option value="snappy">Snappy</option>
               </select>
             </label>
           </div>
-          <div class="ghost-cursor-share">
-            <label class="ghost-cursor-field" for="ghost-cursor-share">
+          <div class="ghost-cursor-share bui-stack">
+            <label class="ghost-cursor-field bui-label bui-card" for="ghost-cursor-share">
               <span>Share settings</span>
-              <input id="ghost-cursor-share" type="text" data-role="ghost-cursor-share" readonly />
+              <input id="ghost-cursor-share" type="text" data-role="ghost-cursor-share" readonly="" class="bui-input">
             </label>
-            <button class="link-btn" type="button" data-role="ghost-cursor-copy-share">Copy</button>
-            <label class="ghost-cursor-field" for="ghost-cursor-import-share">
+            <button class="link-btn bui-button" type="button" data-role="ghost-cursor-copy-share">Copy</button>
+            <label class="ghost-cursor-field bui-label bui-card" for="ghost-cursor-import-share">
               <span>Import settings</span>
-              <input id="ghost-cursor-import-share" type="text" data-role="ghost-cursor-import-share" placeholder="Paste a gc1. string" autocomplete="off" spellcheck="false" />
+              <input id="ghost-cursor-import-share" type="text" data-role="ghost-cursor-import-share" placeholder="Paste a gc1. string" autocomplete="off" spellcheck="false" class="bui-input">
             </label>
-            <button class="link-btn" type="button" data-role="ghost-cursor-import-share-button">Import</button>
+            <button class="link-btn bui-button" type="button" data-role="ghost-cursor-import-share-button">Import</button>
           </div>
         </div>
-        <div class="footer">
-          <button class="reset-btn" type="button" data-role="reset">Reset all settings</button>
-          <button class="download-btn" type="button" data-role="download-logs">Download Logs</button>
-          <div class="status" data-role="status">Loading...</div>
+<div class="footer bui-row" data-align="between">
+          <button class="reset-btn bui-button" type="button" data-role="reset">Reset all settings</button>
+          <button class="download-btn bui-button" type="button" data-role="download-logs">Download Logs</button>
+          <div class="status bui-status" data-role="status">Loading...</div>
         </div>
-      </section>
-      <p class="support-footer">
+<p class="support-footer bui-card bui-hint">
         These Babel tools are maintained by Naftsan;
-        <a class="support-link" href="https://ko-fi.com/naftsan" target="_blank" rel="noopener noreferrer">if this extension saves you time, consider supporting development on Ko-Fi</a>
+        <a class="support-link bui-link" href="https://ko-fi.com/naftsan" target="_blank" rel="noopener noreferrer">if this extension saves you time, consider supporting development on Ko-Fi</a>
       </p>
-    </main>
-    <script src="dist/options/options.js"></script>
-  </body>
+</div>
+</div>
+</section>
+</main>
+    <script src="dist/options/options.js">
+</script>
+
+
+</body>
 </html>

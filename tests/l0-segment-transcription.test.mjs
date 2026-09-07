@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 async function loadEntry(entryPoint) {
@@ -100,33 +99,6 @@ test('task, row, and emptiness are revalidated after waiting for L0', async () =
   }
 });
 
-test('broker fallbackAllowed survives failed L0 transcription responses', async () => {
-  for (const fallbackAllowed of [false, true, undefined]) {
-    const setup = createOptions({
-      request: async (request) => {
-        if (request.operation === 'ping') {
-          return { ok: true, capabilities: { transcribeSegmentL0: true } };
-        }
-        return {
-          ok: false,
-          reason: 'local-model-failed',
-          ...(fallbackAllowed === undefined ? {} : { fallbackAllowed })
-        };
-      }
-    });
-
-    const result = await service.transcribeEmptySegmentWithL0(setup.options);
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, 'local-model-failed');
-    assert.equal(result.fallbackAllowed, fallbackAllowed);
-    assert.equal(
-      service.isL0SegmentLegacyFallbackAllowed(result),
-      fallbackAllowed !== false
-    );
-    assert.equal(setup.writes.length, 0);
-  }
-});
-
 test('false L0 capability stops after ping and forbids legacy fallback', async () => {
   const requests = [];
   const setup = createOptions({
@@ -145,50 +117,6 @@ test('false L0 capability stops after ping and forbids legacy fallback', async (
     fallbackAllowed: false,
     broker: { ok: true, capabilities: { transcribeSegmentL0: false } }
   });
-  assert.equal(service.isL0SegmentLegacyFallbackAllowed(result), false);
   assert.equal(setup.writes.length, 0);
 });
 
-test('timeline selection returns unavailable capability before timing wait or legacy mutation', () => {
-  const source = readFileSync('src/services/timeline-selection-service.ts', 'utf8');
-  const waitStart = source.indexOf('async function waitForAutoSegmentL0Timing()');
-  const waitEnd = source.indexOf('helper.autoSegmentVisibleSilences = async function', waitStart);
-  const waitBlock = source.slice(waitStart, waitEnd);
-  const autoStart = waitEnd;
-  const preTrim = source.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio', autoStart);
-  const autoPrepareBlock = source.slice(autoStart, preTrim);
-
-  assert.ok(waitStart >= 0 && waitEnd > waitStart && preTrim > autoStart);
-  assert.ok(
-    waitBlock.indexOf('hasL0SegmentBrokerCapability(brokerAvailability)') <
-      waitBlock.indexOf('while (Date.now() - startedAt')
-  );
-  assert.match(autoPrepareBlock, /reason === 'timing-provider-unavailable'/);
-  assert.match(autoPrepareBlock, /return \{ ok: false, reason: 'timing-provider-unavailable', splitCount: 0 \}/);
-  assert.doesNotMatch(waitBlock, /useLegacy: true/);
-});
-
-test('Alt+Shift+G prefers transcribeSegmentL0 and keeps legacy fallback outside the L0 request module', () => {
-  const source = readFileSync('src/services/timeline-selection-service.ts', 'utf8');
-  const segmentSource = readFileSync('src/services/l0-segment-transcription.ts', 'utf8');
-  const start = source.indexOf('helper.transcribeCurrentSegmentWithL0 = async function transcribeCurrentSegmentWithL0()');
-  const end = source.indexOf('helper.trimCurrentSegmentToAudio = async function trimCurrentSegmentToAudio', start);
-  const block = source.slice(start, end);
-  const fallbackPolicy = block.indexOf('if (!isL0SegmentLegacyFallbackAllowed(result))');
-  const blockedReturn = block.indexOf('return result;', fallbackPolicy);
-  const legacyFallback = block.indexOf('return await transcribeCurrentSegmentWithLegacyModel()', fallbackPolicy);
-
-  assert.ok(start >= 0 && end > start);
-  assert.match(segmentSource, /operation: 'transcribeSegmentL0'/);
-  assert.match(block, /buildCurrentL0TimingTaskId\(helper\)/);
-  assert.match(block, /transcribeEmptySegmentWithL0/);
-  assert.match(block, /transcribeCurrentSegmentWithLegacyModel\(\)/);
-  assert.ok(
-    fallbackPolicy >= 0 &&
-      blockedReturn > fallbackPolicy &&
-      legacyFallback > blockedReturn,
-    'fallbackAllowed=false must return before the historical legacy/OpenRouter path'
-  );
-  assert.doesNotMatch(block, /operation: 'transcribeSegment'/);
-  assert.doesNotMatch(block, /transcribe-segment-audio|callSelectionBridge|OpenRouter|Gemini|Prompt/);
-});

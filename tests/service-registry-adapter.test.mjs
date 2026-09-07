@@ -14,7 +14,8 @@ async function importServiceRuntime() {
       contents: [
         "export { createBuiltinServiceRegistry } from './src/core/service-registry.ts';",
         "export { installLegacyServiceProvider } from './src/core/legacy-service-provider.ts';",
-        "export { createScope } from './src/mod-platform/scope.ts';"
+        "export { createScope } from './src/mod-platform/scope.ts';",
+        "export { createRowServiceFacade } from './src/services/row-service-facade.ts';"
       ].join('\n'),
       resolveDir: process.cwd(),
       sourcefile: 'service-runtime-entry.ts'
@@ -30,6 +31,26 @@ async function importServiceRuntime() {
 }
 
 const runtime = await importServiceRuntime();
+
+test('row facade resolves native identity through the current helper implementation', () => {
+  const row = {};
+  const identity = { annotationId: 'row-1', processedRecordingId: 'speaker-1' };
+  let receivedOptions;
+  const helper = {
+    getCurrentActionRow(options) { receivedOptions = options; return row; },
+    getRowIdentity(value) { assert.equal(value, row); return identity; },
+    findRowByIdentity(value) { assert.equal(value, identity); return row; },
+    getRowTextValue() { return 'before'; }
+  };
+  const rows = runtime.createRowServiceFacade(helper);
+  assert.equal(rows.getCurrentActionRow(), row);
+  assert.deepEqual(receivedOptions, { allowFallback: false });
+  assert.equal(rows.getRowIdentity(row), identity);
+  assert.equal(rows.findRowByIdentity(identity), row);
+  assert.equal(rows.getRowTextValue(row), 'before');
+  helper.getRowTextValue = () => 'after';
+  assert.equal(rows.getRowTextValue(row), 'after');
+});
 
 test('built-in property handles remain late-bound through replace, decorate, and intercept', () => {
   const services = runtime.createBuiltinServiceRegistry();

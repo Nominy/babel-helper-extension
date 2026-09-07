@@ -60,18 +60,3 @@ test('feature module creation and hotkeys help use feature registrations', async
     )
   );
 });
-
-test('custom linter feature is co-located in a feature folder', async () => {
-  await assert.rejects(
-    fs.access('src/features/custom-linter-feature.ts'),
-    /ENOENT/
-  );
-  await fs.access('src/features/custom-linter/index.ts');
-  await fs.access('src/features/custom-linter/feature.ts');
-
-  const registrySource = await fs.readFile('src/features/registry.ts', 'utf8');
-  const entrySource = await fs.readFile('src/content/entry.ts', 'utf8');
-
-  assert.match(registrySource, /from ['"]\.\/custom-linter['"]/);
-  assert.match(entrySource, /from ['"]\.\.\/features\/custom-linter['"]/);
-});

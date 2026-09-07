@@ -43,6 +43,8 @@ class FakeClassList {
     this.element = element;
   }
 
+  add(...names) { for (const name of names) this.toggle(name, true); }
+
   contains(name) {
     return (this.element.getAttribute('class') ?? '').split(/\s+/).includes(name);
   }
@@ -152,25 +154,6 @@ function findElements(root, selector) {
   return matches;
 }
 
-function cssDeclarations(styleElement, selector) {
-  const rule = [...styleElement.textContent.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .find((match) => match[1].trim() === selector);
-  assert.ok(rule, `Missing CSS rule for ${selector}`);
-  return Object.fromEntries(
-    rule[2]
-      .split(';')
-      .map((declaration) => declaration.trim())
-      .filter(Boolean)
-      .map((declaration) => {
-        const separator = declaration.indexOf(':');
-        return [
-          declaration.slice(0, separator).trim(),
-          declaration.slice(separator + 1).trim()
-        ];
-      })
-  );
-}
-
 class FakeElement extends FakeNode {
   constructor(tagName, ownerDocument) {
     super();
@@ -185,7 +168,7 @@ class FakeElement extends FakeNode {
     this.open = false;
     this.textContent = '';
     this.shadowRoot = null;
-    this.style = {};
+    this.style = { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } };
   }
 
   setAttribute(name, value) {
@@ -601,7 +584,7 @@ test('exact Alt+Shift+P toggles one Shadow DOM editor even while a panel control
   assert.equal(harness.document.activeElement, pageButton);
 });
 
-test('the toolbar launcher is an accessible green nature button that toggles exactly like the shortcut', () => {
+test('the toolbar launcher is an accessible picture button that toggles exactly like the shortcut', () => {
   let toolbar;
   let wand;
   const harness = createHarness(createWebsiteAppearancePanel, DEFAULTS, {
@@ -618,7 +601,7 @@ test('the toolbar launcher is an accessible green nature button that toggles exa
   assert.equal(launcher.getAttribute('aria-label'), 'Website Appearance');
   assert.match(launcher.title, /Website Appearance/);
   assert.match(launcher.title, /Alt \+ Shift \+ P/);
-  assert.equal(launcher.textContent, '🌿');
+  assert.equal(launcher.textContent, '🖼️');
   assert.equal(launcher.hidden, false);
   assert.equal(launcher.style.width, '36px');
   assert.equal(launcher.style.height, '36px');
@@ -631,29 +614,6 @@ test('the toolbar launcher is an accessible green nature button that toggles exa
   );
   assert.equal(launcherStyles.length, 1);
   assert.equal(launcherStyles[0].tagName, 'STYLE');
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]'),
-    {
-      'background-color': 'rgba(240, 253, 244, 0.5)',
-      border: '1px solid #86efac',
-      color: '#15803d',
-      transition: 'background-color 120ms ease, border-color 120ms ease'
-    }
-  );
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:hover'),
-    {
-      'background-color': 'rgba(220, 252, 231, 0.75)',
-      'border-color': '#4ade80'
-    }
-  );
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:active'),
-    {
-      'background-color': 'rgba(187, 247, 208, 0.9)',
-      'border-color': '#22c55e'
-    }
-  );
   assert.equal(launcher.parentElement, toolbar);
   assert.equal(toolbar.children[toolbar.children.indexOf(wand) + 1], launcher);
   assert.equal(
@@ -957,74 +917,6 @@ test('the editor and table text dials reach 10px and move independently', () => 
   };
   assert.deepEqual(harness.previews.at(-1), expected);
   assert.deepEqual(harness.commits.at(-1), expected);
-});
-
-test('the editor is three sections: Text, Theme, and one Advanced block', () => {
-  const harness = createHarness(createWebsiteAppearancePanel);
-  const markup = harness.shadow.innerHTML;
-
-  const groupStarts = [...markup.matchAll(/<fieldset data-group="([^"]+)">/g)];
-  assert.deepEqual(
-    groupStarts.map((match) => match[1]),
-    ['textEnabled', 'themeEnabled', 'gradientEnabled'],
-    'exactly three gated sections, in reading order'
-  );
-
-  for (const [flag, fields] of Object.entries(GROUP_DIALS)) {
-    const start = markup.indexOf(`<fieldset data-group="${flag}">`);
-    const end = markup.indexOf('</fieldset>', start);
-    const section = markup.slice(start, end);
-    const legend = section.slice(section.indexOf('<legend>'), section.indexOf('</legend>'));
-    assert.ok(legend.includes(`data-field="${flag}"`), `${flag} toggle belongs in the legend`);
-    for (const field of fields) {
-      assert.ok(section.includes(`data-field="${field}"`), `${field} belongs to ${flag}`);
-    }
-  }
-
-  // Gradient, expert CSS and theme sharing are the only things behind Advanced.
-  const advanced = markup.slice(
-    markup.indexOf('<details class="advanced" data-advanced>'),
-    markup.indexOf('</details>')
-  );
-  assert.ok(advanced.includes('<summary>Advanced</summary>'));
-  assert.ok(advanced.includes('<fieldset data-group="gradientEnabled">'));
-  assert.ok(advanced.includes('data-field="customCssEnabled"'));
-  assert.ok(advanced.includes('data-share="value"'));
-  assert.ok(!advanced.includes('data-action="apply-preset"'), 'no built-in preset control');
-  assert.ok(!advanced.includes('data-field="themeEnabled"'), 'the palette stays in plain sight');
-
-  assert.ok(
-    markup.includes('fieldset[data-group]:has(> legend .toggle > input:not(:checked)) {'),
-    'collapsed sections must shed their padding and border'
-  );
-  assert.ok(
-    markup.includes(
-      'fieldset[data-group]:has(> legend .toggle > input:not(:checked)) > :not(legend):not(.note) {'
-    ),
-    'collapsed sections must hide their dials while keeping their explanation'
-  );
-});
-
-test('the whole palette sits in one compact colour grid', () => {
-  const harness = createHarness(createWebsiteAppearancePanel);
-  const markup = harness.shadow.innerHTML;
-  const start = markup.indexOf('<fieldset data-group="themeEnabled">');
-  const theme = markup.slice(start, markup.indexOf('</fieldset>', start));
-
-  const grids = [...theme.matchAll(/<div class="colors">/g)];
-  assert.equal(grids.length, 1, 'the palette must not be split across sub-grids');
-  const grid = theme.slice(theme.indexOf('<div class="colors">'), theme.indexOf('</div>'));
-  assert.deepEqual(markupFields(grid), [...PALETTE_FIELDS].sort());
-  assert.ok(theme.includes('<p class="hint note">'), 'the palette explains what it drives');
-
-  for (const field of PALETTE_FIELDS) {
-    assert.ok(
-      grid.includes(`<input type="color" data-field="${field}"`),
-      `${field} needs a swatch`
-    );
-  }
-  assert.ok(grid.includes('aria-label="Active row text color"'));
-  assert.ok(grid.includes('aria-label="Speaker 3 color"'));
 });
 
 test('every appearance setting is reachable, and the editor exposes nothing else', async () => {

@@ -13,7 +13,6 @@ const bundledModulePath = path.join(
   tempDir,
   "selected-number-to-skaz.bundle.mjs",
 );
-const rootDir = path.resolve(".");
 
 await build({
   entryPoints: [path.resolve("src/hooks/selected-number-to-skaz.ts")],
@@ -23,19 +22,6 @@ await build({
   format: "esm",
   target: "node20",
   logLevel: "silent",
-  banner: {
-    js: 'const __dirname = "/virtual";',
-  },
-  plugins: [
-    {
-      name: "fs-browser-shim",
-      setup(buildApi) {
-        buildApi.onResolve({ filter: /^fs$/ }, () => ({
-          path: path.join(rootDir, "src/build/fs-browser-shim.js"),
-        }));
-      },
-    },
-  ],
 });
 
 const selectedNumberModule = await import(

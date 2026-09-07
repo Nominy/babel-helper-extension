@@ -236,3 +236,327 @@ test('page.magnifier keeps every legacy operation late-bound, preserves progress
   );
   assert.equal(responses.length, responseCountBeforeDispose);
 });
+
+async function loadClient() {
+  const result = await build({
+    entryPoints: [path.resolve('src/services/bridge-client-service.ts')],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2020'
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].contents).toString('base64')}`);
+}
+
+function clientFixture(t, { loaded = false, invalidContext = false } = {}) {
+  const listeners = new Map();
+  const timers = new Map();
+  const scripts = [];
+  const requests = [];
+  let time = 0;
+  let nextTimer = 0;
+  const pageWindow = {
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
+    dispatchEvent(event) {
+      for (const listener of [...(listeners.get(event.type) || [])]) listener(event);
+      return true;
+    },
+    setTimeout(callback, delay) {
+      const id = ++nextTimer;
+      timers.set(id, { callback, deadline: time + delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); }
+  };
+  if (loaded) pageWindow.__babelHelperMagnifierBridge = {};
+  const globals = {
+    window: pageWindow,
+    document: {
+      documentElement: { appendChild(script) { scripts.push(script); } },
+      createElement() {
+        return { removed: false, remove() { this.removed = true; } };
+      }
+    },
+    chrome: { runtime: { getURL(resource) {
+      if (invalidContext) throw new Error('Extension context invalidated.');
+      return `chrome-extension://helper/${resource}`;
+    } } },
+    CustomEvent: TestCustomEvent
+  };
+  for (const [key, value] of Object.entries(globals)) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else delete globalThis[key];
+    });
+  }
+  pageWindow.addEventListener('babel-helper-magnifier-request', (event) => {
+    requests.push(event.detail);
+  });
+  return {
+    scripts,
+    requests,
+    timers,
+    responseListeners: () => listeners.get('babel-helper-magnifier-response')?.size || 0,
+    respond(id, result) {
+      pageWindow.dispatchEvent(new TestCustomEvent('babel-helper-magnifier-response', {
+        detail: { id, result }
+      }));
+    },
+    advance(milliseconds) {
+      time += milliseconds;
+      for (const [id, timer] of [...timers]) {
+        if (timer.deadline <= time) {
+          timers.delete(id);
+          timer.callback();
+        }
+      }
+    }
+  };
+}
+
+test('magnifier clients load independently and correlate concurrent out-of-order responses', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t);
+  const magnifier = createMagnifierBridgeClient('request-');
+  const minimap = createMagnifierBridgeClient('minimap-request-');
+  const scale = createMagnifierBridgeClient('waveform-scale-');
+  const settled = [];
+  const track = (name, request) => request.then((result) => {
+    settled.push(name);
+    return result;
+  });
+  const first = track('first', magnifier('ensure', { instanceId: 'lens-a' }));
+  const second = track('second', magnifier('update', { instanceId: 'lens-b' }));
+  const map = track('map', minimap('minimap-data'));
+  const zoom = track('zoom', scale('waveform-scale-set', { scale: 2 }));
+  assert.equal(fixture.scripts.length, 3, 'one pending load per client, not per call');
+  assert.deepEqual(fixture.requests, []);
+
+  fixture.scripts[1].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(fixture.requests.map((request) => request.operation), ['minimap-data']);
+  fixture.respond(fixture.requests[0].id, { lanes: ['speaker-a'] });
+  assert.deepEqual(await map, { lanes: ['speaker-a'] });
+  assert.deepEqual(settled, ['map'], 'one loaded client must not release another client');
+
+  fixture.scripts[0].onload();
+  fixture.scripts[2].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  const ids = fixture.requests.map((request) => request.id);
+  assert.equal(new Set(ids).size, 4, 'independent counters must not collide on the shared channel');
+  fixture.respond('unrelated-request', { ok: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(settled, ['map']);
+  const requestFor = (operation) => fixture.requests.find((request) => request.operation === operation);
+  fixture.respond(requestFor('waveform-scale-set').id, { scale: 2 });
+  fixture.respond(requestFor('update').id, { lens: 'lens-b' });
+  fixture.respond(requestFor('ensure').id, { lens: 'lens-a' });
+  assert.deepEqual(await Promise.all([first, second, zoom]), [
+    { lens: 'lens-a' }, { lens: 'lens-b' }, { scale: 2 }
+  ]);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+  assert.ok(fixture.scripts.every((script) => script.removed));
+});
+
+test('magnifier timeout releases its listener and late replies cannot settle a subsequent call', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t, { loaded: true });
+  const call = createMagnifierBridgeClient('request-');
+  let settled = false;
+  const lost = call('ensure').then((result) => { settled = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  const expiredId = fixture.requests[0].id;
+  fixture.respond('wrong-id', { ok: true });
+  fixture.advance(699);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  fixture.advance(1);
+  assert.equal(await lost, null);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+
+  let nextSettled = false;
+  const next = call('ensure').then((result) => { nextSettled = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.respond(expiredId, { stale: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(nextSettled, false);
+  fixture.respond(fixture.requests[1].id, { lens: 'recovered' });
+  assert.deepEqual(await next, { lens: 'recovered' });
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+  assert.deepEqual(fixture.scripts, []);
+});
+
+test('magnifier script errors settle every load waiter and allow a later injection retry', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t);
+  const call = createMagnifierBridgeClient('request-');
+  const first = call('ensure');
+  const second = call('update');
+  fixture.scripts[0].onerror();
+  assert.deepEqual(await Promise.all([first, second]), [null, null]);
+  assert.equal(fixture.scripts[0].removed, true);
+  assert.deepEqual(fixture.requests, []);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+
+  const retried = call('ensure');
+  assert.equal(fixture.scripts.length, 2);
+  fixture.scripts[1].onload();
+  await new Promise((resolve) => setImmediate(resolve));
+  fixture.respond(fixture.requests[0].id, { lens: 'available' });
+  assert.deepEqual(await retried, { lens: 'available' });
+  assert.equal(fixture.scripts[1].removed, true);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+});
+
+test('invalidated extension context settles magnifier requests without leaking listeners or timers', async (t) => {
+  const { createMagnifierBridgeClient } = await loadClient();
+  const fixture = clientFixture(t, { invalidContext: true });
+  const call = createMagnifierBridgeClient('request-');
+  assert.equal(await call('ensure'), null);
+  assert.deepEqual(fixture.scripts, []);
+  assert.deepEqual(fixture.requests, []);
+  assert.equal(fixture.responseListeners(), 0);
+  assert.equal(fixture.timers.size, 0);
+});
+
+test('zoom ready waits for the visible wave only and settles without Promise.withResolvers', async (t) => {
+  const previous = ['window', 'document', 'CustomEvent', 'HTMLElement', 'ShadowRoot', 'MutationObserver'].map(
+    (key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]
+  );
+  const withResolvers = Promise.withResolvers;
+  t.after(() => {
+    Promise.withResolvers = withResolvers;
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  // Chrome 114-118 (the esbuild target) has no Promise.withResolvers.
+  Promise.withResolvers = undefined;
+
+  class TestHTMLElement {
+    constructor(visible = true) {
+      this.isConnected = true;
+      this.visible = visible;
+      this.parentElement = null;
+    }
+    getRootNode() {
+      return globalThis.document;
+    }
+    getBoundingClientRect() {
+      return this.visible ? { width: 320, height: 48 } : { width: 0, height: 0 };
+    }
+  }
+  const observers = [];
+  const services = new TestServiceRegistry();
+  const pageWindow = new EventTarget();
+  const pageDocument = new EventTarget();
+  const slider = new TestHTMLElement();
+  const registry = {};
+  slider.__reactFiber$test = { ref: { current: registry } };
+  pageWindow.BabelMods = { unsafe: { services } };
+  pageWindow.setTimeout = setTimeout;
+  pageWindow.clearTimeout = clearTimeout;
+  pageWindow.getComputedStyle = (element) => ({
+    display: element.visible ? 'block' : 'none',
+    visibility: 'visible'
+  });
+  pageDocument.documentElement = new TestHTMLElement();
+  pageDocument.querySelector = (selector) => (selector.includes('[role="slider"]') ? slider : null);
+  globalThis.window = pageWindow;
+  globalThis.document = pageDocument;
+  globalThis.CustomEvent = TestCustomEvent;
+  globalThis.HTMLElement = TestHTMLElement;
+  globalThis.ShadowRoot = class ShadowRoot {};
+  globalThis.MutationObserver = class MutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.disconnected = true;
+    }
+  };
+
+  const makeWave = (container, decoded) => {
+    const listeners = new Map();
+    return {
+      container,
+      decoded,
+      listeners,
+      getDuration: () => 1,
+      getDecodedData() {
+        return this.decoded ? { duration: 1 } : null;
+      },
+      on(event, callback) {
+        listeners.set(event, callback);
+        return () => listeners.delete(event);
+      }
+    };
+  };
+  const visible = makeWave(new TestHTMLElement(true), false);
+  const collapsed = makeWave(new TestHTMLElement(false), false);
+  registry.primary = { wavesurfer: visible };
+  registry.collapsed = { wavesurfer: collapsed };
+
+  const responses = [];
+  pageWindow.addEventListener('babel-helper-magnifier-response', (event) => {
+    responses.push(event.detail);
+  });
+  await loadBridge();
+  t.after(() => pageWindow.__babelHelperMagnifierBridge?.dispose());
+
+  const request = (id) => {
+    pageWindow.dispatchEvent(
+      new TestCustomEvent('babel-helper-magnifier-request', {
+        detail: { id, operation: 'zoom-ready', payload: { timeoutMs: 5000 } }
+      })
+    );
+    return new Promise((resolve) => setImmediate(resolve));
+  };
+
+  await request('pending');
+  assert.equal(responses.find((entry) => entry.id === 'pending'), undefined);
+  assert.equal(typeof visible.listeners.get('ready'), 'function');
+
+  // The visible wave decoding is enough; the collapsed track never decodes.
+  visible.decoded = true;
+  visible.listeners.get('ready')();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responses.find((entry) => entry.id === 'pending')?.result, { ok: true });
+  assert.equal(visible.listeners.size, 0);
+  assert.equal(collapsed.listeners.size, 0);
+  assert.equal(observers.at(-1).disconnected, true);
+
+  // With every track hidden, any decoded wave is enough to zoom.
+  visible.decoded = false;
+  visible.container.visible = false;
+  collapsed.decoded = true;
+  await request('all-hidden');
+  assert.deepEqual(responses.find((entry) => entry.id === 'all-hidden')?.result, { ok: true });
+
+  // A visible wave that is not yet decoded still gates readiness.
+  visible.container.visible = true;
+  await request('gated');
+  assert.equal(responses.find((entry) => entry.id === 'gated'), undefined);
+  visible.decoded = true;
+  visible.listeners.get('ready')();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responses.find((entry) => entry.id === 'gated')?.result, { ok: true });
+});
