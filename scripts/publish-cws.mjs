@@ -54,6 +54,12 @@ console.log(`Preparing Chrome Web Store upload for ${extensionId} (${manifest.ve
 console.log(`ZIP: ${zipPath}`);
 
 const accessToken = await getAccessToken();
+const uploadUrl = createUploadUrl(publisherId, extensionId);
+const publishUrl = createPublishUrl(publisherId, extensionId);
+const statusUrl = createStatusUrl(publisherId, extensionId);
+
+assertVersionAboveStore(manifest.version, await fetchStoreVersions(statusUrl, accessToken));
+
 if (cancelPendingSubmission) {
   const cancelResult = await requestJson(createCancelSubmissionUrl(publisherId, extensionId), {
     method: 'POST',
@@ -64,9 +70,6 @@ if (cancelPendingSubmission) {
   ensureApiSuccess(cancelResult, 'submission cancellation');
   console.log(`Cancelled pending Chrome Web Store submission for ${extensionId}.`);
 }
-const uploadUrl = createUploadUrl(publisherId, extensionId);
-const publishUrl = createPublishUrl(publisherId, extensionId);
-const statusUrl = createStatusUrl(publisherId, extensionId);
 const zipBuffer = await readFile(zipPath);
 
 const uploadResult = await requestJson(uploadUrl, {
@@ -368,6 +371,85 @@ function ensureApiSuccess(payload, stage) {
   if (typeof uploadState === 'string' && /(FAIL|ERROR|INVALID|REJECT)/i.test(uploadState)) {
     throw new Error(`Chrome Web Store ${stage} failed with uploadState=${uploadState}.\n${formatJson(payload)}`);
   }
+}
+
+/**
+ * Versions the store currently holds (items.fetchStatus): the published revision and the
+ * revision submitted for review, if any.
+ */
+async function fetchStoreVersions(url, token) {
+  const status = await requestJson(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+  ensureApiSuccess(status, 'fetchStatus');
+
+  const describeRevision = (revision) => {
+    if (!revision || typeof revision !== 'object') {
+      return null;
+    }
+    const versions = (Array.isArray(revision.distributionChannels) ? revision.distributionChannels : [])
+      .map((channel) => channel?.crxVersion)
+      .filter((value) => typeof value === 'string' && value.length > 0);
+    return { state: revision.state ?? null, versions };
+  };
+
+  return {
+    published: describeRevision(status.publishedItemRevisionStatus),
+    submitted: describeRevision(status.submittedItemRevisionStatus),
+    takenDown: status.takenDown === true,
+    warned: status.warned === true
+  };
+}
+
+/** Abort unless the manifest version is strictly greater than every published and submitted store version. */
+function assertVersionAboveStore(manifestVersion, storeVersions) {
+  const describe = (label, revision) =>
+    `${label}: ${revision ? `${revision.versions.join(', ') || '(no package)'}${revision.state ? ` [${revision.state}]` : ''}` : 'none'}`;
+  console.log(
+    `Chrome Web Store versions -> ${describe('published', storeVersions.published)}; ${describe('submitted', storeVersions.submitted)}; manifest: ${manifestVersion}`
+  );
+  if (storeVersions.takenDown) {
+    console.warn('Chrome Web Store reports this item as taken down. Check the developer dashboard.');
+  }
+  if (storeVersions.warned) {
+    console.warn('Chrome Web Store reports a policy warning for this item. Check the developer dashboard.');
+  }
+
+  const blocking = [];
+  for (const [label, revision] of [['published', storeVersions.published], ['submitted', storeVersions.submitted]]) {
+    for (const version of revision?.versions ?? []) {
+      if (compareExtensionVersions(manifestVersion, version) <= 0) {
+        blocking.push(`${label} ${version}`);
+      }
+    }
+  }
+  if (blocking.length > 0) {
+    throw new Error(
+      `Refusing to upload manifest version ${manifestVersion}: it is not greater than the Chrome Web Store ${blocking.join(' and ')}. Bump the version and retry.`
+    );
+  }
+}
+
+function compareExtensionVersions(left, right) {
+  const parse = (value) => {
+    const text = String(value ?? '').trim();
+    if (!/^\d+(\.\d+){0,3}$/.test(text)) {
+      throw new Error(`Unsupported extension version: ${JSON.stringify(value)}`);
+    }
+    return text.split('.').map(Number);
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0);
+    if (delta !== 0) {
+      return delta < 0 ? -1 : 1;
+    }
+  }
+  return 0;
 }
 
 function createUploadUrl(publisherId, extensionId) {

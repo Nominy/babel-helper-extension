@@ -124,8 +124,10 @@ Feedback draft restore notes:
 
 - `npm run build:zip` rebuilds the extension and writes `.artifacts/babel-helper-extension-<version>.zip`.
 - `npm run build:zip -- --no-build` packages existing bundles without rebuilding or changing the version. `BABEL_EXTENSION_ZIP_DIR` overrides the output directory and `BABEL_EXTENSION_ZIP_PATH` overrides the complete ZIP path; relative paths resolve from this repository root.
-- The deploy workflow validates, runs `npm run build:zip` (which bumps through `npm run build`), publishes to Chrome Web Store, and commits the bumped version files.
-- `.github/workflows/deploy-babel-helper-extension.yml` is a manual deployment workflow. It validates the extension, builds the ZIP, publishes it to the Chrome Web Store, commits the bumped version files back to the selected branch, and then creates or updates the matching GitHub Release asset tagged as `v<version>`.
+- The version committed in `manifest.json`, `package.json` and `package-lock.json` is the release version. Bump it in the PR (`npm run version:patch`, or implicitly through `npm run build`); CI never bumps or commits versions. The version must be greater than what the Chrome Web Store currently holds (the publish script checks this and aborts otherwise).
+- Push to `main` (`.github/workflows/deploy-babel-helper-extension.yml`, job `prerelease`) validates, builds the ZIP without bumping, uploads it as a workflow artifact, and creates a GitHub *pre-release* tagged `v<version>` pointing at that commit. It never publishes to the Chrome Web Store. If `v<version>` is already a full release the job fails until the version is bumped.
+- Publishing to the Chrome Web Store is manual only: run the same workflow via `workflow_dispatch` (job `publish`) with `version` (must equal `manifest.json` on the selected ref, whose tag `v<version>` must point at that commit and still be a pre-release) and `confirm` set to `PUBLISH <version>`. `publish_type` defaults to `STAGED_PUBLISH`; `replace_pending_submission` cancels a pending review first. The job re-validates, rebuilds, checks the store's published and submitted versions, uploads and publishes, then promotes the pre-release to a full release.
+- `.github/workflows/ci.yml` (job `validate`) runs typecheck, tests and `build:core` on pull requests and non-main pushes; it is the required status check for merging to `main`.
 - Required GitHub Actions secrets:
   - `CWS_CLIENT_ID`
   - `CWS_CLIENT_SECRET`
