@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
+
 import { createMagnifierBridgeClient } from '../services/bridge-client-service';
 import type { FeatureModule } from '../core/types';
 
@@ -376,6 +378,8 @@ export function registerMagnifierService(helper: any) {
 
   function createMagnifier(context) {
     const element = document.createElement("div");
+    themeRoot(element, "white");
+    applyComponent(element, "surface");
     element.setAttribute(MAGNIFIER_ATTR, "true");
     element.style.position = "absolute";
     element.style.top = INSET + "px";
@@ -385,10 +389,6 @@ export function registerMagnifierService(helper: any) {
     element.style.zIndex = "9";
     element.style.pointerEvents = "none";
     element.style.overflow = "hidden";
-    element.style.border = "1px solid rgba(15, 23, 42, 0.78)";
-    element.style.borderRadius = "6px";
-    element.style.background = "rgba(255, 255, 255, 0.98)";
-    element.style.boxShadow = "0 10px 20px rgba(15, 23, 42, 0.20)";
 
     const viewport = document.createElement("div");
     viewport.style.position = "absolute";
@@ -411,23 +411,19 @@ export function registerMagnifierService(helper: any) {
     viewport.appendChild(regionsLayer);
 
     const badge = document.createElement("div");
+    applyComponent(badge, "badge");
     badge.style.position = "absolute";
     badge.style.left = "6px";
     badge.style.top = "5px";
     badge.style.padding = "2px 6px";
-    badge.style.borderRadius = "999px";
-    badge.style.fontSize = "10px";
-    badge.style.fontWeight = "700";
-    badge.style.lineHeight = "1.2";
     badge.style.fontFamily =
       "ui-monospace, SFMono-Regular, Consolas, monospace";
-    badge.style.color = "#e2e8f0";
-    badge.style.background = "rgba(15, 23, 42, 0.82)";
     badge.style.zIndex = "5";
     badge.textContent = `${SCALE}x`;
     element.appendChild(badge);
 
     context.container.appendChild(element);
+    themeRoot(element, "white");
 
     const hostMarker = nextMarker("host");
     const mountMarker = nextMarker("mount");

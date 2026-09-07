@@ -43,6 +43,8 @@ class FakeClassList {
     this.element = element;
   }
 
+  add(...names) { for (const name of names) this.toggle(name, true); }
+
   contains(name) {
     return (this.element.getAttribute('class') ?? '').split(/\s+/).includes(name);
   }
@@ -152,25 +154,6 @@ function findElements(root, selector) {
   return matches;
 }
 
-function cssDeclarations(styleElement, selector) {
-  const rule = [...styleElement.textContent.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .find((match) => match[1].trim() === selector);
-  assert.ok(rule, `Missing CSS rule for ${selector}`);
-  return Object.fromEntries(
-    rule[2]
-      .split(';')
-      .map((declaration) => declaration.trim())
-      .filter(Boolean)
-      .map((declaration) => {
-        const separator = declaration.indexOf(':');
-        return [
-          declaration.slice(0, separator).trim(),
-          declaration.slice(separator + 1).trim()
-        ];
-      })
-  );
-}
-
 class FakeElement extends FakeNode {
   constructor(tagName, ownerDocument) {
     super();
@@ -185,7 +168,7 @@ class FakeElement extends FakeNode {
     this.open = false;
     this.textContent = '';
     this.shadowRoot = null;
-    this.style = {};
+    this.style = { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } };
   }
 
   setAttribute(name, value) {
@@ -601,7 +584,7 @@ test('exact Alt+Shift+P toggles one Shadow DOM editor even while a panel control
   assert.equal(harness.document.activeElement, pageButton);
 });
 
-test('the toolbar launcher is an accessible green nature button that toggles exactly like the shortcut', () => {
+test('the toolbar launcher is an accessible nature button that toggles exactly like the shortcut', () => {
   let toolbar;
   let wand;
   const harness = createHarness(createWebsiteAppearancePanel, DEFAULTS, {
@@ -631,29 +614,6 @@ test('the toolbar launcher is an accessible green nature button that toggles exa
   );
   assert.equal(launcherStyles.length, 1);
   assert.equal(launcherStyles[0].tagName, 'STYLE');
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]'),
-    {
-      'background-color': 'rgba(240, 253, 244, 0.5)',
-      border: '1px solid #86efac',
-      color: '#15803d',
-      transition: 'background-color 120ms ease, border-color 120ms ease'
-    }
-  );
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:hover'),
-    {
-      'background-color': 'rgba(220, 252, 231, 0.75)',
-      'border-color': '#4ade80'
-    }
-  );
-  assert.deepEqual(
-    cssDeclarations(launcherStyles[0], 'button[data-babel-helper-appearance-button]:active'),
-    {
-      'background-color': 'rgba(187, 247, 208, 0.9)',
-      'border-color': '#22c55e'
-    }
-  );
   assert.equal(launcher.parentElement, toolbar);
   assert.equal(toolbar.children[toolbar.children.indexOf(wand) + 1], launcher);
   assert.equal(

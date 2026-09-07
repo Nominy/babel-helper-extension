@@ -56,7 +56,8 @@ class TestElement extends TestEventTarget {
   constructor(tagName = 'div') {
     super();
     this.tagName = tagName.toUpperCase();
-    this.style = {};
+    this.style = { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } };
+    this.classList = { add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/), ...names])].join(" "); } };
     this.dataset = {};
     this.children = [];
     this.isConnected = false;

@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
+
 import { createMagnifierBridgeClient } from '../services/bridge-client-service';
 import {
   loadWorkflowDefaults,
@@ -173,6 +175,8 @@ export function registerWaveformScaleService(helper: any) {
     }
 
     const root = document.createElement('div');
+    applyComponent(root, 'row');
+    themeRoot(root, 'white');
     root.setAttribute(EDITOR_ATTR, row.key);
     root.style.position = 'absolute';
     root.style.left = '50%';
@@ -183,13 +187,10 @@ export function registerWaveformScaleService(helper: any) {
     root.style.justifyContent = 'center';
     root.style.width = '72px';
     root.style.height = '28px';
-    root.style.border = '1px solid rgba(100, 116, 139, 0.35)';
-    root.style.borderRadius = '999px';
-    root.style.background = 'rgba(255, 255, 255, 0.98)';
-    root.style.boxShadow = '0 6px 20px rgba(15, 23, 42, 0.16)';
     root.style.zIndex = '6';
 
     const input = document.createElement('input');
+    applyComponent(input, 'input');
     input.type = 'number';
     input.min = '0.3';
     input.max = String(getTargetMax());
@@ -199,27 +200,19 @@ export function registerWaveformScaleService(helper: any) {
     input.value = formatInputValue(row.slider.getAttribute('aria-valuenow'));
     input.style.width = '100%';
     input.style.height = '100%';
-    input.style.border = '0';
     input.style.outline = 'none';
-    input.style.borderRadius = '999px';
     input.style.padding = '0 18px 0 10px';
-    input.style.fontSize = '12px';
-    input.style.fontWeight = '700';
     input.style.textAlign = 'center';
-    input.style.background = 'transparent';
-    input.style.color = '#0f172a';
     input.style.appearance = 'textfield';
     input.style.MozAppearance = 'textfield';
 
     const suffix = document.createElement('span');
+    applyComponent(suffix, 'meta');
     suffix.textContent = 'x';
     suffix.style.position = 'absolute';
     suffix.style.right = '9px';
     suffix.style.top = '50%';
     suffix.style.transform = 'translateY(-50%)';
-    suffix.style.fontSize = '11px';
-    suffix.style.fontWeight = '700';
-    suffix.style.color = '#475569';
     suffix.style.pointerEvents = 'none';
 
     input.addEventListener('keydown', (event) => {

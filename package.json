@@ -24,6 +24,7 @@
     "typescript": "^5.8.2"
   },
   "dependencies": {
-    "@nominy/babel-babel-runtime": "file:../shared/babel-extension-platform/packages/babel-babel-runtime"
+    "@nominy/babel-babel-runtime": "file:../shared/babel-extension-platform/packages/babel-babel-runtime",
+    "@nominy/babel-extension-frontend": "file:../shared/babel-extension-platform/packages/babel-extension-frontend"
   }
 }

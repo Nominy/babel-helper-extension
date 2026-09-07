@@ -489,8 +489,10 @@ test('timing-ready notification lasts 750ms and replaces an older notice', () =>
     },
     createElement() {
       return {
+        ownerDocument: fakeDocument,
+        classList: { add() {} },
         attributes: {},
-        style: {},
+        style: { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } },
         textContent: '',
         removed: false,
         setAttribute(name, value) {

@@ -1,3 +1,4 @@
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
 type SegmentRecord = {
   startTimeInSeconds?: unknown;
   endTimeInSeconds?: unknown;
@@ -854,9 +855,8 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = 'babel-helper-extended-diff-style';
   style.textContent = `
-    .bh-segmentation-mode-controls { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; padding: 2px; border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 6px; background: rgba(255, 255, 255, 0.88); }
-    .bh-segmentation-mode-controls button { border: 0; border-radius: 4px; padding: 2px 7px; background: transparent; color: #334155; font-size: 11px; font-weight: 700; cursor: pointer; }
-    .bh-segmentation-mode-controls button[data-active="true"] { background: #0f172a; color: #f8fafc; }
+    .bh-segmentation-mode-controls { margin-left: 8px; padding: 2px; }
+    .bh-segmentation-mode-controls button[data-active="true"] { background: var(--bui-accent-soft); border-color: var(--bui-accent-ink); }
   `;
   document.documentElement.appendChild(style);
 }
@@ -889,6 +889,8 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
   if (!controls) {
     controls = createElement('div', 'bh-segmentation-mode-controls');
     controls.id = 'bh-segmentation-mode-controls';
+    themeRoot(controls, 'white');
+    applyComponent(controls, 'row');
     anchor.insertAdjacentElement('afterend', controls);
   }
 
@@ -913,6 +915,7 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
   controls.replaceChildren(
     ...options.map((option) => {
       const button = createElement('button', '', option.label);
+      applyComponent(button, 'button', { size: 'sm' });
       button.type = 'button';
       button.title = option.title;
       button.dataset.mode = option.mode;

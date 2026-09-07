@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
+
 import type { TimelineModules } from '../services/timeline-selection-service';
 
 export function createLongTaskProgress(helper: any, api: Pick<TimelineModules, 'site'>) {
@@ -24,6 +26,8 @@ export function createLongTaskProgress(helper: any, api: Pick<TimelineModules, '
 
     const root = document.createElement('div');
     root.id = LONG_TASK_PROGRESS_ID;
+    themeRoot(root, 'white');
+    applyComponent(root, 'toast');
     root.setAttribute('role', 'status');
     root.setAttribute('aria-live', 'polite');
     root.style.position = 'fixed';
@@ -32,34 +36,25 @@ export function createLongTaskProgress(helper: any, api: Pick<TimelineModules, '
     root.style.width = '300px';
     root.style.maxWidth = 'calc(100vw - 36px)';
     root.style.padding = '12px 14px';
-    root.style.border = '1px solid rgba(15, 23, 42, 0.14)';
-    root.style.borderRadius = '8px';
-    root.style.background = 'rgba(255, 255, 255, 0.96)';
-    root.style.boxShadow = '0 16px 38px rgba(15, 23, 42, 0.18)';
-    root.style.color = '#111827';
-    root.style.font = '13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    root.style.zIndex = '2147483647';
     root.style.pointerEvents = 'none';
 
     const label = document.createElement('div');
-    label.style.fontWeight = '650';
+    applyComponent(label, 'title');
     label.style.marginBottom = '6px';
 
     const detail = document.createElement('div');
-    detail.style.color = '#4b5563';
+    applyComponent(detail, 'hint');
     detail.style.marginBottom = '8px';
 
     const track = document.createElement('div');
+    applyComponent(track, 'progress');
     track.style.height = '6px';
     track.style.overflow = 'hidden';
-    track.style.borderRadius = '999px';
-    track.style.background = '#e5e7eb';
 
     const fill = document.createElement('div');
+    applyComponent(fill, 'progress-fill');
     fill.style.width = '0%';
     fill.style.height = '100%';
-    fill.style.borderRadius = '999px';
-    fill.style.background = '#2563eb';
     fill.style.transition = 'width 120ms ease';
 
     track.appendChild(fill);
@@ -93,7 +88,11 @@ export function createLongTaskProgress(helper: any, api: Pick<TimelineModules, '
           : 'Preparing...';
     delete progress.root.dataset.babelHelperL0TranscriptionFailure;
     delete progress.root.dataset.babelHelperL0TranscriptionFailureToken;
-    progress.fill.style.background = '#2563eb';
+    delete progress.fill.dataset.tone;
+    delete progress.root.dataset.tone;
+    progress.fill.parentElement.dataset.indeterminate = String(
+      (percent === undefined || percent === null || !Number.isFinite(Number(percent))) && safeTotal === 0
+    );
     progress.fill.style.width = `${safePercent}%`;
   }
 
@@ -118,11 +117,12 @@ export function createLongTaskProgress(helper: any, api: Pick<TimelineModules, '
 
     const progress = helper.state.longTaskProgress;
     if (progress && progress.fill instanceof HTMLElement) {
-      progress.fill.style.background = '#dc2626';
+      progress.fill.dataset.tone = 'danger';
     }
     if (progress && progress.root instanceof HTMLElement) {
       const dismissToken = Date.now() + '-' + Math.random().toString(36).slice(2);
       progress.root.dataset.babelHelperL0TranscriptionFailure = 'true';
+      progress.root.dataset.tone = 'danger';
       progress.root.dataset.babelHelperL0TranscriptionFailureToken = dismissToken;
       window.setTimeout(() => {
         if (

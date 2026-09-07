@@ -1,3 +1,4 @@
+import { themeRoot } from '@nominy/babel-extension-frontend';
 import {
   getAngleTagPartBackspaceEdit,
   shouldHandleAngleTagPartBackspaceEvent
@@ -775,13 +776,10 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
       item.setAttribute('role', 'option');
       item.setAttribute('aria-selected', index === state.highlightedIndex ? 'true' : 'false');
       item.dataset.quickRegionSuggestionIndex = String(index);
-      item.className =
-        index === state.highlightedIndex
-          ? 'cursor-pointer select-none px-3 py-1.5 text-xs bg-accent text-accent-foreground'
-          : 'cursor-pointer select-none px-3 py-1.5 text-xs hover:bg-accent/50';
+      item.className = 'bui-menu-item';
 
       const label = document.createElement('span');
-      label.className = 'font-mono font-semibold text-blue-600 dark:text-blue-400';
+      label.className = 'bui-code';
       label.textContent = suggestion.label;
       item.appendChild(label);
       fragment.appendChild(item);
@@ -802,8 +800,8 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     const root = document.createElement('ul');
     root.setAttribute('role', 'listbox');
     root.setAttribute(LISTBOX_ATTR, 'true');
-    root.className =
-      'fixed z-[9999] max-h-[140px] min-w-[180px] overflow-y-auto rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-lg';
+    root.className = 'bui-menu';
+    themeRoot(root, 'white');
     root.style.display = 'none';
     root.style.position = host === document.body ? 'fixed' : 'absolute';
     root.style.pointerEvents = 'auto';

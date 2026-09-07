@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { applyComponent, themeRoot } from '@nominy/babel-extension-frontend';
 import type { FeatureModule } from '../core/types';
 import type { TimelineModules } from '../services/timeline-selection-service';
 import type { EditorHooks } from '../core/editor-hooks';
@@ -345,7 +346,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       const labelText = Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
       label.textContent = labelText;
       label.style.display = labelText ? 'block' : 'none';
-      label.style.background = tooShort ? 'rgba(127, 29, 29, 0.92)' : 'rgba(15, 23, 42, 0.82)';
+      label.dataset.tone = tooShort ? 'danger' : 'neutral';
     }
   }
 
@@ -477,16 +478,11 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
 
     const label = document.createElement('div');
     label.setAttribute('data-babel-helper-cut-label', 'true');
+    applyComponent(label, 'badge', { accent: 'white' });
     label.style.position = 'absolute';
     label.style.left = '50%';
     label.style.top = '4px';
     label.style.transform = 'translateX(-50%)';
-    label.style.padding = '2px 6px';
-    label.style.borderRadius = '999px';
-    label.style.fontSize = '10px';
-    label.style.fontWeight = '700';
-    label.style.fontFamily = 'ui-monospace, SFMono-Regular, Consolas, monospace';
-    label.style.color = '#f8fafc';
     label.style.pointerEvents = 'none';
     label.style.whiteSpace = 'nowrap';
 
@@ -494,6 +490,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     preview.appendChild(rightHandle);
     preview.appendChild(label);
     draft.container.appendChild(preview);
+    themeRoot(label, 'white');
     api.site.rememberCutContainer(draft.container);
 
     const zoomSignature = api.site.getLaneZoomSignature(draft.container);

@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
+
 import type { FeatureModule } from '../core/types';
 
 export function registerHotkeysHelpService(helper: any) {
@@ -28,13 +30,14 @@ export function registerHotkeysHelpService(helper: any) {
   helper.buildHotkeysHelpBlock = function buildHotkeysHelpBlock() {
     const wrapper = document.createElement('div');
     wrapper.setAttribute(helper.config.hotkeysHelpMarker, 'true');
+    themeRoot(wrapper, 'white');
+    applyComponent(wrapper, 'body');
     wrapper.style.marginTop = '12px';
     wrapper.style.paddingTop = '12px';
     wrapper.style.borderTop = '1px solid rgba(148, 163, 184, 0.35)';
 
     const title = document.createElement('div');
-    title.style.fontWeight = '700';
-    title.style.fontSize = '14px';
+    applyComponent(title, 'row');
     title.style.marginBottom = '8px';
     title.style.display = 'flex';
     title.style.alignItems = 'center';
@@ -42,17 +45,16 @@ export function registerHotkeysHelpService(helper: any) {
     title.style.flexWrap = 'wrap';
 
     const titleText = document.createElement('span');
+    applyComponent(titleText, 'title');
     titleText.textContent = 'Babel Helper';
 
     const supportLink = document.createElement('a');
-    supportLink.className = 'babel-helper-support-link';
+    applyComponent(supportLink, 'link');
+    supportLink.classList.add('babel-helper-support-link');
     supportLink.href = 'https://ko-fi.com/naftsan';
     supportLink.target = '_blank';
     supportLink.rel = 'noopener noreferrer';
     supportLink.textContent = 'if this extension saves you time, consider supporting development on Ko-Fi';
-    supportLink.style.color = 'rgb(15, 122, 103)';
-    supportLink.style.fontSize = '11px';
-    supportLink.style.fontWeight = '700';
     supportLink.style.textDecoration = 'none';
     supportLink.addEventListener('click', (event) => event.stopPropagation());
 
@@ -62,6 +64,7 @@ export function registerHotkeysHelpService(helper: any) {
 
     for (const [shortcut, description] of helper.config.hotkeysHelpRows) {
       const row = document.createElement('div');
+    applyComponent(row, 'row');
       row.style.display = 'flex';
       row.style.alignItems = 'center';
       row.style.justifyContent = 'space-between';
@@ -69,25 +72,18 @@ export function registerHotkeysHelpService(helper: any) {
       row.style.marginTop = '4px';
 
       const text = document.createElement('span');
+    applyComponent(text, 'meta');
       text.textContent = description;
       text.style.flex = '1';
       text.style.minWidth = '0';
-      text.style.fontSize = '14px';
-      text.style.color = 'rgb(51, 65, 85)';
       text.style.textAlign = 'left';
 
       const key = document.createElement('kbd');
+    applyComponent(key, 'kbd');
       key.textContent = shortcut;
       key.style.marginLeft = 'auto';
       key.style.padding = '3px 8px';
-      key.style.border = '1px solid rgb(226, 232, 240)';
-      key.style.borderRadius = '8px';
-      key.style.background = 'rgb(248, 250, 252)';
-      key.style.fontFamily = 'ui-monospace, SFMono-Regular, Consolas, monospace';
-      key.style.fontSize = '12px';
-      key.style.fontWeight = '700';
       key.style.whiteSpace = 'nowrap';
-      key.style.color = 'rgb(100, 116, 139)';
 
       row.appendChild(text);
       row.appendChild(key);

@@ -1,3 +1,4 @@
+import { UI_STYLES, themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
 import {
   DEFAULT_WEBSITE_APPEARANCE_SETTINGS,
   WEBSITE_CUSTOM_CSS_MAX_LENGTH,
@@ -214,25 +215,25 @@ function dialMarkup(dial: Dial): string {
   switch (dial.kind) {
     case 'color':
     case 'list-color':
-      return `<label>${dial.label} <input type="color" data-field="${dial.field}" aria-label="${aria}"></label>`;
+      return `<label>${dial.label} <input type="color" data-field="${dial.field}" aria-label="${aria}" class="bui-color"></label>`;
     case 'number':
-      return `<label>${dial.label} <input type="number" min="${dial.min}" max="${dial.max}" step="${dial.step}" data-field="${dial.field}" aria-label="${aria}"></label>`;
+      return `<label>${dial.label} <input type="number" min="${dial.min}" max="${dial.max}" step="${dial.step}" data-field="${dial.field}" aria-label="${aria}" class="bui-input"></label>`;
     case 'range':
-      return `<label>${dial.label} <span class="slider"><input type="range" min="${dial.min}" max="${dial.max}" step="${dial.step}" data-field="${dial.field}" aria-label="${aria}"><output data-output="${dial.field}"></output></span></label>`;
+      return `<label>${dial.label} <span class="slider"><input type="range" min="${dial.min}" max="${dial.max}" step="${dial.step}" data-field="${dial.field}" aria-label="${aria}" class="bui-range"><output data-output="${dial.field}"></output></span></label>`;
     case 'select':
-      return `<label>${dial.label} <select data-field="${dial.field}" aria-label="${aria}">${dial.options
+      return `<label>${dial.label} <select data-field="${dial.field}" aria-label="${aria}" class="bui-select">${dial.options
         .map(([value, text]) => `<option value="${value}">${text}</option>`)
         .join('')}</select></label>`;
   }
 }
 
 function groupMarkup(group: AppearanceGroup): string {
-  const note = group.note ? `<p class="hint note">${group.note}</p>` : '';
+  const note = group.note ? `<p class="hint note bui-hint">${group.note}</p>` : '';
   const colors = group.dials.filter(isColorDial);
   const grid = colors.length > 0 ? `<div class="colors">${colors.map(dialMarkup).join('')}</div>` : '';
   const others = group.dials.filter((dial) => !isColorDial(dial));
-  return `<fieldset data-group="${group.flag}">
-          <legend><label class="toggle"><input type="checkbox" data-field="${group.flag}" aria-label="Enable ${group.legend}">${group.legend}</label></legend>
+  return `<fieldset data-group="${group.flag}" class="bui-surface">
+          <legend><label class="toggle bui-toggle"><input type="checkbox" data-field="${group.flag}" aria-label="Enable ${group.legend}" class="bui-checkbox">${group.legend}</label></legend>
           ${note}${grid}${others.map(dialMarkup).join('')}
         </fieldset>`;
 }
@@ -253,209 +254,87 @@ export function createWebsiteAppearancePanel(
   const launcher = targetDocument.createElement('button');
   const launcherStyle = targetDocument.createElement('style');
   launcherStyle.setAttribute(LAUNCHER_STYLE_ATTRIBUTE, '');
-  launcherStyle.textContent = `
-    button[${LAUNCHER_ATTRIBUTE}] {
-      background-color: rgba(240, 253, 244, 0.5);
-      border: 1px solid #86efac;
-      color: #15803d;
-      transition: background-color 120ms ease, border-color 120ms ease;
-    }
-    button[${LAUNCHER_ATTRIBUTE}]:hover {
-      background-color: rgba(220, 252, 231, 0.75);
-      border-color: #4ade80;
-    }
-    button[${LAUNCHER_ATTRIBUTE}]:active {
-      background-color: rgba(187, 247, 208, 0.9);
-      border-color: #22c55e;
-    }
-  `;
+  launcherStyle.textContent = '';
+  themeRoot(launcher, '#d4b85b');
+  applyComponent(launcher, 'icon-button', { variant: 'soft' });
+  launcher.style.setProperty('--bui-accent-soft', '#fffcf0');
   launcher.type = 'button';
   launcher.setAttribute(LAUNCHER_ATTRIBUTE, '');
   launcher.setAttribute('aria-label', 'Website Appearance');
   launcher.title = `Website Appearance (${SHORTCUT_LABEL})`;
-  launcher.textContent = '🌿';
+  launcher.textContent = '🖼️';
   launcher.style.width = '36px';
   launcher.style.height = '36px';
   launcher.style.minWidth = '36px';
   launcher.style.minHeight = '36px';
   launcher.style.flex = '0 0 36px';
-  launcher.style.borderRadius = '8px';
+  launcher.style.fontSize = '18px';
   launcher.style.display = 'inline-flex';
   launcher.style.alignItems = 'center';
   launcher.style.justifyContent = 'center';
   launcher.style.padding = '0';
   launcher.style.cursor = 'pointer';
-  launcher.style.fontSize = '18px';
-  launcher.style.lineHeight = '1';
   shadow.innerHTML = `
-    <style>
-      :host {
-        all: initial;
-        position: fixed;
-        z-index: 2147483647;
-        inset: 16px 16px auto auto;
-        width: min(340px, calc(100vw - 32px));
-        max-height: calc(100vh - 32px);
-        color: #111827;
-        color-scheme: light;
-        font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
+    <style>${UI_STYLES}
+      :host { all: initial; position: fixed; z-index: 2147483647; inset: 16px 16px auto auto; width: min(360px,calc(100vw - 32px)); max-height: calc(100vh - 32px); }
       :host([hidden]) { display: none !important; }
-      *, *::before, *::after { box-sizing: border-box; }
-      .panel {
-        overflow: auto;
-        max-height: calc(100vh - 32px);
-        border: 1px solid #cbd5e1;
-        border-radius: 12px;
-        background: #fff;
-        box-shadow: 0 18px 48px rgb(15 23 42 / 24%);
-      }
-      header {
-        position: sticky;
-        z-index: 1;
-        top: 0;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 10px 12px;
-        border-bottom: 1px solid #e2e8f0;
-        background: #fff;
-      }
-      h2 { margin: 0; font-size: 15px; line-height: 1.2; }
-      .body { display: grid; gap: 8px; padding: 12px; }
-      .master { font-weight: 700; }
-      .hint { margin: -4px 0 2px; color: #475569; font-size: 12px; }
-      .hint.warn, .status.warn { color: #b45309; font-weight: 600; }
-      [hidden] { display: none !important; }
-      fieldset {
-        display: grid;
-        gap: 7px;
-        min-width: 0;
-        margin: 0;
-        padding: 8px 9px 9px;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-      }
-      legend { padding: 0 4px; color: #475569; font-weight: 700; }
+      .panel { overflow: auto; max-height: calc(100vh - 32px); box-shadow: var(--bui-shadow); }
+      header { position: sticky; top: 0; z-index: 1; }
+      fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 8px 10px; }
+      legend { padding-inline: 4px; }
       label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; }
       label.stack { grid-template-columns: 1fr; }
-      label.toggle { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; }
+      label.toggle { display: inline-flex; }
       .slider { display: inline-flex; align-items: center; gap: 6px; }
-      .colors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; }
-      .colors label { grid-template-columns: 1fr 30px; font-size: 12px; }
-      .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .colors { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px 10px; }
+      .colors label { grid-template-columns: 1fr 30px; }
       .row .grow { flex: 1 1 auto; min-width: 0; }
-      .row .hint { margin: 0; }
-      .row > button { flex: 0 0 auto; white-space: nowrap; }
-      .share { font: 11px/1.45 ui-monospace, monospace; }
+      .row > button { flex: 0 0 auto; }
       .advanced { display: grid; gap: 8px; }
-      .advanced > summary {
-        color: #475569;
-        font-weight: 700;
-        cursor: pointer;
-        list-style: none;
-      }
-      .advanced > summary::before { content: "▸ "; }
-      .advanced[open] > summary::before { content: "▾ "; }
-      .advanced > summary::-webkit-details-marker { display: none; }
-      fieldset[data-group] { padding-top: 4px; }
-      fieldset[data-group]:has(> legend .toggle > input:not(:checked)) {
-        gap: 0;
-        padding: 0 9px 3px;
-        border-color: transparent;
-      }
-      fieldset[data-group]:has(> legend .toggle > input:not(:checked)) > :not(legend):not(.note) {
-        display: none;
-      }
-      fieldset[data-group]:has(> legend .toggle > input:not(:checked)) > .note {
-        margin: 0 0 2px;
-      }
-      input, select, textarea, button { font: inherit; }
-      input[type='checkbox'] { width: 16px; height: 16px; margin: 0; accent-color: #0f766e; }
-      input[type='color'] {
-        width: 30px;
-        height: 24px;
-        padding: 1px;
-        border: 1px solid #94a3b8;
-        border-radius: 5px;
-        background: #fff;
-      }
-      input[type='number'], input[type='text'], select, textarea {
-        border: 1px solid #94a3b8;
-        border-radius: 6px;
-        background: #fff;
-        color: #111827;
-      }
-      input[type='number'] { width: 70px; padding: 4px 6px; }
-      select { min-width: 112px; padding: 4px 6px; }
-      input[type='range'] { width: 132px; accent-color: #0f766e; }
-      textarea { width: 100%; min-height: 76px; padding: 7px; resize: vertical; font: 12px/1.45 ui-monospace, monospace; }
-      input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible,
-      summary:focus-visible {
-        outline: 2px solid #0f766e;
-        outline-offset: 2px;
-      }
-      button {
-        border: 1px solid #94a3b8;
-        border-radius: 6px;
-        padding: 5px 9px;
-        background: #f8fafc;
-        color: #0f172a;
-        cursor: pointer;
-      }
-      button:hover { background: #f1f5f9; }
-      .icon-button { min-width: 30px; padding: 4px 7px; font-size: 17px; line-height: 1; }
-      output { min-width: 42px; color: #475569; text-align: right; font-variant-numeric: tabular-nums; }
-      .status { margin: -2px 0 0; color: #047857; font-size: 12px; }
-      .status.invalid { color: #b91c1c; }
-      footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      kbd {
-        border: 1px solid #cbd5e1;
-        border-bottom-width: 2px;
-        border-radius: 4px;
-        padding: 2px 5px;
-        background: #f8fafc;
-        color: #334155;
-        font: 11px/1.2 ui-monospace, monospace;
-        white-space: nowrap;
-      }
-      [disabled] { opacity: .55; cursor: not-allowed; }
+      fieldset[data-group]:has(> legend .toggle > input:not(:checked)) { gap: 0; padding: 0 10px 3px; border-color: transparent; }
+      fieldset[data-group]:has(> legend .toggle > input:not(:checked)) > :not(legend):not(.note) { display: none; }
+      input[type='color'] { width: 30px; height: 26px; }
+      input[type='number'] { width: 70px; }
+      input[type='range'] { width: 132px; }
+      select { min-width: 112px; }
+      output { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+      .status.invalid { color: var(--bui-danger); }
+      .hint.warn, .status.warn { color: var(--bui-warning); }
     </style>
-    <section class="panel" role="dialog" aria-modal="false" aria-labelledby="appearance-panel-title">
-      <header>
-        <h2 id="appearance-panel-title">Website Appearance</h2>
-        <button class="icon-button" type="button" data-action="close" aria-label="Close Website Appearance editor">×</button>
+    <section data-bui-accent="white" class="panel bui-panel bui-root" role="dialog" aria-modal="false" aria-labelledby="appearance-panel-title">
+      <header class="bui-header">
+        <h2 id="appearance-panel-title" class="bui-title">Website Appearance</h2>
+        <button class="icon-button bui-icon-button bui-button" type="button" data-action="close" aria-label="Close Website Appearance editor">×</button>
       </header>
-      <div class="body">
-        <label class="toggle master"><input type="checkbox" data-field="enabled">Enable custom appearance</label>
-        <p class="hint">Only the sections you enable are changed. Everything else keeps the site's own design.</p>
-        <p class="hint warn" id="master-hint" role="status" aria-live="polite">Turn on custom appearance to edit these sections.</p>
+      <div class="body bui-body">
+        <label class="toggle master bui-toggle"><input type="checkbox" data-field="enabled" class="bui-checkbox">Enable custom appearance</label>
+        <p class="hint bui-hint">Only the sections you enable are changed. Everything else keeps the site's own design.</p>
+        <p class="hint warn bui-hint" id="master-hint" role="status" aria-live="polite">Turn on custom appearance to edit these sections.</p>
         ${groupMarkup(TEXT_GROUP)}
         ${groupMarkup(THEME_GROUP)}
         <details class="advanced" data-advanced>
-          <summary>Advanced</summary>
+          <summary class="bui-summary">Advanced</summary>
           ${groupMarkup(GRADIENT_GROUP)}
-          <fieldset class="expert">
-            <legend><label class="toggle"><input type="checkbox" data-field="customCssEnabled" aria-label="Apply expert CSS">Expert CSS</label></legend>
-            <label class="stack">Custom CSS<textarea data-field="customCss" maxlength="${WEBSITE_CUSTOM_CSS_MAX_LENGTH}" spellcheck="false" aria-describedby="custom-css-status"></textarea></label>
-            <p class="status" id="custom-css-status" role="status" aria-live="polite"></p>
+          <fieldset class="expert bui-surface">
+            <legend><label class="toggle bui-toggle"><input type="checkbox" data-field="customCssEnabled" aria-label="Apply expert CSS" class="bui-checkbox">Expert CSS</label></legend>
+            <label class="stack">Custom CSS<textarea data-field="customCss" maxlength="${WEBSITE_CUSTOM_CSS_MAX_LENGTH}" spellcheck="false" aria-describedby="custom-css-status" class="bui-textarea"></textarea></label>
+            <p class="status bui-status" id="custom-css-status" role="status" aria-live="polite"></p>
           </fieldset>
-          <fieldset class="sharing">
+          <fieldset class="sharing bui-surface">
             <legend>Theme sharing</legend>
-            <label class="stack">Share string<input class="share" type="text" data-share="value" readonly spellcheck="false" aria-label="Website Appearance share string" aria-describedby="theme-status"></label>
-            <div class="row">
-              <button type="button" data-action="copy-share">Copy</button>
-              <input class="share grow" type="text" data-share="import" spellcheck="false" placeholder="Paste a theme string" aria-label="Website Appearance share string to import" aria-describedby="theme-status">
-              <button type="button" data-action="import-share">Import</button>
+            <label class="stack">Share string<input class="share bui-code bui-input" type="text" data-share="value" readonly spellcheck="false" aria-label="Website Appearance share string" aria-describedby="theme-status"></label>
+            <div class="row bui-row">
+              <button type="button" data-action="copy-share" class="bui-button">Copy</button>
+              <input class="share grow bui-code bui-input" type="text" data-share="import" spellcheck="false" placeholder="Paste a theme string" aria-label="Website Appearance share string to import" aria-describedby="theme-status">
+              <button type="button" data-action="import-share" class="bui-button">Import</button>
             </div>
-            <p class="status" id="theme-status" role="status" aria-live="polite"></p>
+            <p class="status bui-status" id="theme-status" role="status" aria-live="polite"></p>
           </fieldset>
         </details>
-        <p class="status invalid" id="commit-status" role="status" aria-live="polite"></p>
-        <footer>
-          <button type="button" data-action="reset">Reset appearance</button>
-          <span>Toggle <kbd>${SHORTCUT_LABEL}</kbd></span>
+        <p class="status invalid bui-status" id="commit-status" role="status" aria-live="polite"></p>
+        <footer class="bui-footer">
+          <button type="button" data-action="reset" class="bui-button">Reset appearance</button>
+          <span>Toggle <kbd class="bui-kbd">${SHORTCUT_LABEL}</kbd></span>
         </footer>
       </div>
     </section>

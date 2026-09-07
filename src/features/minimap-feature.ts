@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { applyComponent } from '@nominy/babel-extension-frontend';
 import { createMagnifierBridgeClient } from '../services/bridge-client-service';
 import type { FeatureModule } from '../core/types';
 
@@ -103,10 +104,8 @@ export function registerMinimapService(helper: any) {
     minimap.style.minWidth = '180px';
     minimap.style.height = MINIMAP_HEIGHT + 'px';
     minimap.style.boxSizing = 'border-box';
-    minimap.style.border = '1px solid #cbd5e1';
-    minimap.style.borderRadius = '6px';
+    applyComponent(minimap, 'surface', { accent: 'white' });
     minimap.style.overflow = 'hidden';
-    minimap.style.background = 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)';
     minimap.style.cursor = 'pointer';
     minimap.style.userSelect = 'none';
     minimap.style.touchAction = 'none';

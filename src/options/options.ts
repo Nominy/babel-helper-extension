@@ -1,3 +1,4 @@
+import { ensureUiStyles } from '@nominy/babel-extension-frontend';
 import {
   CUSTOM_LINTER_DEFAULTS_VERSION,
   CUSTOM_LINTER_RULE_SETTINGS,
@@ -65,22 +66,22 @@ function renderFeatureCards(list: HTMLElement) {
 
   for (const key of FEATURE_KEYS) {
     const card = document.createElement('label');
-    card.className = 'feature-card';
+    card.className = 'feature-card bui-card bui-setting-toggle';
 
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.name = key;
-    input.className = 'feature-toggle';
+    input.className = 'feature-toggle bui-checkbox';
 
     const details = document.createElement('div');
-    details.className = 'feature-details';
+    details.className = 'feature-details bui-stack';
 
     const title = document.createElement('div');
-    title.className = 'feature-title';
+    title.className = 'feature-title bui-label';
     title.textContent = FEATURE_META[key].label;
 
     const description = document.createElement('div');
-    description.className = 'feature-description';
+    description.className = 'feature-description bui-hint';
     description.textContent = FEATURE_META[key].description;
 
     details.appendChild(title);
@@ -88,11 +89,11 @@ function renderFeatureCards(list: HTMLElement) {
 
     if (key === 'customLinter' || key === 'proportionalCursorRestore') {
       const actions = document.createElement('div');
-      actions.className = 'feature-actions';
+      actions.className = 'feature-actions bui-row';
 
       const actionButton = document.createElement('button');
       actionButton.type = 'button';
-      actionButton.className = 'link-btn';
+      actionButton.className = 'link-btn bui-button';
       actionButton.dataset.role =
         key === 'customLinter' ? 'manage-custom-linter-rules' : 'customize-ghost-cursor';
       actionButton.textContent = key === 'customLinter' ? 'Manage rules' : 'Customize ghost cursor';
@@ -114,22 +115,22 @@ function renderCustomLinterRuleCards(list: HTMLElement): RuleInputMap {
 
   for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
     const card = document.createElement('label');
-    card.className = 'rule-card';
+    card.className = 'rule-card bui-card bui-setting-toggle';
 
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.name = `custom-linter-rule-${rule.id}`;
-    input.className = 'rule-toggle';
+    input.className = 'rule-toggle bui-checkbox';
     input.dataset.ruleId = rule.id;
 
     const details = document.createElement('span');
 
     const title = document.createElement('span');
-    title.className = 'rule-title';
+    title.className = 'rule-title bui-label';
     title.textContent = rule.label;
 
     const description = document.createElement('span');
-    description.className = 'rule-description';
+    description.className = 'rule-description bui-hint';
     description.textContent = rule.description;
 
     details.appendChild(title);
@@ -463,3 +464,5 @@ async function boot() {
 }
 
 void boot();
+
+ensureUiStyles();
