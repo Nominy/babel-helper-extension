@@ -31,7 +31,11 @@ function trimmedString(value: unknown): string {
 
 function getPublishedReviewActionId(): string {
   if (typeof document === 'undefined') return '';
-  return trimmedString(document.documentElement?.getAttribute(PAGE_TASK_ID_ATTRIBUTE));
+  try {
+    return trimmedString(document.documentElement?.getAttribute(PAGE_TASK_ID_ATTRIBUTE));
+  } catch {
+    return '';
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -82,15 +86,11 @@ function getReviewActionIdFromFiber(element: unknown): string {
   return '';
 }
 
-function getReviewActionIdFromRows(
-  helper: TimingIdentityHelper,
-  rows: readonly unknown[],
-  resolveReviewActionId: (element: unknown) => string | null = getReviewActionIdFromFiber
-): string {
+function getReviewActionIdFromRows(helper: TimingIdentityHelper, rows: readonly unknown[]): string {
   for (const row of rows) {
-    const rowReviewActionId = resolveReviewActionId(row);
+    const rowReviewActionId = getReviewActionIdFromFiber(row);
     if (rowReviewActionId) return rowReviewActionId;
-    const textareaReviewActionId = resolveReviewActionId(getRowTextarea(helper, row));
+    const textareaReviewActionId = getReviewActionIdFromFiber(getRowTextarea(helper, row));
     if (textareaReviewActionId) return textareaReviewActionId;
   }
   return '';
@@ -196,60 +196,27 @@ export function buildCurrentL0TimingTaskId(
   return serializeL0TimingTaskId(baseTaskId, rowIdentities);
 }
 
-function getCommittedReviewActionId(element: unknown): string | null {
-  let fiber = getReactFiber(element);
-  if (!fiber) return null;
-  const ancestry: Record<string, unknown>[] = [];
-  while (fiber.return && ancestry.length < 90) {
-    ancestry.push(fiber);
-    const parent = asRecord(fiber.return);
-    if (!parent) return '';
-    fiber = parent;
-  }
-  let current = asRecord(asRecord(fiber.stateNode)?.current);
-  if (!current) return '';
-  let reviewActionId = trimmedString(asRecord(current.memoizedProps)?.reviewActionId);
-  // Match the timestamp bridge's committed path: DOM expandos can retain the
-  // previous render branch even when the same native editor hosts a new task.
-  for (let index = ancestry.length - 1; index >= 0; index -= 1) {
-    const expected = ancestry[index];
-    let child = asRecord(current.child);
-    while (child && child !== expected && child !== expected.alternate) {
-      child = asRecord(child.sibling);
-    }
-    if (!child) return '';
-    current = child;
-    reviewActionId = trimmedString(asRecord(current.memoizedProps)?.reviewActionId) || reviewActionId;
-  }
-  return reviewActionId;
-}
-
-export function captureL0TaskGuard(helper: TimingIdentityHelper): () => boolean {
-  const taskHref = typeof location === 'undefined' ? '' : location.href;
-  const readReviewActionId = () => {
-    let nativeAvailable = false;
-    // These native editor anchors also back create-annotation resolution and
-    // remain mounted when a replacement removes the last transcript row.
-    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
-      const seeds = document.querySelectorAll('tbody, table, main');
-      for (let index = 0; index < seeds.length; index += 1) {
-        const reviewActionId = getCommittedReviewActionId(seeds[index]);
-        nativeAvailable ||= reviewActionId !== null;
-        if (reviewActionId) return reviewActionId;
-      }
-    }
-    const rowReviewActionId = getReviewActionIdFromRows(helper, getCurrentL0TimingRows(helper), (element) => {
-      const reviewActionId = getCommittedReviewActionId(element);
-      nativeAvailable ||= reviewActionId !== null;
-      return reviewActionId;
-    });
-    return rowReviewActionId || (nativeAvailable ? '' : getPublishedReviewActionId());
+/**
+ * Captures the task identity that a mutation sequence starts on and returns a
+ * predicate that fails OPEN: it reports a task change only when a positively
+ * observed, non-empty review action differs from the one captured, or when the
+ * pathname changed. An absent publication and search/hash changes never abort.
+ *
+ * World boundary: this runs in the isolated content-script world, where page
+ * React's `__reactFiber$` expandos are invisible, so the only identity sources
+ * are `location.pathname` and Gold's published `data-babel-review-action-id`.
+ */
+export function captureL0TaskGuard(): () => boolean {
+  const pathname = typeof location === 'undefined' ? '' : trimmedString(location.pathname);
+  const reviewActionId = getPublishedReviewActionId();
+  return () => {
+    const currentPathname =
+      typeof location === 'undefined' ? '' : trimmedString(location.pathname);
+    if (currentPathname !== pathname) return false;
+    if (!reviewActionId) return true;
+    const current = getPublishedReviewActionId();
+    return !current || current === reviewActionId;
   };
-  const reviewActionId = readReviewActionId();
-  return () =>
-    Boolean(reviewActionId) &&
-    (typeof location === 'undefined' ? '' : location.href) === taskHref &&
-    readReviewActionId() === reviewActionId;
 }
 
 export function buildL0TimingLaneAliases(

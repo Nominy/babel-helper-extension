@@ -20,19 +20,16 @@ const runtime = {
   ...(await loadEntry('src/content/l0-replace-listener.ts'))
 };
 
-let taskRoot;
+// The guard runs in the isolated content-script world: page React fibers are
+// invisible there, so the only task identity is Gold's publication on <html>.
+let publishedReviewActionId;
 test.beforeEach((t) => {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-  taskRoot = { memoizedProps: { reviewActionId: 'task-one' } };
-  const root = { child: taskRoot };
-  root.stateNode = { current: root };
-  taskRoot.return = root;
-  const taskHost = { __reactFiber$test: taskRoot };
+  publishedReviewActionId = 'task-one';
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
     value: {
-      documentElement: { getAttribute: () => '' },
-      querySelectorAll: () => [taskHost]
+      documentElement: { getAttribute: () => publishedReviewActionId }
     }
   });
   t.after(() => {
@@ -116,6 +113,7 @@ function createHelper(options = {}) {
       return {
         ok: true,
         backend: 'page-react-transcript-snapshot',
+        lanes: Object.entries(laneByTrack).map(([id, label]) => ({ processedRecordingId: id, trackLabel: label })),
         rows: rows.map(nativeSnapshotRow)
       };
     },
@@ -232,6 +230,25 @@ test('authoritative bridge snapshot replaces despite incomplete isolated React i
   );
 });
 
+test('replacement creates segments on a waveform lane with no existing annotations', async () => {
+  const helper = createHelper();
+  helper.rows.splice(1, 1);
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'delete'), [['delete', 'original-1']]);
+  assert.deepEqual(helper.rows.map((row) => row.identity.processedRecordingId), ['track-1', 'track-2']);
+});
+
+test('replacement populates an empty transcript using native waveform lane identities', async () => {
+  const helper = createHelper();
+  helper.rows.splice(0);
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'delete'), []);
+  assert.deepEqual(helper.rows.map(row => row.textarea.value).sort(), requestedRows.map(row => row.text).sort());
+  assert.deepEqual(helper.rows.map(row => row.identity.processedRecordingId), ['track-1', 'track-2']);
+});
+
 test('bridge failure performs zero transcript mutation', async () => {
   const helper = createHelper({ bridgeFailure: true, isolatedIdentityIncomplete: true });
   const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
@@ -329,13 +346,12 @@ test('creation failure removes new rows and restores every original identity and
   );
 });
 
+function rowSummary(row) {
+  return [row.identity.annotationId, row.textarea.value];
+}
+
 test('navigation during replacement or rollback leaves the new task untouched', async (t) => {
   const scenarios = [
-    {
-      name: 'initial snapshot',
-      method: 'snapshotTranscriptWithNativeBridge',
-      pause: (_call, count) => count === 1
-    },
     {
       name: 'original deletion',
       method: 'deleteSegmentWithNativeAction',
@@ -399,9 +415,9 @@ test('navigation during replacement or rollback leaves the new task untouched', 
       const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
       await paused;
       helper.state.sessionLifecycleRevision += 1;
-      taskRoot.memoizedProps.reviewActionId = 'task-two';
+      publishedReviewActionId = 'task-two';
       // Reuse an original annotation identity to expose accidental text restoration,
-      // and keep a distinct row to expose rollback's stray-annotation cleanup.
+      // and keep a distinct row to expose stray-annotation cleanup on a foreign task.
       helper.rows.splice(0, helper.rows.length,
         makeRow({
           annotationId: 'original-1',
@@ -421,15 +437,36 @@ test('navigation during replacement or rollback leaves the new task untouched', 
         })
       );
       if (scenario.emptyNewTask) helper.rows.length = 0;
-      const newTaskRows = structuredClone(helper.rows);
+      const newTaskRows = helper.rows.map(rowSummary);
+      const mutationsBeforeResume = helper.mutations.length;
       resume();
 
       const result = await replacement;
       assert.equal(result.ok, false);
       assert.equal(result.reason, 'stale-task');
-      assert.deepEqual(helper.rows, newTaskRows);
+      assert.match(result.message, /rollback stopped/i);
+      assert.doesNotMatch(result.message, /Original transcript restored/);
+      const finalRows = helper.rows.map(rowSummary);
+      assert.deepEqual(finalRows, newTaskRows, 'the new task is untouched');
+      const afterResume = helper.mutations.slice(mutationsBeforeResume);
+      assert.deepEqual(afterResume, [], 'no mutations are issued after navigation');
     });
   }
+});
+
+test('a task change before the first mutation reports stale-task without touching the transcript', async () => {
+  const helper = createHelper();
+  const snapshot = await helper.snapshotTranscriptWithNativeBridge();
+  let finishSnapshot;
+  helper.snapshotTranscriptWithNativeBridge = () => new Promise((resolve) => { finishSnapshot = resolve; });
+  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  publishedReviewActionId = 'task-two';
+  finishSnapshot(snapshot);
+
+  const result = await replacement;
+  assert.equal(result.reason, 'stale-task');
+  assert.match(result.message, /No transcript changes were made/);
+  assert.deepEqual(helper.mutations, []);
 });
 
 test('same-task empty rebuild and lifecycle refresh preserve replacement and rollback', async (t) => {
@@ -445,17 +482,17 @@ test('same-task empty rebuild and lifecycle refresh preserve replacement and rol
           helper.state.sessionLifecycleRevision += 1;
           // Gold's row-based publication can disappear while the native
           // workbench remains on the same action with no transcript rows.
-          document.documentElement.getAttribute = () => '';
+          publishedReviewActionId = '';
         }
         return result;
       };
-      document.documentElement.getAttribute = () => 'task-one';
+      publishedReviewActionId = 'task-one';
       const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
       assert.equal(emptied, true);
       if (failCreation) {
         assert.equal(result.reason, 'create-failed');
         assert.deepEqual(
-          helper.rows.map((row) => [row.identity.annotationId, row.textarea.value]).sort(),
+          helper.rows.map(rowSummary).sort(),
           [['original-1', 'Original one'], ['original-2', 'Original two']]
         );
       } else {
@@ -466,45 +503,76 @@ test('same-task empty rebuild and lifecycle refresh preserve replacement and rol
   }
 });
 
-test('task identity changes abort before lifecycle state catches up', async (t) => {
-  for (const identity of ['route', 'published review action']) {
-    await t.test(identity, async (t) => {
+test('a lost publication, remounted rows, or a same-route URL change mid-replacement never aborts', async (t) => {
+  const churn = {
+    'Gold removes the publication while rows are gone': () => {
+      publishedReviewActionId = '';
+    },
+    'the publication is unreadable': () => {
+      document.documentElement.getAttribute = () => { throw new Error('detached document'); };
+    },
+    'rows remount as fresh objects': (helper) => {
+      helper.rows.splice(0, helper.rows.length, ...helper.rows.map((row) => structuredClone(row)));
+    },
+    'the URL search and hash change on the same route': () => {
+      globalThis.location.search = '?jobId=refetched';
+      globalThis.location.hash = '#row-3';
+      globalThis.location.href = 'https://babel.test/transcription?jobId=refetched#row-3';
+    }
+  };
+  for (const [name, disturb] of Object.entries(churn)) {
+    await t.test(name, async (t) => {
       const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
-      const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-      const taskLocation = { href: 'https://babel.test/transcription?jobId=one', pathname: '/transcription', search: '?jobId=one' };
-      let reviewActionId = 'review-one';
-      Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
-      Object.defineProperty(globalThis, 'document', {
+      Object.defineProperty(globalThis, 'location', {
         configurable: true,
-        value: { documentElement: { getAttribute: () => reviewActionId } }
+        value: { href: 'https://babel.test/transcription?jobId=one', pathname: '/transcription', search: '?jobId=one', hash: '' }
       });
       t.after(() => {
         if (originalLocation) Object.defineProperty(globalThis, 'location', originalLocation);
         else delete globalThis.location;
-        if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
-        else delete globalThis.document;
       });
       const helper = createHelper();
-      const snapshot = await helper.snapshotTranscriptWithNativeBridge();
-      let finishSnapshot;
-      helper.snapshotTranscriptWithNativeBridge = () => new Promise((resolve) => { finishSnapshot = resolve; });
-      const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
-      if (identity === 'route') {
-        taskLocation.href = 'https://babel.test/transcription?jobId=two';
-        taskLocation.search = '?jobId=two';
-      } else {
-        reviewActionId = 'review-two';
-      }
-      const untouchedRows = structuredClone(helper.rows);
-      finishSnapshot(snapshot);
-
-      const result = await replacement;
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, 'stale-task');
-      assert.deepEqual(helper.rows, untouchedRows);
-      assert.deepEqual(helper.mutations, []);
+      const nativeCreate = helper.createSegmentWithNativeAction.bind(helper);
+      let disturbed = false;
+      helper.createSegmentWithNativeAction = async (call) => {
+        const result = await nativeCreate(call);
+        if (!disturbed) {
+          disturbed = true;
+          disturb(helper);
+        }
+        return result;
+      };
+      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      assert.equal(disturbed, true);
+      assert.equal(result.ok, true, result.message);
+      assert.deepEqual(helper.rows.map((row) => row.textarea.value), ['First text', 'Later text']);
     });
   }
+});
+
+test('a pathname change aborts before lifecycle state catches up', async (t) => {
+  const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const taskLocation = { href: 'https://babel.test/transcription?jobId=one', pathname: '/transcription', search: '?jobId=one' };
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
+  t.after(() => {
+    if (originalLocation) Object.defineProperty(globalThis, 'location', originalLocation);
+    else delete globalThis.location;
+  });
+  const helper = createHelper();
+  const snapshot = await helper.snapshotTranscriptWithNativeBridge();
+  let finishSnapshot;
+  helper.snapshotTranscriptWithNativeBridge = () => new Promise((resolve) => { finishSnapshot = resolve; });
+  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  taskLocation.href = 'https://babel.test/projects';
+  taskLocation.pathname = '/projects';
+  taskLocation.search = '';
+  const untouchedRows = helper.rows.map(rowSummary);
+  finishSnapshot(snapshot);
+
+  const result = await replacement;
+  assert.equal(result.reason, 'stale-task');
+  assert.deepEqual(helper.rows.map(rowSummary), untouchedRows);
+  assert.deepEqual(helper.mutations, []);
 });
 
 class FakeWindow extends EventTarget {

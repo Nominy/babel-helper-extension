@@ -13,7 +13,10 @@ test(appearanceScenarios.websiteAppearance[0], async ({ page }) => {
   const nativeSize = await editor.evaluate((element) => getComputedStyle(element).fontSize);
   let panel = await openAppearance(page);
   await panel.getByLabel('Enable custom appearance', { exact: true }).check();
+  await panel.getByLabel('Enable Text', { exact: true }).uncheck();
+  await expect(panel.getByLabel('Transcript editor text size in pixels')).toBeHidden();
   await panel.getByLabel('Enable Text', { exact: true }).check();
+  await expect(panel.getByLabel('Transcript editor text size in pixels')).toBeVisible();
   await panel.getByLabel('Transcript editor text size in pixels').fill('21');
   await panel.getByLabel('Transcript table text size in pixels').fill('18');
   await expect(editor).toHaveCSS('font-size', '21px');
@@ -25,6 +28,7 @@ test(appearanceScenarios.websiteAppearance[0], async ({ page }) => {
   await expect(panel.getByLabel('Transcript table text size in pixels')).toHaveValue('18');
   await panel.getByLabel('Enable Text', { exact: true }).uncheck();
   await expect(editors(page).first()).toHaveCSS('font-size', nativeSize);
+  await expect(panel.getByLabel('Transcript editor text size in pixels')).toBeHidden();
   await panel.getByRole('button', { name: 'Reset appearance', exact: true }).click();
   await expect(panel.getByLabel('Enable custom appearance', { exact: true })).not.toBeChecked();
 });

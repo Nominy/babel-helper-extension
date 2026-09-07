@@ -217,17 +217,29 @@ test.describe('Helper native editing', () => {
   });
 
   test(featureScenarios.speakerWorkflowHotkeys[0], async ({ page }) => {
+    await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks.length)).toBe(2);
+    // Both lanes start muted and collapsed: callbacks must work without first
+    // mounting the hidden mute buttons or temporarily expanding the other lane.
     for (const number of [1, 2]) {
+      await lane(page, number).getByRole('button', { name: 'Solo track', exact: true }).click();
+      await lane(page, number).getByRole('button', { name: 'Hide track', exact: true }).click();
+    }
+    for (const number of [1, 1, 2, 2]) {
+      await page.evaluate(() => delete document.documentElement.dataset.babelHelperSpeakerWorkflow);
       await page.keyboard.press(`Alt+Digit${number}`);
       await expect(lane(page, number).getByRole('button', { name: 'Hide track', exact: true })).toBeVisible();
       await expect(lane(page, 3 - number).getByRole('button', { name: 'Show track', exact: true })).toBeVisible();
-      await expect(lane(page, number).getByRole('button', { name: 'Unsolo track', exact: true })).toBeVisible();
+      await expect(lane(page, number).getByRole('button', { name: 'Solo track', exact: true })).toBeVisible();
       await expect(page.getByRole('combobox').filter({ hasText: `Speaker ${number}` })).toBeVisible();
       // Native controls update before the asynchronous workflow releases its
       // busy guard; order independent commands on actual workflow completion.
       await expect.poll(() => page.evaluate(() =>
         JSON.parse(document.documentElement.dataset.babelHelperSpeakerWorkflow || 'null')
       )).toMatchObject({ stage: 'switch-ok', targetLabel: `Speaker ${number}` });
+      await expect(editors(page)).toHaveCount(2);
+      await expect.poll(() => page.evaluate(() =>
+        window.__BABEL_E2E__.snapshot().audio.tracks.map(track => track.volume)
+      )).toEqual(number === 1 ? [1, 0] : [0, 1]);
     }
     await page.keyboard.press('Alt+Backquote');
     for (const number of [1, 2]) {
@@ -235,6 +247,29 @@ test.describe('Helper native editing', () => {
       await expect(lane(page, number).getByRole('button', { name: 'Solo track', exact: true })).toBeVisible();
     }
     await expect(page.getByRole('combobox').filter({ hasText: 'All Tracks' })).toBeVisible();
+    await expect(editors(page)).toHaveCount(4);
+    await expect.poll(() => page.evaluate(() =>
+      window.__BABEL_E2E__.snapshot().audio.tracks.map(track => track.volume)
+    )).toEqual([1, 1]);
+    // A filter with no matching annotations still has native track controls.
+    while (await editors(page).count()) {
+      const count = await editors(page).count();
+      await row(page, 0).locator('button[aria-haspopup="menu"]').click();
+      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+      await expect(editors(page)).toHaveCount(count - 1);
+    }
+    for (const number of [1, 2]) {
+      await page.keyboard.press(`Alt+Digit${number}`);
+      await expect.poll(() => page.evaluate(() =>
+        JSON.parse(document.documentElement.dataset.babelHelperSpeakerWorkflow || 'null')
+      )).toMatchObject({ stage: 'switch-ok', targetLabel: `Speaker ${number}` });
+      await expect(page.getByRole('combobox').filter({ hasText: `Speaker ${number}` })).toBeVisible();
+      await expect(editors(page)).toHaveCount(0);
+    }
+    await page.keyboard.press('Alt+Backquote');
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(document.documentElement.dataset.babelHelperSpeakerWorkflow || 'null')
+    )).toMatchObject({ stage: 'reset-ok' });
   });
 
   test(featureScenarios.customLinter[0], async ({ page, babel }) => {

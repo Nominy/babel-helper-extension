@@ -91,6 +91,32 @@ test('speed keys change real playback, preserve position and clamp to the native
   expect((await audio(page)).map((track) => track.playbackRate)).toEqual([0.25, 0.25]);
 });
 
+test('native speed dropdown preserves both lane positions while paused and playing', async ({ page }) => {
+  await ready(page);
+  await seek(page, 4);
+  const paused = await audio(page);
+  await page.getByRole('combobox').filter({ hasText: /^1x$/ }).click();
+  await page.getByRole('option', { name: '2x', exact: true }).click();
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([2, 2]);
+  (await audio(page)).forEach((track, index) => {
+    expect(track.playing).toBe(false);
+    expect(track.currentTime).toBeCloseTo(paused[index].currentTime, 3);
+  });
+  await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
+  await expect.poll(async () => (await audio(page)).every(track => track.playing)).toBe(true);
+  await page.getByRole('combobox').filter({ hasText: /^2x$/ }).click();
+  const before = await audio(page);
+  await page.getByRole('option', { name: '0.5x', exact: true }).click();
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([0.5, 0.5]);
+  const after = await audio(page);
+  after.forEach((track, index) => {
+    expect(track.playing).toBe(true);
+    expect(track.currentTime).toBeGreaterThanOrEqual(before[index].currentTime - 0.05);
+    expect(track.currentTime - before[index].currentTime).toBeLessThan(0.6);
+  });
+  expect(Math.abs(after[0].currentTime - after[1].currentTime)).toBeLessThan(0.1);
+});
+
 test('Alt+X rewinds exactly one second, clamps at zero and keeps active audio playing', async ({ page }) => {
   await ready(page);
   await seek(page, 4);

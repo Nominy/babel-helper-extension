@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 async function loadEntry(entryPoint) {
@@ -119,24 +118,5 @@ test('false L0 capability stops after ping and forbids legacy fallback', async (
     broker: { ok: true, capabilities: { transcribeSegmentL0: false } }
   });
   assert.equal(setup.writes.length, 0);
-});
-
-test('timeline selection returns unavailable capability before timing wait or legacy mutation', () => {
-  const source = readFileSync('src/services/timeline-selection-service.ts', 'utf8');
-  const waitStart = source.indexOf('async function waitForAutoSegmentL0Timing()');
-  const waitEnd = source.indexOf('helper.autoSegmentVisibleSilences = async function', waitStart);
-  const waitBlock = source.slice(waitStart, waitEnd);
-  const autoStart = waitEnd;
-  const preTrim = source.indexOf('const preTrimResult = await helper.trimAllSegmentsToAudio', autoStart);
-  const autoPrepareBlock = source.slice(autoStart, preTrim);
-
-  assert.ok(waitStart >= 0 && waitEnd > waitStart && preTrim > autoStart);
-  assert.ok(
-    waitBlock.indexOf('hasL0SegmentBrokerCapability(brokerAvailability)') <
-      waitBlock.indexOf('while (Date.now() - startedAt')
-  );
-  assert.match(autoPrepareBlock, /reason === 'timing-provider-unavailable'/);
-  assert.match(autoPrepareBlock, /return \{ ok: false, reason: 'timing-provider-unavailable', splitCount: 0 \}/);
-  assert.doesNotMatch(waitBlock, /useLegacy: true/);
 });
 

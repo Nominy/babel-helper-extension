@@ -39,6 +39,7 @@ class FakeHTMLElement extends FakeElement {}
 class FakeHTMLDivElement extends FakeHTMLElement {}
 class FakeHTMLMediaElement extends FakeHTMLElement {}
 class FakeHTMLTableRowElement extends FakeHTMLElement {}
+class FakeHTMLTextAreaElement extends FakeHTMLElement {}
 class FakeShadowRoot {}
 
 function installPageGlobals(services) {
@@ -61,12 +62,17 @@ function installPageGlobals(services) {
     window: pageWindow
   });
   Object.assign(globalThis, {
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
     CustomEvent: FakeCustomEvent,
     Element: FakeElement,
     HTMLElement: FakeHTMLElement,
     HTMLDivElement: FakeHTMLDivElement,
     HTMLMediaElement: FakeHTMLMediaElement,
     HTMLTableRowElement: FakeHTMLTableRowElement,
+    HTMLTextAreaElement: FakeHTMLTextAreaElement,
     ShadowRoot: FakeShadowRoot,
     document: pageDocument,
     window: pageWindow
@@ -277,7 +283,10 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
     endTimeInSeconds: 29.826
   };
   transcriptRows = [makeLiveRow(originalAnnotation, 'Live transcript text')];
-  const workbench = { memoizedProps: { reviewActionId: 'review-action-live' } };
+  const workbench = { memoizedProps: {
+    reviewActionId: 'review-action-live',
+    transcriptionChunkProcessedRecordings: [{ processedRecordingId: 'empty-recording', speaker: 1, processedRecordingUrl: '' }]
+  } };
   const root = { child: workbench };
   root.stateNode = { current: root };
   workbench.return = root;
@@ -285,7 +294,7 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
   main.__reactFiber$live = workbench;
   pageWindow.document.querySelectorAll = (selector) => {
     if (selector === 'tbody tr') return transcriptRows;
-    if (selector === 'tbody, table, main') return [main];
+    if (selector === 'tbody, table, main' || selector === 'main, table') return [main];
     return [];
   };
 
@@ -294,6 +303,7 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
   assert.deepEqual(direct, {
     ok: true,
     backend: 'page-react-transcript-snapshot',
+    lanes: [{ processedRecordingId: 'empty-recording', speakerKey: 'empty-recording', trackLabel: 'Speaker 1', lane: 'Speaker 1' }],
     rows: [
       {
         index: 0,
@@ -354,7 +364,7 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
 function installTimestampMutationHarness(t, respond) {
   const keys = [
     'CustomEvent', 'Element', 'HTMLElement', 'HTMLDivElement', 'HTMLMediaElement',
-    'HTMLTableRowElement', 'ShadowRoot', 'document', 'window'
+    'HTMLTableRowElement', 'HTMLTextAreaElement', 'ShadowRoot', 'document', 'window'
   ];
   const previous = keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
   t.after(() => {
@@ -364,11 +374,12 @@ function installTimestampMutationHarness(t, respond) {
     }
   });
   const pageWindow = installPageGlobals({});
-  const taskRoot = { memoizedProps: { reviewActionId: 'task-one' } };
-  const root = { child: taskRoot };
-  root.stateNode = { current: root };
-  taskRoot.return = root;
-  pageWindow.document.querySelectorAll = () => [{ __reactFiber$test: taskRoot }];
+  // Gold publishes the review action on <html>; the returned task object lets a
+  // test move to another action (or blank the publication) mid-mutation.
+  const task = { reviewActionId: 'task-one' };
+  pageWindow.document.documentElement = {
+    getAttribute: (name) => (name === 'data-babel-review-action-id' ? task.reviewActionId : null)
+  };
   pageWindow.__babelHelperTimestampBridge = {};
   pageWindow.addEventListener('babel-helper-timestamp-request', (event) => {
     Promise.resolve(respond(event.detail)).then((result) => {
@@ -377,7 +388,7 @@ function installTimestampMutationHarness(t, respond) {
       }));
     });
   });
-  return taskRoot;
+  return task;
 }
 
 function mutationRow(annotationId, speakerKey, startText, endText) {
@@ -517,74 +528,87 @@ test('timestamp retry exhaustion stops at the cap and success preserves the page
   assert.equal(requests, 5);
 });
 
-test('native timestamp mutations stop at awaited boundaries when the task changes', async (t) => {
+test('native timestamp mutations stop at awaited boundaries only for a confirmed task change', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
     'src/services/timestamp-edit-service.ts', 'timestamp-task-retry'
   );
-  for (const boundary of ['bridge response', 'retry delay', 'bridge load']) {
-    await t.test(boundary, async (t) => {
-      let announcePause;
-      let resume;
-      const paused = new Promise((resolve) => { announcePause = resolve; });
-      const resumed = new Promise((resolve) => { resume = resolve; });
-      let rows = ['old task row'];
-      let requests = 0;
-      const taskRoot = installTimestampMutationHarness(t, async () => {
-        requests += 1;
-        if (requests === 1 && boundary !== 'bridge load') {
-          if (boundary === 'bridge response') {
-            announcePause();
-            await resumed;
+  const changes = {
+    'a different review action': { reviewActionId: 'task-two', stale: true },
+    'a lost publication': { reviewActionId: '', stale: false }
+  };
+  for (const [change, { reviewActionId, stale }] of Object.entries(changes)) {
+    for (const boundary of ['bridge response', 'retry delay', 'bridge load']) {
+      await t.test(`${boundary} with ${change}`, async (t) => {
+        let announcePause;
+        let resume;
+        const paused = new Promise((resolve) => { announcePause = resolve; });
+        const resumed = new Promise((resolve) => { resume = resolve; });
+        let rows = ['old task row'];
+        let requests = 0;
+        const task = installTimestampMutationHarness(t, async () => {
+          requests += 1;
+          if (requests === 1 && boundary !== 'bridge load') {
+            if (boundary === 'bridge response') {
+              announcePause();
+              await resumed;
+            }
+            return { ok: false };
           }
-          return { ok: false };
-        }
-        rows.push('created annotation');
-        return { ok: true, annotationId: 'created' };
-      });
-      const helper = rowHelper(() => []);
-      helper.state = { sessionLifecycleRevision: 1 };
-      helper.sleep = async () => {
-        announcePause();
-        await resumed;
-      };
-      let bridgeScript;
-      if (boundary === 'bridge load') {
-        delete window.__babelHelperTimestampBridge;
-        document.documentElement = {
-          getAttribute: () => '',
-          appendChild(script) {
-            bridgeScript = script;
-            announcePause();
-          }
+          rows.push('created annotation');
+          return { ok: true, annotationId: 'created' };
+        });
+        const helper = rowHelper(() => []);
+        helper.state = { sessionLifecycleRevision: 1 };
+        helper.sleep = async () => {
+          announcePause();
+          await resumed;
         };
-        document.createElement = () => ({ remove() {} });
-        const previousChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
-        Object.defineProperty(globalThis, 'chrome', {
-          configurable: true,
-          value: { runtime: { getURL: (path) => path } }
+        let bridgeScript;
+        if (boundary === 'bridge load') {
+          delete window.__babelHelperTimestampBridge;
+          const published = document.documentElement;
+          document.documentElement = {
+            getAttribute: (name) => published.getAttribute(name),
+            appendChild(script) {
+              bridgeScript = script;
+              announcePause();
+            }
+          };
+          document.createElement = () => ({ remove() {} });
+          const previousChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
+          Object.defineProperty(globalThis, 'chrome', {
+            configurable: true,
+            value: { runtime: { getURL: (path) => path } }
+          });
+          t.after(() => {
+            if (previousChrome) Object.defineProperty(globalThis, 'chrome', previousChrome);
+            else delete globalThis.chrome;
+          });
+        }
+        registerTimestampEditService(helper);
+        const mutation = helper.createSegmentWithNativeAction({
+          processedRecordingId: 'recording', startSeconds: 1, endSeconds: 2, text: 'requested text'
         });
-        t.after(() => {
-          if (previousChrome) Object.defineProperty(globalThis, 'chrome', previousChrome);
-          else delete globalThis.chrome;
-        });
-      }
-      registerTimestampEditService(helper);
-      const mutation = helper.createSegmentWithNativeAction({
-        processedRecordingId: 'recording', startSeconds: 1, endSeconds: 2, text: 'requested text'
-      });
-      await paused;
-      helper.state.sessionLifecycleRevision += 1;
-      taskRoot.memoizedProps.reviewActionId = 'task-two';
-      rows = ['new task row'];
-      resume();
-      bridgeScript?.onload();
+        await paused;
+        helper.state.sessionLifecycleRevision += 1;
+        task.reviewActionId = reviewActionId;
+        if (stale) rows = ['new task row'];
+        resume();
+        bridgeScript?.onload();
 
-      const result = await mutation;
-      assert.equal(result.ok, false);
-      assert.equal(result.reason, 'stale-task');
-      assert.deepEqual(rows, ['new task row']);
-      assert.equal(requests, boundary === 'bridge load' ? 0 : 1);
-    });
+        const result = await mutation;
+        if (stale) {
+          assert.equal(result.ok, false);
+          assert.equal(result.reason, 'stale-task');
+          assert.deepEqual(rows, ['new task row']);
+          assert.equal(requests, boundary === 'bridge load' ? 0 : 1);
+        } else {
+          assert.equal(result.ok, true);
+          assert.deepEqual(rows, ['old task row', 'created annotation']);
+          assert.equal(requests, boundary === 'bridge load' ? 1 : 2);
+        }
+      });
+    }
   }
 });
 
@@ -665,4 +689,126 @@ test('boundary edits without usable labels choose the nearby boundary in the req
   assert.equal(nearest.endSeconds, 18);
   assert.equal(distant.endSeconds, undefined);
   assert.equal(otherSpeaker.endSeconds, undefined);
+});
+
+function liveRow(annotation, textarea) {
+  const row = new FakeHTMLTableRowElement();
+  row.children = ['', annotation.trackLabel, '00:00:01.000', '00:00:02.000'].map((textContent) => ({
+    textContent
+  }));
+  row.querySelector = () => textarea;
+  return row;
+}
+
+async function loadTimestampBridge(t, label) {
+  const { createServiceRegistry } = await importBundledTs(
+    'src/mod-platform/service-registry.ts',
+    `${label}-registry`
+  );
+  const pageWindow = installPageGlobals(createServiceRegistry());
+  t.after(() => pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown')));
+  await importBundledTs('src/content/timestamp-bridge.ts', label);
+  return pageWindow;
+}
+
+test('row action binding prefers the committed fiber path and falls back to the return walk on a miss', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'binding-fallback-bridge');
+  const deleted = [];
+  const annotation = { id: 'ann-live', trackLabel: 'Speaker 1', startTimeInSeconds: 1, endTimeInSeconds: 2 };
+  const row = liveRow(annotation, new FakeHTMLElement());
+  let rows = [row];
+  // The host node keeps its original fiber whose `.return` reaches the stale
+  // alternate; the committed tree holds the fresh alternate with new callbacks.
+  const hostFiber = { memoizedProps: {} };
+  const staleRowFiber = {
+    memoizedProps: { annotation, onTimeChange() {}, onDelete: (id) => { deleted.push('stale:' + id); rows = []; } }
+  };
+  const committedRowFiber = {
+    memoizedProps: { annotation, onTimeChange() {}, onDelete: (id) => { deleted.push('committed:' + id); rows = []; } },
+    alternate: staleRowFiber,
+    child: hostFiber
+  };
+  staleRowFiber.alternate = committedRowFiber;
+  const root = { child: committedRowFiber };
+  root.stateNode = { current: root };
+  hostFiber.return = staleRowFiber;
+  staleRowFiber.return = root;
+  committedRowFiber.return = root;
+  row.__reactFiber$live = hostFiber;
+  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? rows : []);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+
+  const viaCommitted = await bridge.deleteSegment({ annotationId: annotation.id });
+  assert.equal(viaCommitted.ok, true, JSON.stringify(viaCommitted));
+  assert.deepEqual(deleted, ['committed:ann-live']);
+
+  // A committed tree that no longer contains the row's fiber pair (portal,
+  // remount, deep Next.js root) must not strip the binding: use `.return`.
+  rows = [row];
+  root.child = { memoizedProps: {}, sibling: null };
+  const viaReturn = await bridge.deleteSegment({ annotationId: annotation.id });
+  assert.equal(viaReturn.ok, true, JSON.stringify(viaReturn));
+  assert.deepEqual(deleted, ['committed:ann-live', 'stale:ann-live']);
+
+  // No fiber root reachable at all (the ancestry never ends in a HostRoot).
+  rows = [row];
+  staleRowFiber.return = { memoizedProps: {} };
+  const viaOrphan = await bridge.deleteSegment({ annotationId: annotation.id });
+  assert.equal(viaOrphan.ok, true, JSON.stringify(viaOrphan));
+  assert.equal(deleted.length, 3);
+});
+
+test('merge supports non-textarea rows but preserves edits when a commit times out', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'merge-fail-open-bridge');
+  const merged = [];
+  let rows = [];
+  const makeRow = (id, textarea, content) => {
+    const annotation = { id, trackLabel: 'Speaker 1', startTimeInSeconds: 1, endTimeInSeconds: 2, content };
+    const row = liveRow(annotation, textarea);
+    row.__reactFiber$live = {
+      memoizedProps: {
+        annotation,
+        onTimeChange() {},
+        canMergeBelow: true,
+        canMergeAbove: true,
+        onMergeBelow: (mergedId) => { merged.push(mergedId); rows = rows.slice(0, 1); },
+        onMergeAbove() {}
+      },
+      return: null
+    };
+    return { row, annotation };
+  };
+  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? rows : []);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+
+  // Low-confidence / TTS rows render an editor that is not a plain textarea.
+  const ttsEditor = new FakeHTMLElement();
+  ttsEditor.value = 'not a textarea';
+  const committing = new FakeHTMLTextAreaElement();
+  committing.value = 'edited below';
+  const below = makeRow('below-commits', committing, 'saved below');
+  committing.focus = () => {};
+  committing.blur = () => { below.annotation.content = committing.value; };
+  rows = [makeRow('tts-top', ttsEditor, 'saved top').row, below.row];
+  const clean = await bridge.mergeSegment({ annotationId: 'tts-top', direction: 'below' });
+  assert.equal(clean.ok, true, JSON.stringify(clean));
+  assert.equal('warning' in clean, false);
+  assert.deepEqual(merged, ['tts-top']);
+
+  // A textarea whose debounced label update never lands within the budget
+  // must block the merge so the pending text remains available for retry.
+  const stuck = new FakeHTMLTextAreaElement();
+  stuck.value = 'edited but never committed';
+  let blurred = 0;
+  stuck.focus = () => {};
+  stuck.blur = () => { blurred += 1; };
+  rows = [makeRow('tts-top', ttsEditor, 'saved top').row, makeRow('below-stuck', stuck, 'saved below').row];
+  const warned = await bridge.mergeSegment({ annotationId: 'tts-top', direction: 'below' });
+  assert.equal(warned.ok, false, JSON.stringify(warned));
+  assert.equal(warned.reason, 'pending-edit-commit-timeout');
+  assert.equal(warned.warning, 'pending-edit-commit-timeout:below-stuck');
+  assert.equal(blurred, 1);
+  assert.deepEqual(merged, ['tts-top']);
+  assert.equal(rows.length, 2);
+  assert.equal(stuck.value, 'edited but never committed');
 });

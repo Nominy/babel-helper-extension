@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 async function loadAllocatorModule() {
   const result = await build({
-    entryPoints: [fileURLToPath(new URL('../src/services/auto-segment-text-allocation.ts', import.meta.url))],
+    entryPoints: [fileURLToPath(new URL('../src/features/auto-segmentation/text-allocation.ts', import.meta.url))],
     bundle: true,
     write: false,
     format: 'esm',

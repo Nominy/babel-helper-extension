@@ -432,3 +432,131 @@ test('invalidated extension context settles magnifier requests without leaking l
   assert.equal(fixture.responseListeners(), 0);
   assert.equal(fixture.timers.size, 0);
 });
+
+test('zoom ready waits for the visible wave only and settles without Promise.withResolvers', async (t) => {
+  const previous = ['window', 'document', 'CustomEvent', 'HTMLElement', 'ShadowRoot', 'MutationObserver'].map(
+    (key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]
+  );
+  const withResolvers = Promise.withResolvers;
+  t.after(() => {
+    Promise.withResolvers = withResolvers;
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  // Chrome 114-118 (the esbuild target) has no Promise.withResolvers.
+  Promise.withResolvers = undefined;
+
+  class TestHTMLElement {
+    constructor(visible = true) {
+      this.isConnected = true;
+      this.visible = visible;
+      this.parentElement = null;
+    }
+    getRootNode() {
+      return globalThis.document;
+    }
+    getBoundingClientRect() {
+      return this.visible ? { width: 320, height: 48 } : { width: 0, height: 0 };
+    }
+  }
+  const observers = [];
+  const services = new TestServiceRegistry();
+  const pageWindow = new EventTarget();
+  const pageDocument = new EventTarget();
+  const slider = new TestHTMLElement();
+  const registry = {};
+  slider.__reactFiber$test = { ref: { current: registry } };
+  pageWindow.BabelMods = { unsafe: { services } };
+  pageWindow.setTimeout = setTimeout;
+  pageWindow.clearTimeout = clearTimeout;
+  pageWindow.getComputedStyle = (element) => ({
+    display: element.visible ? 'block' : 'none',
+    visibility: 'visible'
+  });
+  pageDocument.documentElement = new TestHTMLElement();
+  pageDocument.querySelector = (selector) => (selector.includes('[role="slider"]') ? slider : null);
+  globalThis.window = pageWindow;
+  globalThis.document = pageDocument;
+  globalThis.CustomEvent = TestCustomEvent;
+  globalThis.HTMLElement = TestHTMLElement;
+  globalThis.ShadowRoot = class ShadowRoot {};
+  globalThis.MutationObserver = class MutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      observers.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.disconnected = true;
+    }
+  };
+
+  const makeWave = (container, decoded) => {
+    const listeners = new Map();
+    return {
+      container,
+      decoded,
+      listeners,
+      getDuration: () => 1,
+      getDecodedData() {
+        return this.decoded ? { duration: 1 } : null;
+      },
+      on(event, callback) {
+        listeners.set(event, callback);
+        return () => listeners.delete(event);
+      }
+    };
+  };
+  const visible = makeWave(new TestHTMLElement(true), false);
+  const collapsed = makeWave(new TestHTMLElement(false), false);
+  registry.primary = { wavesurfer: visible };
+  registry.collapsed = { wavesurfer: collapsed };
+
+  const responses = [];
+  pageWindow.addEventListener('babel-helper-magnifier-response', (event) => {
+    responses.push(event.detail);
+  });
+  await loadBridge();
+  t.after(() => pageWindow.__babelHelperMagnifierBridge?.dispose());
+
+  const request = (id) => {
+    pageWindow.dispatchEvent(
+      new TestCustomEvent('babel-helper-magnifier-request', {
+        detail: { id, operation: 'zoom-ready', payload: { timeoutMs: 5000 } }
+      })
+    );
+    return new Promise((resolve) => setImmediate(resolve));
+  };
+
+  await request('pending');
+  assert.equal(responses.find((entry) => entry.id === 'pending'), undefined);
+  assert.equal(typeof visible.listeners.get('ready'), 'function');
+
+  // The visible wave decoding is enough; the collapsed track never decodes.
+  visible.decoded = true;
+  visible.listeners.get('ready')();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responses.find((entry) => entry.id === 'pending')?.result, { ok: true });
+  assert.equal(visible.listeners.size, 0);
+  assert.equal(collapsed.listeners.size, 0);
+  assert.equal(observers.at(-1).disconnected, true);
+
+  // With every track hidden, any decoded wave is enough to zoom.
+  visible.decoded = false;
+  visible.container.visible = false;
+  collapsed.decoded = true;
+  await request('all-hidden');
+  assert.deepEqual(responses.find((entry) => entry.id === 'all-hidden')?.result, { ok: true });
+
+  // A visible wave that is not yet decoded still gates readiness.
+  visible.container.visible = true;
+  await request('gated');
+  assert.equal(responses.find((entry) => entry.id === 'gated'), undefined);
+  visible.decoded = true;
+  visible.listeners.get('ready')();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(responses.find((entry) => entry.id === 'gated')?.result, { ok: true });
+});

@@ -1,5 +1,4 @@
 import type { FeatureModule } from '../core/types';
-
 import { createCustomLinterFeature } from './custom-linter';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
@@ -182,7 +181,7 @@ export const FEATURE_REGISTRATIONS = [
       [
         'Esc',
         'Pause and blur / resume and restore cursor' +
-          (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')
+        (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')
       ]
     ]
   }),

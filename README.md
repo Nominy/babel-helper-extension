@@ -36,12 +36,15 @@ Bundled outputs:
 Source lives under `src/`:
 - `core/` runtime/kernel/lifecycle
 - `hooks/` DOM + React introspection helpers
-- `services/` row/menu/focus/timeline/magnifier services
+- `services/` stable service facades and feature composition
+- `site/` native Babel state, row, playback, and waveform APIs
 - `handlers/` keyboard/pointer/route handler adapters
-- `features/` plugin modules that consume typed context
+- `features/` feature behavior, shortcuts, lifecycle, and page-world integrations
+- `ui/` shared rendering primitives
 - `content/` extension entry points and dashboard-authored styles, including `website-appearance.css`
 
 Supporting engineering notes live under:
+- [Feature ownership, site APIs, and input hooks](docs/feature-architecture.md)
 - `docs/babel-dashboard-snapshot/`
 
 Read these first when working on Babel-specific interactions:

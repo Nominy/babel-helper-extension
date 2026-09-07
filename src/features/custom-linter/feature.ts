@@ -1,7 +1,8 @@
 import type { FeatureContext, FeatureModule } from '../../core/types';
-
 import { normalizeHighlightedWords } from '../../core/highlighted-words';
 import { BABEL_MOD_CONTROLLER_EVENT, isControllerTransition } from '../../mod-platform/protocol';
+import type { EditorHooks } from '../../core/editor-hooks';
+import type { EditorInputState } from '../editor-input';
 
 const BRIDGE_SCRIPT_PATH = 'dist/content/linter-bridge.js';
 const TOGGLE_EVENT = 'babel-helper-linter-bridge-toggle';
@@ -128,7 +129,7 @@ export async function bootstrapCustomLinterBridge(
   return true;
 }
 
-export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean; [key: string]: unknown }> {
+export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean;[key: string]: unknown }> {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -221,4 +222,31 @@ export function createCustomLinterFeature(): FeatureModule {
       }
     }
   };
+}
+
+export function registerLinterInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
+  const { isFeatureEnabled } = input;
+
+  hooks.on('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
+    let handled = false;
+    if (isFeatureEnabled('customLinter') && event.code === 'KeyF') {
+      handled = true;
+      const scope = event.shiftKey ? 'all' : 'current';
+      const requestAutoFix =
+        typeof helper.requestAutoFix === 'function'
+          ? helper.requestAutoFix
+          : null;
+      void (requestAutoFix
+        ? requestAutoFix(scope)
+        : Promise.resolve({ ok: false, reason: 'linter-not-ready' })
+      ).then((result: Record<string, unknown>) => {
+        if (helper.analytics) {
+          helper.analytics.record('hotkey:lint-autofix', { scope, ...result });
+        }
+      });
+    }
+    if (handled) { event.preventDefault(); event.stopPropagation(); }
+    return handled;
+  }, 97);
 }

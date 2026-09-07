@@ -190,7 +190,8 @@ test('S cuts a real region, preserves text once, and native merge restores one r
   await page.locator(TEXT).first().click();
   await page.keyboard.press('Alt+Shift+ArrowDown');
   await expect(page.locator(TEXT)).toHaveCount(3);
-  expect((await rows(page))[0]).toEqual(before[0]);
+  // Row removal and the surviving controlled textarea can commit separately.
+  await expect.poll(async () => (await rows(page))[0]).toEqual(before[0]);
 });
 
 test('Shift+S keeps native duplicated text while cutting, and a fully covered region is deleted', async ({ page, babel }) => {

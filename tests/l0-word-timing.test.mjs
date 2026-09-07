@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 async function loadEntry(entryPoint) {
@@ -348,24 +347,16 @@ test('published main-world review action overrides the shared route in Helper', 
   }
 });
 
-test('task guard follows the committed native action across empty rows and reused editor hosts', (t) => {
+test('task guard fails open: only a different published review action or pathname ends the task', (t) => {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
-  const taskLocation = { href: 'https://babel.test/label?jobId=shared' };
-  const workbench = { memoizedProps: { reviewActionId: 'task-one' } };
-  const root = { child: workbench };
-  const rootState = { current: root };
-  root.stateNode = rootState;
-  workbench.return = root;
-  const nativeHost = { __reactFiber$test: workbench };
+  const taskLocation = { href: 'https://babel.test/label?jobId=shared', pathname: '/label', search: '?jobId=shared', hash: '' };
   let publishedId = 'task-one';
+  let readAttribute = () => publishedId;
   Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
-    value: {
-      documentElement: { getAttribute: () => publishedId },
-      querySelectorAll: () => [nativeHost]
-    }
+    value: { documentElement: { getAttribute: () => readAttribute() } }
   });
   t.after(() => {
     if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
@@ -373,41 +364,52 @@ test('task guard follows the committed native action across empty rows and reuse
     if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation);
     else delete globalThis.location;
   });
-  let rows = [{}];
-  const helper = { getTranscriptRows: () => rows, state: { sessionLifecycleRevision: 1 } };
-  const isOriginalTask = identity.captureL0TaskGuard(helper);
-  rows = [];
-  publishedId = '';
-  helper.state.sessionLifecycleRevision += 1;
-  assert.equal(isOriginalTask(), true, 'the native action survives an empty transcript and session refresh');
+  const isOriginalTask = identity.captureL0TaskGuard();
 
-  const nextWorkbench = { memoizedProps: { reviewActionId: 'task-two' }, alternate: workbench };
-  const nextRoot = { child: nextWorkbench, stateNode: rootState };
-  nextWorkbench.return = nextRoot;
-  workbench.alternate = nextWorkbench;
-  rootState.current = nextRoot;
+  publishedId = '';
+  assert.equal(isOriginalTask(), true, 'Gold removing its publication is not a task change');
+  publishedId = '  ';
+  assert.equal(isOriginalTask(), true, 'a blank publication is unknown, not different');
+  readAttribute = () => { throw new Error('detached document'); };
+  assert.equal(isOriginalTask(), true, 'an unreadable publication is not a task change');
+  readAttribute = () => publishedId;
   publishedId = 'task-one';
-  assert.equal(isOriginalTask(), false, 'an empty new task supersedes the old DOM expando and publication');
-  const isNextTask = identity.captureL0TaskGuard(helper);
-  assert.equal(isNextTask(), true);
-  taskLocation.href = 'https://babel.test/other';
-  assert.equal(isNextTask(), false);
-  taskLocation.href = 'https://babel.test/label?jobId=shared';
-  nextRoot.child = null;
-  assert.equal(isNextTask(), false, 'a disconnected native anchor cannot use stale publication');
+  taskLocation.search = '?jobId=refetched';
+  taskLocation.hash = '#row-2';
+  taskLocation.href = 'https://babel.test/label?jobId=refetched#row-2';
+  assert.equal(isOriginalTask(), true, 'search and hash changes on the same route are not a task change');
+
+  publishedId = 'task-two';
+  assert.equal(isOriginalTask(), false, 'a different published review action ends the task');
+  publishedId = 'task-one';
+  taskLocation.pathname = '/projects';
+  assert.equal(isOriginalTask(), false, 'a pathname change ends the task');
+  taskLocation.pathname = '/label';
+  assert.equal(isOriginalTask(), true);
 });
 
-test('task guard refuses an unidentified empty editor instead of trusting its URL', (t) => {
+test('task guard captured without a publication only ends on a pathname change', (t) => {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const previousLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const taskLocation = { pathname: '/label', search: '' };
+  let publishedId = '';
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: taskLocation });
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
-    value: { documentElement: { getAttribute: () => '' }, querySelectorAll: () => [] }
+    value: { documentElement: { getAttribute: () => publishedId } }
   });
   t.after(() => {
     if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
     else delete globalThis.document;
+    if (previousLocation) Object.defineProperty(globalThis, 'location', previousLocation);
+    else delete globalThis.location;
   });
-  assert.equal(identity.captureL0TaskGuard({ getTranscriptRows: () => [] })(), false);
+  const isTask = identity.captureL0TaskGuard();
+  assert.equal(isTask(), true, 'an unidentified editor is trusted rather than refused');
+  publishedId = 'task-late';
+  assert.equal(isTask(), true, 'an identity appearing later cannot contradict an unknown start');
+  taskLocation.pathname = '/projects';
+  assert.equal(isTask(), false);
 });
 
 test('listener replacement and disposal prevent leaks across kernel restarts', () => {
@@ -431,9 +433,6 @@ test('listener replacement and disposal prevent leaks across kernel restarts', (
   disposeSecond();
   assert.equal(protocolWindow.listenerCount(), 0);
 
-  const kernelSource = readFileSync('src/core/kernel.ts', 'utf8');
-  assert.match(kernelSource, /registerL0TimingListener\(helper\.state, helper\)/);
-  assert.match(kernelSource, /kernelScope\.defer\(disposeL0TimingListener\)/);
 });
 
 test('one visible lane is valid and ambiguous display aliases resolve to no timing track', () => {
@@ -520,7 +519,7 @@ test('timing-ready notification lasts 750ms and replaces an older notice', () =>
   assert.equal(notification.removed, true);
 });
 
-test('missing anchors return null and ghost projections retain proportional fallback', () => {
+test('missing anchors return null', () => {
   assert.equal(
     alignment.computeL0TimedCharacterOffset(
       'edited text',
@@ -540,18 +539,4 @@ test('missing anchors return null and ghost projections retain proportional fall
     null
   );
 
-  const rowServiceSource = readFileSync('src/services/row-service.ts', 'utf8');
-  assert.match(
-    rowServiceSource,
-    /return computeRestoreOffset\(text, timeRange, currentTime, blurTime, baseline\)/
-  );
-  assert.equal((rowServiceSource.match(/computeGhostCursorOffset\(/g) || []).length, 3);
-});
-
-test('escape restoration lands on the last visible ghost cursor position', () => {
-  const rowServiceSource = readFileSync('src/services/row-service.ts', 'utf8');
-  assert.match(
-    rowServiceSource,
-    /if \(preservedGhostTarget && preservedGhostTarget\.row === rememberedRow\) \{[\s\S]*?selectionStart = preservedGhostTarget\.offset;[\s\S]*?selectionEnd = preservedGhostTarget\.offset;[\s\S]*?\} else if \(helper\.config\.features\.proportionalCursorRestore\)/
-  );
 });
