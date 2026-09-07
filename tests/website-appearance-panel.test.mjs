@@ -584,7 +584,7 @@ test('exact Alt+Shift+P toggles one Shadow DOM editor even while a panel control
   assert.equal(harness.document.activeElement, pageButton);
 });
 
-test('the toolbar launcher is an accessible nature button that toggles exactly like the shortcut', () => {
+test('the toolbar launcher is an accessible picture button that toggles exactly like the shortcut', () => {
   let toolbar;
   let wand;
   const harness = createHarness(createWebsiteAppearancePanel, DEFAULTS, {
@@ -601,7 +601,7 @@ test('the toolbar launcher is an accessible nature button that toggles exactly l
   assert.equal(launcher.getAttribute('aria-label'), 'Website Appearance');
   assert.match(launcher.title, /Website Appearance/);
   assert.match(launcher.title, /Alt \+ Shift \+ P/);
-  assert.equal(launcher.textContent, '🌿');
+  assert.equal(launcher.textContent, '🖼️');
   assert.equal(launcher.hidden, false);
   assert.equal(launcher.style.width, '36px');
   assert.equal(launcher.style.height, '36px');

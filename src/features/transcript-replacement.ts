@@ -490,10 +490,10 @@ export async function replaceTranscriptSegmentation(
     });
   }
   const helper = helperValue;
-  const isCurrentTask = captureL0TaskGuard();
+  const isCurrentTask = captureL0TaskGuard({ requireIdentity: true });
   const untouchedStaleTaskResponse = () => response(request.requestId, false, {
     reason: 'stale-task',
-    message: 'The task changed before transcript replacement began. No transcript changes were made.'
+    message: 'The current task could not be confirmed or changed before transcript replacement began. No transcript changes were made. Reload the task and try again.'
   });
 
   let original: SnapshotRow[];

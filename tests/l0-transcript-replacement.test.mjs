@@ -199,6 +199,23 @@ const requestedRows = [
   { id: 'first', lane: 'Speaker 1', startSeconds: 0, endSeconds: 3, text: 'First text' }
 ];
 
+test('replacement without a starting task identity performs no snapshot or mutation', async () => {
+  publishedReviewActionId = '';
+  const helper = createHelper();
+  let snapshots = 0;
+  helper.snapshotTranscriptWithNativeBridge = async () => {
+    snapshots += 1;
+    publishedReviewActionId = 'task-two';
+    throw new Error('An unidentified task must not reach the bridge');
+  };
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'stale-task');
+  assert.equal(snapshots, 0);
+  assert.deepEqual(helper.mutations, []);
+  assert.deepEqual(helper.rows.map(row => row.textarea.value), ['Original one', 'Original two']);
+});
+
 test('valid replacement deletes in reverse order, creates deterministically, and maps identities', async () => {
   const helper = createHelper();
   const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));

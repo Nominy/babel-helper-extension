@@ -198,22 +198,23 @@ export function buildCurrentL0TimingTaskId(
 
 /**
  * Captures the task identity that a mutation sequence starts on and returns a
- * predicate that fails OPEN: it reports a task change only when a positively
- * observed, non-empty review action differs from the one captured, or when the
- * pathname changed. An absent publication and search/hash changes never abort.
+ * predicate that can require a known starting review action for bulk replacement.
+ * Single-row bridge retries also work without Gold's publication. Once captured, a
+ * temporarily absent publication is allowed while rows remount, but a new
+ * review action or pathname stops all further mutations.
  *
  * World boundary: this runs in the isolated content-script world, where page
  * React's `__reactFiber$` expandos are invisible, so the only identity sources
  * are `location.pathname` and Gold's published `data-babel-review-action-id`.
  */
-export function captureL0TaskGuard(): () => boolean {
+export function captureL0TaskGuard({ requireIdentity = false } = {}): () => boolean {
   const pathname = typeof location === 'undefined' ? '' : trimmedString(location.pathname);
   const reviewActionId = getPublishedReviewActionId();
   return () => {
     const currentPathname =
       typeof location === 'undefined' ? '' : trimmedString(location.pathname);
     if (currentPathname !== pathname) return false;
-    if (!reviewActionId) return true;
+    if (!reviewActionId) return !requireIdentity;
     const current = getPublishedReviewActionId();
     return !current || current === reviewActionId;
   };

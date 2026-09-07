@@ -405,8 +405,11 @@ test('task guard captured without a publication only ends on a pathname change',
     else delete globalThis.location;
   });
   const isTask = identity.captureL0TaskGuard();
+  const strictTask = identity.captureL0TaskGuard({ requireIdentity: true });
+  assert.equal(strictTask(), false, 'bulk replacement requires a known starting identity');
   assert.equal(isTask(), true, 'an unidentified editor is trusted rather than refused');
   publishedId = 'task-late';
+  assert.equal(strictTask(), false, 'a later identity cannot retroactively identify the starting task');
   assert.equal(isTask(), true, 'an identity appearing later cannot contradict an unknown start');
   taskLocation.pathname = '/projects';
   assert.equal(isTask(), false);
