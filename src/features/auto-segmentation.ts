@@ -8,7 +8,13 @@ import { parseTimeValue } from '../hooks/parsing';
 import type { TimelineModules } from '../services/timeline-selection-service';
 
 export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules, 'site' | 'progress' | 'loop' | 'trim' | 'split'>) {
-  const AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD = Math.pow(10, -56 / 20);
+  // Native WaveSurfer line renderer (extracted module 99407):
+  // Math.round(peak * canvasHeight / 2 * barHeight) || 1.
+  // At 20x, peaks remain indistinguishable from the one-pixel baseline until
+  // they round to 2. Native lanes are 150 CSS px, normalize:false; canvas
+  // height is rounded after applying max(1, devicePixelRatio).
+  const AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD =
+    3 / (Math.round(150 * Math.max(1, window.devicePixelRatio || 1)) * 20);
 
   const AUTO_SEGMENT_SILENCE_MIN_SECONDS = 1;
 
