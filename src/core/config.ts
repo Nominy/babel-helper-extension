@@ -3,10 +3,6 @@ import { DEFAULT_FEATURE_SETTINGS } from './settings';
 import { getRegisteredHotkeysHelpRows, PLAYBACK_REWIND_SHORTCUTS } from '../features/registry';
 import { BABEL_ROW_ACTION_LABELS, BABEL_ROW_TEXTAREA_SELECTOR } from './babel-editor-contract';
 
-function buildHotkeysHelpRows(featureSettings: FeatureSettings): Array<[string, string]> {
-  return getRegisteredHotkeysHelpRows(featureSettings);
-}
-
 export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_SETTINGS) {
   return {
     features: {
@@ -20,7 +16,7 @@ export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_
       /\buse these shortcuts to navigate and control the transcription workbench\b/i,
       /\bhotkeys\b/i
     ],
-    hotkeysHelpRows: buildHotkeysHelpRows(featureSettings),
+    hotkeysHelpRows: getRegisteredHotkeysHelpRows(featureSettings),
     playbackRewindShortcuts: PLAYBACK_REWIND_SHORTCUTS.map((shortcut) => ({
       ...shortcut
     })),

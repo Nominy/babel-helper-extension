@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { buildCurrentL0TimingTaskId, getPreferredL0TimingLaneKey, resolveL0TimingTrack } from '../services/l0-timing-identity';
-import { transcribeEmptySegmentWithL0 } from '../services/l0-segment-transcription';
+import { transcribeEmptySegmentWithL0 } from './segment-transcription/request';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
 import type { TimelineModules } from '../services/timeline-selection-service';
 

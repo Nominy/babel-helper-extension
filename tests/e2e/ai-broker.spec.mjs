@@ -1,4 +1,4 @@
-import { test, expect } from '../../../shared/babel-extension-platform/packages/babel-extension-e2e/src/test.mjs';
+import { test, expect } from '@nominy/babel-extension-e2e/test';
 
 const TEXT = 'textarea[placeholder="What was said…"]';
 const PROGRESS = '#babel-helper-long-task-progress';

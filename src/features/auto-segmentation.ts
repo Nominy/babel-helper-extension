@@ -1,8 +1,8 @@
 // @ts-nocheck
-import { applyAutoSegmentTextReview, createAutoSegmentTextRedistributionDraft, createL0TimedAutoSegmentTextAllocations, normalizeAutoSegmentText, validateAutoSegmentTextAllocationsPreserveText } from '../services/auto-segment-text-allocation';
+import { applyAutoSegmentTextReview, createAutoSegmentTextRedistributionDraft, createL0TimedAutoSegmentTextAllocations, normalizeAutoSegmentText, validateAutoSegmentTextAllocationsPreserveText } from './auto-segmentation/text-allocation';
 import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { buildCurrentL0TimingTaskId, buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
-import { hasL0SegmentBrokerCapability } from '../services/l0-segment-transcription';
+import { hasL0SegmentBrokerCapability } from './segment-transcription/request';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
 import { parseTimeValue } from '../hooks/parsing';
 import type { TimelineModules } from '../services/timeline-selection-service';

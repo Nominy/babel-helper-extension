@@ -20,7 +20,7 @@ import { createBuiltinServiceRegistry } from './service-registry';
 import { createScope } from '../mod-platform/scope';
 import { createAnalyticsStore } from './analytics-store';
 import { createPerfRuntime } from './perf';
-import { registerExtendedDiffViewService } from '../services/extended-diff-view-service';
+import { registerExtendedDiffViewService } from '../features/extended-diff-view-feature';
 import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
 import { createSessionService } from '../services/session-service';
 import type * as SessionRuntimeModule from '../content/lazy-session';

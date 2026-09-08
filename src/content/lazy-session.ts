@@ -1,5 +1,5 @@
 import type { FeatureContext, FeatureModule } from '../core/types';
-import { createFeatureModules } from '../features';
+import { getRegisteredFeatureModules } from '../features/registry';
 import type { Scope } from '../mod-platform/scope';
 import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
 import {
@@ -179,7 +179,7 @@ export async function ensureSessionRuntime(ctx: FeatureContext, reason = 'sessio
   await registerSessionServices(ctx);
 
   if (!runtime.features.length) {
-    runtime.features = createFeatureModules(ctx.helper.settings.features);
+    runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features);
   }
 
   if (runtime.started) {

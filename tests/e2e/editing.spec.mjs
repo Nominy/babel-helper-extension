@@ -1,4 +1,4 @@
-import { test, expect } from '../../../shared/babel-extension-platform/packages/babel-extension-e2e/src/test.mjs';
+import { test, expect } from '@nominy/babel-extension-e2e/test';
 import { editors, row, ready, selectText, caret, lane, enableOnlyLinterRules } from './helper-editing-utils.mjs';
 
 // Canonical src/features/registry.ts setting keys -> executable browser scenario titles.

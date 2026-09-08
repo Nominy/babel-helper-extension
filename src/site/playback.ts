@@ -120,8 +120,9 @@ export function createPlaybackSiteApi(helper: any) {
   }
 
 
-  // Playback is owned by page React. The isolated world cannot read its fibers;
-  // a bridge miss must not turn into a successful write to the dummy <audio>.
+  // Prefer native playback controls. Custom seeks use page-world Wavesurfer instances
+  // held in React hook state; the isolated world cannot read those fibers.
+  // The visible <audio> can be a dummy, so bridge failure must remain failure.
   function unavailablePlaybackState() {
     return { ok: false, reason: 'playback-unavailable', paused: null, waveCount: 0 };
   }

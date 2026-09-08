@@ -452,6 +452,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
         behavior: 'smooth'
       });
     }
+    // A native row click can reset the playhead; focus restoration must pass activateRow: false.
     if (!options || options.activateRow !== false) {
       row.dispatchEvent(
         new MouseEvent('click', {

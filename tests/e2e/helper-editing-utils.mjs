@@ -1,4 +1,4 @@
-import { expect } from '../../../shared/babel-extension-platform/packages/babel-extension-e2e/src/test.mjs';
+import { expect } from '@nominy/babel-extension-e2e/test';
 
 export const transcriptSelector = 'tbody textarea[placeholder="What was said…"]';
 export const editors = (page) => page.locator(transcriptSelector);

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { splitAutoSegmentTextAtFloorOffset } from '../services/auto-segment-text-allocation';
+import { splitAutoSegmentTextAtFloorOffset } from './auto-segmentation/text-allocation';
 import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { computeL0CompletedWordCharacterOffset } from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';

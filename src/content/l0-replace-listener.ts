@@ -1,7 +1,7 @@
 import {
   replaceTranscriptSegmentation,
   type ReplacementResponse
-} from '../services/l0-transcript-replacement-service';
+} from '../features/transcript-replacement';
 
 type TranscriptHelper = Parameters<typeof replaceTranscriptSegmentation>[0];
 type ProtocolWindow = Pick<Window, 'addEventListener' | 'removeEventListener' | 'postMessage'>;

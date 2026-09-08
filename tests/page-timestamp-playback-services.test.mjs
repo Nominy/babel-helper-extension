@@ -322,7 +322,7 @@ test('MAIN snapshot retains create binding for rollback after all rows are delet
   });
 
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts',
+    'src/features/timestamp-edit-feature.ts',
     'snapshot-timestamp-client'
   );
   const isolatedHelper = {};
@@ -419,7 +419,7 @@ function rowHelper(getRows) {
 
 test('timestamp retries mutate the replacement React row, never a stale identity or another speaker', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-row-retry'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-row-retry'
   );
   const cases = [
     {
@@ -503,7 +503,7 @@ test('timestamp retries mutate the replacement React row, never a stale identity
 
 test('timestamp retry exhaustion stops at the cap and success preserves the page backend', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-retry-exhaustion'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-retry-exhaustion'
   );
   let requests = 0;
   let succeeds = false;
@@ -530,7 +530,7 @@ test('timestamp retry exhaustion stops at the cap and success preserves the page
 
 test('native timestamp mutations stop at awaited boundaries only for a confirmed task change', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-task-retry'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-task-retry'
   );
   const changes = {
     'a different review action': { reviewActionId: 'task-two', stale: true },
@@ -614,7 +614,7 @@ test('native timestamp mutations stop at awaited boundaries only for a confirmed
 
 test('invalid timestamp mutations never reach the page or schedule a retry', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-invalid-input'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-invalid-input'
   );
   let requests = 0;
   let sleeps = 0;
@@ -641,7 +641,7 @@ test('invalid timestamp mutations never reach the page or schedule a retry', asy
 
 test('timestamp parser tolerates embedded colon, unit and numeric labels without tightening syntax', async () => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-parser'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-parser'
   );
   const helper = {};
   registerTimestampEditService(helper);
@@ -662,7 +662,7 @@ test('timestamp parser tolerates embedded colon, unit and numeric labels without
 
 test('boundary edits without usable labels choose the nearby boundary in the requested speaker lane', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/services/timestamp-edit-service.ts', 'timestamp-nearest-boundary'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-nearest-boundary'
   );
   const distant = mutationRow('distant', 'speaker-a', '01:40', '01:50');
   const nearest = mutationRow('nearest', 'speaker-a', '00:10', '00:20');

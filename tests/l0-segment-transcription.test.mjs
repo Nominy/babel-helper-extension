@@ -15,7 +15,7 @@ async function loadEntry(entryPoint) {
   return import(`data:text/javascript;base64,${source}`);
 }
 
-const service = await loadEntry('src/services/l0-segment-transcription.ts');
+const service = await loadEntry('src/features/segment-transcription/request.ts');
 
 function createOptions(overrides = {}) {
   const row = { empty: true };

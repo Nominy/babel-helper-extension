@@ -7,6 +7,7 @@ import type { EditorInputState } from './editor-input';
 
 export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
 
+  // Native menus appear asynchronously in portals outside the row; never scope lookup to the row.
   helper.getMenuRoots = function getMenuRoots() {
     const portalRoots = Array.from(
       document.querySelectorAll('[data-radix-popper-content-wrapper], [data-radix-portal], [role="menu"]')

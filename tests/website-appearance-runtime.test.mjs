@@ -65,7 +65,7 @@ async function importKernelHarness() {
       `export const registerCustomLinterSettingsForwarding = () => () => {};`
     ],
     [
-      '../services/extended-diff-view-service',
+      '../features/extended-diff-view-feature',
       `export const registerExtendedDiffViewService = () => {};`
     ],
     [

@@ -16,7 +16,7 @@ async function loadEntry(entryPoint) {
 }
 
 const runtime = {
-  ...(await loadEntry('src/services/l0-transcript-replacement-service.ts')),
+  ...(await loadEntry('src/features/transcript-replacement.ts')),
   ...(await loadEntry('src/content/l0-replace-listener.ts'))
 };
 
