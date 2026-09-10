@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { FeatureModule } from '../core/types';
 import type { RowModules } from '../services/row-service';
 import type { EditorHooks } from '../core/editor-hooks';
@@ -655,7 +656,7 @@ export function registerFocusInput(helper: any, hooks: EditorHooks, input: Edito
   const { isFeatureEnabled, isTypingInTextControl } = input;
 
   hooks.on('keydown', (event) => {
-    if (isFeatureEnabled('focusToggle') && event.key === 'Escape') {
+    if (isFeatureEnabled('focusToggle') && matchesShortcut(helper.config?.shortcuts, 'focus.toggle', event, helper.state?.rightShiftPressed)) {
       if (typeof helper.handleEscapeWorkflow === 'function' && helper.handleEscapeWorkflow()) {
         event.preventDefault();
         event.stopPropagation();

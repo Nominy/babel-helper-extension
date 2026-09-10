@@ -9,12 +9,12 @@ import {
   type WebsiteAppearanceSettings,
   type WebsiteGradientSpeed
 } from '../core/settings';
+import { formatShortcut, matchesShortcut, type ShortcutSettings } from '../core/shortcuts';
 
 const PANEL_ATTRIBUTE = 'data-babel-helper-appearance-panel';
 const COMMIT_DELAY_MS = 250;
 // Only used where the target window has no animation frames at all.
 const PREVIEW_FRAME_FALLBACK_MS = 16;
-const SHORTCUT_LABEL = 'Alt + Shift + P';
 const LAUNCHER_ATTRIBUTE = 'data-babel-helper-appearance-button';
 const LAUNCHER_STYLE_ATTRIBUTE = 'data-babel-helper-appearance-button-style';
 const DRAFTING_BUTTON_SELECTOR = '#babel-gold-drafting-magic-button';
@@ -162,6 +162,7 @@ export type WebsiteAppearanceCommitResult = { saved: boolean; error?: string };
 
 export type WebsiteAppearancePanelOptions = {
   getSettings: () => WebsiteAppearanceSettings;
+  getShortcuts: () => ShortcutSettings;
   onPreview: (next: WebsiteAppearanceSettings) => void;
   onCommit: (next: WebsiteAppearanceSettings) => Promise<WebsiteAppearanceCommitResult>;
   targetDocument?: Document;
@@ -195,16 +196,6 @@ function cloneSettings(settings: WebsiteAppearanceSettings): WebsiteAppearanceSe
   };
 }
 
-function isToggleShortcut(event: KeyboardEvent): boolean {
-  return (
-    event.code === 'KeyP' &&
-    !event.repeat &&
-    event.altKey &&
-    event.shiftKey &&
-    !event.ctrlKey &&
-    !event.metaKey
-  );
-}
 
 function isColorDial(dial: Dial): dial is ColorDial | ListColorDial {
   return dial.kind === 'color' || dial.kind === 'list-color';
@@ -261,7 +252,6 @@ export function createWebsiteAppearancePanel(
   launcher.type = 'button';
   launcher.setAttribute(LAUNCHER_ATTRIBUTE, '');
   launcher.setAttribute('aria-label', 'Website Appearance');
-  launcher.title = `Website Appearance (${SHORTCUT_LABEL})`;
   launcher.textContent = '🖼️';
   launcher.style.width = '36px';
   launcher.style.height = '36px';
@@ -334,7 +324,7 @@ export function createWebsiteAppearancePanel(
         <p class="status invalid bui-status" id="commit-status" role="status" aria-live="polite"></p>
         <footer class="bui-footer">
           <button type="button" data-action="reset" class="bui-button">Reset appearance</button>
-          <span>Toggle <kbd class="bui-kbd">${SHORTCUT_LABEL}</kbd></span>
+          <span>Toggle <kbd class="bui-kbd" data-shortcut-label></kbd></span>
         </footer>
       </div>
     </section>
@@ -347,6 +337,22 @@ export function createWebsiteAppearancePanel(
     }
     return match;
   };
+
+  const shortcutLabel = query<HTMLElement>('[data-shortcut-label]');
+  let rightShiftPressed = false;
+  function refreshShortcutLabel() {
+    const label = formatShortcut(options.getShortcuts(), 'appearance.toggle');
+    shortcutLabel.textContent = label;
+    launcher.title = `Website Appearance (${label})`;
+  }
+
+  function handleDocumentKeyup(event: KeyboardEvent) {
+    if (event.code === 'ShiftRight' || !event.shiftKey) rightShiftPressed = false;
+  }
+
+  function handleWindowBlur() {
+    rightShiftPressed = false;
+  }
 
   const bindings: Binding[] = [];
   const outputs: Array<{ element: HTMLOutputElement; field: NumberSettingKey; suffix: string }> = [];
@@ -823,6 +829,7 @@ export function createWebsiteAppearancePanel(
     if (disposed || !host.hidden) {
       return;
     }
+    refreshShortcutLabel();
     draft = cloneSettings(normalizeWebsiteAppearanceSettings(options.getSettings()));
     renderDraft();
     previouslyFocused = targetDocument.activeElement;
@@ -856,7 +863,9 @@ export function createWebsiteAppearancePanel(
     if (disposed) {
       return;
     }
-    if (isToggleShortcut(event)) {
+    if (event.code === 'ShiftRight') rightShiftPressed = true;
+    else if (!event.shiftKey) rightShiftPressed = false;
+    if (!event.repeat && matchesShortcut(options.getShortcuts(), 'appearance.toggle', event, rightShiftPressed)) {
       event.preventDefault();
       event.stopImmediatePropagation();
       toggle();
@@ -880,6 +889,7 @@ export function createWebsiteAppearancePanel(
   }
 
   function sync(next: WebsiteAppearanceSettings) {
+    if (!disposed) refreshShortcutLabel();
     if (disposed || unsavedDraft || pendingCommit !== null || commitTimer !== null) {
       return;
     }
@@ -951,6 +961,9 @@ export function createWebsiteAppearancePanel(
   copyShareButton.addEventListener('click', handleCopyShare);
   importShareButton.addEventListener('click', handleImportShare);
   targetDocument.addEventListener('keydown', handleDocumentKeydown, true);
+  targetDocument.addEventListener('keyup', handleDocumentKeyup, true);
+  targetWindow.addEventListener('blur', handleWindowBlur);
+  refreshShortcutLabel();
   launcher.addEventListener('click', handleLauncherClick);
   startLauncherMounting();
   mountHost();
@@ -970,6 +983,8 @@ export function createWebsiteAppearancePanel(
       stopWaitingForMount();
       stopLauncherMounting();
       targetDocument.removeEventListener('keydown', handleDocumentKeydown, true);
+      targetDocument.removeEventListener('keyup', handleDocumentKeyup, true);
+      targetWindow.removeEventListener('blur', handleWindowBlur);
       shadow.removeEventListener('input', handleInput);
       shadow.removeEventListener('change', handleChange);
       closeButton.removeEventListener('click', close);

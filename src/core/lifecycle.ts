@@ -26,7 +26,6 @@ export function registerLifecycle(helper: any) {
   const ROUTE_REFRESH_MAX_WINDOW_MS = 10000;
   const URL_POLL_INTERVAL_MS = 2000;
   const SESSION_BIND_RETRY_DELAYS_MS = [250, 750, 1500, 3000];
-  const EXTENSION_COMMAND_MESSAGE_TYPE = 'babel-helper-command';
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -200,76 +199,6 @@ export function registerLifecycle(helper: any) {
     helper.state.routeRecoveryObserver = observer;
   }
 
-  async function runExtensionAutoInsertSegmentCommand() {
-    if (!isTranscriptionRoute() || isReadOnlyFeedbackRoute()) {
-      return {
-        ok: false,
-        reason: 'not-transcription-route'
-      };
-    }
-
-    if (!isFeatureEnabled('timelineSelection')) {
-      return {
-        ok: false,
-        reason: 'feature-disabled'
-      };
-    }
-
-    if (!hasTranscriptSurface()) {
-      helper.runtime.scheduleRouteRefresh('command:auto-insert-segment');
-      return {
-        ok: false,
-        reason: 'missing-transcript-surface'
-      };
-    }
-
-    if (helper.runtime && typeof helper.runtime.ensureSessionRuntime === 'function') {
-      await helper.runtime.ensureSessionRuntime('command:auto-insert-segment');
-    }
-
-    if (typeof helper.autoInsertSegmentAtCaret !== 'function') {
-      return {
-        ok: false,
-        reason: 'auto-insert-unavailable'
-      };
-    }
-
-    helper.state.autoInsertSegmentHotkeyHandledAt = Date.now();
-    const result = await helper.autoInsertSegmentAtCaret();
-    if (helper.analytics) {
-      helper.analytics.record('hotkey:trim', {
-        scope: 'auto-insert-segment',
-        via: 'chrome-command',
-        ok: Boolean(result && result.ok),
-        reason: result && result.reason ? result.reason : null
-      });
-    }
-    return result;
-  }
-
-  function handleExtensionCommandMessage(message, _sender, sendResponse) {
-    if (
-      !message ||
-      message.type !== EXTENSION_COMMAND_MESSAGE_TYPE ||
-      message.command !== 'auto-insert-segment'
-    ) {
-      return false;
-    }
-
-    void runExtensionAutoInsertSegmentCommand()
-      .then((result) => {
-        sendResponse(result || null);
-      })
-      .catch((error) => {
-        sendResponse({
-          ok: false,
-          reason: 'command-error',
-          message: error instanceof Error ? error.message : String(error || '')
-        });
-      });
-
-    return true;
-  }
 
   function bindGlobalListeners() {
     if (helper.state.keydownBound) {
@@ -280,14 +209,6 @@ export function registerLifecycle(helper: any) {
     window.addEventListener('keyup', handleGlobalKeyup, true);
     window.addEventListener('blur', handleWindowBlur, true);
     document.addEventListener('keydown', helper.handleKeydown, true);
-    if (
-      typeof chrome !== 'undefined' &&
-      chrome.runtime &&
-      chrome.runtime.onMessage &&
-      typeof chrome.runtime.onMessage.addListener === 'function'
-    ) {
-      chrome.runtime.onMessage.addListener(handleExtensionCommandMessage);
-    }
     helper.state.keydownBound = true;
     helper.state.nativeArrowSuppressBound = true;
   }
@@ -301,14 +222,6 @@ export function registerLifecycle(helper: any) {
     window.removeEventListener('keyup', handleGlobalKeyup, true);
     window.removeEventListener('blur', handleWindowBlur, true);
     document.removeEventListener('keydown', helper.handleKeydown, true);
-    if (
-      typeof chrome !== 'undefined' &&
-      chrome.runtime &&
-      chrome.runtime.onMessage &&
-      typeof chrome.runtime.onMessage.removeListener === 'function'
-    ) {
-      chrome.runtime.onMessage.removeListener(handleExtensionCommandMessage);
-    }
     helper.state.keydownBound = false;
     helper.state.nativeArrowSuppressBound = false;
     helper.state.rightShiftPressed = false;

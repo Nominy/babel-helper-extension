@@ -3,10 +3,6 @@ import { parseTimeValue } from '../hooks/parsing';
 import type { TimelineModules } from '../services/timeline-selection-service';
 
 export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop' | 'site' | 'segmentation' | 'progress'>) {
-  const AUDIO_TRIM_INWARD_THRESHOLD = Math.pow(10, -62 / 20);
-
-  const AUDIO_TRIM_OUTWARD_THRESHOLD = Math.pow(10, -62 / 20);
-
   const AUDIO_TRIM_OUTWARD_STEP_SECONDS = 0.05;
 
   const AUDIO_TRIM_PADDING_SECONDS = 0.005;
@@ -16,9 +12,9 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
   const AUDIO_TRIM_NEIGHBOR_GUARD_SECONDS = 0.01;
 
 
-  function getAudioTrimAmplitudeThreshold(options, fallback) {
+  function getAudioTrimAmplitudeThreshold(options) {
     const value = Number(options && options.amplitudeThreshold);
-    return Number.isFinite(value) && value > 0 ? value : fallback;
+    return Number.isFinite(value) && value > 0 ? value : api.segmentation.AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD;
   }
 
 
@@ -48,7 +44,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       hostMarker,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_INWARD_THRESHOLD),
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options),
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
@@ -69,7 +65,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       speakerKey,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_INWARD_THRESHOLD),
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options),
       paddingSeconds: AUDIO_TRIM_PADDING_SECONDS
     });
   }
@@ -115,7 +111,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       hostMarker,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_OUTWARD_THRESHOLD),
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options),
       stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
     });
   }
@@ -136,7 +132,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       speakerKey,
       startSeconds,
       endSeconds,
-      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options, AUDIO_TRIM_OUTWARD_THRESHOLD),
+      amplitudeThreshold: getAudioTrimAmplitudeThreshold(options),
       stepSeconds: AUDIO_TRIM_OUTWARD_STEP_SECONDS
     });
   }

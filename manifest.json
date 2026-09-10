@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Babel Audio Workflow Helper",
-  "version": "1.0.271",
+  "version": "1.0.273",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
   "icons": {
     "16": "icons/icon16.png",
@@ -11,9 +11,6 @@
   "permissions": [
     "storage"
   ],
-  "background": {
-    "service_worker": "dist/background/commands.js"
-  },
   "action": {
     "default_title": "Open Babel Helper settings",
     "default_popup": "options.html",
@@ -21,14 +18,6 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
-    }
-  },
-  "commands": {
-    "auto-insert-segment": {
-      "suggested_key": {
-        "default": "Alt+C"
-      },
-      "description": "Create an empty segment around nearest uncovered speech near caret"
     }
   },
   "options_ui": {

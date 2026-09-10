@@ -21,6 +21,7 @@
           <h2 id="features-title" class="features-title bui-title">Features</h2>
           <div class="feature-list bui-stack" data-role="feature-list" aria-labelledby="features-title">
 </div>
+          <button class="bui-button" type="button" data-role="manage-shortcuts">Shortcuts</button>
           <div class="dictionary-settings bui-card">
             <label for="highlighted-words" class="dictionary-title bui-label">Highlighted Words</label>
             <label class="dictionary-toggle bui-label bui-setting-toggle">
@@ -35,6 +36,17 @@
 </textarea>
           </div>
         </div>
+          <section class="bui-stack" data-role="shortcuts-page" aria-labelledby="shortcuts-title" hidden>
+            <div class="bui-row" data-align="between">
+              <h2 id="shortcuts-title" class="bui-title">Shortcuts</h2>
+              <button class="bui-button" type="button" data-role="back-from-shortcuts">Back</button>
+            </div>
+            <p id="shortcuts-help" class="bui-hint">Record a replacement or add an alternative, then press the desired key combination. Escape and Tab can be assigned. To cancel, click Cancel recording or tap and release a modifier key alone. Clear disables an action; Reset restores its original shortcuts. Changes save automatically.</p>
+            <p class="bui-hint">Shortcuts apply only where the action is available. Shared combinations may overlap across contexts; warnings do not prevent saving. Browser or operating-system shortcuts may not reach the extension.</p>
+            <button class="bui-button" type="button" data-role="reset-shortcuts">Reset all shortcuts</button>
+            <p class="bui-status" role="status" aria-live="polite" data-role="shortcut-status"></p>
+            <div class="bui-stack" data-role="shortcut-list" aria-describedby="shortcuts-help"></div>
+          </section>
 <div class="custom-linter-rule-page bui-stack" data-role="custom-linter-rule-page" hidden="">
           <div class="rule-page-header bui-row" data-align="between">
             <h2 class="rule-page-title bui-title">Custom Linter Rules</h2>
@@ -94,7 +106,7 @@
 <div class="footer bui-row" data-align="between">
           <button class="reset-btn bui-button" type="button" data-role="reset">Reset all settings</button>
           <button class="download-btn bui-button" type="button" data-role="download-logs">Download Logs</button>
-          <div class="status bui-status" data-role="status">Loading...</div>
+          <div class="status bui-status" data-role="status" role="status" aria-live="polite">Loading...</div>
         </div>
 <p class="support-footer bui-card bui-hint">
         These Babel tools are maintained by Naftsan;

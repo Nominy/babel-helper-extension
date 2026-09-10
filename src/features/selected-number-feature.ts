@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
 import { autoConvertSelectedNumberText, isTextControl, getSelectedTextFromTextControl, convertSelectionWithDigit } from '../hooks/selected-number-to-skaz';
@@ -32,10 +33,7 @@ export function registerSelectedNumberInput(helper: any, hooks: EditorHooks, inp
     }
     if (
       isFeatureEnabled('selectedNumberToSkaz') &&
-      event.code === 'KeyA' &&
-      event.altKey &&
-      !event.shiftKey &&
-      !event.metaKey
+      matchesShortcut(helper.config?.shortcuts, 'number.convert', event, helper.state?.rightShiftPressed)
     ) {
       const handled = autoConvertSelectedNumberText(event.target);
       if (handled) {

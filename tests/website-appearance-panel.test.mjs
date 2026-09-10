@@ -227,7 +227,7 @@ class FakeShadowRoot extends FakeNode {
   set innerHTML(markup) {
     this.markup = markup;
     this.children = [];
-    const elementPattern = /<(input|select|textarea|button|output|details|summary|p)\b([^>]*)>/gi;
+    const elementPattern = /<(input|select|textarea|button|output|details|summary|p|kbd)\b([^>]*)>/gi;
     for (const match of markup.matchAll(elementPattern)) {
       const element = new FakeElement(match[1], this.ownerDocument);
       const attributePattern = /([\w-]+)(?:=(['"])(.*?)\2)?/g;
@@ -281,8 +281,9 @@ class FakeDocument extends FakeNode {
   }
 }
 
-class FakeWindow {
+class FakeWindow extends FakeNode {
   constructor() {
+    super();
     this.nextTimer = 1;
     this.timers = new Map();
     this.nextFrame = 1;
@@ -467,6 +468,7 @@ function createHarness(
     targetDocument: document,
     targetWindow: window,
     getSettings: () => structuredClone(settings),
+    getShortcuts: () => ({}),
     onPreview(next) {
       previews.push(next);
       settings = structuredClone(next);
@@ -1075,6 +1077,7 @@ test('document-start mounting appends once when a root appears and disposal canc
     targetDocument: document,
     targetWindow: window,
     getSettings: () => structuredClone(DEFAULTS),
+    getShortcuts: () => ({}),
     onPreview() {},
     onCommit() {}
   });
@@ -1108,6 +1111,7 @@ test('document-start mounting appends once when a root appears and disposal canc
     targetDocument: disposedDocument,
     targetWindow: disposedWindow,
     getSettings: () => structuredClone(DEFAULTS),
+    getShortcuts: () => ({}),
     onPreview() {},
     onCommit() {}
   });

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { FeatureModule } from '../core/types';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
@@ -179,9 +180,8 @@ export function registerTextMoveInput(helper: any, hooks: EditorHooks, input: Ed
   const { isFeatureEnabled, isTypingInTextControl } = input;
 
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
-    if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketLeft') {
+    if (isFeatureEnabled('textMove') && matchesShortcut(helper.config?.shortcuts, 'text.previous', event, helper.state?.rightShiftPressed)) {
       handled = helper.moveTextToAdjacentSegment(-1);
       if (handled && helper.analytics) {
         helper.analytics.record('hotkey:text-move', { direction: 'left' });
@@ -191,9 +191,8 @@ export function registerTextMoveInput(helper: any, hooks: EditorHooks, input: Ed
     return handled;
   }, 93);
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
-    if (isFeatureEnabled('textMove') && !event.shiftKey && event.code === 'BracketRight') {
+    if (isFeatureEnabled('textMove') && matchesShortcut(helper.config?.shortcuts, 'text.next', event, helper.state?.rightShiftPressed)) {
       handled = helper.moveTextToAdjacentSegment(1);
       if (handled && helper.analytics) {
         helper.analytics.record('hotkey:text-move', { direction: 'right' });

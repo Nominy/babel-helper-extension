@@ -14,6 +14,15 @@ import {
   saveExtensionSettings
 } from '../core/settings';
 import { formatHighlightedWordsForTextarea, normalizeHighlightedWords } from '../core/highlighted-words';
+import {
+  SHORTCUT_ACTIONS,
+  formatShortcut,
+  normalizeShortcutSettings,
+  shortcutBindingFromEvent,
+  type ShortcutBinding,
+  type ShortcutModifier,
+  type ShortcutSettings
+} from '../core/shortcuts';
 
 type InputMap = Record<FeatureSettingKey, HTMLInputElement>;
 type RuleInputMap = Record<string, HTMLInputElement>;
@@ -58,6 +67,176 @@ function getGhostCursorInputs(): GhostCursorInputMap {
     thickness: requireElement<HTMLInputElement>('[data-role="ghost-cursor-thickness"]'),
     thicknessValue: requireElement<HTMLOutputElement>('[data-role="ghost-cursor-thickness-value"]'),
     motion: requireElement<HTMLSelectElement>('[data-role="ghost-cursor-motion"]')
+  };
+}
+
+function createShortcutEditor(onChange: () => void) {
+  const list = requireElement<HTMLElement>('[data-role="shortcut-list"]');
+  const status = requireElement<HTMLElement>('[data-role="shortcut-status"]');
+  const resetAll = requireElement<HTMLButtonElement>('[data-role="reset-shortcuts"]');
+  let settings: ShortcutSettings = {};
+  let recording: { id: string; add: boolean; button: HTMLButtonElement; label: string; accessibleLabel: string } | null = null;
+  let rightShiftPressed = false;
+  const rows = new Map<string, { value: HTMLElement; warning: HTMLElement; status: HTMLElement }>();
+  let recordedCode: string | null = null;
+  const modifiers: ShortcutModifier[] = ['ctrlKey', 'altKey', 'shiftKey', 'metaKey'];
+
+  function overlaps(left: ShortcutBinding[], right: ShortcutBinding[]): boolean {
+    return left.some(a => right.some(b =>
+      (a.key && b.key ? a.key === b.key : a.code === b.code) &&
+      modifiers.every(modifier =>
+        a.ignoreModifiers?.includes(modifier) ||
+        b.ignoreModifiers?.includes(modifier) ||
+        a[modifier] === b[modifier]
+      )
+    ));
+  }
+
+  function refresh() {
+    for (const action of SHORTCUT_ACTIONS) {
+      const row = rows.get(action.id)!;
+      row.value.textContent = formatShortcut(settings, action.id);
+      const bindings = settings[action.id] === undefined ? action.defaults : settings[action.id] ?? [];
+      const conflicts = SHORTCUT_ACTIONS.filter(other => {
+        if (other.id === action.id) return false;
+        const otherBindings = settings[other.id] === undefined ? other.defaults : settings[other.id] ?? [];
+        return overlaps(bindings, otherBindings);
+      });
+      const original = conflicts.length > 0 && settings[action.id] === undefined &&
+        conflicts.every(other => settings[other.id] === undefined);
+      row.warning.textContent = conflicts.length
+        ? `${original ? 'Default context overlap (informational)' : 'Shortcut conflict'}: also used by ${conflicts.map(other => other.label).join(', ')}. Actions retain their existing contexts.`
+        : '';
+      row.warning.hidden = conflicts.length === 0;
+      row.warning.style.color = original ? '' : 'var(--bui-warning)';
+    }
+  }
+
+  function stopRecording() {
+    if (recording) {
+      recording.button.setAttribute('aria-pressed', 'false');
+      recording.button.textContent = recording.label;
+      recording.button.setAttribute('aria-label', recording.accessibleLabel);
+      rows.get(recording.id)!.status.textContent = 'Recording cancelled. Shortcut unchanged.';
+      recording = null;
+    }
+    rightShiftPressed = false;
+  }
+
+  for (const action of SHORTCUT_ACTIONS) {
+    const card = document.createElement('fieldset');
+    card.className = 'bui-card bui-stack';
+    const title = document.createElement('legend');
+    title.className = 'bui-label';
+    title.textContent = action.label;
+    const value = document.createElement('kbd');
+    value.className = 'bui-kbd';
+    value.id = `shortcut-${action.id}`;
+    const warning = document.createElement('p');
+    warning.className = 'bui-hint';
+    warning.id = `shortcut-conflict-${action.id}`;
+    warning.setAttribute('aria-live', 'polite');
+    const rowStatus = document.createElement('p');
+    rowStatus.className = 'bui-status';
+    rowStatus.id = `shortcut-status-${action.id}`;
+    rowStatus.setAttribute('role', 'status');
+    rowStatus.setAttribute('aria-live', 'polite');
+    const controls = document.createElement('div');
+    controls.className = 'bui-row';
+    for (const [operation, label] of [
+      ['record', 'Record replacement'], ['add', 'Add alternative'], ['clear', 'Clear'], ['reset', 'Reset']
+    ]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'bui-button';
+      button.textContent = label;
+      button.setAttribute('aria-label', `${label}: ${action.label}`);
+      button.setAttribute('aria-describedby', `${value.id} ${warning.id} ${rowStatus.id} shortcuts-help`);
+      if (operation === 'record' || operation === 'add') button.setAttribute('aria-pressed', 'false');
+      button.addEventListener('click', () => {
+        if (recording?.button === button) {
+          stopRecording();
+          return;
+        }
+        stopRecording();
+        if (operation === 'record' || operation === 'add') {
+          recording = { id: action.id, add: operation === 'add', button, label, accessibleLabel: `${label}: ${action.label}` };
+          button.setAttribute('aria-pressed', 'true');
+          button.textContent = 'Cancel recording';
+          button.setAttribute('aria-label', `Cancel recording: ${action.label}`);
+          rowStatus.textContent = 'Recording… Press a key combination, click Cancel recording, or tap and release a modifier alone to cancel.';
+          button.focus();
+          return;
+        }
+        settings = { ...settings };
+        if (operation === 'clear') settings[action.id] = null;
+        else delete settings[action.id];
+        refresh();
+        rowStatus.textContent = `${action.label}: ${formatShortcut(settings, action.id)}.`;
+        onChange();
+      });
+      controls.appendChild(button);
+    }
+    card.append(title, value, controls, rowStatus, warning);
+    rows.set(action.id, { value, warning, status: rowStatus });
+    list.appendChild(card);
+  }
+
+  document.addEventListener('keydown', event => {
+    if (!recording) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.code === 'ShiftRight') rightShiftPressed = true;
+    else if (!event.shiftKey) rightShiftPressed = false;
+    if (event.repeat) return;
+    const binding = shortcutBindingFromEvent(event);
+    if (!binding) return;
+    if (binding.shiftKey && rightShiftPressed) binding.rightShift = true;
+    const { id, add, button } = recording;
+    recordedCode = event.code;
+    const action = SHORTCUT_ACTIONS.find(item => item.id === id)!;
+    const previous = settings[id] === undefined ? action.defaults : settings[id] ?? [];
+    const next = add ? [...previous, binding] : [binding];
+    settings = normalizeShortcutSettings({ ...settings, [id]: next });
+    stopRecording();
+    refresh();
+    rows.get(id)!.status.textContent = `${action.label}: ${formatShortcut(settings, id)}.`;
+    button.focus();
+    onChange();
+  }, true);
+  document.addEventListener('keyup', event => {
+    if (event.code === 'ShiftRight' || !event.shiftKey) rightShiftPressed = false;
+    if (event.code === recordedCode) {
+      recordedCode = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    if (recording && /^(?:Control|Alt|Shift|Meta)(?:Left|Right)$/.test(event.code)) {
+      stopRecording();
+    }
+  }, true);
+  window.addEventListener('blur', () => {
+    if (!recording) return;
+    const rowStatus = rows.get(recording.id)!.status;
+    stopRecording();
+    rowStatus.textContent = 'Recording cancelled because this window lost focus.';
+  });
+  resetAll.addEventListener('click', () => {
+    stopRecording();
+    settings = {};
+    refresh();
+    status.textContent = 'All shortcuts restored to defaults.';
+    onChange();
+  });
+  refresh();
+  return {
+    stopRecording,
+    getSettings: () => settings,
+    setSettings(next: ShortcutSettings) {
+      stopRecording();
+      settings = normalizeShortcutSettings(next);
+      refresh();
+    }
   };
 }
 
@@ -206,7 +385,8 @@ function readSettingsFromInputs(
   highlightedWordsInput: HTMLTextAreaElement,
   highlightedWordsEnabledInput: HTMLInputElement,
   ghostCursorInputs: GhostCursorInputMap,
-  websiteAppearance: ExtensionSettings['websiteAppearance']
+  websiteAppearance: ExtensionSettings['websiteAppearance'],
+  shortcuts: ShortcutSettings
 ): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
@@ -222,7 +402,8 @@ function readSettingsFromInputs(
       .map((rule) => rule.id),
     customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
     ghostCursor: readGhostCursorSettingsFromInputs(ghostCursorInputs),
-    websiteAppearance
+    websiteAppearance,
+    shortcuts
   };
 }
 
@@ -268,6 +449,9 @@ async function boot() {
   const customLinterRulePage = requireElement<HTMLElement>('[data-role="custom-linter-rule-page"]');
   const customLinterRuleList = requireElement<HTMLElement>('[data-role="custom-linter-rule-list"]');
   const ghostCursorPage = requireElement<HTMLElement>('[data-role="ghost-cursor-page"]');
+  const shortcutsPage = requireElement<HTMLElement>('[data-role="shortcuts-page"]');
+  const manageShortcutsButton = requireElement<HTMLButtonElement>('[data-role="manage-shortcuts"]');
+  const backFromShortcutsButton = requireElement<HTMLButtonElement>('[data-role="back-from-shortcuts"]');
   const backFromGhostCursorButton = requireElement<HTMLButtonElement>('[data-role="back-from-ghost-cursor"]');
   const shareInput = requireElement<HTMLInputElement>('[data-role="ghost-cursor-share"]');
   const importShareInput = requireElement<HTMLInputElement>('[data-role="ghost-cursor-import-share"]');
@@ -286,10 +470,12 @@ async function boot() {
   const manageRulesButton = requireElement<HTMLButtonElement>('[data-role="manage-custom-linter-rules"]');
 
   let retainedWebsiteAppearance = DEFAULT_EXTENSION_SETTINGS.websiteAppearance;
+  let initialShortcuts = DEFAULT_EXTENSION_SETTINGS.shortcuts;
 
   try {
     const { loaded, settings } = await loadExtensionSettings();
     retainedWebsiteAppearance = settings.websiteAppearance;
+    initialShortcuts = settings.shortcuts;
     applySettingsToInputs(
       settings,
       inputs,
@@ -312,7 +498,8 @@ async function boot() {
       highlightedWordsInput,
       highlightedWordsEnabledInput,
       ghostCursorInputs,
-      retainedWebsiteAppearance
+      retainedWebsiteAppearance,
+      shortcutEditor.getSettings()
     );
     const run = async () => {
       setStatus(statusElement, 'Saving...');
@@ -349,6 +536,8 @@ async function boot() {
     saveQueue = saveQueue.then(run, run);
     return saveQueue;
   };
+  const shortcutEditor = createShortcutEditor(() => { void save(); });
+  shortcutEditor.setSettings(initialShortcuts);
 
   for (const key of FEATURE_KEYS) {
     inputs[key].addEventListener('change', () => {
@@ -389,6 +578,7 @@ async function boot() {
 
   resetButton.addEventListener('click', () => {
     retainedWebsiteAppearance = DEFAULT_EXTENSION_SETTINGS.websiteAppearance;
+    shortcutEditor.setSettings(DEFAULT_EXTENSION_SETTINGS.shortcuts);
     applySettingsToInputs(
       DEFAULT_EXTENSION_SETTINGS,
       inputs,
@@ -398,6 +588,18 @@ async function boot() {
       ghostCursorInputs
     );
     void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance);
+  });
+
+  manageShortcutsButton.addEventListener('click', () => {
+    settingsHome.hidden = true;
+    shortcutsPage.hidden = false;
+    backFromShortcutsButton.focus();
+  });
+  backFromShortcutsButton.addEventListener('click', () => {
+    shortcutEditor.stopRecording();
+    shortcutsPage.hidden = true;
+    settingsHome.hidden = false;
+    manageShortcutsButton.focus();
   });
 
   manageRulesButton.addEventListener('click', (event) => {

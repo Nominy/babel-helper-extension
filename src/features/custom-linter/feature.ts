@@ -1,3 +1,4 @@
+import { matchesShortcut } from '../../core/shortcuts';
 import type { FeatureContext, FeatureModule } from '../../core/types';
 import { normalizeHighlightedWords } from '../../core/highlighted-words';
 import { BABEL_MOD_CONTROLLER_EVENT, isControllerTransition } from '../../mod-platform/protocol';
@@ -228,11 +229,15 @@ export function registerLinterInput(helper: any, hooks: EditorHooks, input: Edit
   const { isFeatureEnabled } = input;
 
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
+    if (!isFeatureEnabled('customLinter')) return false;
+    const scope = matchesShortcut(helper.config?.shortcuts, 'lint.all', event, helper.state?.rightShiftPressed)
+      ? 'all'
+      : matchesShortcut(helper.config?.shortcuts, 'lint.current', event, helper.state?.rightShiftPressed)
+        ? 'current'
+        : null;
     let handled = false;
-    if (isFeatureEnabled('customLinter') && event.code === 'KeyF') {
+    if (scope) {
       handled = true;
-      const scope = event.shiftKey ? 'all' : 'current';
       const requestAutoFix =
         typeof helper.requestAutoFix === 'function'
           ? helper.requestAutoFix

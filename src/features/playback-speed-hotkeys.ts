@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
 import { readBabelPlaybackBindings } from '@nominy/babel-babel-runtime';
@@ -21,12 +22,8 @@ export function registerPlaybackSpeedInput(helper: any, hooks: EditorHooks, inpu
     if (
       isFeatureEnabled('rowActions') &&
       isFeatureEnabled('playbackSpeedHotkeys') &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey &&
+      matchesShortcut(helper.config?.shortcuts, 'playback.faster', event, helper.state?.rightShiftPressed) &&
       !isTypingInTextControl(event) &&
-      event.code === 'Digit1' &&
       typeof helper.adjustPlaybackSpeed === 'function'
     ) {
       event.preventDefault();
@@ -39,12 +36,8 @@ export function registerPlaybackSpeedInput(helper: any, hooks: EditorHooks, inpu
     if (
       isFeatureEnabled('rowActions') &&
       isFeatureEnabled('playbackSpeedHotkeys') &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey &&
+      matchesShortcut(helper.config?.shortcuts, 'playback.slower', event, helper.state?.rightShiftPressed) &&
       !isTypingInTextControl(event) &&
-      event.code === 'Digit2' &&
       typeof helper.adjustPlaybackSpeed === 'function'
     ) {
       event.preventDefault();

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { RowModules } from '../services/row-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
@@ -116,12 +117,10 @@ export function registerSpeakerInput(helper: any, hooks: EditorHooks, input: Edi
   const { isFeatureEnabled, isTypingInTextControl } = input;
 
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
     if (isFeatureEnabled('rowActions') &&
       isFeatureEnabled('speakerWorkflowHotkeys') &&
-      !event.shiftKey &&
-      event.code === 'Digit1' &&
+      matchesShortcut(helper.config?.shortcuts, 'speaker.first', event, helper.state?.rightShiftPressed) &&
       typeof helper.switchSpeakerWorkflow === 'function') {
       handled = true;
       void helper.switchSpeakerWorkflow('Speaker 1');
@@ -133,12 +132,10 @@ export function registerSpeakerInput(helper: any, hooks: EditorHooks, input: Edi
     return handled;
   }, 90);
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
     if (isFeatureEnabled('rowActions') &&
       isFeatureEnabled('speakerWorkflowHotkeys') &&
-      !event.shiftKey &&
-      event.code === 'Digit2' &&
+      matchesShortcut(helper.config?.shortcuts, 'speaker.second', event, helper.state?.rightShiftPressed) &&
       typeof helper.switchSpeakerWorkflow === 'function') {
       handled = true;
       void helper.switchSpeakerWorkflow('Speaker 2');
@@ -150,11 +147,10 @@ export function registerSpeakerInput(helper: any, hooks: EditorHooks, input: Edi
     return handled;
   }, 91);
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
     if (isFeatureEnabled('rowActions') &&
       isFeatureEnabled('speakerWorkflowHotkeys') &&
-      event.code === 'Backquote' &&
+      matchesShortcut(helper.config?.shortcuts, 'speaker.reset', event, helper.state?.rightShiftPressed) &&
       typeof helper.resetSpeakerWorkflow === 'function') {
       handled = true;
       void helper.resetSpeakerWorkflow();

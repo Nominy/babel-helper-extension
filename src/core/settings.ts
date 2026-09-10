@@ -1,5 +1,6 @@
 import { FEATURE_REGISTRATIONS } from '../features/registry';
 import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from './highlighted-words';
+import { normalizeShortcutSettings, type ShortcutSettings } from './shortcuts';
 
 export type FeatureSettingKey = (typeof FEATURE_REGISTRATIONS)[number]['setting']['key'];
 export type FeatureSettings = Record<FeatureSettingKey, boolean>;
@@ -66,6 +67,7 @@ export interface WebsiteAppearanceSettings {
 
 export interface ExtensionSettings {
   features: FeatureSettings;
+  shortcuts: ShortcutSettings;
   highlightedWordsEnabled: boolean;
   highlightedWords: string[];
   customLinterDefaultsVersion: number;
@@ -290,6 +292,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = buildFeatureSettings();
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   features: DEFAULT_FEATURE_SETTINGS,
+  shortcuts: {},
   highlightedWordsEnabled: true,
   highlightedWords: normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS),
   customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
@@ -966,6 +969,7 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
 
   return {
     features,
+    shortcuts: normalizeShortcutSettings(incoming.shortcuts),
     highlightedWordsEnabled:
       typeof incoming.highlightedWordsEnabled === 'boolean'
         ? incoming.highlightedWordsEnabled

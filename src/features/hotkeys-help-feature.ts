@@ -30,6 +30,7 @@ export function registerHotkeysHelpService(helper: any) {
   helper.buildHotkeysHelpBlock = function buildHotkeysHelpBlock() {
     const wrapper = document.createElement('div');
     wrapper.setAttribute(helper.config.hotkeysHelpMarker, 'true');
+    wrapper.dataset.shortcutRows = JSON.stringify(helper.config.hotkeysHelpRows);
     themeRoot(wrapper, 'white');
     applyComponent(wrapper, 'body');
     wrapper.style.marginTop = '12px';
@@ -95,12 +96,10 @@ export function registerHotkeysHelpService(helper: any) {
 
   helper.enhanceHotkeysDialog = function enhanceHotkeysDialog() {
     for (const host of helper.findHotkeysHosts()) {
-      if (
-        !(host instanceof HTMLElement) ||
-        host.querySelector('[' + helper.config.hotkeysHelpMarker + ']')
-      ) {
-        continue;
-      }
+      if (!(host instanceof HTMLElement)) continue;
+      const existing = host.querySelector('[' + helper.config.hotkeysHelpMarker + ']');
+      if (existing?.dataset.shortcutRows === JSON.stringify(helper.config.hotkeysHelpRows)) continue;
+      existing?.remove();
 
       const contentTarget =
         host.querySelector('[data-slot="dialog-content"]') ||

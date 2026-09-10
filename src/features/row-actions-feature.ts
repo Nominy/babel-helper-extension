@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import type { FeatureModule } from '../core/types';
 import { getBabelRowActionLabel } from '../core/babel-editor-contract';
 import type { RowModules } from '../services/row-service';
@@ -457,25 +458,10 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     });
     return true;
   }
-  function isRightShiftSegmentNavigationShortcut(event) {
-    return Boolean(
-      isFeatureEnabled('rowActions') &&
-      helper.state.rightShiftPressed &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.metaKey &&
-      (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
-    );
-  }
   hooks.on('keydown', (event) => {
     if (
       isFeatureEnabled('rowActions') &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      event.code === 'KeyD' &&
+      matchesShortcut(helper.config?.shortcuts, 'row.delete', event, helper.state?.rightShiftPressed) &&
       !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)
     ) {
       if (tryDeleteCurrentRow(event)) {
@@ -487,9 +473,8 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     }
   }, 60);
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
-    if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowUp') {
+    if (isFeatureEnabled('rowActions') && matchesShortcut(helper.config?.shortcuts, 'row.mergePrevious', event, helper.state?.rightShiftPressed)) {
       handled = true;
       void helper.runRowAction('mergePrevious');
       if (helper.analytics) {
@@ -500,9 +485,8 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     return handled;
   }, 95);
   hooks.on('keydown', (event) => {
-    if (event.ctrlKey || event.metaKey || !event.altKey) return false;
     let handled = false;
-    if (isFeatureEnabled('rowActions') && event.shiftKey && event.key === 'ArrowDown') {
+    if (isFeatureEnabled('rowActions') && matchesShortcut(helper.config?.shortcuts, 'row.mergeNext', event, helper.state?.rightShiftPressed)) {
       handled = true;
       void helper.runRowAction('mergeNext');
       if (helper.analytics) {
@@ -513,8 +497,13 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     return handled;
   }, 96);
   hooks.on('capture', (event) => {
-    if (isRightShiftSegmentNavigationShortcut(event)) {
-      const offset = event.key === 'ArrowRight' ? 1 : -1;
+    if (!isFeatureEnabled('rowActions')) return false;
+    const offset = matchesShortcut(helper.config?.shortcuts, 'row.next', event, helper.state?.rightShiftPressed)
+      ? 1
+      : matchesShortcut(helper.config?.shortcuts, 'row.previous', event, helper.state?.rightShiftPressed)
+        ? -1
+        : 0;
+    if (offset) {
       const handled =
         typeof helper.moveFocus === 'function' &&
         helper.moveFocus(offset);

@@ -1,4 +1,5 @@
 import type { FeatureModule } from '../core/types';
+import { formatShortcut, type ShortcutSettings } from '../core/shortcuts';
 import { createCustomLinterFeature } from './custom-linter';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
@@ -14,11 +15,7 @@ export type HotkeysHelpRow = [shortcut: string, description: string];
 export type FeatureSettingsLike = Record<string, boolean | undefined>;
 export type HotkeysHelpProvider =
   | HotkeysHelpRow[]
-  | ((featureSettings: FeatureSettingsLike) => HotkeysHelpRow[]);
-
-export const ALWAYS_PRESENT_HOTKEYS_HELP_ROWS: HotkeysHelpRow[] = [
-  ['Alt + Shift + P', 'Toggle Website Appearance editor']
-];
+  | ((featureSettings: FeatureSettingsLike, shortcuts?: ShortcutSettings) => HotkeysHelpRow[]);
 
 export type FeatureRegistration = {
   id: string;
@@ -34,9 +31,6 @@ export type FeatureRegistration = {
   hotkeysHelpOrder?: number;
 };
 
-export const PLAYBACK_REWIND_SHORTCUTS = [
-  { code: 'KeyX', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false, seconds: 1, label: 'Alt + X' }
-];
 
 function defineFeature<TRegistration extends FeatureRegistration>(registration: TRegistration): TRegistration {
   return registration;
@@ -60,30 +54,31 @@ export const FEATURE_REGISTRATIONS = [
       key: 'rowActions',
       defaultEnabled: true,
       label: 'Row Actions',
-      description: 'Enable D and Alt + Shift + Arrow merge shortcuts.'
+      description: 'Enable configurable segment deletion, navigation, and merge shortcuts.'
     },
     moduleOrder: 20,
     createModule: createRowActionsFeature,
     hotkeysHelpOrder: 30,
-    hotkeysHelp: (featureSettings) => {
+    hotkeysHelp: (featureSettings, shortcuts) => {
       const rows: HotkeysHelpRow[] = [];
+      const add = (id: string, description: string) => rows.push([formatShortcut(shortcuts, id), description]);
       if (featureSettings.speakerWorkflowHotkeys) {
-        rows.push(['Alt + 1 / Alt + 2', 'Switch active speaker workflow lane']);
-        rows.push(['Alt + ~', 'Reset lanes: show both, unmute both, select All Tracks']);
+        add('speaker.first', 'Switch to the first speaker workflow lane');
+        add('speaker.second', 'Switch to the second speaker workflow lane');
+        add('speaker.reset', 'Reset lanes: show both, unmute both, select All Tracks');
       }
-      for (const shortcut of PLAYBACK_REWIND_SHORTCUTS) {
-        const milliseconds = Math.round(shortcut.seconds * 1000);
-        rows.push([shortcut.label, 'Rewind playback ' + milliseconds + 'ms']);
-      }
+      add('playback.rewind', 'Rewind playback 1000ms');
       if (featureSettings.playbackSpeedHotkeys) {
-        rows.push(['Shift + 1 / Shift + 2', 'Increase / decrease playback speed']);
+        add('playback.faster', 'Increase playback speed');
+        add('playback.slower', 'Decrease playback speed');
       }
-      rows.push(['Right Shift + Left / Right', 'Focus previous / next segment from start']);
-      rows.push(['Tab', 'Toggle active ghost cursor lane']);
+      add('row.previous', 'Focus previous segment from start');
+      add('row.next', 'Focus next segment from start');
+      add('ghost.lane', 'Toggle active ghost cursor lane');
       rows.push(['Alt + Click word', 'Seek playback to the word timestamp']);
-      rows.push(['Alt + Shift + Up', 'Merge with previous segment']);
-      rows.push(['Alt + Shift + Down', 'Merge with next segment']);
-      rows.push(['D', 'Delete current segment when not typing']);
+      add('row.mergePrevious', 'Merge with previous segment');
+      add('row.mergeNext', 'Merge with next segment');
+      add('row.delete', 'Delete current segment when not typing');
       return rows;
     }
   }),
@@ -93,7 +88,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'playbackSpeedHotkeys',
       defaultEnabled: true,
       label: 'Playback Speed Hotkeys',
-      description: 'Enable Shift + 1 / Shift + 2 playback speed shortcuts.'
+      description: 'Enable configurable playback speed shortcuts.'
     }
   }),
   defineFeature({
@@ -102,7 +97,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'speakerWorkflowHotkeys',
       defaultEnabled: true,
       label: 'Speaker Workflow Hotkeys',
-      description: 'Enable Alt + 1/2 speaker switch and Alt + ~ reset workflow shortcuts.'
+      description: 'Enable configurable speaker lane switching and workflow reset shortcuts.'
     }
   }),
   defineFeature({
@@ -112,12 +107,12 @@ export const FEATURE_REGISTRATIONS = [
       defaultEnabled: true,
       label: 'Selected Number to SKAZ',
       description:
-        'Enable immediate digit-to-SKAZ conversion (Select text + type digit) and Alt + A to convert selected digits into `digits {СКАЗ: words}`.'
+        'Enable immediate digit-to-SKAZ conversion (Select text + type digit) and a configurable shortcut to convert selected digits into `digits {СКАЗ: words}`.'
     },
     hotkeysHelpOrder: 40,
-    hotkeysHelp: [
+    hotkeysHelp: (_featureSettings, shortcuts) => [
       ['Digit', 'Replace selection with `digit {СКАЗ: original}`'],
-      ['Alt + A', 'Auto-convert selected digits into `digits {СКАЗ: words}`']
+      [formatShortcut(shortcuts, 'number.convert'), 'Auto-convert selected digits into `digits {СКАЗ: words}`']
     ]
   }),
   defineFeature({
@@ -126,14 +121,14 @@ export const FEATURE_REGISTRATIONS = [
       key: 'textMove',
       defaultEnabled: true,
       label: 'Text Move',
-      description: 'Enable Alt + [ and Alt + ] to move text between adjacent segments.'
+      description: 'Enable configurable shortcuts to move text between adjacent segments.'
     },
     moduleOrder: 30,
     createModule: createTextMoveFeature,
     hotkeysHelpOrder: 20,
-    hotkeysHelp: [
-      ['Alt + [ (Х)', 'Move text before caret to previous segment'],
-      ['Alt + ] (Є)', 'Move text after caret to next segment']
+    hotkeysHelp: (_featureSettings, shortcuts) => [
+      [formatShortcut(shortcuts, 'text.previous'), 'Move text before caret to previous segment'],
+      [formatShortcut(shortcuts, 'text.next'), 'Move text after caret to next segment']
     ]
   }),
   defineFeature({
@@ -172,14 +167,14 @@ export const FEATURE_REGISTRATIONS = [
       key: 'focusToggle',
       defaultEnabled: true,
       label: 'Focus Toggle',
-      description: 'Enable Esc to pause and blur the active transcript textarea, then resume and restore it.'
+      description: 'Enable a configurable shortcut to pause and blur the active transcript textarea, then resume and restore it.'
     },
     moduleOrder: 40,
     createModule: createFocusToggleFeature,
     hotkeysHelpOrder: 10,
-    hotkeysHelp: (featureSettings) => [
+    hotkeysHelp: (featureSettings, shortcuts) => [
       [
-        'Esc',
+        formatShortcut(shortcuts, 'focus.toggle'),
         'Pause and blur / resume and restore cursor' +
         (featureSettings.proportionalCursorRestore ? ' (proportional to playback position)' : '')
       ]
@@ -191,10 +186,23 @@ export const FEATURE_REGISTRATIONS = [
       key: 'timelineSelection',
       defaultEnabled: true,
       label: 'Timeline Selection',
-      description: 'Enable Alt + Drag cut preview and S/Shift + S/L timeline actions.'
+      description: 'Enable Alt + Drag cut preview and configurable timeline action shortcuts.'
     },
     moduleOrder: 50,
-    createModule: createTimelineSelectionFeature
+    createModule: createTimelineSelectionFeature,
+    hotkeysHelpOrder: 60,
+    hotkeysHelp: (_featureSettings, shortcuts) => [
+      ['Alt + Drag', 'Select a timeline cut preview'],
+      [formatShortcut(shortcuts, 'timeline.insert'), 'Insert a segment at the ghost cursor'],
+      [formatShortcut(shortcuts, 'timeline.autoSegment'), 'Automatically segment the timeline'],
+      [formatShortcut(shortcuts, 'timeline.transcribe'), 'Transcribe the current segment'],
+      [formatShortcut(shortcuts, 'timeline.trimCurrent'), 'Trim silence in the current segment'],
+      [formatShortcut(shortcuts, 'timeline.trimAll'), 'Trim silence in all visible segments'],
+      [formatShortcut(shortcuts, 'preview.cancel'), 'Cancel cut preview'],
+      [formatShortcut(shortcuts, 'preview.commitLeft'), 'Smart split / commit cut preview from the left'],
+      [formatShortcut(shortcuts, 'preview.commit'), 'Commit cut preview'],
+      [formatShortcut(shortcuts, 'preview.loop'), 'Toggle cut preview loop']
+    ]
   }),
   defineFeature({
     id: 'audio-trim-outward-pass',
@@ -203,7 +211,7 @@ export const FEATURE_REGISTRATIONS = [
       defaultEnabled: true,
       label: 'Audio Trim Outward Pass',
       description:
-        'When Alt + R cannot trim silence inward on a boundary, allow it to extend outward to the next quiet block and then refine inward.'
+        'When silence trimming cannot move a boundary inward, allow it to extend outward to the next quiet block and then refine inward.'
     }
   }),
   defineFeature({
@@ -258,9 +266,9 @@ export const FEATURE_REGISTRATIONS = [
     moduleOrder: 90,
     createModule: createCustomLinterFeature,
     hotkeysHelpOrder: 50,
-    hotkeysHelp: [
-      ['Alt + F', 'Auto-fix lint issues in current row'],
-      ['Alt + Shift + F', 'Auto-fix lint issues in all rows']
+    hotkeysHelp: (_featureSettings, shortcuts) => [
+      [formatShortcut(shortcuts, 'lint.current'), 'Auto-fix lint issues in current row'],
+      [formatShortcut(shortcuts, 'lint.all'), 'Auto-fix lint issues in all rows']
     ]
   }),
   defineFeature({
@@ -270,7 +278,7 @@ export const FEATURE_REGISTRATIONS = [
       defaultEnabled: true,
       label: 'Proportional Cursor Restore',
       description:
-        'When restoring focus after Esc, advance cursor to the text position proportional to playback progress (never backward from your last edit position).'
+        'When restoring focus with the focus-toggle shortcut, advance cursor to the text position proportional to playback progress (never backward from your last edit position).'
     }
   }),
   defineFeature({
@@ -317,10 +325,13 @@ export function getRegisteredFeatureModules(featureSettings: FeatureSettingsLike
     .filter((module): module is FeatureModule => Boolean(module));
 }
 
-export function getRegisteredHotkeysHelpRows(featureSettings: FeatureSettingsLike): HotkeysHelpRow[] {
-  const rows: HotkeysHelpRow[] = ALWAYS_PRESENT_HOTKEYS_HELP_ROWS.map(
-    (row) => [row[0], row[1]]
-  );
+export function getRegisteredHotkeysHelpRows(
+  featureSettings: FeatureSettingsLike,
+  shortcuts?: ShortcutSettings
+): HotkeysHelpRow[] {
+  const rows: HotkeysHelpRow[] = [
+    [formatShortcut(shortcuts, 'appearance.toggle'), 'Toggle Website Appearance editor']
+  ];
   for (const registration of (FEATURE_REGISTRATIONS as readonly FeatureRegistration[])
     .filter((entry) => entry.hotkeysHelp)
     .slice()
@@ -335,7 +346,7 @@ export function getRegisteredHotkeysHelpRows(featureSettings: FeatureSettingsLik
       continue;
     }
 
-    const nextRows = typeof provider === 'function' ? provider(featureSettings) : provider;
+    const nextRows = typeof provider === 'function' ? provider(featureSettings, shortcuts) : provider;
     rows.push(...nextRows);
   }
 

@@ -21,6 +21,18 @@ npm run build:core
 npm run sync:unpacked
 ```
 
+## Configurable shortcuts
+
+Open the extension settings and select **Shortcuts** to open its dedicated submenu. All 28 Helper action shortcuts retain their original defaults until changed. Record a replacement, add an alternative, clear an action to disable its shortcut, or restore individual/all defaults. Changes save automatically and apply to open dashboard sessions; shortcut help and appearance hints use the saved bindings.
+
+Recording prompts and results appear inside the action's row; the active recording button becomes **Cancel recording**. The recorder supports right-Shift combinations. Escape and Tab can be assigned; cancel with that inline button or by tapping and releasing a modifier alone. Conflict warnings are informational because some defaults intentionally share keys in different contexts.
+
+These settings cover Helper keyboard actions, not native Babel/browser shortcuts, ordinary text editing, or mouse gestures. Browser/OS-reserved combinations may never reach the page. Auto-insert still defaults to `Alt+C`, now handled by the same configurable page input path rather than a separately reserved Chrome command.
+
+## Audio boundary threshold
+
+By default, `Alt+R`, `Alt+Shift+R`, and the final trim after `Alt+C` use the same silence threshold as `Alt+Shift+S`. Inward and outward trimming share that threshold and retain decoded-audio precision when available. Coarse speech-island scanning, boundary padding, and outward scan steps are unchanged.
+
 ## Checks
 
 ```sh

@@ -278,7 +278,7 @@ test('Alt+C creates an empty native region only over uncovered speech, then D de
   await babel.reset('baseline', { action: { annotations } });
   await ready(page, 3);
   await seek(page, 3.8);
-  // Actual extension command/key delivery; do not invoke chrome.commands listeners or the insert service.
+  // Deliver the configured shortcut through the browser, never invoke the insert service.
   await page.keyboard.press('Alt+KeyC');
   await expect(page.locator(TEXT)).toHaveCount(4);
   await assertEdges(page, 1, 3.6, 4.9);
@@ -286,6 +286,10 @@ test('Alt+C creates an empty native region only over uncovered speech, then D de
   await seek(page, 3.8);
   await page.keyboard.press('Alt+KeyC');
   await expect(page.locator(TEXT)).toHaveCount(4);
+  // Auto-insert focuses the matching segment; D deletes only outside text entry.
+  await expect(page.locator(TEXT).nth(1)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator(TEXT).nth(1)).not.toBeFocused();
   await page.keyboard.press('KeyD');
   await expect(page.locator(TEXT)).toHaveCount(3);
   expect((await rows(page)).map((row) => row.text)).toEqual(annotations.map((row) => row.content));

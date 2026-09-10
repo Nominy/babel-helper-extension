@@ -105,7 +105,7 @@ function getChromeApi(): ChromeRuntimeHost | null {
 export function createHelperKernel() {
   const state = createState();
   let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
-  const config = createConfig(settings.features);
+  const config = createConfig(settings.features, settings.shortcuts);
   const analytics = createAnalyticsStore();
   const perf = createPerfRuntime();
   let sessionRuntimeModule: LoadedSessionRuntimeModule | null = null;
@@ -255,6 +255,7 @@ export function createHelperKernel() {
 
   const websiteAppearancePanel = createWebsiteAppearancePanel({
     getSettings: () => settings.websiteAppearance,
+    getShortcuts: () => settings.shortcuts,
     onPreview: previewWebsiteAppearance,
     onCommit: commitWebsiteAppearance
   });
@@ -285,7 +286,7 @@ export function createHelperKernel() {
     // panel preview, so an open editor must adopt what the storage layer just handed us.
     websiteAppearancePanel.sync(settings.websiteAppearance);
 
-    const nextConfig = createConfig(settings.features);
+    const nextConfig = createConfig(settings.features, settings.shortcuts);
     Object.assign(helper.config, nextConfig);
     reconcileKernelViewServices();
     if (reason) {

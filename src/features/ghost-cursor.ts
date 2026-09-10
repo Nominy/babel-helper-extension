@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { matchesShortcut } from '../core/shortcuts';
 import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { computeL0TimedCharacterOffset, computeL0TimestampAtCharacterOffset } from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
@@ -1074,18 +1075,10 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 export function registerGhostCursorInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
   const { isFeatureEnabled, isTypingInTextControl } = input;
-  function isGhostCursorLaneToggleShortcut(event) {
-    return Boolean(
-      isFeatureEnabled('rowActions') &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      !event.altKey &&
-      !event.shiftKey &&
-      event.code === 'Tab'
-    );
-  }
   hooks.on('keydown', (event) => {
-    if (isGhostCursorLaneToggleShortcut(event) && typeof helper.toggleGhostCursorLane === 'function') {
+    if (isFeatureEnabled('rowActions') &&
+      matchesShortcut(helper.config?.shortcuts, 'ghost.lane', event, helper.state?.rightShiftPressed) &&
+      typeof helper.toggleGhostCursorLane === 'function') {
       const handled = helper.toggleGhostCursorLane();
       if (handled) {
         event.preventDefault();
@@ -1095,7 +1088,9 @@ export function registerGhostCursorInput(helper: any, hooks: EditorHooks, input:
     }
   }, 40);
   hooks.on('capture', (event) => {
-    if (isGhostCursorLaneToggleShortcut(event) && typeof helper.toggleGhostCursorLane === 'function') {
+    if (isFeatureEnabled('rowActions') &&
+      matchesShortcut(helper.config?.shortcuts, 'ghost.lane', event, helper.state?.rightShiftPressed) &&
+      typeof helper.toggleGhostCursorLane === 'function') {
       const handled = helper.toggleGhostCursorLane();
       if (handled) {
         event.preventDefault();

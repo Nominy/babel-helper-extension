@@ -4,6 +4,7 @@ import type { FeatureModule } from '../core/types';
 import type { TimelineModules } from '../services/timeline-selection-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
+import { formatShortcut, matchesShortcut } from '../core/shortcuts';
 
 export function registerTimelineSelection(helper: any, api: Pick<TimelineModules, 'site' | 'edge' | 'loop' | 'split'>) {
 
@@ -33,15 +34,15 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   helper.state.cutLastContainer = null;
 
   if (api.site.isFeatureEnabled('timelineSelection')) {
-    helper.config.hotkeysHelpRows.unshift(['Alt + C', 'Create empty segment around nearest uncovered speech near caret']);
-    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + G', 'Transcribe current empty segment with free L0']);
-    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + S', 'Split visible segments on silence runs over 1000ms, then trim all']);
-    helper.config.hotkeysHelpRows.unshift(['Alt + Shift + R', 'Trim all visible segments to nearby visible audio']);
-    helper.config.hotkeysHelpRows.unshift(['Alt + R', 'Trim current segment to nearby visible audio']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'timeline.insert'), 'Create empty segment around nearest uncovered speech near caret']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'timeline.transcribe'), 'Transcribe current empty segment with free L0']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'timeline.autoSegment'), 'Split visible segments on silence runs over 1000ms, then trim all']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'timeline.trimAll'), 'Trim all visible segments to nearby visible audio']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'timeline.trimCurrent'), 'Trim current segment to nearby visible audio']);
     helper.config.hotkeysHelpRows.unshift(['Shift + Ctrl/Cmd + Click', 'Run native split and redistribute words']);
-    helper.config.hotkeysHelpRows.unshift(['L', 'Loop the selected range until playback caret moves']);
-    helper.config.hotkeysHelpRows.unshift(['Shift + S', 'Split the selected range']);
-    helper.config.hotkeysHelpRows.unshift(['S', 'Smart-split the selected range']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'preview.loop'), 'Loop the selected range until playback caret moves']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'preview.commit'), 'Split the selected range']);
+    helper.config.hotkeysHelpRows.unshift([formatShortcut(helper.config.shortcuts, 'preview.commitLeft'), 'Smart-split the selected range']);
     helper.config.hotkeysHelpRows.unshift(['Alt + Drag', 'Create a timeline selection']);
   }
 
@@ -1233,17 +1234,6 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   };
 
 
-  function isAutoInsertSegmentHotkey(event) {
-    return Boolean(
-      event.altKey &&
-      !event.shiftKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.code === 'KeyC'
-    );
-  }
-
-
   function runAutoInsertSegmentHotkey(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -1266,7 +1256,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       }
     }
 
-    if (!isAutoInsertSegmentHotkey(event)) {
+    if (!matchesShortcut(helper.config.shortcuts, 'timeline.insert', event, helper.state.rightShiftPressed)) {
       return false;
     }
 
@@ -1295,13 +1285,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       }
     }
 
-    if (
-      event.altKey &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.code === 'KeyS'
-    ) {
+    if (matchesShortcut(helper.config.shortcuts, 'timeline.autoSegment', event, helper.state.rightShiftPressed)) {
       event.preventDefault();
       event.stopPropagation();
       void helper.autoSegmentVisibleSilences();
@@ -1314,13 +1298,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       };
     }
 
-    if (
-      event.altKey &&
-      event.shiftKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.code === 'KeyG'
-    ) {
+    if (matchesShortcut(helper.config.shortcuts, 'timeline.transcribe', event, helper.state.rightShiftPressed)) {
       event.preventDefault();
       event.stopPropagation();
       void helper.transcribeCurrentSegmentWithL0();
@@ -1333,19 +1311,15 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       };
     }
 
-    if (isAutoInsertSegmentHotkey(event)) {
+    if (matchesShortcut(helper.config.shortcuts, 'timeline.insert', event, helper.state.rightShiftPressed)) {
       return runAutoInsertSegmentHotkey(event);
     }
 
-    if (
-      event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      event.code === 'KeyR'
-    ) {
+    const trimAll = matchesShortcut(helper.config.shortcuts, 'timeline.trimAll', event, helper.state.rightShiftPressed);
+    if (trimAll || matchesShortcut(helper.config.shortcuts, 'timeline.trimCurrent', event, helper.state.rightShiftPressed)) {
       event.preventDefault();
       event.stopPropagation();
-      if (event.shiftKey) {
+      if (trimAll) {
         void helper.trimAllSegmentsToAudio();
         return {
           handled: true,
@@ -1367,7 +1341,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     }
 
     if (!helper.state.cutPreview) {
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyL') {
+      if (matchesShortcut(helper.config.shortcuts, 'preview.loop', event, helper.state.rightShiftPressed)) {
         api.loop.setSelectionLoopDebug('no-preview-key');
       }
       return false;
@@ -1378,12 +1352,22 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       event.stopPropagation();
       return true;
     }
+    const cancel = matchesShortcut(helper.config.shortcuts, 'preview.cancel', event, helper.state.rightShiftPressed);
+    const smartSplit = matchesShortcut(helper.config.shortcuts, 'preview.commitLeft', event, helper.state.rightShiftPressed);
+    const split = matchesShortcut(helper.config.shortcuts, 'preview.commit', event, helper.state.rightShiftPressed);
+    const loop = matchesShortcut(helper.config.shortcuts, 'preview.loop', event, helper.state.rightShiftPressed);
+
 
     if (helper.state.cutCommitPending) {
       if (
-        event.key === 'Escape' ||
-        event.key.toLowerCase() === 's' ||
-        event.key.toLowerCase() === 'l' ||
+        cancel || smartSplit || split || loop ||
+        // The default busy guard also absorbs modified S/L, but must not
+        // retain those keys after the corresponding action is rebound.
+        (event.key.toLowerCase() === 's' &&
+          (helper.config.shortcuts?.['preview.commitLeft'] === undefined ||
+            helper.config.shortcuts?.['preview.commit'] === undefined)) ||
+        (event.key.toLowerCase() === 'l' &&
+          helper.config.shortcuts?.['preview.loop'] === undefined) ||
         event.key === 'Delete' ||
         (event.altKey && !event.ctrlKey && !event.metaKey)
       ) {
@@ -1395,14 +1379,14 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       return false;
     }
 
-    if (event.key === 'Escape') {
+    if (cancel) {
       helper.clearCutPreview();
       event.preventDefault();
       event.stopPropagation();
       return true;
     }
 
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyS') {
+    if (smartSplit) {
       event.preventDefault();
       event.stopPropagation();
       void helper.commitCutPreview({
@@ -1411,14 +1395,14 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       return true;
     }
 
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && event.code === 'KeyS') {
+    if (split) {
       event.preventDefault();
       event.stopPropagation();
       void helper.commitCutPreview();
       return true;
     }
 
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.code === 'KeyL') {
+    if (loop) {
       event.preventDefault();
       event.stopPropagation();
       void helper.startSelectionLoop();
@@ -1645,7 +1629,7 @@ export function createTimelineSelectionFeature(): FeatureModule {
 }
 
 export function registerTimelineInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
-  const { isFeatureEnabled, isTypingInTextControl } = input;
+  const { isFeatureEnabled } = input;
 
   hooks.on('keydown', (event) => {
     const timelineHotkeyResult =
@@ -1682,21 +1666,12 @@ export function registerTimelineInput(helper: any, hooks: EditorHooks, input: Ed
       helper.runtime.isSessionInteractive() &&
       isFeatureEnabled('timelineSelection') &&
       typeof helper.handleCutPreviewKeydown === 'function' &&
-      event.altKey &&
       (
-        (
-          !event.shiftKey &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          event.code === 'KeyC'
-        ) ||
-        event.code === 'KeyR' ||
-        (
-          event.shiftKey &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          (event.code === 'KeyS' || event.code === 'KeyG')
-        )
+        matchesShortcut(helper.config.shortcuts, 'timeline.insert', event, helper.state.rightShiftPressed) ||
+        matchesShortcut(helper.config.shortcuts, 'timeline.trimCurrent', event, helper.state.rightShiftPressed) ||
+        matchesShortcut(helper.config.shortcuts, 'timeline.trimAll', event, helper.state.rightShiftPressed) ||
+        matchesShortcut(helper.config.shortcuts, 'timeline.autoSegment', event, helper.state.rightShiftPressed) ||
+        matchesShortcut(helper.config.shortcuts, 'timeline.transcribe', event, helper.state.rightShiftPressed)
       )
     ) {
       const timelineHotkeyResult = helper.handleCutPreviewKeydown(event);
