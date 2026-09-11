@@ -441,6 +441,71 @@ export function createRowActionsFeature(): FeatureModule {
 
 export function registerRowActionInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
   const { isFeatureEnabled, isTypingInTextControl } = input;
+  let acceptingWarnings = false;
+
+  async function acceptAllWarnings() {
+    acceptingWarnings = true;
+    const href = window.location.href;
+    const revision = helper.state.sessionLifecycleRevision;
+    const table = document.querySelector('main table');
+    const attemptedRows = new Set();
+    const isCurrentSession = () =>
+      isFeatureEnabled('rowActions') &&
+      helper.runtime.isSessionInteractive() &&
+      helper.state.sessionLifecycleRevision === revision &&
+      window.location.href === href &&
+      table?.isConnected &&
+      document.querySelector('main table') === table;
+    try {
+      while (isCurrentSession()) {
+        let warning = null;
+        // Requery after every native click: React handlers capture the current
+        // acknowledgement list, so a batch of stale handlers loses earlier clicks.
+        for (const row of helper.getTranscriptRows()) {
+          const editor = helper.getRowTextarea(row);
+          if (!(editor instanceof HTMLTextAreaElement) ||
+              !editor.isConnected || editor.readOnly || editor.disabled ||
+              editor.matches(':disabled, [aria-disabled="true"]') ||
+              !table.contains(row)) {
+            continue;
+          }
+          const identity = helper.getRowIdentity(row);
+          const key = identity?.annotationId || row;
+          if (attemptedRows.has(key)) continue;
+          warning = Array.from(row.querySelectorAll('.cursor-pointer')).find((element) =>
+            element instanceof HTMLElement &&
+            !element.matches(':disabled, [aria-disabled="true"]') &&
+            Array.from(element.children).some((child) =>
+              child instanceof HTMLElement && String(child.className || '').includes('bg-yellow')));
+          if (warning) {
+            attemptedRows.add(key);
+            break;
+          }
+        }
+        if (!warning || !isCurrentSession()) break;
+        warning.click();
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      }
+    } finally {
+      acceptingWarnings = false;
+    }
+  }
+
+  hooks.on('keydown', (event) => {
+    if (!isFeatureEnabled('rowActions') ||
+        !helper.runtime.isSessionInteractive() ||
+        !matchesShortcut(helper.config?.shortcuts, 'warnings.acceptAll', event, helper.state?.rightShiftPressed)) {
+      return false;
+    }
+    if (event.isComposing || event.keyCode === 229) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat && !acceptingWarnings) {
+      void acceptAllWarnings();
+    }
+    return true;
+  }, 94);
+
   function tryDeleteCurrentRow(event) {
     const row =
       typeof helper.getCurrentActionRow === 'function'

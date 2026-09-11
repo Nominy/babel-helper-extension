@@ -38,6 +38,7 @@ export const SHORTCUT_ACTIONS = [
   action('number.convert', 'Convert selected number to words', 'KeyA', { altKey: true, ignoreModifiers: ['ctrlKey'] }),
   action('lint.current', 'Fix lint in current segment', 'KeyF', { altKey: true }),
   action('lint.all', 'Fix lint in all segments', 'KeyF', { altKey: true, shiftKey: true }),
+  action('warnings.acceptAll', 'Accept all linter warnings', 'KeyA', { altKey: true, shiftKey: true }),
   action('timeline.insert', 'Insert segment at caret', 'KeyC', { altKey: true }),
   action('timeline.autoSegment', 'Auto-segment visible silences', 'KeyS', { altKey: true, shiftKey: true }),
   action('timeline.transcribe', 'Transcribe current segment', 'KeyG', { altKey: true, shiftKey: true }),

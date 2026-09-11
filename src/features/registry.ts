@@ -54,7 +54,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'rowActions',
       defaultEnabled: true,
       label: 'Row Actions',
-      description: 'Enable configurable segment deletion, navigation, and merge shortcuts.'
+      description: 'Enable configurable segment deletion, navigation, merge, and linter warning acknowledgement shortcuts.'
     },
     moduleOrder: 20,
     createModule: createRowActionsFeature,
@@ -79,6 +79,7 @@ export const FEATURE_REGISTRATIONS = [
       add('row.mergePrevious', 'Merge with previous segment');
       add('row.mergeNext', 'Merge with next segment');
       add('row.delete', 'Delete current segment when not typing');
+      add('warnings.acceptAll', 'Accept all linter warnings without changing transcript text');
       return rows;
     }
   }),
