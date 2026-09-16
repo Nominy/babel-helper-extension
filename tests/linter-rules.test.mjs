@@ -78,6 +78,21 @@ test('normalized stutter matcher excludes generic tags and non-stutter hyphens',
   assert.deepEqual(getNormalizedStutterMatches('слово-тест foo - bar 12- test'), []);
 });
 
+test('ё lint ranges and fixes agree across case, decomposition, compounds, and protected tags', async () => {
+  const { getUnnecessaryYoMatches, fixUnnecessaryYo } = await importBundledTs(
+    'src/features/custom-linter/linter/yo-orthography.ts'
+  );
+  const text = 'Е\u0308ЛКА всё-таки всём-то берёт берёте нём ещё-ёлка [шёпот] <шёпот> ещё </шёпот> {СКАЗ: трёх}';
+  const matches = getUnnecessaryYoMatches(text);
+  assert.deepEqual(matches.map(match => match.text), ['Е\u0308ЛКА', 'ещё', 'ёлка', 'ещё']);
+  for (const match of matches) assert.equal(text.slice(match.start, match.end), match.text);
+  const fixed = fixUnnecessaryYo(text);
+  assert.equal(fixed, 'ЕЛКА всё-таки всём-то берёт берёте нём еще-елка [шёпот] <шёпот> еще </шёпот> {СКАЗ: трёх}');
+  assert.deepEqual(getUnnecessaryYoMatches(fixed), []);
+  assert.equal(fixUnnecessaryYo('Все всем берет нем. Всё\u2011таки ещё\u2010ёлка сверхвсё.'),
+    'Все всем берет нем. Всё\u2011таки еще\u2010елка сверхвсе.');
+});
+
 test('normalized stutter rule is an error rule without autocorrection', async () => {
   const { createLanguageRules } = await importBundledTs(
     'src/features/custom-linter/linter/rules/language-rules.ts'

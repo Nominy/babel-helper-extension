@@ -26,6 +26,14 @@ export const createLanguageRules: CustomLinterRuleFactory = (deps) => [
     fix: (text) => deps.normalizeIncorrectInterjectionForms(text)
   },
   {
+    id: 'unnecessary-yo',
+    reason: deps.reasons.unnecessaryYo,
+    severity: deps.ruleSeverity,
+    markers: [deps.reasons.unnecessaryYo],
+    getMatches: (entry, context) => deps.getUnnecessaryYoMatches(entry.text, context.textContext),
+    fix: (text) => deps.fixUnnecessaryYo(text)
+  },
+  {
     id: 'highlighted-words',
     reason: deps.reasons.highlightedWord,
     severity: deps.highlightedWordRuleSeverity,

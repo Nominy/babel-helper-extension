@@ -19,6 +19,7 @@ export type CustomLinterReasons = {
   doubleDashPunctuation: string;
   singleDashPunctuation: string;
   incorrectInterjectionForms: string;
+  unnecessaryYo: string;
   highlightedWord: string;
   sentenceBoundaryCapitalization: string;
   politePronounCase: string;
@@ -65,6 +66,8 @@ export type CustomLinterRuleDependencies = {
   fixSingleDashPunctuation(text: string): string;
   getIncorrectInterjectionFormMatches(text: string): TextRange[];
   normalizeIncorrectInterjectionForms(text: string): string;
+  getUnnecessaryYoMatches(text: string, textContext?: TranscriptTextContext): TextRange[];
+  fixUnnecessaryYo(text: string): string;
   getHighlightedWordMatches(text: string, textContext?: TranscriptTextContext): TextRange[];
   getSentenceBoundaryCapitalizationMatches(text: string): TextRange[];
   fixSentenceBoundaryCapitalization(text: string): string;

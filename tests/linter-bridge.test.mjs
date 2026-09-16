@@ -131,6 +131,28 @@ test('lint issues keep annotation identity and exact highlighted word ranges', a
   ]);
 });
 
+test('ё rule reports native errors and autofixes only non-exceptions through the page service', async () => {
+  const { linter, window } = await bootLinterBridgeOverNativeFetch();
+  const input = 'Ещё ёлка. Всё обо всём, берёт, берёте, о нём.';
+  const rule = linter.getRules().find(rule => rule.id === 'unnecessary-yo');
+  const issues = linter.buildIssues([{ annotationId: 'yo-row', text: input }])
+    .filter(issue => issue.reason === rule.reason);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].severity, 'error');
+  assert.deepEqual(issues[0].babelHelper.matches, [
+    { start: 0, end: 3, text: 'Ещё' },
+    { start: 4, end: 8, text: 'ёлка' }
+  ]);
+  assert.equal(window.__babelHelperLinterBridge.applyAllFixes(input),
+    'Еще елка. Всё обо всём, берёт, берёте, о нём.');
+  window.dispatchEvent(new CustomEvent('babel-helper-linter-bridge-config', {
+    detail: { disabledCustomLinterRuleIds: ['unnecessary-yo'] }
+  }));
+  assert.equal(window.__babelHelperLinterBridge.applyAllFixes(input), input);
+  assert.deepEqual(linter.buildIssues([{ annotationId: 'yo-row', text: input }])
+    .filter(issue => issue.reason === rule.reason), []);
+});
+
 // A second page bridge (Review) stacked on top of the linter wrapper: it captures whatever
 // window.fetch was at wrap time and calls it only after an await, so the linter's synchronous
 // re-entrancy guard cannot see it. Rejecting on re-entry turns a cycle into a failure instead

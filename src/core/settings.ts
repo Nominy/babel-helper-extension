@@ -236,6 +236,12 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
     enabledByDefault: true
   },
   {
+    id: 'unnecessary-yo',
+    label: 'Unnecessary ё',
+    description: 'Reports ё in words without meaning changes and fixes it to е, preserving dictionary exceptions.',
+    enabledByDefault: true
+  },
+  {
     id: 'normalized-stutters',
     label: 'Normalized stutters',
     description: 'Warns when stutter fragments are not substrings of the following word.',

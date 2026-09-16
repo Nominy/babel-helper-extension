@@ -16,6 +16,7 @@ import {
   isRangeInsideGenericTag as isContextRangeInsideGenericTag,
 } from "./linter/text-context";
 import { createCustomLinterRules } from "./linter/rules";
+import { getUnnecessaryYoMatches, fixUnnecessaryYo } from "./linter/yo-orthography";
 import { BABEL_ROW_TEXTAREA_SELECTOR } from "../../core/babel-editor-contract";
 
 export function initLinterBridge() {
@@ -69,6 +70,8 @@ export function initLinterBridge() {
     "Punctuation immediately after single dash is typically avoided.";
   const INCORRECT_INTERJECTION_FORMS_RULE_REASON =
     "Incorrect interjection forms must use dictionary spelling.";
+  const UNNECESSARY_YO_RULE_REASON =
+    "ё written in a word without meaning changes. Use е instead.";
   const NORMALIZED_STUTTERS_RULE_REASON =
     "Stutter fragments must be in-order substrings of the following word.";
   const SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON =
@@ -2294,6 +2297,7 @@ export function initLinterBridge() {
         doubleDashPunctuation: DOUBLE_DASH_PUNCTUATION_RULE_REASON,
         singleDashPunctuation: SINGLE_DASH_PUNCTUATION_RULE_REASON,
         incorrectInterjectionForms: INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+        unnecessaryYo: UNNECESSARY_YO_RULE_REASON,
         normalizedStutters: NORMALIZED_STUTTERS_RULE_REASON,
         highlightedWord: HIGHLIGHTED_WORD_RULE_REASON,
         sentenceBoundaryCapitalization:
@@ -2338,6 +2342,8 @@ export function initLinterBridge() {
       fixSingleDashPunctuation,
       getIncorrectInterjectionFormMatches,
       normalizeIncorrectInterjectionForms,
+      getUnnecessaryYoMatches,
+      fixUnnecessaryYo,
       getNormalizedStutterMatches,
       getHighlightedWordMatches,
       getSentenceBoundaryCapitalizationMatches,
@@ -4017,6 +4023,7 @@ export function initLinterBridge() {
       DOUBLE_DASH_PUNCTUATION_RULE_REASON,
       SINGLE_DASH_PUNCTUATION_RULE_REASON,
       INCORRECT_INTERJECTION_FORMS_RULE_REASON,
+      UNNECESSARY_YO_RULE_REASON,
       HIGHLIGHTED_WORD_RULE_REASON,
       SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON,
       POLITE_PRONOUN_CASE_RULE_REASON,
@@ -6320,6 +6327,7 @@ export function initLinterBridge() {
     fixDoubleDashPunctuation,
     fixSingleDashPunctuation,
     normalizeIncorrectInterjectionForms,
+    fixUnnecessaryYo,
     fixPolitePronounCase,
     fixTerminalPunctuation,
     fixSentenceBoundaryCapitalization,

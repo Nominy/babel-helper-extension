@@ -29,6 +29,16 @@ Recording prompts and results appear inside the action's row; the active recordi
 
 These settings cover Helper keyboard actions, not native Babel/browser shortcuts, ordinary text editing, or mouse gestures. Browser/OS-reserved combinations may never reach the page. Auto-insert still defaults to `Alt+C`, now handled by the same configurable page input path rather than a separately reserved Chrome command.
 
+## е/ё spelling linter
+
+Added in **1.0.275**. **Custom Linter → Manage rules → Unnecessary ё** is enabled by default. It reports the native error **“ё written in a word without meaning changes. Use е instead.”** and highlights affected words.
+
+Use **Alt + F** to fix the current segment or **Alt + Shift + F** to fix all segments (or your configured replacements). The fix changes non-exception `ё`/`Ё` to `е`/`Е`; it never inserts `ё`. Disabling the rule disables both its errors and its autofix. Detection alone does not rewrite text.
+
+The bundled 4,762-form exception set preserves words such as `всё`, `всём`, `берёт`, `берёте`, and `нём`, including capitalization and decomposed Unicode spellings. Whole dictionary compounds and protected components of hyphenated words are preserved. Generic tags and their payloads remain unchanged; speech inside paired style tags is checked.
+
+This is entirely a Helper feature, with no backend dependency. Gold drafting has separate model-prompt guidance only. The exception set conservatively includes all extracted candidates from OpenCorpora revision `417150` (January 2022); it is dictionary-bounded, not a guarantee of complete Russian coverage. Source attribution, checksum, and the [CC BY-SA 3.0 data license](https://creativecommons.org/licenses/by-sa/3.0/) are retained in `src/features/custom-linter/linter/data/yo-exceptions.json` and the bundled bridge.
+
 ## Accept all linter warnings
 
 Press **Alt + Shift + A** on an editable transcription task to acknowledge all current linter warnings, including offscreen segments. This Workflow Helper action leaves errors, already-accepted warnings, and transcript text unchanged; it does not save or submit the task. Repeating it never undoes acknowledgements. It stops if the route or editing session changes.
