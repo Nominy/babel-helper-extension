@@ -4,6 +4,7 @@ import { tokenizeTranscriptText, type TextRange, type TranscriptTextContext } fr
 const yoExceptions = new Set(dictionary.words);
 const hasYo = /[ёЁ]|[еЕ]\u0308/u;
 const yoLetters = /[ёЁ]|[еЕ]\u0308/gu;
+const startsWithCapital = /^[\p{Lu}\p{Lt}]/u;
 
 export function getUnnecessaryYoMatches(text: string, textContext?: TranscriptTextContext): TextRange[] {
   if (!hasYo.test(text)) {
@@ -24,13 +25,13 @@ export function getUnnecessaryYoMatches(text: string, textContext?: TranscriptTe
       end = tokens[index].end;
     }
     const word = end === token.end ? token.text : text.slice(token.start, end);
-    if (!hasYo.test(word) || yoExceptions.has(word.normalize('NFC').toLowerCase().replace(/[\u2010\u2011]/gu, '-'))) {
+    if (!hasYo.test(word) || startsWithCapital.test(word) || yoExceptions.has(word.normalize('NFC').toLowerCase().replace(/[\u2010\u2011]/gu, '-'))) {
       continue;
     }
     // Preserve exact compounds and exception components followed by particles.
     // Match complete components, never substrings of a larger word.
     for (const part of word.matchAll(/[^-\u2010\u2011]+/gu)) {
-      if (!hasYo.test(part[0]) || yoExceptions.has(part[0].normalize('NFC').toLowerCase())) {
+      if (!hasYo.test(part[0]) || startsWithCapital.test(part[0]) || yoExceptions.has(part[0].normalize('NFC').toLowerCase())) {
         continue;
       }
       const start = token.start + part.index!;

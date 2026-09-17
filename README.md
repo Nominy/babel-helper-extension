@@ -37,7 +37,13 @@ Use **Alt + F** to fix the current segment or **Alt + Shift + F** to fix all seg
 
 The bundled 4,762-form exception set preserves words such as `всё`, `всём`, `берёт`, `берёте`, and `нём`, including capitalization and decomposed Unicode spellings. Whole dictionary compounds and protected components of hyphenated words are preserved. Generic tags and their payloads remain unchanged; speech inside paired style tags is checked.
 
+Since **1.0.276**, capitalized words are conservatively treated as proper-noun candidates: their `ё` is neither reported nor replaced, including all-caps and capitalized components of hyphenated words. This capitalization heuristic also preserves sentence-initial ordinary words; lowercase non-exceptions are still fixed.
+
 This is entirely a Helper feature, with no backend dependency. Gold drafting has separate model-prompt guidance only. The exception set conservatively includes all extracted candidates from OpenCorpora revision `417150` (January 2022); it is dictionary-bounded, not a guarantee of complete Russian coverage. Source attribution, checksum, and the [CC BY-SA 3.0 data license](https://creativecommons.org/licenses/by-sa/3.0/) are retained in `src/features/custom-linter/linter/data/yo-exceptions.json` and the bundled bridge.
+
+## Stutter prefix validation
+
+Since **1.0.276**, **Normalized stutters** requires contiguous, case-insensitive prefixes of the completed word, not arbitrary internal substrings. `к- никто` is an error; `ни- никто`, `ник- никто`, and `Ни- ник- никто` are valid. Existing fragment-chain length checks still apply. Invalid fragments are highlighted but not automatically rewritten because their intended speech cannot be inferred safely.
 
 ## Accept all linter warnings
 

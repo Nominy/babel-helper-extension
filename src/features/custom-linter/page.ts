@@ -73,7 +73,7 @@ export function initLinterBridge() {
   const UNNECESSARY_YO_RULE_REASON =
     "ё written in a word without meaning changes. Use е instead.";
   const NORMALIZED_STUTTERS_RULE_REASON =
-    "Stutter fragments must be in-order substrings of the following word.";
+    "Stutter fragments must match the beginning of the following word.";
   const SENTENCE_BOUNDARY_CAPITALIZATION_RULE_REASON =
     "Words after clear sentence endings ., ?, ! must start uppercase.";
   const POLITE_PRONOUN_CASE_RULE_REASON =

@@ -140,16 +140,29 @@ test('ё rule reports native errors and autofixes only non-exceptions through th
   assert.equal(issues.length, 1);
   assert.equal(issues[0].severity, 'error');
   assert.deepEqual(issues[0].babelHelper.matches, [
-    { start: 0, end: 3, text: 'Ещё' },
     { start: 4, end: 8, text: 'ёлка' }
   ]);
   assert.equal(window.__babelHelperLinterBridge.applyAllFixes(input),
-    'Еще елка. Всё обо всём, берёт, берёте, о нём.');
+    'Ещё елка. Всё обо всём, берёт, берёте, о нём.');
   window.dispatchEvent(new CustomEvent('babel-helper-linter-bridge-config', {
     detail: { disabledCustomLinterRuleIds: ['unnecessary-yo'] }
   }));
   assert.equal(window.__babelHelperLinterBridge.applyAllFixes(input), input);
   assert.deepEqual(linter.buildIssues([{ annotationId: 'yo-row', text: input }])
+    .filter(issue => issue.reason === rule.reason), []);
+});
+
+test('stutter errors reject internal substrings without inventing an autofix', async () => {
+  const { linter, window } = await bootLinterBridgeOverNativeFetch();
+  const rule = linter.getRules().find(rule => rule.id === 'normalized-stutters');
+  const input = 'К- никто.';
+  const issues = linter.buildIssues([{ annotationId: 'stutter-row', text: input }])
+    .filter(issue => issue.reason === rule.reason);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].severity, 'error');
+  assert.deepEqual(issues[0].babelHelper.matches, [{ start: 0, end: 1, text: 'К' }]);
+  assert.equal(window.__babelHelperLinterBridge.applyAllFixes(input), input);
+  assert.deepEqual(linter.buildIssues([{ annotationId: 'stutter-row', text: 'Ни- ник- никто.' }])
     .filter(issue => issue.reason === rule.reason), []);
 });
 

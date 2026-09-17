@@ -8,7 +8,7 @@ export const createLanguageRules: CustomLinterRuleFactory = (deps) => [
     markers: [
       deps.reasons.normalizedStutters,
       'Stutter fragments',
-      'must be in-order substrings of the following word'
+      'must match the beginning of the following word'
     ],
     getMatches: (entry) => deps.getNormalizedStutterMatches(entry.text)
   },

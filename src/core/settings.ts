@@ -238,13 +238,13 @@ export const CUSTOM_LINTER_RULE_SETTINGS: CustomLinterRuleSetting[] = [
   {
     id: 'unnecessary-yo',
     label: 'Unnecessary ё',
-    description: 'Reports ё in words without meaning changes and fixes it to е, preserving dictionary exceptions.',
+    description: 'Reports unnecessary ё and fixes it to е, preserving capitalized words and dictionary exceptions.',
     enabledByDefault: true
   },
   {
     id: 'normalized-stutters',
     label: 'Normalized stutters',
-    description: 'Warns when stutter fragments are not substrings of the following word.',
+    description: 'Warns when stutter fragments do not match the beginning of the following word.',
     enabledByDefault: true
   },
   {

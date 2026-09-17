@@ -202,7 +202,7 @@ export function getNormalizedStutterMatches(text: string): TextRange[] {
     const normalizedTerminalWord = terminalWord.text.toLowerCase();
     for (const fragmentIndex of fragmentIndexes) {
       const fragmentText = tokens[fragmentIndex].text;
-      if (!normalizedTerminalWord.includes(fragmentText.toLowerCase())) {
+      if (!normalizedTerminalWord.startsWith(fragmentText.toLowerCase())) {
         invalidFragmentIndexes.add(fragmentIndex);
       }
     }

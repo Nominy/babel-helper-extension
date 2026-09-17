@@ -57,6 +57,9 @@ test('normalized stutter matcher reports only invalid letter fragments', async (
   assert.deepEqual(matches('н- нет'), []);
   assert.deepEqual(matches('не- нет'), []);
   assert.deepEqual(matches('н- не- нет'), []);
+  assert.deepEqual(matches('к- никто'), [{ start: 0, end: 1, text: 'к' }]);
+  assert.deepEqual(matches('Ни- ник- никто'), []);
+  assert.deepEqual(matches('н- к- никто'), [{ start: 3, end: 4, text: 'к' }]);
   assert.deepEqual(matches('а- а- один'), [
     { start: 0, end: 1, text: 'а' },
     { start: 3, end: 4, text: 'а' }
@@ -84,58 +87,24 @@ test('ё lint ranges and fixes agree across case, decomposition, compounds, and 
   );
   const text = 'Е\u0308ЛКА всё-таки всём-то берёт берёте нём ещё-ёлка [шёпот] <шёпот> ещё </шёпот> {СКАЗ: трёх}';
   const matches = getUnnecessaryYoMatches(text);
-  assert.deepEqual(matches.map(match => match.text), ['Е\u0308ЛКА', 'ещё', 'ёлка', 'ещё']);
+  assert.deepEqual(matches.map(match => match.text), ['ещё', 'ёлка', 'ещё']);
   for (const match of matches) assert.equal(text.slice(match.start, match.end), match.text);
   const fixed = fixUnnecessaryYo(text);
-  assert.equal(fixed, 'ЕЛКА всё-таки всём-то берёт берёте нём еще-елка [шёпот] <шёпот> еще </шёпот> {СКАЗ: трёх}');
+  assert.equal(fixed, 'Е\u0308ЛКА всё-таки всём-то берёт берёте нём еще-елка [шёпот] <шёпот> еще </шёпот> {СКАЗ: трёх}');
   assert.deepEqual(getUnnecessaryYoMatches(fixed), []);
   assert.equal(fixUnnecessaryYo('Все всем берет нем. Всё\u2011таки ещё\u2010ёлка сверхвсё.'),
     'Все всем берет нем. Всё\u2011таки еще\u2010елка сверхвсе.');
 });
 
-test('normalized stutter rule is an error rule without autocorrection', async () => {
-  const { createLanguageRules } = await importBundledTs(
-    'src/features/custom-linter/linter/rules/language-rules.ts'
+test('ё lint exempts capitalized words and name components at any sentence position', async () => {
+  const { getUnnecessaryYoMatches, fixUnnecessaryYo } = await importBundledTs(
+    'src/features/custom-linter/linter/yo-orthography.ts'
   );
-  const sentinel = [{ start: 2, end: 3, text: 'x' }];
-  const accessed = [];
-  const deps = new Proxy(
-    {
-      ruleSeverity: 'error',
-      highlightedWordRuleSeverity: 'warning',
-      reasons: new Proxy({}, { get: (_target, key) => String(key) })
-    },
-    {
-      get: (_target, key) => {
-        if (typeof key === 'string') {
-          accessed.push(key);
-        }
-        if (key === 'ruleSeverity') {
-          return 'error';
-        }
-        if (key === 'highlightedWordRuleSeverity') {
-          return 'warning';
-        }
-        if (key === 'reasons') {
-          return new Proxy({}, { get: (_reasons, reasonKey) => String(reasonKey) });
-        }
-        return typeof key === 'string' && /stutter/i.test(key)
-          ? () => sentinel
-          : typeof key === 'string'
-            ? () => []
-            : undefined;
-      }
-    }
-  );
-
-  const rule = createLanguageRules(deps).find(({ id }) => id === 'normalized-stutters');
-  assert.ok(rule);
-  assert.equal(rule.severity, 'error');
-  assert.match(rule.reason.toLocaleLowerCase(), /stutter/);
-  assert.equal('fix' in rule, false);
-  assert.deepEqual(rule.getMatches({ text: 'sample' }), sentinel);
-  assert.ok(accessed.includes('getNormalizedStutterMatches'));
+  const text = 'Ёлка ещё. Встречаем «Алёшу», Фёдора и мини-Ёлку. Е\u0308ЛКА ёлка.';
+  assert.deepEqual(getUnnecessaryYoMatches(text).map(match => match.text), ['ещё', 'ёлка']);
+  assert.equal(fixUnnecessaryYo(text), 'Ёлка еще. Встречаем «Алёшу», Фёдора и мини-Ёлку. Е\u0308ЛКА елка.');
 });
+
 
 test('linter rule registry builds issues, filters visible tooltip entries, and applies fixes in rule order', async () => {
   const {
