@@ -131,6 +131,21 @@ test('lint issues keep annotation identity and exact highlighted word ranges', a
   ]);
 });
 
+test('highlighted vocabulary matches comma-containing phrases as single entries', async () => {
+  const { window, linter } = await bootLinterBridgeOverNativeFetch();
+  window.dispatchEvent(new CustomEvent('babel-helper-linter-bridge-config', {
+    detail: { highlightedWordsEnabled: true, highlightedWords: 'ну, да\nвсё ясно' }
+  }));
+  const issues = linter.buildIssues([
+    { annotationId: 'phrase', text: 'Он ответил: ну, да.', speakerKey: 'Speaker 1' },
+    { annotationId: 'part', text: 'Он сказал: ну.', speakerKey: 'Speaker 1' }
+  ]).filter(issue => issue.reason === linter.getRules().find(rule => rule.id === 'highlighted-words').reason);
+
+  assert.deepEqual(issues.map(issue => [issue.annotationId, issue.babelHelper.matches]), [
+    ['phrase', [{ start: 12, end: 18, text: 'ну, да' }]]
+  ]);
+});
+
 test('ё rule reports native errors and autofixes only non-exceptions through the page service', async () => {
   const { linter, window } = await bootLinterBridgeOverNativeFetch();
   const input = 'Ещё ёлка. Всё обо всём, берёт, берёте, о нём.';

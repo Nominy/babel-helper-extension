@@ -17,7 +17,7 @@ export function normalizeHighlightedWords(source: unknown): string[] {
   const rawItems = Array.isArray(source)
     ? source
     : typeof source === 'string'
-      ? source.split(/[\n,;]+/g)
+      ? source.split(/[\n;]+/g)
       : DEFAULT_HIGHLIGHTED_WORDS;
 
   const seen = new Set<string>();
