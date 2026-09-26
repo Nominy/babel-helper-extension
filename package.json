@@ -1,11 +1,11 @@
 {
   "name": "babel-helper-extension",
-  "version": "1.0.278",
+  "version": "1.0.279",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "npm run version:patch && npm run build:core && npm run sync:unpacked",
+    "build": "npm run build:core && npm run sync:unpacked",
     "build:reload": "npm run build",
     "build:core": "node esbuild.config.mjs",
     "build:watch": "node esbuild.config.mjs --watch",

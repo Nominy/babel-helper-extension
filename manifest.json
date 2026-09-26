@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Babel Audio Workflow Helper",
-  "version": "1.0.278",
+  "version": "1.0.279",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmxsLRQOopVVeywQE+XrqSmAmAVKApBpWml8FbSQ8+67WUAAR2xSaV2s96Cw6VAJYlRjD6clnNIB9+CKFnK96AziVmdLbkJ6unwbkuTijKW0CPfwYWRBIQfgPexlWkhO4j2WsbMede1n2ZlA64A6+YtsToN3rJUcSdLOBu0MCT4SMpP4+PjU5Sr2TU9JI4wV+tgjzZ9VRpIyjsJ2A81GIPwYYTKX+goGuFwwgZP4NSYiMuL7t7ciZAuMN0CfByt+pjAlOYUn1BzDgv4y+RDClAmVmjDPemIMxxHzIfsMTK7QiKZlbHAQnkKXGUq7kPkwtjDX5I1UG2z/EgQ79062jFQIDAQAB",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
   "icons": {
     "16": "icons/icon16.png",

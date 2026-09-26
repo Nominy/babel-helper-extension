@@ -12,14 +12,13 @@ npm ci
 npm run build
 ```
 
-Load `babel-helper-extension/` unpacked in `chrome://extensions`. After rebuilding, reload the extension and refresh the Babel dashboard tab.
+Load `babel-helper-extension/` unpacked in `chrome://extensions`. Run `npm run build` whenever you want to rebuild that same folder, then reload the extension and refresh the Babel dashboard tab. Nothing watches or rebuilds automatically.
 
-`build` bumps the patch version, writes `dist/`, and syncs the unpacked folder. To rebuild without changing versions:
+`build` preserves the version. Use `npm run version:patch` explicitly when preparing a new release. The manifest includes the official public identity key so the unpacked Helper can connect to Gold's broker.
 
-```sh
-npm run build:core
-npm run sync:unpacked
-```
+## Word-timed ghost cursor
+
+With Gold's current-task word timing available, the ghost cursor and Alt-click seeking use absolute word timestamps. Helper resolves visible speaker labels through Gold's task-scoped recording metadata, so UUID-named timing tracks work without access to page-world React internals. Stale or ambiguous mappings are not used. The cursor falls back to proportional positioning when no usable current-task timing or matching word anchors exist.
 
 ## Configurable shortcuts
 

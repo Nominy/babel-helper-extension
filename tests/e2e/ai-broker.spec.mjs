@@ -283,6 +283,12 @@ test('Helper consumes public Gold absolute word timings on both lanes through ac
   const fixture = await babel.reset('baseline', { audio: babel.ai !== 'placeholder' && babel.hasSpeechFixtures ? { fixture: 'speech' } : {} });
   await ready(page, babel);
   await expect.poll(() => page.evaluate(() => window.__helperE2ETiming.length), { timeout: 120000 }).toBeGreaterThan(0);
+  const originalTaskId = await page.evaluate(() => window.__helperE2ETiming.at(-1).taskId);
+  // Re-enter with cached timing, where lookup can finish before a fresh ASR request.
+  await page.reload();
+  await ready(page, babel);
+  await expect.poll(() => page.evaluate(() => window.__helperE2ETiming.at(-1)?.taskId), { timeout: 120000 })
+    .toBe(originalTaskId);
   const timing = await page.evaluate(() => window.__helperE2ETiming.at(-1));
   expect(timing.taskId).toContain((await babel.state()).action.actionId);
   expect(timing.tracks).toHaveLength(2);

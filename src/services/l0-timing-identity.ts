@@ -263,13 +263,67 @@ function matchingTracks(
   );
 }
 
+let publishedLaneJson: string | null = null;
+let publishedLanes: {
+  reviewActionId: string;
+  taskId: string;
+  idsByLabel: Map<string, string | null>;
+} | null = null;
+
+function getPublishedTimingLaneId(timingIndex: L0TimingIndex, aliases: L0TimingLaneAliases): string {
+  const raw = typeof document === 'undefined'
+    ? null
+    : document.documentElement?.getAttribute('data-babel-recording-lanes') ?? null;
+  // The cursor reads this every frame; parse only when Gold changes the snapshot.
+  if (raw !== publishedLaneJson) {
+    publishedLaneJson = raw;
+    publishedLanes = null;
+    if (raw) {
+      try {
+        const snapshot = asRecord(JSON.parse(raw));
+        const reviewActionId = trimmedString(snapshot?.reviewActionId);
+        if (reviewActionId && Array.isArray(snapshot?.tracks)) {
+          const idsByLabel = new Map<string, string | null>();
+          for (const value of snapshot.tracks) {
+            const track = asRecord(value);
+            const id = trimmedString(track?.id);
+            const label = trimmedString(track?.label).replace(/\s+/g, ' ').toLocaleLowerCase();
+            if (!id || !label) continue;
+            idsByLabel.set(label, idsByLabel.has(label) && idsByLabel.get(label) !== id ? null : id);
+          }
+          publishedLanes = {
+            reviewActionId,
+            taskId: serializeL0TimingTaskId(reviewActionId, []),
+            idsByLabel
+          };
+        }
+      } catch {
+        // Invalid page metadata cannot establish a recording identity.
+      }
+    }
+  }
+  if (!publishedLanes || publishedLanes.reviewActionId !== getPublishedReviewActionId() ||
+      publishedLanes.taskId !== timingIndex.taskId) return '';
+
+  let recordingId = '';
+  for (const alias of Array.isArray(aliases.fallbackAliases) ? aliases.fallbackAliases : []) {
+    const label = trimmedString(alias).replace(/\s+/g, ' ').toLocaleLowerCase();
+    const id = publishedLanes.idsByLabel.get(label);
+    if (id === null || (id && recordingId && id !== recordingId)) return '';
+    if (id) recordingId = id;
+  }
+  return recordingId;
+}
+
 export function resolveL0TimingTrack(
   timingIndex: L0TimingIndex | null | undefined,
   aliases: L0TimingLaneAliases
 ): L0WordTimingTrack | null {
   if (!timingIndex || !aliases) return null;
 
-  const stableKey = trimmedString(aliases.stableId).toLocaleLowerCase();
+  const stableKey = (
+    trimmedString(aliases.stableId) || getPublishedTimingLaneId(timingIndex, aliases)
+  ).toLocaleLowerCase();
   if (stableKey) {
     const stableMatches = matchingTracks(
       timingIndex,

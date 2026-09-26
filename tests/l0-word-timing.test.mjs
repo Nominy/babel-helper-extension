@@ -475,6 +475,85 @@ test('one visible lane is valid and ambiguous display aliases resolve to no timi
   );
 });
 
+function installPublishedLanes(t, reviewActionId, tracks) {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const attributes = new Map([
+    ['data-babel-review-action-id', reviewActionId],
+    ['data-babel-recording-lanes', JSON.stringify({ reviewActionId, tracks })]
+  ]);
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { documentElement: { getAttribute: (name) => attributes.get(name) ?? null } }
+  });
+  t.after(() => {
+    if (previousDocument) Object.defineProperty(globalThis, 'document', previousDocument);
+    else delete globalThis.document;
+  });
+  return attributes;
+}
+
+test('published recording metadata maps visible labels to absolute word timestamps', (t) => {
+  const reviewActionId = 'word-timing-task';
+  const recordingId = '22222222-3333-4444-8555-666666666666';
+  installPublishedLanes(t, reviewActionId, [{ id: recordingId, label: 'Speaker 1' }]);
+  const track = {
+    lane: recordingId,
+    tokens: [token('a', 'alpha', 1, 2), token('b', 'beta', 8, 9)]
+  };
+  const index = {
+    taskId: JSON.stringify({ version: 1, baseTaskId: reviewActionId, stableLaneIds: [] }),
+    tracks: [track]
+  };
+  const matched = identity.resolveL0TimingTrack(
+    index, identity.buildL0TimingLaneAliases({ speakerKey: 'Speaker 1' })
+  );
+  assert.equal(matched, track);
+  assert.equal(alignment.computeL0TimedCharacterOffset(
+    'alpha beta', matched.tokens, { startSeconds: 0, endSeconds: 10 }, 8
+  ), 6);
+  assert.equal(alignment.computeL0TimestampAtCharacterOffset(
+    'alpha beta', matched.tokens, { startSeconds: 0, endSeconds: 10 }, 7
+  ), 8);
+});
+
+test('published lane changes invalidate the old mapping without changing the task ID', (t) => {
+  const reviewActionId = 'changing-lane-task';
+  const attributes = installPublishedLanes(t, reviewActionId, [{ id: 'recording-a', label: 'Speaker 1' }]);
+  const first = { lane: 'recording-a', tokens: [token('a', 'first', 1, 2)] };
+  const second = { lane: 'recording-b', tokens: [token('b', 'second', 7, 8)] };
+  const index = {
+    taskId: JSON.stringify({ version: 1, baseTaskId: reviewActionId, stableLaneIds: [] }),
+    tracks: [first, second]
+  };
+  const aliases = identity.buildL0TimingLaneAliases({ speakerKey: 'Speaker 1' });
+  assert.equal(identity.resolveL0TimingTrack(index, aliases), first);
+  attributes.set('data-babel-recording-lanes', JSON.stringify({
+    reviewActionId, tracks: [{ id: 'recording-b', label: 'Speaker 1' }]
+  }));
+  assert.equal(identity.resolveL0TimingTrack(index, aliases), second);
+});
+
+for (const boundary of ['stale-publication', 'stale-timing', 'duplicate-label', 'conflicting-aliases']) {
+  test(`published lane metadata cannot attach timestamps across ${boundary}`, (t) => {
+    const reviewActionId = 'current-task';
+    const attributes = installPublishedLanes(t, reviewActionId, [
+      { id: 'recording-a', label: 'Speaker 1' },
+      { id: 'recording-b', label: boundary === 'duplicate-label' ? 'Speaker 1' : 'Speaker 2' }
+    ]);
+    if (boundary === 'stale-publication') attributes.set('data-babel-review-action-id', 'next-task');
+    const index = {
+      taskId: JSON.stringify({
+        version: 1, baseTaskId: boundary === 'stale-timing' ? 'old-task' : reviewActionId, stableLaneIds: []
+      }),
+      tracks: [{ lane: 'recording-a', tokens: [] }, { lane: 'recording-b', tokens: [] }]
+    };
+    const aliases = identity.buildL0TimingLaneAliases(
+      { speakerKey: 'Speaker 1' }, boundary === 'conflicting-aliases' ? ['Speaker 2'] : []
+    );
+    assert.equal(identity.resolveL0TimingTrack(index, aliases), null);
+  });
+}
+
 test('timing-ready notification lasts 750ms and replaces an older notice', () => {
   let attached = null;
   let removedOld = false;
