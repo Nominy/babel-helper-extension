@@ -180,7 +180,6 @@ test('stutter errors reject internal substrings without inventing an autofix', a
   assert.deepEqual(linter.buildIssues([{ annotationId: 'stutter-row', text: 'Ни- ник- никто.' }])
     .filter(issue => issue.reason === rule.reason), []);
 });
-
 // A second page bridge (Review) stacked on top of the linter wrapper: it captures whatever
 // window.fetch was at wrap time and calls it only after an await, so the linter's synchronous
 // re-entrancy guard cannot see it. Rejecting on re-entry turns a cycle into a failure instead

@@ -152,6 +152,27 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     }
   }
 
+  function getCaretScrollParent(textarea) {
+    let parent = textarea.parentElement;
+    while (parent) {
+      const overflow = getComputedStyle(parent).overflowY;
+      if ((overflow === 'auto' || overflow === 'scroll') &&
+          parent.scrollHeight > parent.clientHeight) return parent;
+      parent = parent.parentElement;
+    }
+    return null;
+  }
+
+  function scrollToCaret(row, offset) {
+    const textarea = helper.getRowTextarea(row);
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    const scrollParent = getCaretScrollParent(textarea);
+    if (!scrollParent) return;
+    const caret = getCaretPixelPosition(textarea, offset);
+    const viewport = scrollParent.getBoundingClientRect();
+    scrollParent.scrollTop += caret.top + caret.height / 2 - (viewport.top + viewport.bottom) / 2;
+  }
+
 
   /**
    * Compute the character offset the cursor should land at for a given
@@ -746,7 +767,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     const pos = getCaretPixelPosition(textarea, offset);
     const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
     const snapToDevicePixel = (value) => Math.round(value * pixelRatio) / pixelRatio;
-    el.style.display = '';
+    const scrollParent = getCaretScrollParent(textarea);
+    const viewport = scrollParent?.getBoundingClientRect();
+    // The marker is fixed to the page, not clipped by the transcript pane.
+    // Do not paint a caret over the playback controls when its text is scrolled away.
+    el.style.display = viewport && (pos.top < viewport.top || pos.top + pos.height > viewport.bottom)
+      ? 'none' : '';
     el.style.transform = `translate3d(${pos.left}px, ${pos.top}px, 0)`;
     el.style.height = `${snapToDevicePixel(pos.height)}px`;
 
@@ -1070,7 +1096,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     return rendered;
   };
 
-  return { setGhostCursorLaneLockForSpeaker, setGhostCursorLaneLockAuto, getGhostCursorTarget, stopGhostCursor, PROPORTIONAL_MIN_DELTA_SECONDS, computeRestoreOffset, startGhostCursor };
+  return { setGhostCursorLaneLockForSpeaker, setGhostCursorLaneLockAuto, getGhostCursorTarget, stopGhostCursor, scrollToCaret, PROPORTIONAL_MIN_DELTA_SECONDS, computeRestoreOffset, startGhostCursor };
 }
 
 export function registerGhostCursorInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
