@@ -1,4 +1,5 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
+import { openAppearance } from './helper-editing-utils.mjs';
 
 const TEXT = 'textarea[placeholder="What was said…"]';
 const HOST = '[data-babel-helper-minimap-host]';
@@ -141,8 +142,7 @@ test('Escape executes focused/unfocused pause/restore states with proportional f
   await seek(page, 0.8);
   const editor = page.locator(TEXT).first();
   await editor.click();
-  await editor.press('Home');
-  await editor.press('ArrowRight');
+  await editor.evaluate((element) => element.setSelectionRange(1, 1));
   const savedOffset = await editor.evaluate((element) => element.selectionStart);
   await page.keyboard.press('Escape');
   await expect(editor).not.toBeFocused();
@@ -166,11 +166,50 @@ test('Escape executes focused/unfocused pause/restore states with proportional f
   // Playing + focused is a separate transition: pause without blurring or moving the caret.
   await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
   await editor.click();
-  await editor.press('Home');
+  await editor.evaluate((element) => element.setSelectionRange(0, 0));
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
   expect(await editor.evaluate((element) => element.selectionStart)).toBe(0);
+});
+
+test('stopping playback seeks to the ghost cursor inside an oversized wrapped row', async ({ page, babel }) => {
+  const { action } = await babel.state();
+  await babel.reset('baseline', {
+    action: { annotations: action.annotations.map((row, index) =>
+      index === 0 ? { ...row, endTimeInSeconds: 57.58 } : row) }
+  });
+  await ready(page);
+  const editor = page.locator(TEXT).first();
+  await editor.fill('Когда мы вступили в отношения, стабильная работа помогала мне двигаться дальше, и каждый день я возвращался к этим словам. '.repeat(70));
+  const panel = await openAppearance(page);
+  await panel.getByLabel('Enable custom appearance', { exact: true }).check();
+  await panel.getByLabel('Enable Text', { exact: true }).check();
+  await panel.getByLabel('Transcript editor text size in pixels').fill('30');
+  await panel.getByRole('button', { name: 'Close Website Appearance editor' }).click();
+  const row = editor.locator('xpath=ancestor::tr');
+  const scroll = row.locator('xpath=ancestor::div[contains(@class, "overflow-y-auto")]').first();
+  await expect.poll(() => row.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeGreaterThan(await scroll.evaluate((element) => element.clientHeight));
+  await seek(page, 7);
+  await editor.focus();
+  await editor.evaluate((element) => element.setSelectionRange(0, 0));
+  await page.keyboard.press('Escape');
+  await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
+  const ghost = page.locator('[data-babel-helper-ghost-cursor]');
+  const pane = await scroll.boundingBox();
+  await scroll.evaluate((element) => { element.scrollTop = 2400; });
+  await expect(ghost).toBeHidden();
+  const ghostTop = await ghost.evaluate((element) => new DOMMatrixReadOnly(element.style.transform).m42);
+  expect(ghostTop).toBeGreaterThan(pane.y + pane.height);
+  const scrollBefore = await scroll.evaluate((element) => element.scrollTop);
+  await page.keyboard.press('Escape');
+  await expect(editor).toBeFocused();
+  await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
+  const desired = scrollBefore + ghostTop - pane.y - pane.height / 2;
+  await expect.poll(async () => Math.abs((await scroll.evaluate((element) => element.scrollTop)) - desired))
+    .toBeLessThan(180);
+  expect(await editor.evaluate((element) => element.selectionStart)).toBeGreaterThan(0);
 });
 
 test('disabled proportional restore restores the exact caret instead of advancing it', async ({ page, babel }) => {

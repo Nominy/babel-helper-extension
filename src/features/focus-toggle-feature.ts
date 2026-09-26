@@ -8,6 +8,18 @@ import type { EditorInputState } from './editor-input';
 export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' | 'time' | 'playback'>) {
   let escapePlaybackQueue = Promise.resolve();
 
+  function focusAtCursor(row, offset) {
+    const focused = helper.focusRow(row, {
+      activateRow: false,
+      scroll: false,
+      selectionStart: offset,
+      selectionEnd: offset,
+      direction: 'none'
+    });
+    if (focused) api.cursor.scrollToCaret(row, offset);
+    return focused;
+  }
+
 
   helper.clearActiveFocus = function clearActiveFocus() {
     const active = document.activeElement;
@@ -91,12 +103,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
     const currentRow = helper.getCurrentRow();
     if (!remembered) {
       const focused = preservedGhostTarget
-        ? helper.focusRow(preservedGhostTarget.row, {
-          activateRow: false,
-          selectionStart: preservedGhostTarget.offset,
-          selectionEnd: preservedGhostTarget.offset,
-          direction: 'none'
-        })
+        ? focusAtCursor(preservedGhostTarget.row, preservedGhostTarget.offset)
         : helper.focusRow(currentRow, { cursor: 'start' });
       if (focused) {
         helper.state.blurRestorePending = false;
@@ -177,12 +184,14 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       // uses it as the floor. The user can further advance it by editing.
       helper.state.cursorBaseline = selectionStart;
 
-      const focused = helper.focusRow(rememberedRow, {
-        activateRow: false,
-        selectionStart: selectionStart,
-        selectionEnd: selectionEnd,
-        direction: direction
-      });
+      const focused = preservedGhostTarget
+        ? focusAtCursor(rememberedRow, selectionStart)
+        : helper.focusRow(rememberedRow, {
+          activateRow: false,
+          selectionStart,
+          selectionEnd,
+          direction
+        });
       if (focused) {
         helper.state.blurRestorePending = false;
 
@@ -213,12 +222,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       helper.state.blurRestorePending = false;
       helper.state.cursorBaseline = preservedGhostTarget.offset;
 
-      const focused = helper.focusRow(preservedGhostTarget.row, {
-        activateRow: false,
-        selectionStart: preservedGhostTarget.offset,
-        selectionEnd: preservedGhostTarget.offset,
-        direction: 'none'
-      });
+      const focused = focusAtCursor(preservedGhostTarget.row, preservedGhostTarget.offset);
       if (focused && helper.analytics) {
         const rowId = helper.getRowIdentity(preservedGhostTarget.row)?.annotationId ?? null;
         helper.analytics.record('focus:restore-fallback', {
@@ -355,12 +359,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
         });
       }
 
-      return helper.focusRow(ghostTarget.row, {
-        activateRow: false,
-        selectionStart: ghostTarget.offset,
-        selectionEnd: ghostTarget.offset,
-        direction: 'none'
-      });
+      return focusAtCursor(ghostTarget.row, ghostTarget.offset);
     }
 
     // toggleEditorFocus may have failed because the remembered row reference
@@ -405,12 +404,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
                 });
               }
 
-              return helper.focusRow(timeRow, {
-                activateRow: false,
-                selectionStart: result.offset,
-                selectionEnd: result.offset,
-                direction: 'none'
-              });
+              return focusAtCursor(timeRow, result.offset);
             }
           }
         }
