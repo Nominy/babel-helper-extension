@@ -40,6 +40,12 @@ Since **1.0.276**, capitalized words are conservatively treated as proper-noun c
 
 This is entirely a Helper feature, with no backend dependency. Gold drafting has separate model-prompt guidance only. The exception set conservatively includes all extracted candidates from OpenCorpora revision `417150` (January 2022); it is dictionary-bounded, not a guarantee of complete Russian coverage. Source attribution, checksum, and the [CC BY-SA 3.0 data license](https://creativecommons.org/licenses/by-sa/3.0/) are retained in `src/features/custom-linter/linter/data/yo-exceptions.json` and the bundled bridge.
 
+## Emotion transcription punctuation
+
+When the current page URL contains `emotion` (case-insensitive), the curly-tag punctuation rule preserves punctuation between a braced source and its following `{СКАЗ: ...}` or `{SKAZ: ...}` annotation: `{1}, {СКАЗ: одной}` and `{*2 дня*}. {СКАЗ: два дня}`. The source group must not contain a colon. Both error detection and autofix use this exception; ordinary annotation tags retain their existing punctuation rules.
+
+Detection reads the current URL on each check, including after navigation between projects. This is a URL-substring heuristic, not a project metadata lookup; any occurrence of `emotion` in the URL enables it.
+
 ## Stutter prefix validation
 
 Since **1.0.276**, **Normalized stutters** requires contiguous, case-insensitive prefixes of the completed word, not arbitrary internal substrings. `к- никто` is an error; `ни- никто`, `ник- никто`, and `Ни- ник- никто` are valid. Existing fragment-chain length checks still apply. Invalid fragments are highlighted but not automatically rewritten because their intended speech cannot be inferred safely.

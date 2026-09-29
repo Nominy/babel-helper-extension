@@ -1988,6 +1988,7 @@ export function initLinterBridge() {
       return [];
     }
 
+    const isEmotionProject = /emotion/i.test(window.location.href || "");
     const parts = [];
     const tagPattern = /\{[^{}\r\n]*\}/gu;
     let match;
@@ -2018,6 +2019,17 @@ export function initLinterBridge() {
       }
 
       if (punctuationEnd > punctuationStart) {
+        // Emotion wraps the spoken source separately from its SKAZ annotation.
+        // Punctuation belongs after that first group, not before it.
+        if (
+          isEmotionProject &&
+          !match[0].includes(":") &&
+          /^[ \t]*\{(?:СКАЗ|SKAZ):[^{}\r\n]*\}/iu.test(
+            text.slice(punctuationEnd),
+          )
+        ) {
+          continue;
+        }
         parts.push({
           openIndex,
           tagEnd,

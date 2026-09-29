@@ -643,6 +643,36 @@ test('applyAllFixes moves punctuation before curly tags before terminal checks',
   assert.equal(applyAllFixes('3 {SKAZ: three}, next'), '3, {SKAZ: three} next.');
 });
 
+test('Emotion SKAZ source groups preserve punctuation across project navigation', async () => {
+  const { window, linter } = await bootLinterBridgeOverNativeFetch();
+  const rule = linter.getRules().find(rule => rule.id === 'curly-tag-trailing-punctuation');
+  const matches = text => rule.getMatches({ annotationId: 'row', text }, {
+    annotationEntries: [{ annotationId: 'row', text }], index: 0
+  });
+  const { applyAllFixes } = window.__babelHelperLinterBridge;
+  window.location.href = 'https://babel.test/transcription/RU-EmOtIoN-tx';
+  for (const text of [
+    'По {1}, {СКАЗ: одной} по порядку.',
+    'Мне нужны еще {*2 дня*}. {СКАЗ: два дня} Больше срок не сдвинется.',
+    'Мне нужны {*2 дня*}. {SKAZ: два дня}',
+    '{1}, {СКАЗ: одной} по порядку.'
+  ]) {
+    assert.deepEqual(matches(text), [], text);
+    assert.equal(rule.fix(text), text);
+    assert.equal(applyAllFixes(text), text);
+  }
+  const ordinary = 'Мне нужны 2 {СКАЗ: два}.';
+  assert.ok(matches(ordinary).length > 0);
+  assert.equal(rule.fix(ordinary), 'Мне нужны 2. {СКАЗ: два}');
+  assert.ok(matches('Текст {OTHER: один}, {СКАЗ: одной} дальше.').length > 0);
+  assert.ok(matches('Текст {1}, дальше.').length > 0);
+
+  window.location.href = 'https://babel.test/transcription/RU-tx-gold';
+  const text = 'По {1}, {СКАЗ: одной} по порядку.';
+  assert.ok(matches(text).length > 0);
+  assert.equal(rule.fix(text), 'По, {1} {СКАЗ: одной} по порядку.');
+});
+
 test('moves punctuation before square bracket tags that annotate preceding text', async () => {
   const { window } = await bootLinterBridgeOverNativeFetch();
   const { fixSquareBracketTagTrailingPunctuation } = window.__babelHelperLinterBridge;
