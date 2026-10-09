@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { readAudioEnhancementState } from '@nominy/babel-babel-runtime';
+
 export function initMagnifierBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const existingBridge = window.__babelHelperMagnifierBridge;
@@ -1410,9 +1412,11 @@ export function initMagnifierBridge() {
   }
 
   function getMinimapPeakSignature(wave) {
+    const enhancement = readAudioEnhancementState();
     return [
       'duration:' + (Number(getDuration(wave)) || 0).toFixed(3),
-      'audio:' + getAudioBufferSignature(getDecodedAudioForPeaks(wave))
+      'audio:' + getAudioBufferSignature(getDecodedAudioForPeaks(wave)),
+      'variant:' + (enhancement?.strength ? enhancement.variantKey : 'original')
     ].join('|');
   }
 

@@ -1,5 +1,7 @@
+import type { ReviewGraderAccess } from '@nominy/babel-babel-runtime';
 import type { FeatureModule } from '../core/types';
 import { formatShortcut, type ShortcutSettings } from '../core/shortcuts';
+import { createAudioEnhancementFeature } from './audio-enhancement-feature';
 import { createCustomLinterFeature } from './custom-linter';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
@@ -37,6 +39,17 @@ function defineFeature<TRegistration extends FeatureRegistration>(registration: 
 }
 
 export const FEATURE_REGISTRATIONS = [
+  defineFeature({
+    id: 'audio-enhancement',
+    setting: {
+      key: 'audioEnhancement',
+      defaultEnabled: true,
+      label: 'Automatic Audio Enhancement',
+      description: 'Enhance both tracks with Gold Drafting ZipEnhancer. Uses your GPU when available; otherwise uploads Original audio to a remote swarm GPU. Disable to prevent enhancement uploads.'
+    },
+    moduleOrder: 5,
+    createModule: createAudioEnhancementFeature
+  }),
   defineFeature({
     id: 'hotkeys-help',
     setting: {
@@ -316,10 +329,14 @@ export const FEATURE_REGISTRATIONS = [
   })
 ] as const;
 
-export function getRegisteredFeatureModules(featureSettings: FeatureSettingsLike): FeatureModule[] {
+export function getRegisteredFeatureModules(
+  featureSettings: FeatureSettingsLike,
+  reviewGraderAccess?: Pick<ReviewGraderAccess, 'isAvailable'>
+): FeatureModule[] {
   return (FEATURE_REGISTRATIONS as readonly FeatureRegistration[])
     .filter((registration) => registration.createModule)
     .filter((registration) => Boolean(featureSettings[registration.setting.key]))
+    .filter((registration) => registration.id !== 'audio-enhancement' || reviewGraderAccess?.isAvailable() === true)
     .slice()
     .sort((left, right) => (left.moduleOrder || 0) - (right.moduleOrder || 0))
     .map((registration) => registration.createModule?.())

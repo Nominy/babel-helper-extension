@@ -12,7 +12,7 @@ import {
   normalizeWebsiteAppearanceSettings,
   saveExtensionSettings
 } from './settings';
-import { isEditable, isVisible, dispatchClick, sleep } from '@nominy/babel-babel-runtime';
+import { createReviewGraderAccess, isEditable, isVisible, dispatchClick, sleep } from '@nominy/babel-babel-runtime';
 import { normalizeText, setEditableValue, waitFor } from '../hooks/dom';
 import { registerLifecycle } from './lifecycle';
 import type { FeatureContext } from './types';
@@ -104,13 +104,18 @@ function getChromeApi(): ChromeRuntimeHost | null {
 
 export function createHelperKernel() {
   const state = createState();
+  const reviewGraderAccess = createReviewGraderAccess();
   let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
-  const config = createConfig(settings.features, settings.shortcuts);
+  const effectiveSettings = () => ({
+    ...settings,
+    features: { ...settings.features, audioEnhancement: settings.features.audioEnhancement && reviewGraderAccess.isAvailable() }
+  });
+  const config = createConfig(effectiveSettings().features, settings.shortcuts);
   const analytics = createAnalyticsStore();
   const perf = createPerfRuntime();
   let sessionRuntimeModule: LoadedSessionRuntimeModule | null = null;
   let sessionRuntimeLoadPromise: Promise<LoadedSessionRuntimeModule> | null = null;
-  const modController = createModController({ initialSettings: settings });
+  const modController = createModController({ initialSettings: effectiveSettings() });
   const kernelScope = createScope(`builtin:kernel:${modController.generation}`);
   const websiteAppearanceController = createWebsiteAppearanceController();
   let appearanceDisposed = false;
@@ -125,7 +130,8 @@ export function createHelperKernel() {
 
   const helper: any = {
     config,
-    settings,
+    settings: effectiveSettings(),
+    reviewGraderAccess,
     state,
     analytics,
     perf,
@@ -185,7 +191,7 @@ export function createHelperKernel() {
       ...settings,
       websiteAppearance: normalizedAppearance
     };
-    helper.settings = settings;
+    helper.settings = effectiveSettings();
     websiteAppearanceController.apply(normalizedAppearance);
   }
 
@@ -280,17 +286,18 @@ export function createHelperKernel() {
 
   function applySettings(nextSettings: ExtensionSettings, reason?: string) {
     settings = cloneSettings(nextSettings);
-    helper.settings = settings;
+    helper.settings = effectiveSettings();
     websiteAppearanceController.apply(settings.websiteAppearance);
     // Every applySettings call comes from stored or external settings, never from a
     // panel preview, so an open editor must adopt what the storage layer just handed us.
     websiteAppearancePanel.sync(settings.websiteAppearance);
 
-    const nextConfig = createConfig(settings.features, settings.shortcuts);
+    const nextConfig = createConfig(helper.settings.features, settings.shortcuts);
     Object.assign(helper.config, nextConfig);
     reconcileKernelViewServices();
     if (reason) {
-      modController.updateSettings(settings, reason);
+      modController.updateSettings(helper.settings, reason);
+      reconcileFeatureAccess(reason);
     }
   }
 
@@ -335,6 +342,25 @@ export function createHelperKernel() {
     },
     logger
   };
+
+  function reconcileFeatureAccess(reason: string) {
+    if (sessionRuntimeModule) {
+      void sessionRuntimeModule.reconcileSessionFeatureAccess(featureContext, reason)
+        .catch(error => logger.warn('[babel-helper] feature access reconciliation failed', error));
+    }
+  }
+
+  function bindReviewGraderAccess() {
+    const unsubscribe = reviewGraderAccess.subscribe(() => {
+      if (kernelScope.disposed) return;
+      helper.settings = effectiveSettings();
+      Object.assign(helper.config, createConfig(helper.settings.features, settings.shortcuts));
+      modController.updateSettings(helper.settings, 'feature-access-change');
+      reconcileFeatureAccess('feature-access-change');
+    });
+    kernelScope.defer(unsubscribe);
+    kernelScope.defer(() => reviewGraderAccess.dispose());
+  }
 
   function bindSettingsForwarding() {
     if (settingsListenerBound) {
@@ -454,6 +480,7 @@ export function createHelperKernel() {
     modController.start('kernel-start');
     startPromise = (async () => {
       try {
+        bindReviewGraderAccess();
         kernelScope.defer(registerCustomLinterSettingsForwarding({ helper }));
         const loadedSettings = await loadExtensionSettings();
         storedSettingsLoaded = loadedSettings.loaded;
@@ -490,6 +517,7 @@ export function createHelperKernel() {
   }
 
   function stopKernel(reason = 'kernel-stop') {
+    reviewGraderAccess.dispose();
     return modController.stop(reason, async () => {
       if (sessionRuntimeModule && typeof sessionRuntimeModule.stopSessionRuntime === 'function') {
         await sessionRuntimeModule.stopSessionRuntime(featureContext, reason);

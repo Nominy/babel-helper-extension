@@ -7,7 +7,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "lib": ["DOM", "ES2020"],
+    "lib": ["DOM", "ES2020", "ES2024.Promise"],
     "types": []
   },
   "include": ["src/**/*.ts"]

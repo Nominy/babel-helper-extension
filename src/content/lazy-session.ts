@@ -19,6 +19,7 @@ type SessionRuntime = {
   servicesRegistered: boolean;
   serviceScopes: SessionServiceScopes;
   started: boolean;
+  sessionActive: boolean;
   activeFeatures: Set<string>;
   transitionRevision: number;
   transitionTail: Promise<void>;
@@ -40,6 +41,7 @@ function getRuntime(ctx: FeatureContext): SessionRuntime {
       servicesRegistered: false,
       serviceScopes: [],
       started: false,
+      sessionActive: false,
       activeFeatures: new Set(),
       transitionRevision: 0,
       transitionTail: Promise.resolve(),
@@ -178,8 +180,8 @@ export async function ensureSessionRuntime(ctx: FeatureContext, reason = 'sessio
   }
   await registerSessionServices(ctx);
 
-  if (!runtime.features.length) {
-    runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features);
+  if (!runtime.features.length && !runtime.started) {
+    runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features, ctx.helper.reviewGraderAccess);
   }
 
   if (runtime.started) {
@@ -208,6 +210,45 @@ function enqueueTransition<T>(runtime: SessionRuntime, operation: () => Promise<
     () => undefined
   );
   return result;
+}
+
+async function reconcileAudioEnhancement(ctx: FeatureContext, runtime: SessionRuntime, reason: string) {
+  const permitted = ctx.helper.reviewGraderAccess?.isAvailable() === true &&
+    Boolean(ctx.helper.settings.features.audioEnhancement);
+  const existing = runtime.features.find(feature => feature.id === 'audio-enhancement');
+  if (!permitted && existing) {
+    runtime.features = runtime.features.filter(feature => feature !== existing);
+    runtime.activeFeatures.delete(existing.id);
+    for (const hook of ['deactivate', 'stop'] as const) {
+      try { await invokeFeatureHook(ctx, existing, hook, reason); }
+      catch (error) { reportRuntimeError(ctx, `feature.${hook}`, existing.id, error); }
+    }
+  } else if (permitted && !existing && runtime.started) {
+    const [feature] = getRegisteredFeatureModules(
+      { audioEnhancement: true }, ctx.helper.reviewGraderAccess
+    );
+    if (!feature) return;
+    runtime.features.unshift(feature);
+    for (const hook of ['load', 'register', 'start'] as const) {
+      await invokeFeatureHook(ctx, feature, hook, reason);
+    }
+    if (runtime.sessionActive) {
+      await invokeFeatureHook(ctx, feature, 'activate', reason);
+      runtime.activeFeatures.add(feature.id);
+    }
+  } else if (permitted && existing && runtime.sessionActive) {
+    // A disconnect/regrant can coalesce before this serialized transition runs.
+    await invokeFeatureHook(ctx, existing, 'activate', reason);
+    runtime.activeFeatures.add(existing.id);
+  }
+}
+
+export function reconcileSessionFeatureAccess(ctx: FeatureContext, reason = 'feature-access-change') {
+  const runtime = getRuntime(ctx);
+  return enqueueTransition(runtime, async () => {
+    if (runtime.stopping || runtime.stopped) return;
+    await reconcileAudioEnhancement(ctx, runtime, reason);
+  });
 }
 
 async function deactivateActiveFeatures(
@@ -257,6 +298,8 @@ export function activateSessionFeatures(ctx: FeatureContext, reason = 'session-r
       return false;
     }
 
+    runtime.sessionActive = true;
+    await reconcileAudioEnhancement(ctx, runtime, reason);
     await runFeatures(ctx, 'onLoaded', reason);
     for (const feature of runtime.features) {
       if (
@@ -295,6 +338,7 @@ export function activateSessionFeatures(ctx: FeatureContext, reason = 'session-r
 export function deactivateSessionFeatures(ctx: FeatureContext, reason = 'session-clear') {
   const runtime = getRuntime(ctx);
   ++runtime.transitionRevision;
+  runtime.sessionActive = false;
   return enqueueTransition(runtime, async () => {
     if (runtime.stopped) {
       return false;
@@ -311,6 +355,7 @@ export function stopSessionRuntime(ctx: FeatureContext, reason = 'kernel-stop') 
   }
 
   runtime.stopping = true;
+  runtime.sessionActive = false;
   ++runtime.transitionRevision;
   runtime.stopPromise = enqueueTransition(runtime, async () => {
     if (runtime.startPromise) {

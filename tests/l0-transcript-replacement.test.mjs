@@ -23,13 +23,15 @@ const runtime = {
 // The guard runs in the isolated content-script world: page React fibers are
 // invisible there, so the only task identity is Gold's publication on <html>.
 let publishedReviewActionId;
+let publishedAudioState;
 test.beforeEach((t) => {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   publishedReviewActionId = 'task-one';
+  publishedAudioState = null;
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
     value: {
-      documentElement: { getAttribute: () => publishedReviewActionId }
+      documentElement: { getAttribute: name => name === 'data-babel-audio-enhancement' ? publishedAudioState : publishedReviewActionId }
     }
   });
   t.after(() => {
@@ -516,6 +518,34 @@ test('same-task empty rebuild and lifecycle refresh preserve replacement and rol
         assert.equal(result.ok, true);
         assert.deepEqual(helper.rows.map((row) => row.textarea.value), ['First text', 'Later text']);
       }
+    });
+  }
+});
+
+test('switching audio during replacement restores the same review task transcript', async (t) => {
+  for (const transition of ['delete', 'create']) {
+    await t.test(transition, async () => {
+      publishedAudioState = JSON.stringify({ version: 2, taskId: 'task-one', status: 'ready',
+        strength: 0, desiredStrength: 0, revision: 1, variantKey: '' });
+      const helper = createHelper();
+      const before = helper.rows.map(nativeSnapshotRow);
+      const method = transition === 'delete' ? 'deleteSegmentWithNativeAction' : 'createSegmentWithNativeAction';
+      const mutate = helper[method].bind(helper);
+      let switched = false;
+      helper[method] = async call => {
+        const result = await mutate(call);
+        if (!switched) {
+          switched = true;
+          publishedAudioState = JSON.stringify({ version: 2, taskId: 'task-one', status: 'ready',
+            strength: 65, desiredStrength: 65, revision: 2, variantKey: 'zip-model-source-mix-key' });
+        }
+        return result;
+      };
+      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      assert.equal(result.reason, 'stale-task');
+      assert.match(result.message, /Original transcript restored/);
+      const content = rows => rows.map(row => [row.annotationId, row.processedRecordingId, row.startSeconds, row.endSeconds, row.text]).sort();
+      assert.deepEqual(content(helper.rows.map(nativeSnapshotRow)), content(before));
     });
   }
 });

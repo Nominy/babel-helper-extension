@@ -4,9 +4,15 @@ import type { RowModules } from '../services/row-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
 import { readBabelTrackBindings } from '@nominy/babel-babel-runtime';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerSpeakerWorkflow(helper: any, api: Pick<RowModules, 'playback' | 'cursor'>) {
   helper.state.speakerSwitchPending = false;
+  let pendingSwitch: object | null = null;
+  helper.cancelSpeakerWorkflow = () => {
+    pendingSwitch = null;
+    helper.state.speakerSwitchPending = false;
+  };
 
 
   function normalizeSpeakerLabel(value) {
@@ -59,19 +65,27 @@ export function registerSpeakerWorkflow(helper: any, api: Pick<RowModules, 'play
     }
 
     helper.state.speakerSwitchPending = true;
+    const operation = {};
+    pendingSwitch = operation;
+    const isCurrentTask = captureL0TaskGuard();
+    api.cursor.invalidatePlaybackContext();
 
     try {
       const result = await api.playback.callPlaybackBridge('speaker-workflow', { targetLabel });
       const ok = Boolean(result?.ok);
-      if (ok) {
+      if (ok && pendingSwitch === operation && isCurrentTask()) {
         api.cursor.setGhostCursorLaneLockForSpeaker(targetLabel, 'manual');
         recordSpeakerWorkflow('switch-ok', { targetLabel });
       } else {
         recordSpeakerWorkflow('switch-failed', { targetLabel, reason: result?.reason || 'bridge-unavailable' });
       }
-      return ok;
+      return ok && pendingSwitch === operation && isCurrentTask();
     } finally {
-      helper.state.speakerSwitchPending = false;
+      if (pendingSwitch === operation) {
+        pendingSwitch = null;
+        helper.state.speakerSwitchPending = false;
+        if (isCurrentTask()) api.cursor.invalidatePlaybackContext();
+      }
     }
   };
 
@@ -94,19 +108,27 @@ export function registerSpeakerWorkflow(helper: any, api: Pick<RowModules, 'play
     }
 
     helper.state.speakerSwitchPending = true;
+    const operation = {};
+    pendingSwitch = operation;
+    const isCurrentTask = captureL0TaskGuard();
+    api.cursor.invalidatePlaybackContext();
 
     try {
       const result = await api.playback.callPlaybackBridge('speaker-workflow', { targetLabel: null });
       const ok = Boolean(result?.ok);
-      if (ok) {
+      if (ok && pendingSwitch === operation && isCurrentTask()) {
         api.cursor.setGhostCursorLaneLockAuto();
         recordSpeakerWorkflow('reset-ok', {});
       } else {
         recordSpeakerWorkflow('reset-failed', { reason: result?.reason || 'bridge-unavailable' });
       }
-      return ok;
+      return ok && pendingSwitch === operation && isCurrentTask();
     } finally {
-      helper.state.speakerSwitchPending = false;
+      if (pendingSwitch === operation) {
+        pendingSwitch = null;
+        helper.state.speakerSwitchPending = false;
+        if (isCurrentTask()) api.cursor.invalidatePlaybackContext();
+      }
     }
   };
 

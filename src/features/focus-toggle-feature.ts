@@ -294,11 +294,14 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       api.time.rememberPlaybackRow(null);
       return null;
     }
+    const isCurrentPlayback = api.cursor.capturePlaybackGuard();
+    if (api.cursor.isSourceSwitching() || helper.state.speakerSwitchPending) return null;
 
     const playback =
       typeof helper.getPlaybackState === 'function'
         ? await helper.getPlaybackState()
         : api.playback.unavailablePlaybackState();
+    if (!isCurrentPlayback()) return null;
     if (!playback || !playback.ok) {
       return api.time.getLastPlaybackRow();
     }
@@ -313,7 +316,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
     if (playback.paused === false && preferredRow && !helper.state.ghostCursorElement) {
       api.cursor.startGhostCursor(preferredRow);
-    } else if (playback.paused !== false) {
+    } else if (playback.paused !== false && !api.cursor.isSourceSwitching()) {
       api.cursor.stopGhostCursor();
     }
 

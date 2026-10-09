@@ -48,6 +48,8 @@
     ghostCursorPlaybackTime: null,
     ghostCursorPlaybackPaused: null,
     l0TimingIndex: null,
+    l0TimingPairKey: null,
+    l0TimingCache: null,
     playbackRowSyncTimer: null,
     playbackRowSyncInFlight: false,
     lastPlaybackRow: null,

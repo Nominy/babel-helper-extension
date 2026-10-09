@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { applyAutoSegmentTextReview, createAutoSegmentTextRedistributionDraft, createL0TimedAutoSegmentTextAllocations, normalizeAutoSegmentText, validateAutoSegmentTextAllocationsPreserveText } from './auto-segmentation/text-allocation';
-import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
-import { buildCurrentL0TimingTaskId, buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
+import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
+import { buildCurrentL0TimingTaskId, buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import { hasL0SegmentBrokerCapability } from './segment-transcription/request';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
 import { parseTimeValue } from '../hooks/parsing';
@@ -1141,39 +1141,47 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
   async function waitForAutoSegmentL0Timing() {
     const expectedTaskId = buildCurrentL0TimingTaskId(helper);
-    const brokerAvailability = await requestGoldDraftingAiBroker({
-      operation: 'ping'
-    }).catch(() => null);
-    if (!hasL0SegmentBrokerCapability(brokerAvailability)) {
-      return { ok: false, reason: 'timing-provider-unavailable' };
-    }
-    const existingTiming = getCurrentL0TimingIndex(helper.state, helper);
-    if (existingTiming && existingTiming.taskId === expectedTaskId) {
-      return { ok: true, timingIndex: existingTiming };
-    }
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
+    // Already-published word clocks do not require a broker round trip. The
+    // selected waveform still owns silence detection; verified pair clocks may
+    // guide text allocation at another strength without inventing ASR results.
+    const existingTiming = getCurrentL0PlaybackTimingIndex(helper.state, helper);
+    if (existingTiming?.taskId === expectedTaskId) return { ok: true, timingIndex: existingTiming };
+    const controller = new AbortController();
+    let brokerAvailability: unknown = null;
+    let brokerSettled = false;
+    void requestGoldDraftingAiBroker({ operation: 'ping' }, { signal: controller.signal })
+      .then(value => { brokerAvailability = value; brokerSettled = true; })
+      .catch(() => { brokerSettled = true; });
     const startedAt = Date.now();
     let reportedSecond = -1;
-    while (Date.now() - startedAt < AUTO_SEGMENT_TIMING_WAIT_MS) {
-      if (buildCurrentL0TimingTaskId(helper) !== expectedTaskId) {
-        return { ok: false, reason: 'task-changed' };
+    try {
+      while (Date.now() - startedAt < AUTO_SEGMENT_TIMING_WAIT_MS) {
+        if (!isCurrentTask() || buildCurrentL0TimingTaskId(helper) !== expectedTaskId) {
+          return { ok: false, reason: 'task-changed' };
+        }
+        const timingIndex = getCurrentL0PlaybackTimingIndex(helper.state, helper);
+        if (timingIndex?.taskId === expectedTaskId) return { ok: true, timingIndex };
+        if (brokerSettled && !hasL0SegmentBrokerCapability(brokerAvailability)) {
+          return { ok: false, reason: 'timing-provider-unavailable' };
+        }
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        if (elapsedSeconds !== reportedSecond) {
+          reportedSecond = elapsedSeconds;
+          updateAutoSegmentProgress({
+            phase: 'prepare',
+            current: 0,
+            total: 1,
+            detail: 'Waiting for background word timing (' + elapsedSeconds + 's)'
+          });
+        }
+        await helper.sleep(AUTO_SEGMENT_TIMING_POLL_MS);
       }
-      const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
-      if (timingIndex && timingIndex.taskId === expectedTaskId) {
-        return { ok: true, timingIndex };
-      }
-      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-      if (elapsedSeconds !== reportedSecond) {
-        reportedSecond = elapsedSeconds;
-        updateAutoSegmentProgress({
-          phase: 'prepare',
-          current: 0,
-          total: 1,
-          detail: 'Waiting for background word timing (' + elapsedSeconds + 's)'
-        });
-      }
-      await helper.sleep(AUTO_SEGMENT_TIMING_POLL_MS);
+      return { ok: false, reason: 'timing-timeout' };
+    } finally {
+      controller.abort();
     }
-    return { ok: false, reason: 'timing-timeout' };
   }
 
 

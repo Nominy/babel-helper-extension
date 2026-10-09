@@ -1856,6 +1856,35 @@ async function waitForWrites(storage, count) {
   assert.equal(storage.writes.length, count);
 }
 
+test('kernel masks enhancement without Grader while appearance edits retain the saved preference', async () => {
+  const storage = installFakeStorage({
+    storedSettings: { features: { audioEnhancement: true, minimap: false }, highlightedWords: ['retained'] }
+  });
+  try {
+    const { kernel, panel } = await startKernelHarness(storage);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    assert.equal(kernel.helper.isFeatureEnabled('audioEnhancement'), false);
+    await kernel.start();
+    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    assert.equal(kernel.helper.settings.features.minimap, false);
+    assert.deepEqual(kernel.helper.settings.highlightedWords, ['retained']);
+    assert.equal(storage.store.settings.features.audioEnhancement, true);
+    assert.equal(storage.writes.length, 0, 'An absent grant must not write settings');
+    const draft = { ...panel.getSettings(), enabled: true };
+    panel.onPreview(draft);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    const commit = panel.onCommit(draft);
+    await waitForWrites(storage, 1);
+    assert.equal(storage.writes[0].payload.settings.features.audioEnhancement, true);
+    storage.settle(0);
+    await commit;
+    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    await kernel.stop();
+  } finally {
+    releaseKernelHarness();
+  }
+});
+
 test('previews and commits are refused until the first storage load completes', async () => {
   const storage = installFakeStorage();
   try {

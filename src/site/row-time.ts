@@ -38,6 +38,7 @@ export function createRowTimeApi(helper: any) {
 
   let rowTimeCache = {
     signature: '',
+    rows: [],
     entries: []
   };
 
@@ -57,7 +58,9 @@ export function createRowTimeApi(helper: any) {
   function getRowTimeEntries(forceRebuild = false) {
     const rows = helper.getTranscriptRows();
     const signature = getRowTimeSignature(rows);
-    if (!forceRebuild && rowTimeCache.signature === signature) {
+    if (!forceRebuild && rowTimeCache.signature === signature &&
+        rows.length === rowTimeCache.rows.length &&
+        rows.every((row, index) => row === rowTimeCache.rows[index])) {
       helper.perf?.count?.('row-cache.hit');
       return rowTimeCache.entries;
     }
@@ -75,7 +78,7 @@ export function createRowTimeApi(helper: any) {
       }
     }
     entries.sort((left, right) => left.startSeconds - right.startSeconds);
-    rowTimeCache = { signature, entries };
+    rowTimeCache = { signature, rows, entries };
     return entries;
   }
 
@@ -263,7 +266,7 @@ export function createRowTimeApi(helper: any) {
 
 
   helper.invalidateRowTimeCache = function invalidateRowTimeCache() {
-    rowTimeCache = { signature: '', entries: [] };
+    rowTimeCache = { signature: '', rows: [], entries: [] };
   };
 
   return { getRowSpeakerKeySafe, getRowTimeRange, getRowTimeEntries, resolveRowTimeEntry, resolveConnectedRow, hasRowsForSpeakerKey, findRowEntryByPlaybackTime, findLatestRowEntryBeforePlaybackTime, getLastPlaybackRow, parseSegmentTimeValue, rememberPlaybackRow, findRowByPlaybackTime };

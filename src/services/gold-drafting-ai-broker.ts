@@ -1,3 +1,5 @@
+import { isAudioEnhancementProgress, type AudioEnhancementChunk, type AudioEnhancementProgress } from '@nominy/babel-babel-runtime';
+
 type ChromeEventLike<Listener> = {
   addListener: (listener: Listener) => void;
   removeListener?: (listener: Listener) => void;
@@ -36,9 +38,11 @@ const PING_BROKER_TIMEOUT_MS = 5000;
 const TRANSCRIBE_SEGMENT_BROKER_TIMEOUT_MS = 300000;
 const REDISTRIBUTE_TEXT_BROKER_TIMEOUT_MS = 120000;
 const GOLD_DRAFTING_BROKER_PORT_IDLE_TIMEOUT_MS = 20000;
+const ENHANCE_AUDIO_BROKER_TIMEOUT_MS = 1800000;
+const ENHANCE_AUDIO_PORT_IDLE_TIMEOUT_MS = 300000;
 
 export type GoldDraftingAiBrokerPayload = {
-  operation: 'ping' | 'transcribeSegment' | 'transcribeSegmentL0' | 'redistributeText';
+  operation: 'ping' | 'transcribeSegment' | 'transcribeSegmentL0' | 'redistributeText' | 'enhanceAudio';
   [key: string]: unknown;
 };
 
@@ -52,15 +56,33 @@ export type GoldDraftingAiBrokerResult = {
 
 export type GoldDraftingAiBrokerEvent = {
   type: 'event';
-  event: 'accepted' | 'capturing-audio' | 'calling-backend' | 'backend-waiting';
-  operation?: GoldDraftingAiBrokerPayload['operation'];
   message?: string;
   elapsedMs?: number;
-  [key: string]: unknown;
-};
+} & ({
+  event: 'accepted' | 'capturing-audio' | 'calling-backend' | 'backend-waiting';
+  operation?: GoldDraftingAiBrokerPayload['operation'];
+  progress?: AudioEnhancementProgress;
+} | {
+  event: 'enhancement-progress';
+  operation: 'enhanceAudio';
+  progress: AudioEnhancementProgress;
+});
+
+export function isGoldDraftingAiBrokerEvent(value: unknown): value is GoldDraftingAiBrokerEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const event = value as Partial<GoldDraftingAiBrokerEvent>;
+  if (event.type !== 'event' || (event.message !== undefined && typeof event.message !== 'string') ||
+      (event.elapsedMs !== undefined && (typeof event.elapsedMs !== 'number' || !Number.isFinite(event.elapsedMs) || event.elapsedMs < 0)) ||
+      (event.operation !== undefined && !['ping', 'transcribeSegment', 'transcribeSegmentL0', 'redistributeText', 'enhanceAudio'].includes(event.operation)) ||
+      (event.progress !== undefined && !isAudioEnhancementProgress(event.progress))) return false;
+  return event.event === 'enhancement-progress'
+    ? event.operation === 'enhanceAudio' && isAudioEnhancementProgress(event.progress)
+    : typeof event.event === 'string' && ['accepted', 'capturing-audio', 'calling-backend', 'backend-waiting'].includes(event.event);
+}
 
 type GoldDraftingAiBrokerPortMessage =
   | GoldDraftingAiBrokerEvent
+  | AudioEnhancementChunk
   | {
       type: 'result';
       response: GoldDraftingAiBrokerResult | null | undefined;
@@ -77,6 +99,8 @@ type GoldDraftingAiBrokerPortMessage =
 
 export type GoldDraftingAiBrokerOptions = {
   onEvent?: (event: GoldDraftingAiBrokerEvent) => void;
+  onAudioChunk?: (chunk: AudioEnhancementChunk) => void;
+  signal?: AbortSignal;
 };
 
 function hasChromeRuntime(): boolean {
@@ -131,6 +155,9 @@ function reportGoldDraftingAiBrokerFailure(
 }
 
 function getGoldDraftingAiBrokerTimeoutMs(payload: GoldDraftingAiBrokerPayload): number {
+  if (payload.operation === 'enhanceAudio') {
+    return ENHANCE_AUDIO_BROKER_TIMEOUT_MS;
+  }
   if (payload.operation === 'transcribeSegment' || payload.operation === 'transcribeSegmentL0') {
     return TRANSCRIBE_SEGMENT_BROKER_TIMEOUT_MS;
   }
@@ -195,6 +222,17 @@ async function requestGoldDraftingAiBrokerViaPort(
     let settled = false;
     let idleTimeoutId: number | null = null;
     let lastBrokerActivity = 'opening-port';
+    const idleTimeoutMs = payload.operation === 'enhanceAudio'
+      ? ENHANCE_AUDIO_PORT_IDLE_TIMEOUT_MS : GOLD_DRAFTING_BROKER_PORT_IDLE_TIMEOUT_MS;
+    const abort = () => finish({
+      ok: false, reason: 'gold-drafting-broker-aborted', fallbackAllowed: false
+    });
+    const timeoutId = window.setTimeout(() => finish({
+      ok: false,
+      reason: 'gold-drafting-broker-timeout',
+      message: `Gold Drafting AI broker timed out after ${getGoldDraftingAiBrokerTimeoutMs(payload)}ms.`,
+      fallbackAllowed: payload.operation !== 'enhanceAudio'
+    }), getGoldDraftingAiBrokerTimeoutMs(payload));
     function resetGoldDraftingBrokerPortIdleTimeout(activity: string): void {
       lastBrokerActivity = activity;
       if (idleTimeoutId !== null) {
@@ -205,10 +243,10 @@ async function requestGoldDraftingAiBrokerViaPort(
           ok: false,
           reason: 'gold-drafting-broker-port-idle-timeout',
           message:
-            `Gold Drafting AI broker port went silent for ${GOLD_DRAFTING_BROKER_PORT_IDLE_TIMEOUT_MS}ms while waiting for ${payload.operation}. Last broker activity: ${lastBrokerActivity}.`,
+            `Gold Drafting AI broker port went silent for ${idleTimeoutMs}ms while waiting for ${payload.operation}. Last broker activity: ${lastBrokerActivity}.`,
           fallbackAllowed: true
         });
-      }, GOLD_DRAFTING_BROKER_PORT_IDLE_TIMEOUT_MS);
+      }, idleTimeoutMs);
     }
 
     const finish = (result: GoldDraftingAiBrokerResult | null, disconnectPort = true) => {
@@ -216,6 +254,8 @@ async function requestGoldDraftingAiBrokerViaPort(
         return;
       }
       settled = true;
+      window.clearTimeout(timeoutId);
+      options.signal?.removeEventListener('abort', abort);
       if (idleTimeoutId !== null) {
         window.clearTimeout(idleTimeoutId);
         idleTimeoutId = null;
@@ -224,7 +264,8 @@ async function requestGoldDraftingAiBrokerViaPort(
         ? {
             ...result,
             operation: payload.operation,
-            extensionId
+            extensionId,
+            ...(payload.operation === 'enhanceAudio' ? { fallbackAllowed: false } : {})
           }
         : result;
       if (finalResult && !finalResult.ok) {
@@ -241,8 +282,14 @@ async function requestGoldDraftingAiBrokerViaPort(
     };
 
     try {
+      if (options.signal?.aborted) {
+        abort();
+        return;
+      }
+      options.signal?.addEventListener('abort', abort, { once: true });
       resetGoldDraftingBrokerPortIdleTimeout('listeners-attached');
       port.onMessage.addListener((message) => {
+        if (settled) return;
         if (!message || typeof message !== 'object') {
           resetGoldDraftingBrokerPortIdleTimeout('invalid-message');
           finish({
@@ -260,6 +307,16 @@ async function requestGoldDraftingAiBrokerViaPort(
         );
 
         if (message.type === 'event') {
+          if (!isGoldDraftingAiBrokerEvent(message) ||
+              (message.event === 'enhancement-progress' && payload.operation !== 'enhanceAudio')) {
+            finish({
+              ok: false,
+              reason: 'invalid-gold-drafting-broker-progress',
+              message: 'Gold Drafting returned invalid progress metadata.',
+              fallbackAllowed: false
+            });
+            return;
+          }
           try {
             options.onEvent?.(message);
           } catch (error) {
@@ -272,6 +329,21 @@ async function requestGoldDraftingAiBrokerViaPort(
                 error
               });
             }
+          }
+          return;
+        }
+
+        if (message.type === 'audio-chunk' && payload.operation === 'enhanceAudio') {
+          try {
+            if (!options.onAudioChunk) throw new Error('Audio enhancement stream receiver is missing.');
+            options.onAudioChunk(message);
+          } catch (error) {
+            finish({
+              ok: false,
+              reason: 'invalid-audio-enhancement-stream',
+              message: error instanceof Error ? error.message : String(error),
+              fallbackAllowed: false
+            });
           }
           return;
         }
@@ -433,6 +505,15 @@ export async function requestGoldDraftingAiBroker(
 
   if (canUseGoldDraftingAiBrokerPort()) {
     return requestGoldDraftingAiBrokerViaPort(extensionId, payload, options);
+  }
+
+  if (payload.operation === 'enhanceAudio') {
+    return {
+      ok: false,
+      reason: 'gold-drafting-streaming-port-unavailable',
+      message: 'Automatic audio enhancement requires the Gold Drafting streaming port.',
+      fallbackAllowed: false
+    };
   }
 
   return requestGoldDraftingAiBrokerViaMessage(extensionId, payload);

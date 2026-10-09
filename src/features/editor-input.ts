@@ -57,6 +57,10 @@ export function createEditorInput(helper: any) {
     return event.composedPath().some((node) =>
       node instanceof HTMLElement && node.matches('[role="dialog"], [role="alertdialog"], dialog[open]'));
   }
+  function isAudioStrengthEvent(event: KeyboardEvent) {
+    return event.composedPath?.().some(node =>
+      node instanceof HTMLElement && node.matches('[data-babel-helper-audio-enhancement]')) === true;
+  }
   const hooks = createEditorHooks();
   const input = { isFeatureEnabled, isTypingInTextControl };
   hooks.on('keydown', event => event.defaultPrevented, 20);
@@ -74,14 +78,14 @@ export function createEditorInput(helper: any) {
   return {
     hooks,
     handleKeydown(event: KeyboardEvent) {
-      if (!helper.runtime.isSessionInteractive() || isDialogKeyboardEvent(event)) {
+      if (!helper.runtime.isSessionInteractive() || isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
         return;
       }
       hooks.dispatch('keydown', event);
     },
     handleNativeArrowSuppress(event: KeyboardEvent) {
       updateRightShiftState(event);
-      if (isDialogKeyboardEvent(event)) {
+      if (isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
         return;
       }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -99,7 +103,7 @@ export function createEditorInput(helper: any) {
     },
     handleGlobalKeyup(event: KeyboardEvent) {
       updateRightShiftState(event);
-      if (isDialogKeyboardEvent(event)) {
+      if (isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
         return;
       }
       hooks.dispatch('keyup', event);

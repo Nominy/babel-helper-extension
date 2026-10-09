@@ -1,4 +1,5 @@
 import { ensureUiStyles } from '@nominy/babel-extension-frontend';
+import { createReviewGraderAccess } from '@nominy/babel-babel-runtime';
 import {
   CUSTOM_LINTER_DEFAULTS_VERSION,
   CUSTOM_LINTER_RULE_SETTINGS,
@@ -24,7 +25,7 @@ import {
   type ShortcutSettings
 } from '../core/shortcuts';
 
-type InputMap = Record<FeatureSettingKey, HTMLInputElement>;
+type InputMap = Partial<Record<FeatureSettingKey, HTMLInputElement>>;
 type RuleInputMap = Record<string, HTMLInputElement>;
 type GhostCursorInputMap = {
   gradientEnabled: HTMLInputElement;
@@ -49,6 +50,7 @@ function getFeatureInputs(): InputMap {
 
   for (const key of FEATURE_KEYS) {
     const input = document.querySelector<HTMLInputElement>(`input[name="${key}"]`);
+    if (key === 'audioEnhancement' && !input) continue;
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('Missing feature checkbox: ' + key);
     }
@@ -240,10 +242,10 @@ function createShortcutEditor(onChange: () => void) {
   };
 }
 
-function renderFeatureCards(list: HTMLElement) {
+function renderFeatureCards(list: HTMLElement, keys: readonly FeatureSettingKey[]) {
   const fragment = document.createDocumentFragment();
 
-  for (const key of FEATURE_KEYS) {
+  for (const key of keys) {
     const card = document.createElement('label');
     card.className = 'feature-card bui-card bui-setting-toggle';
 
@@ -285,7 +287,7 @@ function renderFeatureCards(list: HTMLElement) {
     fragment.appendChild(card);
   }
 
-  list.replaceChildren(fragment);
+  list.prepend(fragment);
 }
 
 function renderCustomLinterRuleCards(list: HTMLElement): RuleInputMap {
@@ -356,7 +358,8 @@ function applySettingsToInputs(
   ghostCursorInputs: GhostCursorInputMap
 ) {
   for (const key of FEATURE_KEYS) {
-    inputs[key].checked = Boolean(settings.features[key]);
+    const input = inputs[key];
+    if (input) input.checked = Boolean(settings.features[key]);
   }
 
   if (ruleInputs) {
@@ -386,11 +389,13 @@ function readSettingsFromInputs(
   highlightedWordsEnabledInput: HTMLInputElement,
   ghostCursorInputs: GhostCursorInputMap,
   websiteAppearance: ExtensionSettings['websiteAppearance'],
-  shortcuts: ShortcutSettings
+  shortcuts: ShortcutSettings,
+  retainedFeatures: ExtensionSettings['features']
 ): ExtensionSettings {
-  const features = {} as ExtensionSettings['features'];
+  const features = { ...retainedFeatures };
   for (const key of FEATURE_KEYS) {
-    features[key] = inputs[key].checked;
+    const input = inputs[key];
+    if (input) features[key] = input.checked;
   }
 
   return {
@@ -438,6 +443,9 @@ async function loadAnalyticsData(): Promise<unknown> {
 }
 
 async function boot() {
+  const reviewGraderAccess = createReviewGraderAccess();
+  window.addEventListener('pagehide', () => reviewGraderAccess.dispose(), { once: true });
+  void reviewGraderAccess.start();
   const featureList = requireElement<HTMLElement>('[data-role="feature-list"]');
   const statusElement = requireElement<HTMLElement>('[data-role="status"]');
   const resetButton = requireElement<HTMLButtonElement>('[data-role="reset"]');
@@ -463,7 +471,7 @@ async function boot() {
   const shareStatus = statusElement;
   const backToSettingsButton = requireElement<HTMLButtonElement>('[data-role="back-to-settings"]');
 
-  renderFeatureCards(featureList);
+  renderFeatureCards(featureList, FEATURE_KEYS.filter(key => key !== 'audioEnhancement'));
   const customizeGhostCursorButton = requireElement<HTMLButtonElement>('[data-role="customize-ghost-cursor"]');
   const inputs = getFeatureInputs();
   const ruleInputs = renderCustomLinterRuleCards(customLinterRuleList);
@@ -471,11 +479,13 @@ async function boot() {
 
   let retainedWebsiteAppearance = DEFAULT_EXTENSION_SETTINGS.websiteAppearance;
   let initialShortcuts = DEFAULT_EXTENSION_SETTINGS.shortcuts;
+  let retainedFeatures = DEFAULT_EXTENSION_SETTINGS.features;
 
   try {
     const { loaded, settings } = await loadExtensionSettings();
     retainedWebsiteAppearance = settings.websiteAppearance;
     initialShortcuts = settings.shortcuts;
+    retainedFeatures = settings.features;
     applySettingsToInputs(
       settings,
       inputs,
@@ -492,6 +502,7 @@ async function boot() {
 
   let saveQueue = Promise.resolve();
   const save = (websiteAppearanceOverride?: ExtensionSettings['websiteAppearance']) => {
+    const audioPreference = reviewGraderAccess.isAvailable() ? inputs.audioEnhancement?.checked : undefined;
     const formSettings = readSettingsFromInputs(
       inputs,
       ruleInputs,
@@ -499,25 +510,24 @@ async function boot() {
       highlightedWordsEnabledInput,
       ghostCursorInputs,
       retainedWebsiteAppearance,
-      shortcutEditor.getSettings()
+      shortcutEditor.getSettings(),
+      retainedFeatures
     );
     const run = async () => {
       setStatus(statusElement, 'Saving...');
       try {
-        if (websiteAppearanceOverride !== undefined) {
-          retainedWebsiteAppearance = websiteAppearanceOverride;
-        } else {
-          const latest = await loadExtensionSettings();
-          if (!latest.loaded) {
-            throw new Error(latest.error ?? 'Could not load current settings.');
-          }
-          retainedWebsiteAppearance = latest.settings.websiteAppearance;
+        const latest = await loadExtensionSettings();
+        if (!latest.loaded) {
+          throw new Error(latest.error ?? 'Could not load current settings.');
         }
+        retainedWebsiteAppearance = websiteAppearanceOverride ?? latest.settings.websiteAppearance;
+        formSettings.features.audioEnhancement = audioPreference ?? latest.settings.features.audioEnhancement;
         const persisted = await saveExtensionSettings({
           ...formSettings,
           websiteAppearance: retainedWebsiteAppearance
         });
         retainedWebsiteAppearance = persisted.websiteAppearance;
+        retainedFeatures = persisted.features;
         applySettingsToInputs(
           persisted,
           inputs,
@@ -540,10 +550,25 @@ async function boot() {
   shortcutEditor.setSettings(initialShortcuts);
 
   for (const key of FEATURE_KEYS) {
-    inputs[key].addEventListener('change', () => {
+    inputs[key]?.addEventListener('change', () => {
       void save();
     });
   }
+
+  const unsubscribeAccess = reviewGraderAccess.subscribe(available => {
+    if (!available) {
+      inputs.audioEnhancement?.closest('label')?.remove();
+      delete inputs.audioEnhancement;
+      return;
+    }
+    if (inputs.audioEnhancement) return;
+    renderFeatureCards(featureList, ['audioEnhancement']);
+    const input = getFeatureInputs().audioEnhancement!;
+    input.checked = retainedFeatures.audioEnhancement;
+    input.addEventListener('change', () => { void save(); });
+    inputs.audioEnhancement = input;
+  });
+  window.addEventListener('pagehide', unsubscribeAccess, { once: true });
 
   for (const rule of CUSTOM_LINTER_RULE_SETTINGS) {
     ruleInputs[rule.id]?.addEventListener('change', () => {

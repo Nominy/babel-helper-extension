@@ -1,3 +1,4 @@
+import { readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
 import type {
   L0TimingIndex,
@@ -12,6 +13,14 @@ const UPDATE_TYPE = 'babel-gold-drafting:l0-timing-update';
 
 type TimingState = {
   l0TimingIndex: L0TimingIndex | null;
+  l0TimingPairKey?: string | null;
+  l0TimingCache?: {
+    scopeId: string;
+    original: L0TimingIndex | null;
+    enhanced: L0TimingIndex | null;
+    enhancedPairKey?: string;
+    playback?: L0TimingIndex;
+  } | null;
 };
 
 type ProtocolWindow = Pick<Window, 'addEventListener' | 'removeEventListener'>;
@@ -85,19 +94,93 @@ export function parseL0TimingUpdate(value: unknown): L0TimingIndex | null {
   return { taskId: message.taskId.trim(), tracks };
 }
 
+function timingIdentity(taskId: string): { scopeId: string; baseTaskId: string; variantKey: string } | null {
+  try {
+    const { audioVariantKey, ...scope } = JSON.parse(taskId) as Record<string, unknown>;
+    if (scope.version !== 1 || typeof scope.baseTaskId !== 'string' ||
+        !Array.isArray(scope.stableLaneIds) || !scope.stableLaneIds.every((lane) => typeof lane === 'string') ||
+        (audioVariantKey !== undefined && (typeof audioVariantKey !== 'string' || !audioVariantKey))) return null;
+    return { scopeId: JSON.stringify(scope), baseTaskId: scope.baseTaskId,
+      variantKey: typeof audioVariantKey === 'string' ? audioVariantKey : '' };
+  } catch {
+    return null;
+  }
+}
+
+function selectTimingIndex(state: TimingState, taskId: string): L0TimingIndex | null {
+  const active = state.l0TimingIndex;
+  const retained = state.l0TimingCache;
+  if (active?.taskId === taskId && (retained?.original === active || retained?.enhanced === active)) return active;
+  const selected = timingIdentity(taskId);
+  if (!selected) {
+    state.l0TimingIndex = null;
+    state.l0TimingCache = null;
+    state.l0TimingPairKey = null;
+    return null;
+  }
+  // Shared across separately bundled listener/cursor modules. Retain Original
+  // and one latest nonzero-strength timing set, bound to the verified full pair.
+  let cache = state.l0TimingCache;
+  if (!cache || cache.scopeId !== selected.scopeId) {
+    cache = state.l0TimingCache = { scopeId: selected.scopeId, original: null, enhanced: null };
+  }
+  const audio = readAudioEnhancementState();
+  const pairKey = audio?.taskId === selected.baseTaskId ? audio.pairedVariantKey : undefined;
+  const previous = state.l0TimingIndex;
+  if (previous) {
+    const identity = timingIdentity(previous.taskId);
+    if (identity?.scopeId === selected.scopeId) {
+      const slot = identity.variantKey ? 'enhanced' : 'original';
+      if (cache[slot] !== previous) delete cache.playback;
+      cache[slot] = previous;
+      if (identity.variantKey) {
+        cache.enhancedPairKey = state.l0TimingPairKey || (identity.variantKey === pairKey ? pairKey : undefined);
+      }
+    }
+  }
+  if (selected.variantKey && cache.enhanced?.taskId !== taskId &&
+      (!pairKey || cache.enhancedPairKey !== pairKey)) {
+    cache.enhanced = null;
+    delete cache.enhancedPairKey;
+    delete cache.playback;
+  }
+  const index = cache[selected.variantKey ? 'enhanced' : 'original'];
+  state.l0TimingIndex = index?.taskId === taskId ? index : null;
+  state.l0TimingPairKey = state.l0TimingIndex && selected.variantKey ? cache.enhancedPairKey || null : null;
+  return state.l0TimingIndex;
+}
+
 export function getCurrentL0TimingIndex(
   state: TimingState,
   helper: TimingIdentityHelper,
   suppliedLocation?: TaskLocation
 ): L0TimingIndex | null {
-  const index = state.l0TimingIndex;
-  if (!index) return null;
-  const currentTaskId = buildCurrentL0TimingTaskId(helper, suppliedLocation);
-  if (index.taskId !== currentTaskId) {
-    state.l0TimingIndex = null;
-    return null;
+  return selectTimingIndex(state, buildCurrentL0TimingTaskId(helper, suppliedLocation));
+}
+
+/** Playback pins can share the bridge-verified clock; ASR/draft/segmentation lookup remains source-specific. */
+export function getCurrentL0PlaybackTimingIndex(
+  state: TimingState,
+  helper: TimingIdentityHelper,
+  suppliedLocation?: TaskLocation
+): L0TimingIndex | null {
+  const taskId = buildCurrentL0TimingTaskId(helper, suppliedLocation);
+  const own = selectTimingIndex(state, taskId);
+  if (own) return own;
+  const audio = readAudioEnhancementState();
+  const cache = state.l0TimingCache;
+  if (!audio?.pairedVariantKey || audio.status !== 'ready' || !cache) return null;
+  const sourceIdentity = timingIdentity(taskId);
+  if (sourceIdentity?.baseTaskId !== audio.taskId) return null;
+  const donor = cache.enhanced && cache.enhancedPairKey === audio.pairedVariantKey
+    ? cache.enhanced : audio.strength > 0 ? cache.original : null;
+  if (!donor) return null;
+  // A playback-only view maps the same word clocks to the selected lane identity.
+  // It never publishes or stores these pins as newly inferred timing for that source.
+  if (cache.playback?.taskId !== taskId || cache.playback.tracks !== donor.tracks) {
+    cache.playback = { taskId, tracks: donor.tracks };
   }
-  return index;
+  return cache.playback;
 }
 
 export function showL0TimingReadyNotification(
@@ -151,9 +234,7 @@ export function registerL0TimingListener(
   listeners.get(protocolWindow)?.();
 
   const currentTaskId = () => buildCurrentL0TimingTaskId(helper, suppliedLocation);
-  if (state.l0TimingIndex && state.l0TimingIndex.taskId !== currentTaskId()) {
-    state.l0TimingIndex = null;
-  }
+  selectTimingIndex(state, currentTaskId());
 
   let disposed = false;
   const onMessage = (event: MessageEvent) => {
@@ -162,12 +243,14 @@ export function registerL0TimingListener(
     if (!update) return;
 
     const expectedTaskId = currentTaskId();
-    if (state.l0TimingIndex && state.l0TimingIndex.taskId !== expectedTaskId) {
-      state.l0TimingIndex = null;
-    }
+    selectTimingIndex(state, expectedTaskId);
     if (update.taskId !== expectedTaskId) return;
 
     state.l0TimingIndex = update;
+    const audio = readAudioEnhancementState();
+    state.l0TimingPairKey = audio && audio.taskId === timingIdentity(update.taskId)?.baseTaskId
+      ? audio.pairedVariantKey || null : null;
+    selectTimingIndex(state, expectedTaskId);
     showL0TimingReadyNotification();
   };
 
@@ -176,6 +259,9 @@ export function registerL0TimingListener(
     if (disposed) return;
     disposed = true;
     protocolWindow.removeEventListener('message', onMessage as EventListener);
+    state.l0TimingIndex = null;
+    state.l0TimingPairKey = null;
+    state.l0TimingCache = null;
     if (listeners.get(protocolWindow) === dispose) listeners.delete(protocolWindow);
   };
   listeners.set(protocolWindow, dispose);

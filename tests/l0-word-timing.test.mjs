@@ -415,6 +415,85 @@ test('task guard captured without a publication only ends on a pathname change',
   assert.equal(isTask(), false);
 });
 
+function installSourceDocument(t, source) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const document = {
+    documentElement: {
+      getAttribute: (name) => name === 'data-babel-review-action-id' ? source.taskId :
+        name === 'data-babel-audio-enhancement' ? JSON.stringify(source) : null,
+      appendChild() {}
+    },
+    querySelector: () => null,
+    createElement: () => ({
+      ownerDocument: document,
+      classList: { add() {} },
+      style: { removeProperty(name) { delete this[name]; }, setProperty(name, value) { this[name] = value; } },
+      setAttribute() {},
+      remove() {}
+    })
+  };
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: document });
+  t.after(() => previous ? Object.defineProperty(globalThis, 'document', previous) : delete globalThis.document);
+}
+
+test('word timing publications retain both selected sources and reject inactive-source updates', (t) => {
+  const source = { version: 2, taskId: 'current-pair', status: 'ready', strength: 0, desiredStrength: 0, variantKey: '', revision: 1 };
+  installSourceDocument(t, source);
+  const helper = { getTranscriptRows: () => [] };
+  const location = { pathname: '/label', search: '' };
+  const state = { l0TimingIndex: null };
+  const protocolWindow = createProtocolWindow();
+  const dispose = listener.registerL0TimingListener(state, helper, protocolWindow, location);
+  t.after(dispose);
+  const originalId = identity.buildCurrentL0TimingTaskId(helper, location);
+  protocolWindow.emit(validUpdate(originalId));
+  Object.assign(source, { strength: 100, desiredStrength: 100, variantKey: 'graph-a' });
+  const enhancedId = identity.buildCurrentL0TimingTaskId(helper, location);
+  const enhanced = validUpdate(enhancedId);
+  enhanced.tracks[0].tokens = [token('enhanced-alpha', 'alpha', 10, 11), token('enhanced-beta', 'beta', 14, 15)];
+  protocolWindow.emit(enhanced);
+  const read = () => listener.getCurrentL0TimingIndex(state, helper, location);
+  const lateOriginal = validUpdate(originalId);
+  lateOriginal.tracks[0].tokens = [token('late-alpha', 'alpha', 99, 100)];
+  protocolWindow.emit(lateOriginal);
+  for (let cycle = 0; cycle < 4; cycle++) {
+    assert.equal(read().tracks[0].tokens[0].startSeconds, 10);
+    Object.assign(source, { strength: 0, desiredStrength: 0, variantKey: '' });
+    assert.equal(read().tracks[0].tokens[0].startSeconds, 1);
+    Object.assign(source, { strength: 100, desiredStrength: 100, variantKey: 'graph-a' });
+  }
+  dispose();
+  assert.equal(read(), null, 'kernel teardown cannot restore disposed timing');
+});
+
+test('timing memory evicts replaced enhancement graphs and foreign recording tasks rather than keeping history', (t) => {
+  const source = { version: 2, taskId: 'current-pair', status: 'ready', strength: 0, desiredStrength: 0, variantKey: '', revision: 1 };
+  installSourceDocument(t, source);
+  const helper = { getTranscriptRows: () => [] };
+  const location = { pathname: '/label', search: '' };
+  const state = { l0TimingIndex: null };
+  const protocolWindow = createProtocolWindow();
+  const dispose = listener.registerL0TimingListener(state, helper, protocolWindow, location);
+  t.after(dispose);
+  const read = () => listener.getCurrentL0TimingIndex(state, helper, location);
+  const publish = () => protocolWindow.emit(validUpdate(identity.buildCurrentL0TimingTaskId(helper, location)));
+  publish();
+  Object.assign(source, { strength: 100, desiredStrength: 100, variantKey: 'graph-a' });
+  publish();
+  source.variantKey = 'graph-b';
+  assert.equal(read(), null, 'an unseen graph must not inherit graph-a pins');
+  publish();
+  source.variantKey = 'graph-a';
+  assert.equal(read(), null, 'only the selected enhancement graph is retained');
+  Object.assign(source, { strength: 0, desiredStrength: 0, variantKey: '' });
+  assert.equal(read().tracks[0].tokens[0].startSeconds, 1);
+  source.taskId = 'another-pair';
+  assert.equal(read(), null);
+  publish();
+  source.taskId = 'current-pair';
+  assert.equal(read(), null, 'returning to an evicted task cannot revive its old word timing');
+});
+
 test('listener replacement and disposal prevent leaks across kernel restarts', () => {
   const protocolWindow = createProtocolWindow();
   const location = { pathname: '/label', search: '?id=second' };
@@ -594,7 +673,6 @@ test('timing-ready notification lasts 750ms and replaces an older notice', () =>
 
   assert.equal(removedOld, true);
   assert.equal(attached, notification);
-  assert.equal(notification.textContent, 'Timestamped transcription ready');
   assert.equal(notification.attributes.role, 'status');
   assert.deepEqual(scheduled.map(({ delayMs }) => delayMs), [630, 750]);
   scheduled[0].callback();

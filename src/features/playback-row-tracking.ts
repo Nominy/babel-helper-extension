@@ -215,6 +215,15 @@ export function registerPlaybackRowTracking(helper: any) {
   };
 
   helper.unbindRowTracking = function unbindRowTracking() {
+    helper.stopGhostCursor?.();
+    helper.state.ghostCursorLaneLock = null;
+    helper.cancelSpeakerWorkflow?.();
+    helper.invalidateRowTimeCache?.();
+    helper.state.lastBlur = null;
+    helper.state.blurRestorePending = false;
+    helper.state.blurPlaybackTime = null;
+    helper.state.restorePlaybackTime = null;
+    helper.state.cursorBaseline = null;
     if (!helper.state.rowTrackingBound) {
       return;
     }

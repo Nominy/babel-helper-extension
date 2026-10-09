@@ -95,6 +95,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/content/audio-enhancement-bridge.ts'],
+    outfile: 'dist/content/audio-enhancement-bridge.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/content/recovered-editor-bridge.ts'],
     outfile: 'dist/content/recovered-editor-bridge.js'
   },

@@ -1,3 +1,4 @@
+import { readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 import type { L0TimingIndex, L0WordTimingTrack } from './l0-word-timing-alignment';
 
 const QUERY_TASK_ID_KEYS = ['jobId', 'transcriptionChunkId', 'annotationId', 'id'] as const;
@@ -127,14 +128,21 @@ export function collectL0TimingStableLaneIds(
   return Array.from(stableLaneIds).sort();
 }
 
+function getAudioVariantKey(baseTaskId: string): string {
+  const state = readAudioEnhancementState();
+  return state?.taskId === baseTaskId && state.strength > 0 ? state.variantKey : '';
+}
+
 function serializeL0TimingTaskId(
   baseTaskId: string,
   rowIdentities: readonly L0TimingRowIdentity[]
 ): string {
+  const audioVariantKey = getAudioVariantKey(baseTaskId);
   return JSON.stringify({
     version: 1,
     baseTaskId,
-    stableLaneIds: collectL0TimingStableLaneIds(rowIdentities)
+    stableLaneIds: collectL0TimingStableLaneIds(rowIdentities),
+    ...(audioVariantKey ? { audioVariantKey } : {})
   });
 }
 
@@ -207,16 +215,24 @@ export function buildCurrentL0TimingTaskId(
  * React's `__reactFiber$` expandos are invisible, so the only identity sources
  * are `location.pathname` and Gold's published `data-babel-review-action-id`.
  */
-export function captureL0TaskGuard({ requireIdentity = false } = {}): () => boolean {
+export function captureL0TaskGuard({ requireIdentity = false, includeAudioVariant = false } = {}): () => boolean {
   const pathname = typeof location === 'undefined' ? '' : trimmedString(location.pathname);
   const reviewActionId = getPublishedReviewActionId();
+  const audioVariantKey = includeAudioVariant ? getAudioVariantKey(reviewActionId) : '';
   return () => {
     const currentPathname =
       typeof location === 'undefined' ? '' : trimmedString(location.pathname);
     if (currentPathname !== pathname) return false;
     if (!reviewActionId) return !requireIdentity;
     const current = getPublishedReviewActionId();
-    return !current || current === reviewActionId;
+    if (current && current !== reviewActionId) return false;
+    if (includeAudioVariant) {
+      const state = readAudioEnhancementState();
+      if (getAudioVariantKey(reviewActionId) !== audioVariantKey) return false;
+      if (state?.taskId === reviewActionId && (state.status === 'switching' ||
+          state.desiredStrength !== state.strength && state.status !== 'error')) return false;
+    }
+    return true;
   };
 }
 
@@ -267,6 +283,7 @@ let publishedLaneJson: string | null = null;
 let publishedLanes: {
   reviewActionId: string;
   taskId: string;
+  audioVariantKey: string;
   idsByLabel: Map<string, string | null>;
 } | null = null;
 
@@ -294,12 +311,20 @@ function getPublishedTimingLaneId(timingIndex: L0TimingIndex, aliases: L0TimingL
           publishedLanes = {
             reviewActionId,
             taskId: serializeL0TimingTaskId(reviewActionId, []),
+            audioVariantKey: getAudioVariantKey(reviewActionId),
             idsByLabel
           };
         }
       } catch {
         // Invalid page metadata cannot establish a recording identity.
       }
+    }
+  }
+  if (publishedLanes) {
+    const audioVariantKey = getAudioVariantKey(publishedLanes.reviewActionId);
+    if (publishedLanes.audioVariantKey !== audioVariantKey) {
+      publishedLanes.audioVariantKey = audioVariantKey;
+      publishedLanes.taskId = serializeL0TimingTaskId(publishedLanes.reviewActionId, []);
     }
   }
   if (!publishedLanes || publishedLanes.reviewActionId !== getPublishedReviewActionId() ||

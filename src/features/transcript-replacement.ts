@@ -490,7 +490,8 @@ export async function replaceTranscriptSegmentation(
     });
   }
   const helper = helperValue;
-  const isCurrentTask = captureL0TaskGuard({ requireIdentity: true });
+  const isCurrentTask = captureL0TaskGuard({ requireIdentity: true, includeAudioVariant: true });
+  const isSameReviewTask = captureL0TaskGuard({ requireIdentity: true });
   const untouchedStaleTaskResponse = () => response(request.requestId, false, {
     reason: 'stale-task',
     message: 'The current task could not be confirmed or changed before transcript replacement began. No transcript changes were made. Reload the task and try again.'
@@ -574,7 +575,7 @@ export async function replaceTranscriptSegmentation(
   }
 
   if (mutationReason || staleTask) {
-    const report = await rollback(helper, original, created, deletedOriginalIds, isCurrentTask);
+    const report = await rollback(helper, original, created, deletedOriginalIds, isSameReviewTask);
     const outcome = report.errors.length
       ? `Rollback incomplete: ${report.errors.join('; ')}.`
       : 'Original transcript restored.';
@@ -588,8 +589,8 @@ export async function replaceTranscriptSegmentation(
       });
     }
     return response(request.requestId, false, {
-      reason: mutationReason,
-      message: `${mutationMessage} ${outcome}`
+      reason: staleTask ? 'stale-task' : mutationReason,
+      message: `${staleTask ? 'The audio selection changed during transcript replacement.' : mutationMessage} ${outcome}`
     });
   }
 
