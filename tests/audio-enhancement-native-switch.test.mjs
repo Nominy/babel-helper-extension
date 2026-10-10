@@ -310,6 +310,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
   try {
     await facade.setEnabled(true);
     const sources = await captured;
+    assert.equal(facade.getState().desiredStrength, 90, 'Every new task starts with the safe 90/10 mix');
     if (scenario.originalBefore) await facade.selectStrength(0);
     const enhanced = sourceWav(200);
     // Change the current annotation state after the native ready closure was
@@ -356,20 +357,31 @@ test(`real native split and paired selection remain correct with ${scenario.name
       assert.equal(facade.getState().status, 'ready');
       assert.equal(loading.length, 0, 'Choosing Original before model completion prevents automatic Enhanced loading');
       assert.deepEqual(facade.getActiveAudio('chosen-original', 'task-native').tracks.map(track => track.bytes), [sourceWav(100), sourceWav(100)]);
-      await facade.selectStrength(100);
+      await facade.selectStrength(90);
     }
-    assert.equal(facade.getState().strength, 100);
+    assert.equal(facade.getState().strength, 90);
     assert.equal(facade.getState().status, 'ready');
     const enhancedNotice = facade.getState().message;
     assert.ok(enhancedNotice, 'The committed selection retains a terminal status notice');
     if (scenario.cache.cacheStatus === 'unavailable') {
       assert.ok(enhancedNotice.includes(scenario.cache.cacheMessage), 'Cache failure remains visible while valid Enhanced is usable');
     }
-    assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [200, 200]);
+    assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [190, 190], 'Inference and cached pairs both load real 90/10 samples');
+    const defaultCapture = facade.getActiveAudio('default-mix', 'task-native');
+    assert.equal(defaultCapture.available, true);
+    assert.equal(defaultCapture.strength, 90);
+    assert.equal(defaultCapture.variantKey, await stream.audioSha256(new TextEncoder().encode(
+      JSON.stringify(['zip-linear-pcm16-v1', 'b'.repeat(64), 90])).buffer));
+    assert.equal(facade.getState().pairedVariantKey, 'b'.repeat(64));
+    assert.deepEqual(defaultCapture.tracks.map(track => track.bytes), [sourceWav(190), sourceWav(190)]);
+    assert.deepEqual(waves.map(wave => wave.loadedBytes), defaultCapture.tracks.map(track => track.bytes));
+    assert.deepEqual(await (await window.fetch('https://babel.test/lane-1.wav')).arrayBuffer(), sourceWav(190));
+    assert.deepEqual(facade.getActiveAudio('default-original', 'task-native', 'original').tracks.map(track => track.bytes),
+      [sourceWav(100), sourceWav(100)], 'Default mixing never overwrites byte-exact Original');
     assert.deepEqual(loading.map(value => value.id), ['lane-1', 'lane-2']);
     assert.ok(loading.every(value => value.counterpartDecoded), 'Native cross-lane zoom must always have decoded audio');
     assert.ok(loading.every(value => !value.active && value.state.strength === 0 && value.state.status === 'switching'), 'Paired strength is unavailable and uncommitted while either lane loads');
-    if (!scenario.originalBefore) assert.ok(publications.filter(value => value.status === 'ready').every(value => value.strength === 100), 'Ready cannot precede the initial paired native commit');
+    if (!scenario.originalBefore) assert.ok(publications.filter(value => value.status === 'ready').every(value => value.strength === 90), 'Ready cannot precede the initial paired native commit');
     for (const wave of waves) {
       assert.equal(wave.time, 0.4);
       assert.equal(wave.rate, 1.25);
@@ -462,9 +474,11 @@ test(`real native split and paired selection remain correct with ${scenario.name
     assert.deepEqual(originalCapture.tracks.map(track => track.bytes), [sourceWav(100), sourceWav(100)]);
     assert.deepEqual(waves.map(wave => wave.loadedBytes), [sourceWav(100), sourceWav(100)]);
     await splitCurrent();
+    await facade.selectStrength(90);
+    assert.equal(facade.getState().message, enhancedNotice, 'Re-selecting the default mix restores its cache notice');
     await facade.selectStrength(100);
     assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [200, 200]);
-    assert.equal(facade.getState().message, enhancedNotice, 'Re-selecting Enhanced restores its cache notice after paired native commit');
+    assert.equal(facade.getState().strength, 100);
     await splitCurrent();
     const fullCapture = facade.getActiveAudio('enhanced-capture', 'task-native');
     assert.deepEqual(fullCapture.tracks.map(track => track.bytes), [enhanced, enhanced]);
@@ -553,7 +567,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
       await staleSwitch;
       assert.equal(facade.getState().taskId, 'task-next');
       assert.equal(facade.getState().strength, 0);
-      assert.equal(facade.getState().desiredStrength, 100);
+      assert.equal(facade.getState().desiredStrength, 90);
       assert.equal(facade.getState().variantKey, '', 'Old-task mixed results cannot commit into the new task');
       assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [100, 100]);
       assert.deepEqual(editor.annotations.current, nextAnnotations, 'Abandoned native task callbacks cannot change the next task annotations');

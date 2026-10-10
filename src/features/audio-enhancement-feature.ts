@@ -1,5 +1,5 @@
-import { UI_STYLES, themeRoot } from '@nominy/babel-extension-frontend';
-import { isAudioEnhancementProgress, isAudioEnhancementStrength, type AudioEnhancementState, type ReviewGraderAccess } from '@nominy/babel-babel-runtime';
+import { confirmDialog, UI_STYLES, themeRoot } from '@nominy/babel-extension-frontend';
+import { isAudioEnhancementProgress, isAudioEnhancementStrength, type AudioEnhancementState } from '@nominy/babel-babel-runtime';
 import type { FeatureContext, FeatureModule } from '../core/types';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
 import {
@@ -34,7 +34,6 @@ export function createAudioEnhancementFeature(): FeatureModule {
   let injectionScript: HTMLScriptElement | null = null;
   let cancelInjection: (() => void) | null = null;
   let disablePromise: Promise<void> | null = null;
-  let lease: AbortSignal | null = null;
   let currentSession = '';
   let currentTask = '';
   let selectedVariant = '';
@@ -54,6 +53,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
   let sliderSession = '';
   let sliderTask = '';
   let sliderInteraction: 'pointer' | 'keyboard' | 'direct' | null = null;
+  let strengthConfirmation: { controller: AbortController; href: string } | null = null;
   const disabledRequests = new Map<string, () => void>();
 
   function post(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): void {
@@ -91,7 +91,21 @@ export function createAudioEnhancementFeature(): FeatureModule {
     strengthTimeout = null;
   }
 
+  function cancelStrengthConfirmation(): void {
+    const pending = strengthConfirmation;
+    strengthConfirmation = null;
+    pending?.controller.abort();
+  }
+
+  function handleSelectionNavigation(): void {
+    if (strengthConfirmation && strengthConfirmation.href !== window.location.href) {
+      cancelStrengthSelection();
+      render();
+    }
+  }
+
   function cancelStrengthSelection(resetHeld = false): void {
+    cancelStrengthConfirmation();
     clearStrengthTimeout();
     localOriginalMix = null;
     sliderSession = '';
@@ -105,7 +119,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
   }
 
   function canSelectStrength(): boolean {
-    return active && Boolean(currentSession && currentTask && state?.taskId === currentTask);
+    return active && started && ctx.helper.settings.features.audioEnhancement &&
+      Boolean(currentSession && currentTask && state?.taskId === currentTask);
   }
 
   function sliderSelectionIsCurrent(): boolean {
@@ -116,6 +131,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     return Math.round(value / 10) * 10;
   }
   function beginStrengthSelection(slider: HTMLInputElement, interaction: 'pointer' | 'keyboard' | 'direct'): void {
+    cancelStrengthConfirmation();
     clearStrengthTimeout();
     sliderSession = currentSession;
     sliderTask = currentTask;
@@ -124,7 +140,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
   }
 
   function renderSlider(slider: HTMLInputElement): void {
-    const originalMix = localOriginalMix ?? snapOriginalMix(100 - (state?.desiredStrength ?? 100));
+    const originalMix = localOriginalMix ?? snapOriginalMix(100 - (state?.desiredStrength ?? 90));
     const value = String(originalMix);
     if (slider.value !== value) slider.value = value;
     slider.disabled = !state?.taskId;
@@ -133,15 +149,39 @@ export function createAudioEnhancementFeature(): FeatureModule {
     if (label) label.title = selectionLabel(state?.strength ?? 0);
   }
 
-  function commitStrengthSelection(): void {
+  async function commitStrengthSelection(): Promise<void> {
     clearStrengthTimeout();
     if (sliderPointerId !== null || heldSliderKeys.size) return;
     if (!sliderSelectionIsCurrent() || localOriginalMix === null) return;
     const strength = 100 - localOriginalMix;
+    const sessionId = currentSession;
+    const taskId = currentTask;
+    const activation = lifecycleRevision;
+    const desiredStrength = state?.desiredStrength;
     cancelStrengthSelection();
-    if (isAudioEnhancementStrength(strength) && strength !== state?.desiredStrength) {
-      post('select-strength', { sessionId: currentSession, taskId: currentTask, strength });
+    if (!isAudioEnhancementStrength(strength) || strength === desiredStrength) return;
+    if (strength === 100) {
+      // A pending warning is not a selection: keep the previous thumb and native audio.
+      render();
+      const pending = { controller: new AbortController(), href: window.location.href };
+      strengthConfirmation = pending;
+      try {
+        const confirmed = await confirmDialog({
+          title: 'Use 100% enhanced audio?',
+          message: 'Full enhancement can suppress or remove speech, making some words inaudible. We recommend 90% enhanced / 10% Original to retain speech from the original recording.',
+          confirmLabel: 'Use 100% enhanced',
+          cancelLabel: 'Cancel',
+          signal: pending.controller.signal
+        });
+        if (!confirmed || pending.controller.signal.aborted || strengthConfirmation !== pending ||
+            !canSelectStrength() || lifecycleRevision !== activation ||
+            currentSession !== sessionId || currentTask !== taskId ||
+            window.location.href !== pending.href || state?.desiredStrength !== desiredStrength) return;
+      } finally {
+        if (strengthConfirmation === pending) strengthConfirmation = null;
+      }
     }
+    post('select-strength', { sessionId, taskId, strength });
   }
 
   function queueStrengthSelection(): void {
@@ -149,7 +189,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     if (!sliderSelectionIsCurrent() || localOriginalMix === null || sliderPointerId !== null || heldSliderKeys.size) return;
     strengthTimeout = window.setTimeout(() => {
       strengthTimeout = null;
-      commitStrengthSelection();
+      void commitStrengthSelection();
     }, STRENGTH_DEBOUNCE_MS);
   }
 
@@ -164,7 +204,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
       // Let the range's final input/change default action finish before the release fallback.
       strengthTimeout = window.setTimeout(() => {
         strengthTimeout = null;
-        commitStrengthSelection();
+        void commitStrengthSelection();
       }, 0);
     }
   }
@@ -213,7 +253,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
       const fraction = progress && countsKnown
         ? (progress.trackIndex + progress.completedChunks / progress.totalChunks) / progress.trackCount : null;
       let stage = state?.status === 'switching' || state?.status === 'processing' && Boolean(state.model)
-        ? state?.desiredStrength === 0 ? 'Restoring original audio' : `Loading ${selectionLabel(state?.desiredStrength ?? 100).toLowerCase()} audio into native players`
+        ? state?.desiredStrength === 0 ? 'Restoring original audio' : `Loading ${selectionLabel(state?.desiredStrength ?? 90).toLowerCase()} audio into native players`
         : progress ? {
             queued: progress.backend === 'swarm' ? 'Waiting for a compatible swarm GPU' : 'Queued for local GPU',
             uploading: 'Uploading Original audio to the swarm',
@@ -278,8 +318,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
     </style><span class="audio bui-root bui-surface" role="group" aria-label="ZipEnhancer audio selection">
       <strong class="brand">ZipEnhancer</strong>
       <span class="choice"><span>Enhanced</span>
-      <input class="bui-range" type="range" data-strength min="0" max="100" step="10" value="0"
-        aria-label="Original audio mix" aria-orientation="horizontal" aria-valuetext="100% Enhanced, 0% Original">
+      <input class="bui-range" type="range" data-strength min="0" max="100" step="10" value="10"
+        aria-label="Original audio mix" aria-orientation="horizontal" aria-valuetext="90% Enhanced, 10% Original">
       <span>Original</span></span>
       <output class="selection" data-selection aria-label="0% Enhanced">0%</output>
       <button class="details-button bui-icon-button bui-button" type="button" data-details-button
@@ -317,7 +357,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     slider.addEventListener('change', () => {
       if (!sliderSelectionIsCurrent() || sliderPointerId !== null || heldSliderKeys.size) return;
       if (sliderInteraction === 'keyboard') queueStrengthSelection();
-      else commitStrengthSelection();
+      else void commitStrengthSelection();
     });
     slider.addEventListener('keydown', event => {
       event.stopPropagation();
@@ -338,14 +378,14 @@ export function createAudioEnhancementFeature(): FeatureModule {
         cancelStrengthSelection();
         render();
       } else {
-        commitStrengthSelection();
+        void commitStrengthSelection();
       }
     });
     render();
   }
 
   async function dispatch(sessionId: string, taskId: string, tracks: EnhancementSourceTrack[]): Promise<void> {
-    if (!active || lease?.aborted !== false || currentSession !== sessionId || currentTask !== taskId || broker) return;
+    if (!active || currentSession !== sessionId || currentTask !== taskId || broker) return;
     if (tracks.length !== 2 || new Set(tracks.map(track => track.trackId)).size !== 2 ||
         tracks.some(track => !track.trackId || !/^[a-f0-9]{64}$/.test(track.sourceSha256) ||
           !Number.isSafeInteger(track.frameCount) || track.frameCount <= 0 || !Number.isSafeInteger(track.sampleRate) || track.sampleRate <= 0)) {
@@ -399,7 +439,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const data = event.data as EnhancementPageMessage;
     if (data.source !== AUDIO_ENHANCEMENT_EVENT_SOURCE) return;
     if (data.type === 'disabled' && typeof data.requestId === 'string') { disabledRequests.get(data.requestId)?.(); return; }
-    if (!active || lease?.aborted !== false) return;
+    if (!active) return;
     if (data.type === 'state') {
       if (!isAudioEnhancementState(data.state) || typeof data.sessionId !== 'string') return;
       if (data.state.revision <= lastStateRevision) return;
@@ -412,6 +452,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
         currentSession = data.sessionId;
         currentTask = next.taskId;
       }
+      if (next.desiredStrength !== state?.desiredStrength) cancelStrengthConfirmation();
       state = next;
       const variant = `${currentSession}:${next.taskId}:${next.strength}:${next.variantKey}`;
       if (variant !== selectedVariant && next.status !== 'switching') {
@@ -434,21 +475,20 @@ export function createAudioEnhancementFeature(): FeatureModule {
 
   async function enable(): Promise<void> {
     if (disablePromise) await disablePromise;
-    if (active || !started) return;
+    if (active || !started || !ctx.helper.settings.features.audioEnhancement) return;
     const activation = ++lifecycleRevision;
-    const access = ctx.helper.reviewGraderAccess as ReviewGraderAccess | undefined;
-    const grant = await access?.acquire();
-    if (!grant || grant.aborted || lifecycleRevision !== activation || !started ||
-        !ctx.helper.settings.features.audioEnhancement) return;
-    lease = grant;
-    lease.addEventListener('abort', handleAccessRevoked, { once: true });
     active = true;
     window.addEventListener('message', handleMessage);
     window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('popstate', handleSelectionNavigation);
+    window.addEventListener('babel-helper-bridge-teardown', handlePageHide);
     window.addEventListener('pointerup', handleSliderPointerEnd, true);
     window.addEventListener('pointercancel', handleSliderPointerEnd, true);
     if (!observer) {
-      observer = new MutationObserver(() => { if (active) ensurePanel(); });
+      observer = new MutationObserver(() => {
+        handleSelectionNavigation();
+        if (active) ensurePanel();
+      });
       observer.observe(document.documentElement, { childList: true, subtree: true });
     }
     ensurePanel();
@@ -470,7 +510,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     }
     try {
       await injection;
-      if (active && !grant.aborted && lifecycleRevision === activation) post('enable');
+      if (active && lifecycleRevision === activation) post('enable');
     } catch (error) {
       injection = null;
       if (!active || lifecycleRevision !== activation) return;
@@ -487,13 +527,13 @@ export function createAudioEnhancementFeature(): FeatureModule {
     if (disablePromise) return disablePromise;
     ++lifecycleRevision;
     active = false;
-    lease?.removeEventListener('abort', handleAccessRevoked);
-    lease = null;
     cancelStream();
     stopElapsed();
     cancelStrengthSelection(true);
     observer?.disconnect(); observer = null;
     window.removeEventListener('pagehide', handlePageHide);
+    window.removeEventListener('popstate', handleSelectionNavigation);
+    window.removeEventListener('babel-helper-bridge-teardown', handlePageHide);
     window.removeEventListener('pointerup', handleSliderPointerEnd, true);
     window.removeEventListener('pointercancel', handleSliderPointerEnd, true);
     currentSession = ''; currentTask = ''; selectedVariant = ''; state = null;
@@ -524,10 +564,6 @@ export function createAudioEnhancementFeature(): FeatureModule {
     return disablePromise;
   }
 
-  function handleAccessRevoked(): void {
-    void disable();
-  }
-
   function handlePageHide(): void {
     void disable();
   }
@@ -549,6 +585,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
       stopElapsed();
       cancelStrengthSelection(true);
       window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('popstate', handleSelectionNavigation);
+      window.removeEventListener('babel-helper-bridge-teardown', handlePageHide);
       window.removeEventListener('pointerup', handleSliderPointerEnd, true);
       window.removeEventListener('pointercancel', handleSliderPointerEnd, true);
       observer?.disconnect(); observer = null;

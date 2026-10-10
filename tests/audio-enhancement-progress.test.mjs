@@ -12,7 +12,7 @@ const streamModule = await loadEntry('src/services/audio-enhancement-stream.ts')
 const featureModule = await loadEntry('src/features/audio-enhancement-feature.ts');
 const progress = { phase: 'enhancing', trackId: 'track-1', trackIndex: 0, trackCount: 2, completedChunks: 1, totalChunks: 4 };
 const event = overrides => ({ type: 'event', event: 'enhancement-progress', operation: 'enhanceAudio', progress, ...overrides });
-const state = overrides => ({ version: 2, taskId: 'task-1', status: 'processing', strength: 0, desiredStrength: 100, revision: 1, variantKey: '', ...overrides });
+const state = overrides => ({ version: 2, taskId: 'task-1', status: 'processing', strength: 0, desiredStrength: 90, revision: 1, variantKey: '', ...overrides });
 
 function installGlobals(t, values) {
   for (const [name, value] of Object.entries(values)) {
@@ -141,8 +141,11 @@ test('invalid enhancement events fail visibly instead of reaching onEvent', asyn
 });
 
 class TestElement {
-  constructor(document) {
+  constructor(document, tagName = 'div') {
     this.ownerDocument = document;
+    this.tagName = tagName;
+    this.children = [];
+    this.parentElement = null;
     this.attributes = new Map();
     this.classes = new Set();
     this.listeners = new Map();
@@ -161,14 +164,31 @@ class TestElement {
     group.add(listener);
     this.listeners.set(type, group);
   }
+  removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
   dispatch(type, details = {}) {
     const event = { type, target: this, defaultPrevented: false,
       preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...details };
     for (const listener of this.listeners.get(type) ?? []) listener(event);
     return event;
   }
-  appendChild(child) { child.parentElement = this; if (child.onload) queueMicrotask(() => child.onload()); return child; }
-  remove() { this.parentElement = null; }
+  append(...children) { for (const child of children) this.appendChild(child); }
+  appendChild(child) {
+    child.remove();
+    child.parentElement = this;
+    this.children.push(child);
+    if (child.onload) queueMicrotask(() => child.onload());
+    return child;
+  }
+  remove() {
+    if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+    this.parentElement = null;
+  }
+  get isConnected() { return this === this.ownerDocument.body || Boolean(this.parentElement?.isConnected); }
+  focus() { this.ownerDocument.activeElement = this; }
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatch('close'); }
+  all() { return [this, ...this.children.flatMap(child => child.all())]; }
+  contains(node) { return this.all().includes(node); }
   attachShadow() {
     const nodes = new Map();
     for (const selector of ['[data-status]', '[data-strength]', '[data-selection]', '[data-details]', '[data-details-button]', '[data-progress-panel]', '[data-progress-label]', '[data-elapsed]', 'progress', '.bui-root']) nodes.set(selector, new TestElement(this.ownerDocument));
@@ -180,31 +200,31 @@ class TestElement {
   }
 }
 
-async function featureHarness(t, { granted = true, deferredInjection = false } = {}) {
+async function featureHarness(t, { deferredInjection = false } = {}) {
   const harness = brokerHarness(t);
   const listeners = new Map();
   const posts = [];
   const toolbar = new TestElement(harness.document);
-  let lease = new AbortController();
-  let available = granted;
-  const access = {
-    isAvailable: () => available,
-    acquire: async () => available ? lease.signal : null
-  };
   const scripts = [];
   let panel;
   let minimapBinds = 0;
   let observerDisconnects = 0;
   harness.document.createElement = tag => {
-    const element = new TestElement(harness.document);
+    const element = new TestElement(harness.document, tag);
     if (tag === 'span') panel = element;
     return element;
   };
+  harness.document.body = new TestElement(harness.document, 'body');
+  const documentEvents = new TestElement(harness.document);
+  harness.document.addEventListener = documentEvents.addEventListener.bind(documentEvents);
+  harness.document.removeEventListener = documentEvents.removeEventListener.bind(documentEvents);
+  harness.document.querySelector = selector => selector === '#babel-shared-components-style' ? {}
+    : selector === '#babel-gold-drafting-magic-button' ? { parentElement: toolbar } : null;
+  harness.window.location.href = 'https://babel.test/transcription?reviewActionId=task-1';
   harness.document.documentElement.appendChild = child => {
     scripts.push(child);
     if (!deferredInjection && child.onload) queueMicrotask(() => child.onload());
   };
-  harness.document.querySelector = selector => selector === '#babel-gold-drafting-magic-button' ? { parentElement: toolbar } : null;
   harness.window.addEventListener = (type, listener) => { const group = listeners.get(type) ?? new Set(); group.add(listener); listeners.set(type, group); };
   harness.window.removeEventListener = (type, listener) => listeners.get(type)?.delete(listener);
   const deliver = data => { for (const listener of [...(listeners.get('message') ?? [])]) listener({ source: harness.window, origin: harness.window.location.origin, data }); };
@@ -214,7 +234,7 @@ async function featureHarness(t, { granted = true, deferredInjection = false } =
   };
   installGlobals(t, { MutationObserver: class { observe() {} disconnect() { observerDisconnects += 1; } } });
   const feature = featureModule.createAudioEnhancementFeature();
-  const context = { helper: { reviewGraderAccess: access, settings: { features: { minimap: true, audioEnhancement: true } } },
+  const context = { helper: { settings: { features: { minimap: true, audioEnhancement: true } } },
     services: { minimap: { bindMinimap: () => { minimapBinds += 1; } } } };
   feature.start(context);
   const activation = feature.activate();
@@ -223,8 +243,7 @@ async function featureHarness(t, { granted = true, deferredInjection = false } =
   return {
     ...harness, feature, posts, listeners, scripts, activation, context,
     get panel() { return panel; },
-    revoke() { available = false; lease.abort(); },
-    grant() { available = true; lease = new AbortController(); },
+    dialog: () => harness.document.body.children.find(child => child.tagName === 'dialog'),
     dispatchWindow: (type, details = {}) => {
       for (const listener of listeners.get(type) ?? []) listener({ type, ...details });
     },
@@ -236,23 +255,17 @@ async function featureHarness(t, { granted = true, deferredInjection = false } =
   };
 }
 
-test('no grant means no enhancement DOM, bridge, observers or broker even with counterfeit page events', async t => {
-  const harness = await featureHarness(t, { granted: false });
-  harness.publish(state({ status: 'ready', strength: 100 }));
-  harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready',
-    sessionId: 'session-1', taskId: 'task-1', tracks: [] });
-  await harness.feature.onLoaded();
-  assert.equal(harness.panel, undefined);
-  assert.equal(harness.scripts.length, 0);
-  assert.equal(harness.posts.length, 0);
-  assert.equal(harness.ports.length, 0);
-  assert.equal(harness.listeners.size, 0);
-  assert.equal(harness.timer.timers.size, 0);
-  assert.equal(harness.context.helper.settings.features.audioEnhancement, true, 'Stored preference remains enabled');
+test('enabled enhancement initializes its toolbar and bridge without another extension', async t => {
+  const harness = await featureHarness(t);
+  assert.equal(harness.panel.parentElement !== null, true);
+  assert.equal(harness.node('[data-strength]').value, '10');
+  assert.equal(harness.node('[data-strength]').getAttribute('aria-valuetext'), '90% Enhanced, 10% Original');
+  assert.equal(harness.scripts.length, 1);
+  assert.equal(harness.posts.some(post => post.type === 'enable'), true);
   await harness.feature.stop();
 });
 
-test('revocation cancels broker and removes enhancement surfaces; a fresh grant can activate again', async t => {
+test('disable cancels broker and removes enhancement surfaces; enabling can activate again', async t => {
   const harness = await featureHarness(t);
   const firstPanel = harness.panel;
   harness.publish(state());
@@ -261,10 +274,10 @@ test('revocation cancels broker and removes enhancement surfaces; a fresh grant 
       trackId, speakerKey: trackId, trackLabel: trackId, sourceSha256: 'a'.repeat(64), sampleRate: 48000, frameCount: 2
     })) });
   assert.equal(harness.ports.length, 1);
-  harness.revoke();
+  harness.context.helper.settings.features.audioEnhancement = false;
+  await harness.feature.deactivate();
   assert.equal(firstPanel.parentElement, null);
   assert.equal(harness.ports[0].disconnected, true);
-  await harness.feature.deactivate();
   assert.equal(harness.timer.timers.size, 0);
   assert.equal(harness.listeners.get('message')?.size, 0);
   assert.ok(harness.posts.some(post => post.type === 'dispose'));
@@ -272,21 +285,21 @@ test('revocation cancels broker and removes enhancement surfaces; a fresh grant 
   harness.publish(state({ revision: 99 }));
   await harness.feature.activate();
   assert.equal(harness.posts.length, count);
-  harness.grant();
+  harness.context.helper.settings.features.audioEnhancement = true;
   await harness.feature.activate();
   assert.notEqual(harness.panel, firstPanel);
-  assert.equal(harness.scripts.length, 2, 'A grant injects a fresh bridge rather than reusing a revoked facade');
+  assert.equal(harness.scripts.length, 2, 'Enabling injects a fresh bridge after disposal');
   harness.publish(state({ revision: 1, status: 'ready' }));
   assert.equal(harness.panel.parentElement !== null, true);
   await harness.feature.stop();
 });
 
-test('revocation during injection removes the script and cannot enable a late bridge', async t => {
+test('disable during injection removes the script and cannot enable a late bridge', async t => {
   const harness = await featureHarness(t, { deferredInjection: true });
   assert.equal(harness.scripts.length, 1);
-  harness.revoke();
+  const disabling = harness.feature.deactivate();
   await harness.activation;
-  await harness.feature.deactivate();
+  await disabling;
   harness.scripts[0].onload();
   await Promise.resolve();
   assert.equal(harness.posts.some(post => post.type === 'enable'), false);
@@ -446,6 +459,11 @@ test('native keyboard defaults remain available while releases coalesce and blur
   input(0);
   slider.dispatch('keyup', { key: 'Home' });
   slider.dispatch('blur');
+  assert.deepEqual(requests().map(value => value.strength), [0], 'Home requires confirmation before sending 100%');
+  const dialog = harness.dialog();
+  assert.ok(dialog);
+  dialog.all().find(node => node.textContent === 'Use 100% enhanced').dispatch('click');
+  await Promise.resolve();
   assert.deepEqual(requests().map(value => value.strength), [0, 100]);
   slider.dispatch('change');
   harness.timer.advance(500);
@@ -458,11 +476,11 @@ test('pointer cancellation, task or session replacement and disable cannot leak 
   const slider = harness.node('[data-strength]');
   const requests = () => harness.posts.filter(value => value.type === 'select-strength');
   const input = value => { slider.value = String(value); slider.dispatch('input'); };
-  harness.publish(state({ status: 'ready', strength: 100, model: 'zipr1', variantKey: 'a'.repeat(64) }));
+  harness.publish(state({ status: 'ready', strength: 90, model: 'zipr1', variantKey: 'a'.repeat(64) }));
   slider.dispatch('pointerdown', { button: 0, pointerId: 7 });
   input(40);
   harness.dispatchWindow('pointercancel', { pointerId: 7 });
-  assert.equal(slider.value, '0', 'Cancellation restores the published selection');
+  assert.equal(slider.value, '10', 'Cancellation restores the published selection');
   slider.dispatch('change');
   harness.timer.advance(500);
   assert.equal(requests().length, 0);
@@ -505,6 +523,111 @@ test('pointer cancellation, task or session replacement and disable cannot leak 
   assert.equal(harness.timer.timers.size, 0);
   await harness.feature.stop();
 });
+
+test('100% warning preserves the previous selection until explicit confirmation and prompts on each new transition', async t => {
+  const harness = await featureHarness(t);
+  const slider = harness.node('[data-strength]');
+  const requests = () => harness.posts.filter(value => value.type === 'select-strength');
+  const select = original => { slider.value = String(original); slider.dispatch('input'); slider.dispatch('change'); };
+  harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+  select(0);
+  const first = harness.dialog();
+  assert.ok(first?.open);
+  assert.equal(harness.document.activeElement.textContent, 'Cancel');
+  assert.match(first.all().map(node => node.textContent).join(' '), /suppress or remove speech.*inaudible.*90% enhanced \/ 10% Original/);
+  assert.equal(slider.value, '10');
+  assert.equal(harness.node('[data-selection]').textContent, '90%');
+  harness.timer.advance(1000);
+  assert.equal(requests().length, 0, 'Opening the warning cannot request full enhancement');
+  first.all().find(node => node.textContent === 'Cancel').dispatch('click');
+  await Promise.resolve();
+  assert.equal(harness.dialog(), undefined);
+  assert.equal(requests().length, 0);
+  assert.equal(slider.value, '10', 'Cancellation keeps the prior selection');
+
+  select(0);
+  const second = harness.dialog();
+  assert.notEqual(second, first);
+  harness.publish(state({ revision: 2, status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+  assert.equal(harness.dialog(), second, 'Progress/state refresh without a new choice retains the warning');
+  second.all().find(node => node.textContent === 'Use 100% enhanced').dispatch('click');
+  assert.equal(requests().length, 0, 'The async confirmation must finish before requesting full enhancement');
+  await Promise.resolve();
+  assert.deepEqual(requests().map(value => value.strength), [100]);
+  harness.publish(state({ revision: 3, status: 'ready', strength: 100, desiredStrength: 100, variantKey: 'b'.repeat(64) }));
+  select(0);
+  assert.equal(harness.dialog(), undefined, 'An unchanged full-enhancement selection is not a new transition');
+  select(10);
+  assert.deepEqual(requests().map(value => value.strength), [100, 90]);
+  harness.publish(state({ revision: 4, status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+  select(0);
+  assert.ok(harness.dialog(), 'Moving back to 100% must warn again after an earlier confirmation');
+  harness.dialog().dispatch('cancel');
+  await Promise.resolve();
+  assert.deepEqual(requests().map(value => value.strength), [100, 90]);
+  await harness.feature.stop();
+});
+
+for (const previousStrength of [0, 40, 90]) {
+  test(`cancelling full enhancement retains the previous ${previousStrength}% selection`, async t => {
+    const harness = await featureHarness(t);
+    harness.publish(state({ status: 'ready', strength: previousStrength, desiredStrength: previousStrength,
+      variantKey: previousStrength ? 'a'.repeat(64) : '' }));
+    const slider = harness.node('[data-strength]');
+    slider.value = '0';
+    slider.dispatch('input');
+    slider.dispatch('change');
+    harness.dialog().all().find(node => node.textContent === 'Cancel').dispatch('click');
+    await Promise.resolve();
+    assert.equal(slider.value, String(100 - previousStrength));
+    assert.equal(harness.node('[data-selection]').textContent, `${previousStrength}%`);
+    assert.equal(harness.posts.some(value => value.type === 'select-strength'), false);
+    await harness.feature.stop();
+  });
+}
+
+for (const scenario of ['task', 'session', 'published-choice', 'superseding-selection', 'confirmed-then-superseded',
+  'confirmed-then-task', 'confirmed-then-disable', 'confirmed-then-setting-disabled',
+  'navigation', 'navigation-before-await', 'disable', 'stop', 'pagehide', 'teardown']) {
+  test(`pending full-enhancement confirmation cannot survive ${scenario}`, async t => {
+    const harness = await featureHarness(t);
+    const slider = harness.node('[data-strength]');
+    const requests = () => harness.posts.filter(value => value.type === 'select-strength');
+    const select = original => { slider.value = String(original); slider.dispatch('input'); slider.dispatch('change'); };
+    const publishSelection = (overrides, sessionId) => {
+      const next = state({ variantKey: 'b'.repeat(64), ...overrides });
+      assert.equal(streamModule.isAudioEnhancementState(next), true, 'Replacement selections must satisfy the native state protocol');
+      harness.publish(next, sessionId);
+    };
+    harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+    select(0);
+    const dialog = harness.dialog();
+    const confirm = dialog.all().find(node => node.textContent === 'Use 100% enhanced');
+    if (scenario.startsWith('confirmed-then-')) confirm.dispatch('click');
+    if (scenario === 'task' || scenario === 'confirmed-then-task') publishSelection({ revision: 2, taskId: 'task-2', status: 'ready', strength: 90 });
+    if (scenario === 'session') publishSelection({ revision: 2, status: 'ready', strength: 90 }, 'session-2');
+    if (scenario === 'published-choice') publishSelection({ revision: 2, status: 'ready', strength: 70, desiredStrength: 70 });
+    if (scenario === 'superseding-selection' || scenario === 'confirmed-then-superseded') select(30);
+    if (scenario === 'navigation' || scenario === 'navigation-before-await') {
+      harness.window.location.href = 'https://babel.test/transcription?reviewActionId=task-2';
+      if (scenario === 'navigation') harness.dispatchWindow('popstate');
+    }
+    if (scenario === 'disable' || scenario === 'confirmed-then-disable') await harness.feature.deactivate();
+    if (scenario === 'confirmed-then-setting-disabled') harness.context.helper.settings.features.audioEnhancement = false;
+    if (scenario === 'stop') await harness.feature.stop();
+    if (scenario === 'pagehide') harness.dispatchWindow('pagehide');
+    if (scenario === 'teardown') harness.dispatchWindow('babel-helper-bridge-teardown');
+    if (scenario !== 'navigation-before-await') assert.equal(harness.dialog(), undefined, 'Invalidation removes the warning immediately');
+    confirm.dispatch('click');
+    await Promise.resolve();
+    assert.equal(requests().some(value => value.strength === 100), false, 'A stale confirmation must never select full enhancement');
+    assert.deepEqual(requests().map(value => value.strength),
+      scenario === 'superseding-selection' || scenario === 'confirmed-then-superseded' ? [70] : []);
+    await harness.feature.stop();
+    assert.equal(harness.dialog(), undefined);
+    assert.equal(harness.timer.timers.size, 0);
+  });
+}
 
 function tinyWav() {
   const bytes = new ArrayBuffer(48);

@@ -228,7 +228,7 @@ export function initAudioEnhancementBridge(): void {
   revision = Math.max(revision, readAudioEnhancementState()?.revision || 0);
   let state: AudioEnhancementState = {
     version: AUDIO_ENHANCEMENT_PROTOCOL_VERSION, taskId: '', status: 'idle',
-    strength: 0, desiredStrength: 100, revision, variantKey: ''
+    strength: 0, desiredStrength: 90, revision, variantKey: ''
   };
   const nativeFetch = window.fetch;
   let fetchInstalled = false;
@@ -646,7 +646,7 @@ export function initAudioEnhancementBridge(): void {
     if (disposed || !enabled) return;
     const snapshot = nativeSnapshot();
     if (!snapshot) {
-      if (session) { release(session); session = null; publish({ taskId: '', strength: 0, desiredStrength: 100, status: 'idle', variantKey: '', message: '' }); }
+      if (session) { release(session); session = null; publish({ taskId: '', strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', message: '' }); }
       return;
     }
     if (!session || session.key !== snapshot.key) {
@@ -654,7 +654,7 @@ export function initAudioEnhancementBridge(): void {
       session = { id: crypto.randomUUID(), key: snapshot.key, taskId: snapshot.taskId,
         tracks: [], capturing: false, captureAbort: new AbortController(), model: '', variantKey: '', sourceNotice: '',
         patches: new Map(), regionAddPatches: new Map(), switching: false };
-      publish({ taskId: session.taskId, strength: 0, desiredStrength: 100, status: 'idle', variantKey: '', model: '', message: 'Waiting for both source tracks…' });
+      publish({ taskId: session.taskId, strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', model: '', message: 'Waiting for both source tracks…' });
     }
     const target = session;
     if (!target.tracks.length && state.status !== 'error') { void capture(target, snapshot); return; }
@@ -861,5 +861,5 @@ export function initAudioEnhancementBridge(): void {
   window.addEventListener('babel-helper-bridge-teardown', teardown);
 }
 
-// A revoked, removed injection must not leave a late MAIN-world bridge behind.
+// A cancelled, removed injection must not leave a late MAIN-world bridge behind.
 if (document.currentScript?.isConnected) initAudioEnhancementBridge();

@@ -181,7 +181,7 @@ export async function ensureSessionRuntime(ctx: FeatureContext, reason = 'sessio
   await registerSessionServices(ctx);
 
   if (!runtime.features.length && !runtime.started) {
-    runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features, ctx.helper.reviewGraderAccess);
+    runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features);
   }
 
   if (runtime.started) {
@@ -213,8 +213,7 @@ function enqueueTransition<T>(runtime: SessionRuntime, operation: () => Promise<
 }
 
 async function reconcileAudioEnhancement(ctx: FeatureContext, runtime: SessionRuntime, reason: string) {
-  const permitted = ctx.helper.reviewGraderAccess?.isAvailable() === true &&
-    Boolean(ctx.helper.settings.features.audioEnhancement);
+  const permitted = Boolean(ctx.helper.settings.features.audioEnhancement);
   const existing = runtime.features.find(feature => feature.id === 'audio-enhancement');
   if (!permitted && existing) {
     runtime.features = runtime.features.filter(feature => feature !== existing);
@@ -224,9 +223,7 @@ async function reconcileAudioEnhancement(ctx: FeatureContext, runtime: SessionRu
       catch (error) { reportRuntimeError(ctx, `feature.${hook}`, existing.id, error); }
     }
   } else if (permitted && !existing && runtime.started) {
-    const [feature] = getRegisteredFeatureModules(
-      { audioEnhancement: true }, ctx.helper.reviewGraderAccess
-    );
+    const [feature] = getRegisteredFeatureModules({ audioEnhancement: true });
     if (!feature) return;
     runtime.features.unshift(feature);
     for (const hook of ['load', 'register', 'start'] as const) {
@@ -237,7 +234,7 @@ async function reconcileAudioEnhancement(ctx: FeatureContext, runtime: SessionRu
       runtime.activeFeatures.add(feature.id);
     }
   } else if (permitted && existing && runtime.sessionActive) {
-    // A disconnect/regrant can coalesce before this serialized transition runs.
+    // Reapplying enabled settings keeps the existing feature instance.
     await invokeFeatureHook(ctx, existing, 'activate', reason);
     runtime.activeFeatures.add(existing.id);
   }

@@ -1856,29 +1856,29 @@ async function waitForWrites(storage, count) {
   assert.equal(storage.writes.length, count);
 }
 
-test('kernel masks enhancement without Grader while appearance edits retain the saved preference', async () => {
+test('kernel enables enhancement without other extensions and appearance edits retain its saved preference', async () => {
   const storage = installFakeStorage({
     storedSettings: { features: { audioEnhancement: true, minimap: false }, highlightedWords: ['retained'] }
   });
   try {
     const { kernel, panel } = await startKernelHarness(storage);
-    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
-    assert.equal(kernel.helper.isFeatureEnabled('audioEnhancement'), false);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, true);
+    assert.equal(kernel.helper.isFeatureEnabled('audioEnhancement'), true);
     await kernel.start();
-    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, true);
     assert.equal(kernel.helper.settings.features.minimap, false);
     assert.deepEqual(kernel.helper.settings.highlightedWords, ['retained']);
     assert.equal(storage.store.settings.features.audioEnhancement, true);
-    assert.equal(storage.writes.length, 0, 'An absent grant must not write settings');
+    assert.equal(storage.writes.length, 0, 'Initialization must not rewrite settings');
     const draft = { ...panel.getSettings(), enabled: true };
     panel.onPreview(draft);
-    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, true);
     const commit = panel.onCommit(draft);
     await waitForWrites(storage, 1);
     assert.equal(storage.writes[0].payload.settings.features.audioEnhancement, true);
     storage.settle(0);
     await commit;
-    assert.equal(kernel.helper.settings.features.audioEnhancement, false);
+    assert.equal(kernel.helper.settings.features.audioEnhancement, true);
     await kernel.stop();
   } finally {
     releaseKernelHarness();

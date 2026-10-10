@@ -12,7 +12,7 @@ import {
   normalizeWebsiteAppearanceSettings,
   saveExtensionSettings
 } from './settings';
-import { createReviewGraderAccess, isEditable, isVisible, dispatchClick, sleep } from '@nominy/babel-babel-runtime';
+import { isEditable, isVisible, dispatchClick, sleep } from '@nominy/babel-babel-runtime';
 import { normalizeText, setEditableValue, waitFor } from '../hooks/dom';
 import { registerLifecycle } from './lifecycle';
 import type { FeatureContext } from './types';
@@ -104,18 +104,13 @@ function getChromeApi(): ChromeRuntimeHost | null {
 
 export function createHelperKernel() {
   const state = createState();
-  const reviewGraderAccess = createReviewGraderAccess();
   let settings = cloneSettings(DEFAULT_EXTENSION_SETTINGS);
-  const effectiveSettings = () => ({
-    ...settings,
-    features: { ...settings.features, audioEnhancement: settings.features.audioEnhancement && reviewGraderAccess.isAvailable() }
-  });
-  const config = createConfig(effectiveSettings().features, settings.shortcuts);
+  const config = createConfig(settings.features, settings.shortcuts);
   const analytics = createAnalyticsStore();
   const perf = createPerfRuntime();
   let sessionRuntimeModule: LoadedSessionRuntimeModule | null = null;
   let sessionRuntimeLoadPromise: Promise<LoadedSessionRuntimeModule> | null = null;
-  const modController = createModController({ initialSettings: effectiveSettings() });
+  const modController = createModController({ initialSettings: settings });
   const kernelScope = createScope(`builtin:kernel:${modController.generation}`);
   const websiteAppearanceController = createWebsiteAppearanceController();
   let appearanceDisposed = false;
@@ -130,8 +125,7 @@ export function createHelperKernel() {
 
   const helper: any = {
     config,
-    settings: effectiveSettings(),
-    reviewGraderAccess,
+    settings,
     state,
     analytics,
     perf,
@@ -191,7 +185,7 @@ export function createHelperKernel() {
       ...settings,
       websiteAppearance: normalizedAppearance
     };
-    helper.settings = effectiveSettings();
+    helper.settings = settings;
     websiteAppearanceController.apply(normalizedAppearance);
   }
 
@@ -286,7 +280,7 @@ export function createHelperKernel() {
 
   function applySettings(nextSettings: ExtensionSettings, reason?: string) {
     settings = cloneSettings(nextSettings);
-    helper.settings = effectiveSettings();
+    helper.settings = settings;
     websiteAppearanceController.apply(settings.websiteAppearance);
     // Every applySettings call comes from stored or external settings, never from a
     // panel preview, so an open editor must adopt what the storage layer just handed us.
@@ -348,18 +342,6 @@ export function createHelperKernel() {
       void sessionRuntimeModule.reconcileSessionFeatureAccess(featureContext, reason)
         .catch(error => logger.warn('[babel-helper] feature access reconciliation failed', error));
     }
-  }
-
-  function bindReviewGraderAccess() {
-    const unsubscribe = reviewGraderAccess.subscribe(() => {
-      if (kernelScope.disposed) return;
-      helper.settings = effectiveSettings();
-      Object.assign(helper.config, createConfig(helper.settings.features, settings.shortcuts));
-      modController.updateSettings(helper.settings, 'feature-access-change');
-      reconcileFeatureAccess('feature-access-change');
-    });
-    kernelScope.defer(unsubscribe);
-    kernelScope.defer(() => reviewGraderAccess.dispose());
   }
 
   function bindSettingsForwarding() {
@@ -480,7 +462,6 @@ export function createHelperKernel() {
     modController.start('kernel-start');
     startPromise = (async () => {
       try {
-        bindReviewGraderAccess();
         kernelScope.defer(registerCustomLinterSettingsForwarding({ helper }));
         const loadedSettings = await loadExtensionSettings();
         storedSettingsLoaded = loadedSettings.loaded;
@@ -517,7 +498,6 @@ export function createHelperKernel() {
   }
 
   function stopKernel(reason = 'kernel-stop') {
-    reviewGraderAccess.dispose();
     return modController.stop(reason, async () => {
       if (sessionRuntimeModule && typeof sessionRuntimeModule.stopSessionRuntime === 'function') {
         await sessionRuntimeModule.stopSessionRuntime(featureContext, reason);

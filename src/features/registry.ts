@@ -1,4 +1,3 @@
-import type { ReviewGraderAccess } from '@nominy/babel-babel-runtime';
 import type { FeatureModule } from '../core/types';
 import { formatShortcut, type ShortcutSettings } from '../core/shortcuts';
 import { createAudioEnhancementFeature } from './audio-enhancement-feature';
@@ -330,13 +329,11 @@ export const FEATURE_REGISTRATIONS = [
 ] as const;
 
 export function getRegisteredFeatureModules(
-  featureSettings: FeatureSettingsLike,
-  reviewGraderAccess?: Pick<ReviewGraderAccess, 'isAvailable'>
+  featureSettings: FeatureSettingsLike
 ): FeatureModule[] {
   return (FEATURE_REGISTRATIONS as readonly FeatureRegistration[])
     .filter((registration) => registration.createModule)
     .filter((registration) => Boolean(featureSettings[registration.setting.key]))
-    .filter((registration) => registration.id !== 'audio-enhancement' || reviewGraderAccess?.isAvailable() === true)
     .slice()
     .sort((left, right) => (left.moduleOrder || 0) - (right.moduleOrder || 0))
     .map((registration) => registration.createModule?.())
