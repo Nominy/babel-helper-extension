@@ -44,7 +44,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'audioEnhancement',
       defaultEnabled: true,
       label: 'Automatic Audio Enhancement',
-      description: 'Enhance both tracks with Gold Drafting ZipEnhancer. Uses your GPU when available; otherwise uploads Original audio to a remote swarm GPU. Disable to prevent enhancement uploads.'
+      description: 'Enhance both tracks with Gold Drafting ZipEnhancer. Choose Automatic or Remote inference in Gold settings. Remote processing uploads Original audio to official GPU services first, then the swarm if needed. Disable to prevent enhancement uploads.'
     },
     moduleOrder: 5,
     createModule: createAudioEnhancementFeature

@@ -255,8 +255,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
       let stage = state?.status === 'switching' || state?.status === 'processing' && Boolean(state.model)
         ? state?.desiredStrength === 0 ? 'Restoring original audio' : `Loading ${selectionLabel(state?.desiredStrength ?? 90).toLowerCase()} audio into native players`
         : progress ? {
-            queued: progress.backend === 'swarm' ? 'Waiting for a compatible swarm GPU' : 'Queued for local GPU',
-            uploading: 'Uploading Original audio to the swarm',
+            queued: progress.backend === 'swarm' ? 'Waiting for remote inference' : 'Queued for local GPU',
+            uploading: 'Uploading Original audio for remote inference',
             'cache-lookup': 'Checking local pair cache',
             'cache-hit': 'Reusing locally cached audio',
             'loading-model': 'Loading ZipEnhancer model',
@@ -268,7 +268,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
       const detail = progress ? ` · Track ${progress.trackIndex + 1}/${progress.trackCount}` : '';
       const counts = progress && countsKnown
         ? ` · ${progress.completedChunks}/${progress.totalChunks} inference windows · ${((fraction ?? 0) * 100).toFixed(1)}% inference` : '';
-      const engine = progress?.backend === 'swarm' ? ' · Swarm GPU (remote)'
+      const engine = progress?.backend === 'swarm' ? ' · Remote GPU'
         : progress?.backend === 'webgpu' ? ' · WebGPU (local)' : '';
       progressLabel.textContent = `${stage}${engine}${detail}${counts}${progress?.backendReason ? ` · ${progress.backendReason}` : ''}`;
       // A completed inference count is not a committed native audio selection.
@@ -413,7 +413,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
           }
           post('progress', {
             sessionId, taskId, progress: event.progress,
-            message: event.message || (event.progress?.backend === 'swarm' ? 'Enhancing both tracks on a remote swarm GPU…' : 'Preparing ZipEnhancer…')
+            message: event.message || (event.progress?.backend === 'swarm' ? 'Enhancing both tracks on a remote GPU…' : 'Preparing ZipEnhancer…')
           });
         }
       });
