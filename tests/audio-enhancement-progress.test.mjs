@@ -206,6 +206,11 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
   const posts = [];
   const toolbar = new TestElement(harness.document);
   const scripts = [];
+  const tabStorage = new Map();
+  harness.window.sessionStorage = {
+    getItem: key => tabStorage.get(key) ?? null,
+    setItem: (key, value) => tabStorage.set(key, String(value))
+  };
   let panel;
   let minimapBinds = 0;
   let observerDisconnects = 0;
@@ -233,7 +238,7 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
     if (data.type === 'dispose') queueMicrotask(() => deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: data.requestId }));
   };
   installGlobals(t, { MutationObserver: class { observe() {} disconnect() { observerDisconnects += 1; } } });
-  const feature = featureModule.createAudioEnhancementFeature();
+  let feature = featureModule.createAudioEnhancementFeature();
   const context = { helper: { settings: { features: { minimap: true, audioEnhancement: true } } },
     services: { minimap: { bindMinimap: () => { minimapBinds += 1; } } } };
   feature.start(context);
@@ -241,7 +246,14 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
   if (!deferredInjection) await activation;
   else await Promise.resolve();
   return {
-    ...harness, feature, posts, listeners, scripts, activation, context,
+    ...harness, posts, listeners, scripts, activation, context,
+    get feature() { return feature; },
+    async restartFeature() {
+      await feature.stop();
+      feature = featureModule.createAudioEnhancementFeature();
+      feature.start(context);
+      await feature.activate();
+    },
     get panel() { return panel; },
     dialog: () => harness.document.body.children.find(child => child.tagName === 'dialog'),
     dispatchWindow: (type, details = {}) => {
@@ -524,7 +536,7 @@ test('pointer cancellation, task or session replacement and disable cannot leak 
   await harness.feature.stop();
 });
 
-test('100% warning preserves the previous selection until explicit confirmation and prompts on each new transition', async t => {
+test('full enhancement remembers confirmed approval per task across selections and feature recreation, not cancellation', async t => {
   const harness = await featureHarness(t);
   const slider = harness.node('[data-strength]');
   const requests = () => harness.posts.filter(value => value.type === 'select-strength');
@@ -534,7 +546,6 @@ test('100% warning preserves the previous selection until explicit confirmation 
   const first = harness.dialog();
   assert.ok(first?.open);
   assert.equal(harness.document.activeElement.textContent, 'Cancel');
-  assert.match(first.all().map(node => node.textContent).join(' '), /suppress or remove speech.*inaudible.*90% enhanced \/ 10% Original/);
   assert.equal(slider.value, '10');
   assert.equal(harness.node('[data-selection]').textContent, '90%');
   harness.timer.advance(1000);
@@ -561,10 +572,54 @@ test('100% warning preserves the previous selection until explicit confirmation 
   assert.deepEqual(requests().map(value => value.strength), [100, 90]);
   harness.publish(state({ revision: 4, status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
   select(0);
-  assert.ok(harness.dialog(), 'Moving back to 100% must warn again after an earlier confirmation');
+  assert.equal(harness.dialog(), undefined, 'The approved task must not warn again');
+  assert.deepEqual(requests().map(value => value.strength), [100, 90, 100]);
+
+  harness.publish(state({ revision: 5, taskId: 'task-2', status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }), 'session-2');
+  select(0);
+  assert.ok(harness.dialog()?.open, 'A different task needs its own approval');
   harness.dialog().dispatch('cancel');
   await Promise.resolve();
-  assert.deepEqual(requests().map(value => value.strength), [100, 90]);
+  harness.publish(state({ revision: 6, status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }), 'session-3');
+  select(0);
+  assert.equal(harness.dialog(), undefined, 'Returning to an approved task retains its approval');
+  assert.equal(requests().at(-1).taskId, 'task-1');
+
+  await harness.restartFeature();
+  harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }), 'session-4');
+  const reloadedSlider = harness.node('[data-strength]');
+  reloadedSlider.value = '0';
+  reloadedSlider.dispatch('input');
+  reloadedSlider.dispatch('change');
+  assert.equal(harness.dialog(), undefined, 'A new feature instance reads the task approval from tab storage');
+  assert.equal(requests().at(-1).sessionId, 'session-4');
+  assert.equal(requests().at(-1).strength, 100);
+  await harness.feature.stop();
+});
+
+test('blocked tab storage retains current-page approval but never silently approves after recreation', async t => {
+  const harness = await featureHarness(t);
+  Object.defineProperty(harness.window, 'sessionStorage', { get() { throw new Error('Storage blocked'); } });
+  const select = original => {
+    const slider = harness.node('[data-strength]');
+    slider.value = String(original);
+    slider.dispatch('input');
+    slider.dispatch('change');
+  };
+  harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+  select(0);
+  harness.dialog().all().find(node => node.textContent === 'Use 100% enhanced').dispatch('click');
+  await Promise.resolve();
+  harness.publish(state({ revision: 2, status: 'ready', strength: 100, desiredStrength: 100, variantKey: 'a'.repeat(64) }));
+  select(10);
+  harness.publish(state({ revision: 3, status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }));
+  select(0);
+  assert.equal(harness.dialog(), undefined);
+  assert.deepEqual(harness.posts.filter(value => value.type === 'select-strength').map(value => value.strength), [100, 90, 100]);
+  await harness.restartFeature();
+  harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }), 'session-2');
+  select(0);
+  assert.ok(harness.dialog()?.open, 'Unavailable storage cannot manufacture approval');
   await harness.feature.stop();
 });
 
@@ -626,6 +681,15 @@ for (const scenario of ['task', 'session', 'published-choice', 'superseding-sele
     await harness.feature.stop();
     assert.equal(harness.dialog(), undefined);
     assert.equal(harness.timer.timers.size, 0);
+    harness.context.helper.settings.features.audioEnhancement = true;
+    await harness.restartFeature();
+    harness.publish(state({ status: 'ready', strength: 90, variantKey: 'a'.repeat(64) }), 'fresh-session');
+    const freshSlider = harness.node('[data-strength]');
+    freshSlider.value = '0';
+    freshSlider.dispatch('input');
+    freshSlider.dispatch('change');
+    assert.ok(harness.dialog()?.open, 'A stale confirmation must not persist approval for its old task');
+    await harness.feature.stop();
   });
 }
 

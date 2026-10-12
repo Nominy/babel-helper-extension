@@ -12,6 +12,7 @@ const STRENGTH_KEYS: Record<string, true> = {
   ArrowLeft: true, ArrowRight: true, ArrowUp: true, ArrowDown: true, Home: true, End: true, PageUp: true, PageDown: true
 };
 const STRENGTH_DEBOUNCE_MS = 200;
+const FULL_STRENGTH_APPROVAL_PREFIX = 'babel-helper:audio-enhancement:full-strength-approved:';
 
 interface EnhancementPageMessage {
   source?: unknown;
@@ -54,6 +55,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
   let sliderTask = '';
   let sliderInteraction: 'pointer' | 'keyboard' | 'direct' | null = null;
   let strengthConfirmation: { controller: AbortController; href: string } | null = null;
+  const fullStrengthApprovals = new Set<string>();
   const disabledRequests = new Map<string, () => void>();
 
   function post(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): void {
@@ -149,6 +151,28 @@ export function createAudioEnhancementFeature(): FeatureModule {
     if (label) label.title = selectionLabel(state?.strength ?? 0);
   }
 
+  function hasFullStrengthApproval(taskId: string): boolean {
+    if (fullStrengthApprovals.has(taskId)) return true;
+    try {
+      if (window.sessionStorage.getItem(FULL_STRENGTH_APPROVAL_PREFIX + taskId) === '1') {
+        fullStrengthApprovals.add(taskId);
+        return true;
+      }
+    } catch {
+      // Blocked site storage must not bypass the warning.
+    }
+    return false;
+  }
+
+  function rememberFullStrengthApproval(taskId: string): void {
+    fullStrengthApprovals.add(taskId);
+    try {
+      window.sessionStorage.setItem(FULL_STRENGTH_APPROVAL_PREFIX + taskId, '1');
+    } catch {
+      // The current page still remembers approval when tab storage is unavailable.
+    }
+  }
+
   async function commitStrengthSelection(): Promise<void> {
     clearStrengthTimeout();
     if (sliderPointerId !== null || heldSliderKeys.size) return;
@@ -160,7 +184,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const desiredStrength = state?.desiredStrength;
     cancelStrengthSelection();
     if (!isAudioEnhancementStrength(strength) || strength === desiredStrength) return;
-    if (strength === 100) {
+    if (strength === 100 && !hasFullStrengthApproval(taskId)) {
       // A pending warning is not a selection: keep the previous thumb and native audio.
       render();
       const pending = { controller: new AbortController(), href: window.location.href };
@@ -177,6 +201,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
             !canSelectStrength() || lifecycleRevision !== activation ||
             currentSession !== sessionId || currentTask !== taskId ||
             window.location.href !== pending.href || state?.desiredStrength !== desiredStrength) return;
+        rememberFullStrengthApproval(taskId);
       } finally {
         if (strengthConfirmation === pending) strengthConfirmation = null;
       }
