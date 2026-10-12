@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { build } from 'esbuild';
-import { readFileSync } from 'node:fs';
+import { build, transform } from 'esbuild';
+import { join } from 'node:path';
+import { defaultSnapshotDir } from '@nominy/babel-extension-e2e/recreation-snapshot';
 
-const recoveredEditor = readFileSync(new URL('../../tools/babel-editor-rebuild/app/src/recovered/source/babel-owned/73681.js', import.meta.url), 'utf8');
+const { recoveredModuleSources, recoveredEditorModuleId } = await loadEntry(
+  join(defaultSnapshotDir, 'app/src/recovered/generated/moduleSources.ts')
+);
+const recoveredEditor = (await transform(`(${recoveredModuleSources[recoveredEditorModuleId]})`, { loader: 'js', minify: false })).code;
 
 function nativeCallback(name, scope) {
   const marker = `${name} = (0, a.useCallback)(`;

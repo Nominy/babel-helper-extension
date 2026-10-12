@@ -95,6 +95,8 @@ npm run test:e2e:native
 
 The browser command requires the [shared browser setup](../shared/babel-extension-platform/README.md#browser-checks).
 
+Native split/switch regression tests load the captured editor factory from the shared E2E package's published recreation snapshot. They do not require the private sibling `tools/babel-editor-rebuild` checkout.
+
 ## Package and publish
 
 ```sh
