@@ -108,7 +108,7 @@ Output: `.artifacts/babel-helper-extension-<version>.zip`. `BABEL_EXTENSION_ZIP_
 
 Commit the release version in `manifest.json`, `package.json`, and `package-lock.json`; `npm run version:patch` bumps them without building. CI does not bump versions. The version must exceed the store's published and submitted versions.
 
-Push to `main` creates a GitHub prerelease `v<version>`. To publish, manually run `.github/workflows/deploy-babel-helper-extension.yml` on that commit with `version=<version>` and `confirm=PUBLISH <version>`. The tag must still be a prerelease pointing at the selected commit. `publish_type` defaults to `STAGED_PUBLISH`; `replace_pending_submission` cancels a pending review. A successful publish promotes the prerelease.
+Push to `main` creates a GitHub prerelease `v<version>`. To publish, manually run `.github/workflows/deploy-babel-helper-extension.yml` on that commit with `version=<version>` and `confirm=PUBLISH <version>`. The tag must still be a prerelease pointing at the selected commit. `publish_type` defaults to `DEFAULT_PUBLISH`: Google still reviews the update, then publishes it automatically on approval. Select `STAGED_PUBLISH` only when manual publication is intentional. `replace_pending_submission` cancels a pending review and remains off by default. A successful submission promotes the GitHub prerelease; it does not mean the Store update is already live.
 
 Required Actions secrets: `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_PUBLISHER_ID`, `CWS_EXTENSION_ID`. Optional short-lived fallback: `CWS_ACCESS_TOKEN`.
 
