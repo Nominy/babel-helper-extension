@@ -33,6 +33,7 @@ class ElementFixture {
     this.textContent = '';
   }
   get parentElement() { return this.parentNode; }
+  get ownerDocument() { return globalThis.document; }
   get isConnected() { return this.root === true || this.parentNode?.isConnected === true; }
   appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; return child; }
@@ -40,34 +41,63 @@ class ElementFixture {
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
-  closest(tagName) { return this.tagName === tagName ? this : this.parentNode?.closest(tagName) ?? null; }
+  closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector) {
     for (const child of this.children) {
-      if (selector === child.tagName) return child;
+      if (child.matches?.(selector)) return child;
       const found = child.querySelector?.(selector);
       if (found) return found;
     }
     return null;
   }
-  matches(selector) { return selector === this.tagName; }
+  matches(selector) {
+    return selector === this.tagName ||
+      (selector === 'section[data-annotation-id]' && this.tagName === 'section' && Boolean(this.dataset.annotationId)) ||
+      (selector.includes('[data-slate-editor') && this.getAttribute('data-slate-editor') === 'true');
+  }
   getBoundingClientRect() {
     const preceding = this.tagName === 'span' ? this.parentNode.children.slice(0, this.parentNode.children.indexOf(this)) : [];
     const left = 10 + preceding.reduce((length, child) => length + (child.textContent?.length ?? 0), 0) * 5;
     return { top: 10, bottom: 34, left, right: left + 300, height: 24, width: 300 };
   }
 }
-class TextareaFixture extends ElementFixture {
-  constructor(value) { super('textarea'); this.value = value; this.selectionStart = 0; this.selectionEnd = 0; }
+class EditorControlFixture {
+  constructor(row, value) {
+    this.row = row;
+    this.element = row.appendChild(new ElementFixture('div'));
+    this.element.setAttribute('data-slate-editor', 'true');
+    this.value = value;
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
+  }
+  get isConnected() { return this.row.isConnected; }
+  getCaretRect(offset) { return { top: 10, left: 10 + offset * 5, height: 24 }; }
 }
 class RowFixture extends ElementFixture {
   constructor(annotationId, lane) {
-    super('tr');
-    this.identity = { annotationId, processedRecordingId: `stable-${lane}`, speakerKey: `stable-${lane}`, trackLabel: `Speaker ${lane}`, startText: '0:00', endText: '0:20' };
-    for (const text of ['', `Speaker ${lane}`, '0:00', '0:20']) {
-      const cell = this.appendChild(new ElementFixture('td'));
-      cell.textContent = text;
+    super('section');
+    this.identity = { annotationId, processedRecordingId: `stable-${lane}`, speakerKey: `stable-${lane}`, trackLabel: `Speaker ${lane}`, startText: '0:00', endText: '0:20', startSeconds: 0, endSeconds: 20 };
+    this.dataset.annotationId = annotationId;
+    this.editor = new EditorControlFixture(this, 'alpha beta gamma delta');
+  }
+  dispatchEvent(event) {
+    if (event.type !== 'babel-helper:editor-control') return true;
+    const request = JSON.parse(event.detail);
+    if (!['read', 'identity', 'offsetAtPoint', 'select'].includes(request.operation)) return false;
+    if (request.operation === 'select') {
+      this.editor.selectionStart = request.start;
+      this.editor.selectionEnd = request.end;
     }
-    this.textarea = this.appendChild(new TextareaFixture('alpha beta gamma delta'));
+    const offset = request.operation === 'offsetAtPoint'
+      ? Math.max(0, Math.min(this.editor.value.length, Math.floor((request.x - 10) / 5)))
+      : this.editor.selectionStart;
+    this.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+      ...this.identity,
+      id: request.id, ok: true, annotationId: this.identity.annotationId,
+      reviewActionId: document.documentElement.getAttribute('data-babel-review-action-id'),
+      text: this.editor.value, start: offset, end: offset, direction: 'none', readOnly: false
+    }));
+    return true;
   }
 }
 
@@ -90,6 +120,7 @@ function createHarness(t) {
   const head = root.appendChild(new ElementFixture('head'));
   const document = {
     documentElement: root, body, head, hidden: false, activeElement: body,
+    get location() { return window.location; },
     createElement: (tagName) => new ElementFixture(tagName),
     createTextNode: (textContent) => ({ textContent, parentNode: null }),
     querySelector: (selector) => selector.startsWith('style[') ? head.children.find((child) => child.tagName === 'style') ?? null : body.querySelector(selector),
@@ -112,8 +143,10 @@ function createHarness(t) {
   install('window', window);
   install('location', window.location);
   install('HTMLElement', ElementFixture);
-  install('HTMLTextAreaElement', TextareaFixture);
-  install('HTMLTableRowElement', RowFixture);
+  install('Element', ElementFixture);
+  install('CustomEvent', class extends Event {
+    constructor(type, options) { super(type); this.detail = options.detail; }
+  });
   install('getComputedStyle', window.getComputedStyle);
   install('setInterval', (callback) => { const id = ++nextTimerId; intervals.set(id, callback); return id; });
   install('clearInterval', (id) => intervals.delete(id));
@@ -126,7 +159,7 @@ function createHarness(t) {
   let playbackCalls = 0;
   const harness = { playback: { ok: true, paused: false, currentTime: 1 }, bridge: async () => ({ ok: true }) };
   const helper = {
-    state: createState(), config: { features: { proportionalCursorRestore: true }, rowTextareaSelector: 'textarea' },
+    state: createState(), config: { features: { proportionalCursorRestore: true }, rowEditorSelector: '[data-slate-editor="true"]' },
     settings: { ghostCursor: { gradientEnabled: false } },
     runtime: { isSessionInteractive: () => window.location.pathname.startsWith('/transcription/') },
     isFeatureEnabled: () => true,
@@ -136,16 +169,16 @@ function createHarness(t) {
     normalizeText: (element) => element.textContent,
     rowMatchesIdentity: (row, identity) => row.identity.annotationId === identity.annotationId,
     findRowByIdentity: (identity) => rows.find((row) => row.isConnected && row.identity.annotationId === identity.annotationId) ?? null,
-    getRowTextarea: (row) => row?.textarea ?? null,
-    getActiveRowTextarea: () => harness.focusedTextarea ?? null,
+    getRowEditor: (row) => row?.editor ?? null,
+    getActiveRowEditor: () => harness.focusedEditor ?? null,
     setCurrentRow(row) { this.state.currentRow = row; this.state.currentRowIdentity = row?.identity ?? null; },
     getCurrentRow() { return this.findRowByIdentity(this.state.currentRowIdentity ?? {}) ?? null; },
     getPlaybackState() { playbackCalls += 1; return pendingPlayback.shift()?.promise ?? Promise.resolve({ ...harness.playback }); },
     focusRow(row, options = {}) {
-      harness.focusedTextarea = row.textarea;
-      document.activeElement = row.textarea;
-      row.textarea.selectionStart = options.selectionStart ?? 0;
-      row.textarea.selectionEnd = options.selectionEnd ?? row.textarea.selectionStart;
+      harness.focusedEditor = row.editor;
+      document.activeElement = row.editor.element;
+      row.editor.selectionStart = options.selectionStart ?? 0;
+      row.editor.selectionEnd = options.selectionEnd ?? row.editor.selectionStart;
       helper.setCurrentRow(row);
       return true;
     }
@@ -267,8 +300,8 @@ test('returning to Original restores its word pins and Escape caret without anot
   assert.equal(h.helper.state.ghostCursorElement, element);
   assert.equal(h.helper.state.ghostCursorOffset, 16, 'the cursor reaches the timed end of gamma, not the proportional character');
   assert.equal(h.helper.toggleEditorFocus(), true);
-  assert.equal(h.rows[0].textarea.selectionStart, 16);
-  assert.equal(h.rows[0].textarea.selectionEnd, 16);
+  assert.equal(h.rows[0].editor.selectionStart, 16);
+  assert.equal(h.rows[0].editor.selectionEnd, 16);
 });
 
 test('Enhanced-only word pins remain timed on its verified Original clock without becoming Original ASR results', async (t) => {
@@ -296,7 +329,7 @@ test('Enhanced-only word pins remain timed on its verified Original clock withou
   h.publish({ status: 'ready', strength: 0, desiredStrength: 0, variantKey: '' });
   await h.tick();
   assert.equal(h.helper.toggleEditorFocus(), true);
-  assert.equal(h.rows[0].textarea.selectionStart, 16);
+  assert.equal(h.rows[0].editor.selectionStart, 16);
   h.publish({ pairedVariantKey: 'c'.repeat(64) });
   assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), null, 'another paired graph cannot borrow the old pins');
   h.publish({ pairedVariantKey: undefined });
@@ -343,7 +376,6 @@ function registerSegmentationWithoutAudio(h) {
     site: {
       clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
       discoverWaveformContainers: () => [],
-      getFallbackTranscriptRows: () => [],
       getRowTimeLabels: row => ({ startText: row.identity.startText, endText: row.identity.endText })
     },
     progress: { updateLongTaskProgress() {}, dismissLongTaskProgress() {} },
@@ -580,14 +612,14 @@ test('Escape teardown preserves valid same-task lane projections for focused Tab
   const target = h.helper.getGhostCursorTarget();
   h.helper.state.blurRestorePending = true;
   assert.equal(h.helper.toggleEditorFocus(), true);
-  assert.equal(h.helper.getActiveRowTextarea(), h.rows[0].textarea);
-  assert.equal(h.rows[0].textarea.selectionStart, target.offset);
+  assert.equal(h.helper.getActiveRowEditor(), h.rows[0].editor);
+  assert.equal(h.rows[0].editor.selectionStart, target.offset);
   assert.equal(h.helper.state.ghostCursorElement, null);
   assert.equal(h.helper.toggleGhostCursorLane(), true);
-  assert.equal(h.helper.getActiveRowTextarea(), h.rows[1].textarea);
+  assert.equal(h.helper.getActiveRowEditor(), h.rows[1].editor);
   assert.equal(h.helper.toggleGhostCursorLane(), true);
-  assert.equal(h.helper.getActiveRowTextarea(), h.rows[0].textarea);
-  assert.equal(h.rows[0].textarea.selectionStart >= target.offset, true);
+  assert.equal(h.helper.getActiveRowEditor(), h.rows[0].editor);
+  assert.equal(h.rows[0].editor.selectionStart >= target.offset, true);
   assert.equal(h.intervals.size, 0);
   assert.equal(h.sourceListeners.size, 0);
 });
@@ -610,4 +642,181 @@ test('native speaker filtering with equal row counts/ranges rebuilds the lane ca
   }
   assert.equal(h.intervals.size, 1);
   assert.equal(h.sourceListeners.size, 1);
+});
+
+test('disabling proportional restore live removes its cursor, listeners and interval', async (t) => {
+  const h = createHarness(t);
+  await h.start();
+  assert.notEqual(h.helper.state.ghostCursorElement, null);
+  h.helper.config.features.proportionalCursorRestore = false;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorElement, null);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.sourceListeners.size, 0);
+  assert.equal(h.helper.getGhostCursorTarget(), null);
+});
+
+test('shortening a native turn clamps a remembered proportional baseline to raw text length', (t) => {
+  const h = createHarness(t);
+  const result = h.api.cursor.computeRestoreOffset('short', { startSeconds: 0, endSeconds: 20 }, 10, 1, 200);
+  assert.deepEqual(result, { offset: 5, clamped: true });
+});
+
+test('an Escape playback query cannot restore focus or resume audio in a replacement task', async (t) => {
+  const h = createHarness(t);
+  const changes = [];
+  h.helper.setPlaybackPaused = async (paused) => { changes.push(paused); };
+  const pending = h.deferPlayback();
+  assert.equal(h.helper.handleEscapeWorkflow(), true);
+  await flush();
+  h.root.setAttribute('data-babel-review-action-id', 'task-replacement');
+  pending.resolve({ ok: true, paused: false, currentTime: 7 });
+  await flush();
+  assert.deepEqual(changes, []);
+  assert.equal(h.focusedEditor, undefined);
+  assert.equal(h.helper.state.ghostCursorElement, null);
+});
+
+test('ghost lane switching uses native track IDs and includes a third custom-labeled speaker', async (t) => {
+  const h = createHarness(t);
+  const third = new RowFixture('annotation-three', 3);
+  h.rows.push(third);
+  h.body.appendChild(third);
+  const labels = ['Interviewer', 'Guest', 'Interpreter'];
+  h.rows.forEach((row, index) => { row.identity.trackLabel = labels[index]; });
+  h.helper.getEditorSnapshot = () => ({
+    tracks: h.rows.map((row) => ({ id: row.identity.processedRecordingId, label: row.identity.trackLabel }))
+  });
+  await h.start();
+  assert.equal(h.helper.toggleGhostCursorLane(), true);
+  assert.equal(h.helper.getGhostCursorTarget()?.row, h.rows[1]);
+  assert.equal(h.helper.toggleGhostCursorLane(), true);
+  assert.equal(h.helper.getGhostCursorTarget()?.row, third);
+});
+
+test('exact word seek owns native mousedown/mouseup and never falls through on missing timing', async t => {
+  const h = createHarness(t);
+  h.helper.bindRowTracking();
+  const sought = [];
+  h.helper.seekPlaybackBySeconds = async seconds => { sought.push(seconds); return true; };
+  let timestamp = null;
+  h.helper.getL0TimestampForRowOffset = (_row, offset) => offset === 6 ? timestamp : null;
+  const gesture = (type, target = h.rows[0].editor.element) => {
+    const event = { type, target, button: 0, altKey: true, clientX: 40, clientY: 15,
+      preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+    for (const listener of h.documentListeners.get(type) || []) listener(event);
+    return event;
+  };
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    assert.equal(gesture(type).stopped, true, `${type} must not reach native approximate playback`);
+    assert.equal(h.focusedEditor, undefined, 'activation must not remount Slate inside the mouse event');
+  }
+  await flush();
+  assert.deepEqual(sought, []);
+  assert.equal(h.focusedEditor, undefined, 'missing timing must not activate a native turn and seek its start');
+  assert.equal(h.playbackCalls(), 0);
+  timestamp = 4.5;
+  for (const type of ['mousedown', 'mouseup', 'click']) gesture(type);
+  await flush();
+  assert.deepEqual(sought, [3.5], 'one exact seek from current time 1');
+  const outside = new ElementFixture('input');
+  h.body.appendChild(outside);
+  assert.equal(gesture('mousedown', outside).stopped, undefined);
+  h.helper.isFeatureEnabled = key => key !== 'rowActions';
+  assert.equal(gesture('mousedown').stopped, undefined, 'disabled restores native gesture handling');
+});
+
+test('word seek rechecks exact timing after asynchronous playback state resolves', async t => {
+  const h = createHarness(t);
+  h.helper.bindRowTracking();
+  const sought = [];
+  h.helper.seekPlaybackBySeconds = async seconds => { sought.push(seconds); return true; };
+  let timestamp = 4.5;
+  h.helper.getL0TimestampForRowOffset = () => timestamp;
+  const pending = h.deferPlayback();
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    for (const listener of h.documentListeners.get(type)) listener({
+      type, target: h.rows[0].editor.element, button: 0, altKey: true, clientX: 40, clientY: 15,
+      preventDefault() {}, stopImmediatePropagation() {}
+    });
+  }
+  await flush();
+  assert.equal(h.playbackCalls(), 1);
+  timestamp = null;
+  pending.resolve({ ok: true, currentTime: 1 });
+  await flush();
+  assert.deepEqual(sought, []);
+});
+
+test('ghost follows authoritative speed samples, rewinds within a row, and stops on pause', async t => {
+  const h = createHarness(t);
+  h.installTiming([{ lane: 'stable-1', tokens: words([0, 6, 12, 18]) }]);
+  await h.start();
+  const initial = h.helper.state.ghostCursorOffset;
+  h.playback = { ok: true, paused: false, currentTime: 14, playbackRate: 2 };
+  await h.tick();
+  const advanced = h.helper.state.ghostCursorOffset;
+  assert.ok(advanced > initial);
+  assert.equal(h.helper.state.ghostCursorElement.style.transition, 'transform 66ms linear');
+  h.playback = { ok: true, paused: false, currentTime: 1, playbackRate: 0.5 };
+  await h.tick();
+  assert.ok(h.helper.state.ghostCursorOffset < advanced, 'rewind retires forward-only projection floor');
+  assert.equal(h.helper.state.ghostCursorElement.style.transition, 'none');
+  h.playback.paused = true;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorElement, null);
+  assert.equal(h.intervals.size, 0);
+});
+
+test('ghost reads caret geometry before writing styles and snaps across row boundaries', async t => {
+  const h = createHarness(t);
+  Object.assign(h.rows[1].identity, {
+    speakerKey: 'stable-1', processedRecordingId: 'stable-1', trackLabel: 'Speaker 1',
+    startSeconds: 20, endSeconds: 40
+  });
+  h.helper.invalidateRowTimeCache();
+  await h.start();
+  const element = h.helper.state.ghostCursorElement;
+  const operations = [];
+  element.style = new Proxy(element.style, {
+    set(target, key, value) { operations.push(`write:${String(key)}`); target[key] = value; return true; }
+  });
+  const original = h.rows[1].editor.getCaretRect;
+  h.rows[1].editor.getCaretRect = function(offset) {
+    operations.push('caret');
+    return original.call(this, offset);
+  };
+  h.playback.currentTime = 21;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorRow, h.rows[1]);
+  assert.equal(h.helper.state.lastBlur.row, h.rows[1]);
+  assert.equal(operations[0], 'caret');
+  assert.equal(element.style.transition, 'none', 'do not animate diagonally from the previous turn');
+});
+
+test('retired row-sync completion cannot clear the replacement session flight', async t => {
+  const h = createHarness(t);
+  const old = Promise.withResolvers();
+  const next = Promise.withResolvers();
+  let calls = 0;
+  h.helper.syncCurrentRowToPlayback = () => ++calls === 1 ? old.promise : next.promise;
+  const runTimer = () => {
+    const [id, callback] = h.timers.entries().next().value;
+    h.timers.delete(id);
+    callback();
+  };
+  h.helper.bindRowTracking();
+  runTimer();
+  h.helper.unbindRowTracking();
+  h.helper.bindRowTracking();
+  runTimer();
+  assert.equal(h.helper.state.playbackRowSyncInFlight, true);
+  old.resolve({ playback: { paused: false } });
+  await flush();
+  assert.equal(h.helper.state.playbackRowSyncInFlight, true);
+  assert.equal(h.timers.size, 0);
+  next.resolve({ playback: { paused: false } });
+  await flush();
+  assert.equal(h.helper.state.playbackRowSyncInFlight, false);
+  assert.equal(h.timers.size, 1);
 });

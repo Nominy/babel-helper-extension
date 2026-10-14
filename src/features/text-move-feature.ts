@@ -54,9 +54,9 @@ export function registerTextMove(helper: any) {
 
 
   helper.applySmartSplitToRows = function applySmartSplitToRows(leftRow, rightRow, sourceText, ratio) {
-    const leftTextarea = helper.getRowTextarea(leftRow);
-    const rightTextarea = helper.getRowTextarea(rightRow);
-    if (!(leftTextarea instanceof HTMLTextAreaElement) || !(rightTextarea instanceof HTMLTextAreaElement)) {
+    const leftTextarea = helper.getRowEditor(leftRow);
+    const rightTextarea = helper.getRowEditor(rightRow);
+    if (!leftTextarea || !rightTextarea || leftTextarea.readOnly || rightTextarea.readOnly) {
       return false;
     }
 
@@ -72,12 +72,12 @@ export function registerTextMove(helper: any) {
 
 
   helper.moveTextToAdjacentSegment = function moveTextToAdjacentSegment(offset) {
-    const textarea = helper.getActiveRowTextarea();
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getActiveRowEditor();
+    if (!textarea || textarea.readOnly) {
       return false;
     }
 
-    const row = textarea.closest('tr');
+    const row = textarea.row;
     if (!(row instanceof HTMLElement)) {
       return false;
     }
@@ -89,12 +89,12 @@ export function registerTextMove(helper: any) {
     }
 
     const targetRow = helper.findAdjacentRowBySpeaker(row, offset);
-    if (!(targetRow instanceof HTMLTableRowElement)) {
+    if (!(targetRow instanceof HTMLElement)) {
       return false;
     }
 
-    const targetTextarea = helper.getRowTextarea(targetRow);
-    if (!(targetTextarea instanceof HTMLTextAreaElement)) {
+    const targetTextarea = helper.getRowEditor(targetRow);
+    if (!targetTextarea || targetTextarea.readOnly) {
       return false;
     }
 

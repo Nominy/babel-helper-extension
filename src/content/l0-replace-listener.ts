@@ -28,6 +28,9 @@ export function registerL0ReplaceListener(
     if (!data || typeof data !== 'object') return;
     if (data.type === READY_REQUEST_TYPE) {
       if (data.version !== 1 || typeof data.requestId !== 'string' || !data.requestId.trim()) return;
+      if (!['snapshotTranscriptWithNativeBridge', 'undoTranscriptWithNativeBridge',
+        'createSegmentWithNativeAction', 'deleteSegmentWithNativeAction']
+        .every(method => typeof (helper as unknown as Record<string, unknown>)[method] === 'function')) return;
       protocolWindow.postMessage({
         type: READY_RESPONSE_TYPE,
         version: 1,
@@ -40,6 +43,15 @@ export function registerL0ReplaceListener(
     mutationQueue = mutationQueue
       .catch(() => undefined)
       .then(async () => {
+        if (disposed) {
+          protocolWindow.postMessage({
+            type: 'babel-gold-drafting:l0-replace-response', version: 1,
+            requestId: typeof data.requestId === 'string' ? data.requestId : '',
+            ok: false, reason: 'service-disposed',
+            message: 'Transcript replacement was cancelled before it started.'
+          }, '*');
+          return;
+        }
         let result: ReplacementResponse;
         try {
           result = await replaceTranscriptSegmentation(helper, data);

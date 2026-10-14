@@ -1,7 +1,7 @@
 import {
   AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_ACTIVE_RESPONSE,
   AUDIO_ENHANCEMENT_PROTOCOL_VERSION, AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, AUDIO_ENHANCEMENT_STATE_EVENT,
-  findBabelEditorFiber, isAudioEnhancementProgress, isAudioEnhancementStrength, parseBabelRoute, readBabelEditorState, readAudioEnhancementState,
+  findBabelEditorFiber, isAudioEnhancementProgress, isAudioEnhancementStrength, parseBabelRoute, readBabelEditorState, readBabelTranscriptBindings, readAudioEnhancementState,
   type ActiveAudioResponse, type AudioEnhancementState
 } from '@nominy/babel-babel-runtime';
 import type { BabelModsHost } from '../mod-platform/page-host';
@@ -46,7 +46,7 @@ interface NativeWave {
   getPlaybackRate(): number;
   isPlaying(): boolean;
   pause(): void;
-  play(): Promise<void> | void;
+  play(start?: number, end?: number): Promise<void> | void;
   setTime(seconds: number): void;
   setPlaybackRate(rate: number): void;
   getMediaElement?(): HTMLMediaElement;
@@ -118,8 +118,9 @@ function isRegionsPlugin(value: unknown): value is NativeRegionsPlugin {
 type NativeSelectionState = Record<string, { activeRegionId: string | null; [key: string]: unknown }>;
 type NativeSnapshot = {
   taskId: string; key: string;
+  readOnly: boolean | null;
   tracks: { id: string; label: string; audioUrl: string; wave: NativeWave | null }[];
-  selection?: { state: NativeSelectionState; dispatch: (update: (prior: NativeSelectionState) => NativeSelectionState) => void };
+  selection?: NativeSelectionState;
 };
 type RetainedTrack = EnhancementSourceTrack & {
   audioUrl: string; original: ArrayBuffer; originalBlob: Blob;
@@ -142,11 +143,16 @@ type Session = {
   regionAddPatches: Map<NativeRegionsPlugin, { add: NativeRegionsPlugin['addRegion']; wrapped: NativeRegionsPlugin['addRegion'] }>;
 };
 
-function nativeSnapshot(): NativeSnapshot | null {
+function nativeSnapshot(restoringOriginal = false): NativeSnapshot | null {
   const route = parseBabelRoute();
-  if (!route.isTranscriptionRoute || route.isReadOnlyFeedbackRoute) return null;
+  if (!route.isTranscriptionRoute) return null;
   const state = readBabelEditorState();
+  const bindings = readBabelTranscriptBindings();
+  // New audio work requires known native editability. Owned Original cleanup
+  // remains safe on the same workbench even while its transcript is unmounted.
+  if (!restoringOriginal && (!bindings || bindings.readOnly)) return null;
   if (!state?.reviewActionId || state.tracks.length !== 2 ||
+      (bindings && bindings.reviewActionId !== state.reviewActionId) ||
       (route.reviewActionId && route.reviewActionId !== state.reviewActionId) ||
       state.tracks.some(track => !track.id || !track.audioUrl) || new Set(state.tracks.map(track => track.id)).size !== 2) return null;
   const fiber = findBabelEditorFiber() as NativeEditorFiber | null;
@@ -171,15 +177,13 @@ function nativeSnapshot(): NativeSnapshot | null {
           return typeof entry === 'object' && entry !== null && 'activeRegionId' in entry &&
             (entry.activeRegionId === null || typeof entry.activeRegionId === 'string');
         })) {
-      selection = {
-        state: selected as NativeSelectionState,
-        dispatch: hook.queue.dispatch as NonNullable<NativeSnapshot['selection']>['dispatch']
-      };
+      selection = selected as NativeSelectionState;
     }
     value = hook.next;
   }
   return {
     taskId: state.reviewActionId,
+    readOnly: bindings?.readOnly ?? null,
     key: JSON.stringify([state.reviewActionId, state.tracks.map(track => [track.id, track.audioUrl])]),
     tracks: state.tracks.map(track => ({ ...track, wave: waves.get(track.id) ?? null })),
     selection
@@ -222,6 +226,8 @@ export function initAudioEnhancementBridge(): void {
   let disposed = false;
   let disposing = false;
   let disposal: Promise<void> | null = null;
+  let restorationFailed = false;
+  let facade: AudioEnhancementFacade | null = null;
   let session: Session | null = null;
   let tail: Promise<void> = Promise.resolve();
   let revision = Number(page.__babelHelperAudioEnhancementRevision) || 0;
@@ -234,21 +240,36 @@ export function initAudioEnhancementBridge(): void {
   let fetchInstalled = false;
   let poll: number | null = null;
 
+  function ownsBridge(): boolean {
+    return facade !== null && page.__babelHelperAudioEnhancementBridge === facade;
+  }
+
+  function getState(): AudioEnhancementState {
+    // A rollback within the writer drain is not a terminal shutdown result.
+    // Keep consumers pending until Original is verified or the drain fails.
+    if (disposing && !restorationFailed && session) return {
+      ...state, status: 'switching', desiredStrength: 0, progress: undefined,
+      message: 'Restoring Original audio before disabling enhancement…'
+    };
+    return { ...state };
+  }
+
   function publish(changes: Partial<AudioEnhancementState> = {}): void {
     state = { ...state, ...changes, revision: ++revision };
     if (session?.variantKey && session.taskId === state.taskId) state.pairedVariantKey = session.variantKey;
     else delete state.pairedVariantKey;
     if (state.status === 'idle' || state.status === 'ready' || state.status === 'error') delete state.progress;
-    if (!disposing && !disposed) {
+    if (!disposed && ownsBridge()) {
       page.__babelHelperAudioEnhancementRevision = revision;
-      document.documentElement.setAttribute(AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, JSON.stringify(state));
-      window.dispatchEvent(new CustomEvent(AUDIO_ENHANCEMENT_STATE_EVENT, { detail: state }));
-      window.postMessage({ source: AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'state', state, sessionId: session?.id || '' }, window.location.origin);
+      const published = getState();
+      document.documentElement.setAttribute(AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, JSON.stringify(published));
+      window.dispatchEvent(new CustomEvent(AUDIO_ENHANCEMENT_STATE_EVENT, { detail: published }));
+      window.postMessage({ source: AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'state', state: published, sessionId: session?.id || '' }, window.location.origin);
     }
   }
 
-  function current(target: Session, snapshot = nativeSnapshot()): boolean {
-    return !disposed && session === target && snapshot?.key === target.key;
+  function current(target: Session, snapshot = nativeSnapshot(!enabled)): boolean {
+    return !disposed && ownsBridge() && session === target && snapshot?.key === target.key;
   }
 
   function selectionNotice(target: Session, strength: number): string {
@@ -282,6 +303,9 @@ export function initAudioEnhancementBridge(): void {
   }
 
   const selectedFetch: typeof fetch = async (input, init) => {
+    // A foreign wrapper may retain this function after it stops being topmost.
+    // Original URL restoration must not wait on its own pending switch queue.
+    if (!enabled || disposing || disposed || !ownsBridge()) return nativeFetch.call(window, input, init);
     const target = session;
     const url = input instanceof Request ? input.url : new URL(String(input), window.location.href).href;
     const track = target && current(target)
@@ -289,7 +313,7 @@ export function initAudioEnhancementBridge(): void {
     const method = init?.method || (input instanceof Request ? input.method : 'GET');
     if (track && method.toUpperCase() === 'GET') {
       if (target?.switching) await tail;
-      if (!target || !current(target)) return nativeFetch.call(window, input, init);
+      if (!enabled || disposing || disposed || !ownsBridge() || !target || !current(target)) return nativeFetch.call(window, input, init);
       if (init?.signal?.aborted || (input instanceof Request && input.signal.aborted)) throw new DOMException('Aborted', 'AbortError');
       const bytes = target.selected?.tracks[target.tracks.indexOf(track)]?.bytes;
       if (bytes) return new Response(bytes, { status: 200, headers: { 'Content-Type': 'audio/wav', 'Content-Length': String(bytes.byteLength) } });
@@ -352,7 +376,7 @@ export function initAudioEnhancementBridge(): void {
   }
 
   async function replaceSources(target: Session, strength: number, originalUrl = false, followDesired = true): Promise<void> {
-    const snapshot = nativeSnapshot();
+    const snapshot = nativeSnapshot(!enabled);
     if (!current(target, snapshot) || !snapshot?.tracks.every(track => track.wave)) return;
     const latestStrength = () => followDesired ? requestedStrength(target) : strength;
     const entries = target.tracks.map(track => {
@@ -373,12 +397,10 @@ export function initAudioEnhancementBridge(): void {
     const priorStatus = state.status;
     const priorMessage = state.message || '';
     const transport = entries.map(({ wave }) => {
-      const media = wave.getMediaElement?.();
       const plugins = (wave.getActivePlugins?.() || []).filter(isRegionsPlugin);
       return {
-        time: wave.getCurrentTime(), playing: wave.isPlaying(), rate: wave.getPlaybackRate(),
-        volume: wave.getVolume?.() ?? media?.volume ?? 1, muted: wave.getMuted?.() ?? media?.muted ?? false,
-        scroll: wave.getScroll?.(),
+        playing: wave.isPlaying(),
+        pendingPlay: undefined as Promise<void> | void,
         // Native ready callbacks rebuild annotation regions. Let those callbacks
         // register real DOM/editing listeners, but retain the current annotation
         // membership, metadata and options rather than an old ready closure.
@@ -394,6 +416,31 @@ export function initAudioEnhancementBridge(): void {
       throw new Error('Native region editing requires ready notifications for audio source replacement.');
     }
     target.switching = true;
+    let ownPlaybackCommand = false;
+    const playbackCleanups = entries.map(({ wave }, index) => {
+      const play = wave.play, pause = wave.pause;
+      const wrappedPlay: NativeWave['play'] = function(this: NativeWave, start, end) {
+        if (!ownPlaybackCommand) transport[index].playing = true;
+        const pending = play.call(this, start, end);
+        transport[index].pendingPlay = pending;
+        return pending;
+      };
+      const wrappedPause: NativeWave['pause'] = function(this: NativeWave) {
+        if (!ownPlaybackCommand) transport[index].playing = false;
+        return pause.call(this);
+      };
+      wave.play = wrappedPlay;
+      wave.pause = wrappedPause;
+      return () => {
+        if (wave.play === wrappedPlay) wave.play = play;
+        if (wave.pause === wrappedPause) wave.pause = pause;
+      };
+    });
+    function pauseForSwitch(): void {
+      ownPlaybackCommand = true;
+      try { for (const { wave } of entries) wave.pause(); }
+      finally { ownPlaybackCommand = false; }
+    }
     for (const saved of transport) {
       for (const savedPlugin of saved.plugins) {
         const { plugin } = savedPlugin;
@@ -405,7 +452,7 @@ export function initAudioEnhancementBridge(): void {
       }
     }
     const stillSameWaves = () => {
-      const fresh = nativeSnapshot();
+      const fresh = nativeSnapshot(!enabled);
       return current(target, fresh) && entries.every(entry => fresh?.tracks.find(track => track.id === entry.track.trackId)?.wave === entry.wave);
     };
     function restoreRegions(): void {
@@ -463,8 +510,12 @@ export function initAudioEnhancementBridge(): void {
           }
           const blob = pair.tracks[entryIndex]?.blob;
           if (!blob) throw new Error('The requested native audio source is unavailable.');
-          const pending = originalUrl && pair.strength === 0
-            ? patch.load.call(wave, track.audioUrl) : patch.loadBlob.call(wave, blob);
+          let pending: Promise<void> | void;
+          ownPlaybackCommand = true;
+          try {
+            pending = originalUrl && pair.strength === 0
+              ? patch.load.call(wave, track.audioUrl) : patch.loadBlob.call(wave, blob);
+          } finally { ownPlaybackCommand = false; }
           patch.activeAbort = wave.abortController instanceof AbortController ? wave.abortController : null;
           if (pending && typeof pending.then === 'function') {
             completion = pending;
@@ -490,46 +541,36 @@ export function initAudioEnhancementBridge(): void {
     }
     async function restoreTransport(): Promise<void> {
       if (!stillSameWaves()) return;
+      // Native WebAudio source replacement retains time, gain, mute, rate and
+      // selection. Replaying a pre-decode snapshot overwrites newer user intent.
+      // Only region DOM was recreated, and only our temporary pause needs undoing.
+      // A user may have started the old WebAudio buffer during decoding. Rebind
+      // playback to the newly decoded pair without changing the latest intent.
+      pauseForSwitch();
+      const selection = nativeSnapshot(!enabled)?.selection;
       for (let index = 0; index < entries.length; index += 1) {
-        const { wave } = entries[index];
-        const saved = transport[index];
-        // Regions have already been reconciled by native ready registration.
-        wave.setPlaybackRate(saved.rate);
-        wave.setVolume?.(saved.volume); wave.setMuted?.(saved.muted);
-        wave.setTime(saved.time);
-        if (typeof saved.scroll === 'number' && Number.isFinite(saved.scroll)) wave.setScroll?.(saved.scroll);
+        const activeRegionId = selection?.[entries[index].track.trackId]?.activeRegionId;
+        if (activeRegionId === undefined) continue;
+        for (const { plugin } of transport[index].plugins) for (const region of plugin.getRegions()) {
+          if (region.element) region.element.style.filter = region.id === activeRegionId ? 'brightness(0.8)' : '';
+        }
       }
-      const selected = snapshot?.selection;
-      if (selected) {
-        const activeByTrack: Record<string, string | null> = {};
+      const playing: Promise<void>[] = [];
+      ownPlaybackCommand = true;
+      try {
         for (let index = 0; index < entries.length; index += 1) {
-          const trackId = entries[index].track.trackId;
-          const id = selected.state[trackId]?.activeRegionId;
-          if (id === undefined) continue;
-          const plugins = transport[index].plugins;
-          const activeRegionId = id === null || plugins.some(({ plugin }) => plugin.getRegions().some(region => region.id === id)) ? id : null;
-          activeByTrack[trackId] = activeRegionId;
-          for (const { plugin } of plugins) for (const region of plugin.getRegions()) {
-            if (region.element) region.element.style.filter = region.id === activeRegionId ? 'brightness(0.8)' : '';
+          if (transport[index].playing) {
+            if (!entries[index].wave.isPlaying()) entries[index].wave.play();
+            const pending = transport[index].pendingPlay;
+            if (pending) playing.push(pending);
           }
         }
-        selected.dispatch(prior => {
-          let next = prior;
-          for (const { track } of entries) {
-            const activeRegionId = activeByTrack[track.trackId];
-            if (activeRegionId !== undefined && prior[track.trackId] && prior[track.trackId].activeRegionId !== activeRegionId) {
-              if (next === prior) next = { ...prior };
-              next[track.trackId] = { ...prior[track.trackId], activeRegionId };
-            }
-          }
-          return next;
-        });
-      }
-      await Promise.all(entries.map(({ wave }, index) => transport[index].playing ? Promise.resolve(wave.play()) : Promise.resolve()));
+      } finally { ownPlaybackCommand = false; }
+      await Promise.all(playing);
     }
     try {
       publish({ status: 'switching', message: strength > 0 ? 'Preparing selected audio for native players…' : 'Restoring original audio…' });
-      for (const entry of entries) entry.wave.pause();
+      pauseForSwitch();
       let appliedPair: SourcePair | undefined;
       while (stillSameWaves()) {
         const requested = latestStrength();
@@ -545,7 +586,7 @@ export function initAudioEnhancementBridge(): void {
         if (!await load(appliedPair, true)) continue;
         await restoreTransport();
         if (latestStrength() === appliedPair.strength) break;
-        for (const entry of entries) entry.wave.pause();
+        pauseForSwitch();
       }
       if (stillSameWaves() && appliedPair) {
         target.selected = appliedPair;
@@ -566,12 +607,13 @@ export function initAudioEnhancementBridge(): void {
             message: `Audio switch failed; previous source restored. ${error instanceof Error ? error.message : String(error)}` });
         } catch (rollbackError) {
           // Playback stays paused; mismatched decoded buffers remain unavailable.
-          for (const entry of entries) entry.wave.pause();
+          pauseForSwitch();
           publish({ strength: priorPair.strength, variantKey: priorPair.variantKey, status: 'error',
             message: `Native audio restoration failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}` });
         }
       }
     } finally {
+      for (const cleanup of playbackCleanups) cleanup();
       for (const [plugin, patch] of target.regionAddPatches) {
         if (plugin.addRegion === patch.wrapped) plugin.addRegion = patch.add;
       }
@@ -580,16 +622,24 @@ export function initAudioEnhancementBridge(): void {
     }
   }
 
-  function queueSwitch(target: Session, nativeReplay = false): Promise<void> {
+  function queueSwitch(target: Session, nativeReplay = false, originalUrl = false): Promise<void> {
     const operation = tail.then(async () => {
       if (!current(target) || !target.tracks.length) return;
       const retainCommitted = nativeReplay && enabled && state.status === 'error';
-      await replaceSources(target, retainCommitted ? state.strength : requestedStrength(target), false, !retainCommitted);
+      await replaceSources(target, retainCommitted ? state.strength : requestedStrength(target), originalUrl, !retainCommitted);
     });
     tail = operation.catch(error => {
       if (current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     });
     return tail;
+  }
+
+  async function drainSwitches(): Promise<void> {
+    let pending: Promise<void>;
+    do {
+      pending = tail;
+      await pending;
+    } while (pending !== tail);
   }
 
   async function capture(target: Session, snapshot: NativeSnapshot): Promise<void> {
@@ -636,7 +686,7 @@ export function initAudioEnhancementBridge(): void {
         tracks: tracks.map(({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount }) =>
           ({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount })) }, window.location.origin);
     } catch (error) {
-      if (current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
+      if (enabled && current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     } finally {
       target.capturing = false;
     }
@@ -646,6 +696,13 @@ export function initAudioEnhancementBridge(): void {
     if (disposed || !enabled) return;
     const snapshot = nativeSnapshot();
     if (!snapshot) {
+      const owned = session && nativeSnapshot(true);
+      if (owned && session && owned.key === session.key) {
+        // Unknown metadata keeps the enabled owner and its Originals intact.
+        // Confirmed readonly uses the existing serialized cleanup path.
+        if (owned.readOnly === true) void setEnabled(false);
+        return;
+      }
       if (session) { release(session); session = null; publish({ taskId: '', strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', message: '' }); }
       return;
     }
@@ -682,6 +739,17 @@ export function initAudioEnhancementBridge(): void {
 
   async function setEnabled(value: boolean): Promise<void> {
     if (disposed || value && disposing) return;
+    if (value && restorationFailed) {
+      // A fresh activation may explicitly retry a failed Original restoration.
+      // Never recapture still-enhanced native buffers as a new Original pair.
+      const key = nativeSnapshot()?.key;
+      await dispose();
+      if (!disposed || nativeSnapshot()?.key !== key) return;
+      initAudioEnhancementBridge();
+      const next = page.__babelHelperAudioEnhancementBridge;
+      if (next && next !== facade) await next.setEnabled(true);
+      return;
+    }
     enabled = value;
     if (value) {
       if (!fetchInstalled) { window.fetch = selectedFetch; fetchInstalled = true; }
@@ -697,15 +765,21 @@ export function initAudioEnhancementBridge(): void {
     if (target && current(target)) {
       publish({ desiredStrength: 0, progress: undefined });
       await queueSwitch(target);
+      await drainSwitches();
     }
     if (target && current(target)) {
-      const snapshot = nativeSnapshot();
+      const snapshot = nativeSnapshot(true);
       const restored = state.strength === 0 && snapshot?.tracks.every(native => {
         const patch = native.wave ? target.patches.get(native.wave) : undefined;
         return patch?.strength === 0 && patch.decoded === native.wave?.getDecodedData();
       });
-      if (!restored && target.tracks.length) await replaceSources(target, 0, true);
-      const finalSnapshot = nativeSnapshot();
+      if (!restored && target.tracks.length) {
+        // Native load listeners can enqueue replays. The URL fallback owns no
+        // separate writer: it must share the same region-wrapper scope queue.
+        await queueSwitch(target, false, true);
+        await drainSwitches();
+      }
+      const finalSnapshot = nativeSnapshot(true);
       const originalLoaded = state.strength === 0 && finalSnapshot?.tracks.every(native => {
         const patch = native.wave ? target.patches.get(native.wave) : undefined;
         return patch?.strength === 0 && patch.decoded === native.wave?.getDecodedData();
@@ -719,7 +793,7 @@ export function initAudioEnhancementBridge(): void {
     if (session === target) {
       if (target) release(target);
       session = null;
-      publish({ taskId: nativeSnapshot()?.taskId || '', strength: 0, desiredStrength: 0, status: 'idle', variantKey: '', message: '' });
+      publish({ taskId: nativeSnapshot(true)?.taskId || '', strength: 0, desiredStrength: 0, status: 'idle', variantKey: '', message: '' });
     }
   }
 
@@ -749,7 +823,7 @@ export function initAudioEnhancementBridge(): void {
   }
 
   async function handleCommand(event: MessageEvent<unknown>): Promise<void> {
-    if (disposing || disposed) return;
+    if (disposed || !ownsBridge()) return;
     if (event.source !== window || event.origin !== window.location.origin || typeof event.data !== 'object' || event.data === null) return;
     const data = event.data as EnhancementBridgeMessage;
     if (data.type === AUDIO_ENHANCEMENT_ACTIVE_REQUEST && data.version === AUDIO_ENHANCEMENT_PROTOCOL_VERSION &&
@@ -759,7 +833,6 @@ export function initAudioEnhancementBridge(): void {
       return;
     }
     if (data.source !== AUDIO_ENHANCEMENT_COMMAND_SOURCE) return;
-    if (data.type === 'enable') { await setEnabled(true); return; }
     if (data.type === 'dispose') {
       try { await dispose(); }
       finally {
@@ -767,6 +840,10 @@ export function initAudioEnhancementBridge(): void {
       }
       return;
     }
+    // Repeated disposal requests above share the same writer drain and each
+    // receive their own acknowledgement. Earlier queued enables are stale.
+    if (disposing) return;
+    if (data.type === 'enable') { await setEnabled(true); return; }
     const target = session;
     if (!target || data.sessionId !== target.id || data.taskId !== target.taskId || !current(target)) return;
     if (data.type === 'select-strength' && isAudioEnhancementStrength(data.strength)) { await selectStrength(data.strength); return; }
@@ -815,7 +892,7 @@ export function initAudioEnhancementBridge(): void {
         ? 'Preparing selected audio for native players…' : 'Enhanced audio available; retaining original selection…' });
       await queueSwitch(target);
     } catch (error) {
-      if (current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
+      if (enabled && current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -828,34 +905,52 @@ export function initAudioEnhancementBridge(): void {
   const registry = serviceValue as ServiceRegistry<Record<string, object>>;
   const registrationOptions: { owner: string; priority?: number } = { owner: 'builtin:audio-enhancement' };
   const provider = registry.provide('page.audio-enhancement', {
-    getState: () => ({ ...state }), getActiveAudio, selectStrength, setEnabled
+    getState, getActiveAudio, selectStrength, setEnabled
   }, registrationOptions);
   function dispose(): Promise<void> {
     if (disposal) return disposal;
     disposing = true;
-    window.removeEventListener('message', listener);
-    window.removeEventListener('babel-helper-bridge-teardown', teardown);
-    provider.dispose();
-    if (page.__babelHelperAudioEnhancementBridge === facade) delete page.__babelHelperAudioEnhancementBridge;
-    delete page.__babelHelperAudioEnhancementRevision;
-    document.documentElement.removeAttribute(AUDIO_ENHANCEMENT_STATE_ATTRIBUTE);
-    disposal = (async () => {
+    restorationFailed = false;
+    disposal = Promise.resolve().then(async () => {
       try {
         await setEnabled(false);
-      } finally {
+        if (session && current(session) && session.tracks.length) {
+          // setEnabled(false) retains the last committed pair on a restoration
+          // failure. Keep its Original bytes, owner and error state for retry.
+          restorationFailed = true;
+          publish();
+          return;
+        }
         if (session) release(session);
         session = null;
-        disposed = true;
+        provider.dispose();
         if (window.fetch === selectedFetch) window.fetch = nativeFetch;
+        window.removeEventListener('message', listener);
+        window.removeEventListener('babel-helper-bridge-teardown', teardown);
+        if (ownsBridge()) {
+          delete page.__babelHelperAudioEnhancementBridge;
+          delete page.__babelHelperAudioEnhancementRevision;
+          document.documentElement.removeAttribute(AUDIO_ENHANCEMENT_STATE_ATTRIBUTE);
+        }
+        disposed = true;
+      } catch (error) {
+        restorationFailed = true;
+        publish({ status: 'error', desiredStrength: 0,
+          message: `Audio enhancement could not finish disabling. ${error instanceof Error ? error.message : String(error)}` });
+      } finally {
+        disposing = false;
+        if (restorationFailed) disposal = null;
       }
-    })();
+    });
+    publish({ status: 'switching', desiredStrength: 0, progress: undefined,
+      message: 'Restoring Original audio before disabling enhancement…' });
     return disposal;
   }
   const listener = (event: MessageEvent<unknown>) => { void handleCommand(event).catch(error => {
     if (session) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
   }); };
-  const teardown = () => { void dispose(); };
-  const facade = { getState: () => ({ ...state }), getActiveAudio, selectStrength, setEnabled, dispose };
+  const teardown = () => { if (!restorationFailed) void dispose(); };
+  facade = { getState, getActiveAudio, selectStrength, setEnabled, dispose };
   page.__babelHelperAudioEnhancementBridge = facade;
   window.addEventListener('message', listener);
   window.addEventListener('babel-helper-bridge-teardown', teardown);

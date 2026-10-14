@@ -44,7 +44,7 @@ export type AnalyticsEventType =
   | 'text:merge-previous'              // Alt+Shift+Up merge
   | 'text:merge-next'                  // Alt+Shift+Down merge
   | 'text:smart-split'                 // Smart split applied
-  | 'text:edit'                        // User typed in textarea (sampled)
+  | 'text:edit'                        // User typed in transcript editor (sampled)
 
   // Playback
   | 'playback:pause'                   // Playback paused

@@ -22,17 +22,9 @@ await build({
 const contract = await import(pathToFileURL(bundledModulePath).href);
 
 test("recovered contract exposes exact Babel editor selectors and labels", () => {
-  assert.equal(contract.BABEL_EDITOR_CONTRACT_VERSION, "recovered-81835-2026-06-21");
-  assert.equal(contract.BABEL_ROW_TEXTAREA_SELECTOR, 'textarea[placeholder="What was said…"]');
-  assert.deepEqual(contract.BABEL_TABLE_COLUMN_INDEX, {
-    id: 0,
-    speaker: 1,
-    start: 2,
-    end: 3,
-    text: 4,
-    linter: 5,
-    actions: 6,
-  });
+  assert.equal(contract.BABEL_EDITOR_CONTRACT_VERSION, "native-36978-2026-10-13");
+  assert.equal(contract.BABEL_TRANSCRIPT_ROW_SELECTOR, 'section[data-annotation-id]');
+  assert.equal(contract.BABEL_ROW_EDITOR_SELECTOR, '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"]');
   assert.deepEqual(contract.BABEL_ROW_ACTION_LABELS, {
     insertAbove: "Add Segment Above",
     insertBelow: "Add Segment Below",
@@ -55,7 +47,7 @@ test("recovered contract parses displayed row timestamps exactly", () => {
 
 test("recovered contract recognizes active row class token set", () => {
   assert.equal(
-    contract.isBabelActiveRowClassList(["relative", "bg-neutral-100", "ring-1", "ring-neutral-300"]),
+    contract.isBabelActiveRowClassList(["flex", "border-orange-300", "bg-white"]),
     true,
   );
   assert.equal(contract.isBabelActiveRowClassList(["bg-green-50", "ring-1", "ring-green-300"]), false);

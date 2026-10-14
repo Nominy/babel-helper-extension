@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 export function createRowTimeApi(helper: any) {
+  helper.getRowTimeRange = getRowTimeRange;
 
   function parseSegmentTimeValue(value) {
     if (typeof value !== 'string') { return null; }
@@ -21,14 +22,14 @@ export function createRowTimeApi(helper: any) {
 
   function getRowTimeRange(row) {
     if (!(row instanceof HTMLElement)) { return null; }
-    const startCell = row.children[2];
-    const endCell = row.children[3];
-    const startSeconds = startCell instanceof HTMLElement
-      ? parseSegmentTimeValue(helper.normalizeText(startCell))
-      : null;
-    const endSeconds = endCell instanceof HTMLElement
-      ? parseSegmentTimeValue(helper.normalizeText(endCell))
-      : null;
+    const identity = helper.getRowIdentity(row);
+    if (!identity) { return null; }
+    const startSeconds = Number.isFinite(identity.startSeconds)
+      ? identity.startSeconds
+      : parseSegmentTimeValue(identity.startText);
+    const endSeconds = Number.isFinite(identity.endSeconds)
+      ? identity.endSeconds
+      : parseSegmentTimeValue(identity.endText);
     if (startSeconds === null || endSeconds === null || endSeconds <= startSeconds) {
       return null;
     }
@@ -44,14 +45,18 @@ export function createRowTimeApi(helper: any) {
 
 
   function getRowTimeSignature(rows) {
-    if (!rows.length) {
-      return 'empty';
-    }
-    const first = rows[0];
-    const last = rows[rows.length - 1];
-    const firstStart = first?.children?.[2] instanceof HTMLElement ? helper.normalizeText(first.children[2]) : '';
-    const lastEnd = last?.children?.[3] instanceof HTMLElement ? helper.normalizeText(last.children[3]) : '';
-    return `${rows.length}:${firstStart}:${lastEnd}`;
+    return rows.map((row) => {
+      const identity = helper.getRowIdentity(row);
+      return JSON.stringify([
+        identity?.reviewActionId,
+        identity?.annotationId,
+        identity?.speakerKey,
+        identity?.startSeconds,
+        identity?.endSeconds,
+        identity?.startText,
+        identity?.endText
+      ]);
+    }).join('|');
   }
 
 

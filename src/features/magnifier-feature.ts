@@ -38,65 +38,6 @@ export function registerMagnifierService(helper: any) {
     return prefix + "-" + Date.now() + "-" + markerId;
   }
 
-  function parseSeconds(value) {
-    if (typeof value !== "string") {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const normalized = trimmed.toLowerCase();
-
-    const timestampMatch = normalized.match(/-?\d+(?::\d+)+(?:\.\d+)?/);
-    if (timestampMatch) {
-      const parts = timestampMatch[0].split(":");
-      let total = 0;
-      for (const part of parts) {
-        const numeric = Number(part);
-        if (!Number.isFinite(numeric)) {
-          return null;
-        }
-        total = total * 60 + numeric;
-      }
-      return total;
-    }
-
-    let total = 0;
-    let foundUnit = false;
-    const unitPattern = /(-?\d+(?:\.\d+)?)\s*([hms])/g;
-    for (const match of normalized.matchAll(unitPattern)) {
-      const numeric = Number(match[1]);
-      if (!Number.isFinite(numeric)) {
-        return null;
-      }
-
-      foundUnit = true;
-      const unit = match[2];
-      if (unit === "h") {
-        total += numeric * 3600;
-      } else if (unit === "m") {
-        total += numeric * 60;
-      } else {
-        total += numeric;
-      }
-    }
-
-    if (foundUnit) {
-      return total;
-    }
-
-    const numericMatch = normalized.match(/-?\d+(?:\.\d+)?/);
-    if (!numericMatch) {
-      return null;
-    }
-
-    const numeric = Number(numericMatch[0]);
-    return Number.isFinite(numeric) ? numeric : null;
-  }
-
   function getPartTokens(element) {
     const part = element instanceof Element ? element.getAttribute("part") : "";
     return part ? part.split(/\s+/).filter(Boolean) : [];
@@ -199,63 +140,6 @@ export function registerMagnifierService(helper: any) {
     return null;
   }
 
-  function getHoverData(scope, containerRect) {
-    if (!scope || typeof scope.querySelector !== "function") {
-      return null;
-    }
-
-    const hover = scope.querySelector('[part="hover"]');
-    if (!(hover instanceof HTMLElement) || !hover.isConnected) {
-      return null;
-    }
-
-    const transform = hover.style.transform || "";
-    const match = transform.match(/translateX\((-?\d+(?:\.\d+)?)px\)/i);
-    if (!match) {
-      return null;
-    }
-
-    const hoverStyle = window.getComputedStyle(hover);
-    if (Number(hoverStyle.opacity || "1") <= 0) {
-      return null;
-    }
-
-    const label = hover.querySelector('[part="hover-label"]');
-    const text = helper.normalizeText(label);
-    const timeSeconds = parseSeconds(text);
-    if (!Number.isFinite(timeSeconds)) {
-      return null;
-    }
-
-    return {
-      x: clamp(Number(match[1]), 0, containerRect.width),
-      text,
-      timeSeconds,
-    };
-  }
-
-  function getRegionBoundaryTime(region, side) {
-    if (!(region instanceof HTMLElement)) {
-      return null;
-    }
-
-    const selector =
-      side === "left"
-        ? ".wavesurfer-region-tooltip-start"
-        : ".wavesurfer-region-tooltip-end";
-    const node = region.querySelector(selector);
-    const text = helper.normalizeText(node);
-    const timeSeconds = parseSeconds(text);
-    if (!Number.isFinite(timeSeconds)) {
-      return null;
-    }
-
-    return {
-      text,
-      timeSeconds,
-    };
-  }
-
   function getDragContextFromEvent(event) {
     if (!event || event.button !== 0) {
       return null;
@@ -272,15 +156,17 @@ export function registerMagnifierService(helper: any) {
       const handle = node instanceof HTMLElement ? node : null;
       const region = getOwningRegion(handle);
       const waveform = getWaveformContextFromEvent(event);
+      const regionId = getPartTokens(region).find((token) => token !== "region");
       if (
         handle instanceof HTMLElement &&
-        region instanceof HTMLElement &&
+        region instanceof HTMLElement && regionId &&
         waveform
       ) {
         return {
           pointerId: typeof event.pointerId === "number" ? event.pointerId : 1,
           handle,
           region,
+          regionId,
           side,
           scope: waveform.scope,
           container: waveform.container,
@@ -292,7 +178,7 @@ export function registerMagnifierService(helper: any) {
     return null;
   }
 
-  function getDragData(drag, containerRect) {
+  function getDragPosition(drag, containerRect) {
     if (
       !drag ||
       !(drag.handle instanceof HTMLElement) ||
@@ -304,27 +190,9 @@ export function registerMagnifierService(helper: any) {
       return null;
     }
 
-    const rect = drag.handle.getBoundingClientRect();
-    const x = clamp(rect.left + rect.width / 2 - containerRect.left, 0, containerRect.width);
-    const boundary = getRegionBoundaryTime(drag.region, drag.side);
-    if (boundary) {
-      return {
-        x,
-        text: boundary.text,
-        timeSeconds: boundary.timeSeconds,
-      };
-    }
-
-    const hover = getHoverData(drag.scope, containerRect);
-    if (hover) {
-      return {
-        x,
-        text: hover.text,
-        timeSeconds: hover.timeSeconds,
-      };
-    }
-
-    return null;
+    const rect = drag.region.getBoundingClientRect();
+    const boundary = drag.side === "left" ? rect.left : rect.right;
+    return clamp(boundary - containerRect.left, 0, containerRect.width);
   }
 
   function setStatus(magnifier, text) {
@@ -359,6 +227,7 @@ export function registerMagnifierService(helper: any) {
       }
 
       const region = document.createElement("div");
+      region.setAttribute("data-babel-helper-magnifier-region", entry.id);
       region.style.position = "absolute";
       region.style.top = "0";
       region.style.left = ((visibleStart - windowStart) / span) * width + "px";
@@ -443,6 +312,7 @@ export function registerMagnifierService(helper: any) {
       bridgeInstanceId: null,
       syncPending: false,
       syncQueued: false,
+      syncFrame: null,
     };
   }
 
@@ -462,6 +332,10 @@ export function registerMagnifierService(helper: any) {
     const magnifier = helper.state.magnifier;
     if (!magnifier) {
       return;
+    }
+    if (magnifier.syncFrame !== null) {
+      window.cancelAnimationFrame(magnifier.syncFrame);
+      magnifier.syncFrame = null;
     }
 
     void disposeMagnifier(magnifier);
@@ -527,8 +401,8 @@ export function registerMagnifierService(helper: any) {
 
       const containerRect = magnifier.container.getBoundingClientRect();
       const drag = helper.state.magnifierDrag;
-      const target = getDragData(drag, containerRect);
-      if (!target || containerRect.width <= 0 || containerRect.height <= 0) {
+      const x = getDragPosition(drag, containerRect);
+      if (x === null || containerRect.width <= 0 || containerRect.height <= 0) {
         setStatus(magnifier, `${SCALE} waiting`);
         return;
       }
@@ -542,7 +416,7 @@ export function registerMagnifierService(helper: any) {
         Math.min(MAX_HEIGHT, Math.round(containerRect.height - INSET * 2)),
       );
       const left = clamp(
-        target.x - width / 2,
+        x - width / 2,
         INSET,
         Math.max(INSET, containerRect.width - width - INSET),
       );
@@ -559,6 +433,10 @@ export function registerMagnifierService(helper: any) {
           height,
           scale: SCALE,
         });
+        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) {
+          if (ensureResult?.id) void callBridge("destroy", { instanceId: ensureResult.id });
+          return;
+        }
 
         if (!ensureResult || !ensureResult.ok || !ensureResult.id) {
           setStatus(magnifier, `${SCALE} unavailable`);
@@ -570,17 +448,20 @@ export function registerMagnifierService(helper: any) {
 
       let updateResult = await callBridge("update", {
         instanceId: magnifier.bridgeInstanceId,
-        time: target.timeSeconds,
+        regionId: drag.regionId,
+        side: drag.side,
         width,
         height,
         scale: SCALE,
       });
+      if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
 
       if ((!updateResult || !updateResult.ok) && magnifier.bridgeInstanceId) {
         await callBridge("destroy", {
           instanceId: magnifier.bridgeInstanceId,
         });
         magnifier.bridgeInstanceId = null;
+        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
 
         const retryEnsure = await callBridge("ensure", {
           hostMarker: magnifier.hostMarker,
@@ -588,24 +469,30 @@ export function registerMagnifierService(helper: any) {
           height,
           scale: SCALE,
         });
+        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) {
+          if (retryEnsure?.id) void callBridge("destroy", { instanceId: retryEnsure.id });
+          return;
+        }
         if (retryEnsure && retryEnsure.ok && retryEnsure.id) {
           magnifier.bridgeInstanceId = retryEnsure.id;
           updateResult = await callBridge("update", {
             instanceId: magnifier.bridgeInstanceId,
-            time: target.timeSeconds,
+            regionId: drag.regionId,
+            side: drag.side,
             width,
             height,
             scale: SCALE,
           });
         }
       }
+      if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
 
       if (!updateResult || !updateResult.ok) {
         setStatus(magnifier, `${SCALE} unavailable`);
         return;
       }
 
-      setStatus(magnifier, `${SCALE}x @ ` + target.text);
+      setStatus(magnifier, `${SCALE}x @ ${updateResult.time.toFixed(3)}s`);
       renderRegions(
         magnifier,
         Array.isArray(updateResult.regions) ? updateResult.regions : [],
@@ -622,14 +509,24 @@ export function registerMagnifierService(helper: any) {
       magnifier.syncPending = false;
       if (magnifier.syncQueued) {
         magnifier.syncQueued = false;
-        void syncMagnifier(magnifier);
+        scheduleMagnifierSync(magnifier);
       }
     }
   }
 
+  function scheduleMagnifierSync(magnifier) {
+    if (magnifier.syncFrame !== null) return;
+    // Capture sees pointermove before WaveSurfer's document drag listener.
+    // Read its live bounds on the next frame, after native resize has run.
+    magnifier.syncFrame = window.requestAnimationFrame(() => {
+      magnifier.syncFrame = null;
+      void syncMagnifier(magnifier);
+    });
+  }
+
   function showMagnifier(context) {
     const magnifier = ensureMagnifier(context);
-    void syncMagnifier(magnifier);
+    scheduleMagnifierSync(magnifier);
   }
 
   function handlePointerDown(event) {
@@ -673,12 +570,6 @@ export function registerMagnifierService(helper: any) {
   }
 
   function handlePointerEnd(event) {
-    if (helper.runtime && typeof helper.runtime.isSessionInteractive === "function") {
-      if (!helper.runtime.isSessionInteractive()) {
-        return;
-      }
-    }
-
     const drag = helper.state.magnifierDrag;
     const pointerId = typeof event.pointerId === "number" ? event.pointerId : 1;
     if (drag && drag.pointerId === pointerId) {
@@ -700,6 +591,8 @@ export function registerMagnifierService(helper: any) {
   };
 
   helper.unbindMagnifier = function unbindMagnifier() {
+    helper.state.magnifierDrag = null;
+    helper.clearMagnifier();
     if (!helper.state.magnifierListenersBound) {
       return;
     }
@@ -714,6 +607,18 @@ export function registerMagnifierService(helper: any) {
 
 export function createMagnifierFeature(): FeatureModule {
   return {
-    id: 'magnifier'
+    id: 'magnifier',
+    activate(context) {
+      context.helper.bindMagnifier();
+    },
+    onLoaded(context) {
+      context.helper.bindMagnifier();
+    },
+    deactivate(context) {
+      context.helper.unbindMagnifier();
+    },
+    stop(context) {
+      context.helper.unbindMagnifier();
+    }
   };
 }

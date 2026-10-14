@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { parseTimeValue } from '../hooks/parsing';
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop' | 'site' | 'segmentation' | 'progress'>) {
   const AUDIO_TRIM_OUTWARD_STEP_SECONDS = 0.05;
@@ -159,8 +160,11 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
 
   async function moveSegmentBoundary(side, labels, speakerKey, targetSeconds, row) {
+    if (!(row instanceof HTMLElement) || !row.isConnected) {
+      return { ok: false, reason: 'stale-row' };
+    }
     const rowIdentity =
-      row instanceof HTMLTableRowElement && typeof helper.getRowIdentity === 'function'
+      row instanceof HTMLElement && typeof helper.getRowIdentity === 'function'
         ? helper.getRowIdentity(row)
         : null;
     return helper.setSegmentBoundaryTime({
@@ -186,7 +190,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
 
   function getSameSpeakerBoundaryNeighborLimits(row, speakerKey) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return {
         minStartSeconds: null,
         maxEndSeconds: null
@@ -206,7 +210,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       .getTranscriptRows()
       .filter(
         (candidate) =>
-          candidate instanceof HTMLTableRowElement &&
+          candidate instanceof HTMLElement &&
           candidate.isConnected &&
           helper.getRowSpeakerKey(candidate) === targetSpeakerKey
       );
@@ -262,6 +266,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
 
   async function applyInwardTrimToRow(row, speakerKey, trimBridgeResult) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     let labels = api.site.getRowTimeLabels(row);
     const rowRange = api.site.getRowTimeRange(row);
     if (!labels || !rowRange || !trimBridgeResult || !trimBridgeResult.ok || !trimBridgeResult.foundAudio) {
@@ -287,6 +292,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       await helper.sleep(32);
     }
 
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     if (
       Number.isFinite(nextStartSeconds) &&
       nextStartSeconds > rowRange.startSeconds + AUDIO_TRIM_EPSILON_SECONDS &&
@@ -319,6 +325,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
 
   async function trimSegmentTarget(target, options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     if (!target || !target.entry) {
       return { ok: false, reason: 'missing-target' };
     }
@@ -326,7 +333,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
     const speakerKey =
       typeof target.speakerKey === 'string'
         ? target.speakerKey
-        : target.row instanceof HTMLTableRowElement
+        : target.row instanceof HTMLElement
           ? helper.getRowSpeakerKey(target.row)
           : '';
     const entryStartSeconds = parseTimeValue(target.entry.startText);
@@ -342,8 +349,8 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
           speakerKey
         })
         : null) ||
-      (target.row instanceof HTMLTableRowElement ? target.row : null);
-    if (!(row instanceof HTMLTableRowElement)) {
+      (target.row instanceof HTMLElement ? target.row : null);
+    if (!(row instanceof HTMLElement)) {
       return { ok: false, reason: 'missing-row' };
     }
 
@@ -368,6 +375,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
     }
 
     const trimResult = await requestTrimTargets(liveTarget, labels, speakerKey, options);
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     if (!trimResult || !trimResult.ok) {
       return { ok: false, reason: 'bridge-failed', bridge: trimResult || null };
     }
@@ -378,6 +386,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
     let changed = false;
     const inwardMove = await applyInwardTrimToRow(row, speakerKey, trimResult);
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     if (!inwardMove || !inwardMove.ok) {
       return {
         ok: false,
@@ -409,6 +418,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
     labels = getCurrentMoveLabels(row, labels);
     liveTarget.entry = labels;
     const extendResult = await requestExtendTargets(liveTarget, labels, speakerKey, options);
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     if (!extendResult || !extendResult.ok) {
       return {
         ok: true,
@@ -439,6 +449,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       await helper.sleep(32);
     }
 
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     const cappedExtendStartSeconds = capOutwardBoundaryTarget(row, 'left', speakerKey, extendStartSeconds);
     const currentLeftRange = api.site.getRowTimeRange(row) || currentRightRange || rowRange;
     if (
@@ -459,6 +470,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
     if (changed) {
       await helper.sleep(32);
       finalTrimResult = await requestTrimTargetsForRow(row, speakerKey, options);
+      if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
       if (finalTrimResult && finalTrimResult.ok && finalTrimResult.foundAudio) {
         const finalInwardMove = await applyInwardTrimToRow(row, speakerKey, finalTrimResult);
         if (!finalInwardMove || !finalInwardMove.ok) {
@@ -491,6 +503,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
 
   helper.trimAllSegmentsToAudio = async function trimAllSegmentsToAudio(options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const progressLabel = getTrimProgressLabel(options);
     const keepProgress = Boolean(options && options.keepProgress);
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
@@ -528,6 +541,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
 
     try {
       for (let index = 0; index < targets.length; index += 1) {
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', changedCount };
         const target = targets[index];
         updateTrimProgress(index);
 

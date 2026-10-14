@@ -39,7 +39,7 @@ const sessionModule = await load(`
   export { FEATURE_REGISTRATIONS, getRegisteredFeatureModules } from './src/features/registry.ts';
 `, new Map([
   ['../services/recovered-editor-snapshot-service', 'export const registerRecoveredEditorSnapshotService = () => {};'],
-  ['../services/builtin-service-adapters', `${adapters.map(name => `export const ${name} = () => {};`).join('\n')}
+  ['../services/builtin-service-adapters', `${adapters.map(name => `export const ${name} = ctx => { ctx.helper.installedServices?.push('${name}'); };`).join('\n')}
     export const disposeSessionServiceScopes = async scopes => { scopes.length = 0; };`]
 ]));
 
@@ -79,6 +79,57 @@ test('session initializes enhancement without another extension and settings rec
   await sessionModule.stopSessionRuntime(ctx);
   await sessionModule.reconcileSessionFeatureAccess(ctx);
   assert.equal(calls.filter(call => call === 'hotkeys-help:factory').length, 1);
+});
+
+test('all visual registry features enable from disabled boot and remove surfaces live without restarting peers', async t => {
+  const registrations = sessionModule.FEATURE_REGISTRATIONS.filter(row =>
+    ['hotkeys-help', 'magnifier', 'minimap'].includes(row.id));
+  const calls = [];
+  const active = new Set();
+  for (const registration of registrations) {
+    const original = registration.createModule;
+    t.after(() => { registration.createModule = original; });
+    registration.createModule = () => {
+      calls.push(`${registration.id}:factory`);
+      return {
+        id: registration.id,
+        activate() { active.add(registration.id); },
+        deactivate() { active.delete(registration.id); calls.push(`${registration.id}:deactivate`); },
+        stop() { calls.push(`${registration.id}:stop`); }
+      };
+    };
+  }
+  const features = { hotkeysHelp: false, magnifier: false, minimap: false };
+  const installedServices = [];
+  const ctx = { helper: { settings: { features }, installedServices, isFeatureEnabled: key => !!features[key] } };
+  await sessionModule.activateSessionFeatures(ctx);
+  assert.equal(active.size, 0);
+  assert.equal(installedServices.includes('installMinimapServiceProvider'), false);
+  for (const registration of registrations) {
+    features[registration.setting.key] = true;
+    await sessionModule.reconcileSessionFeatureAccess(ctx);
+    assert.equal(active.has(registration.id), true);
+  }
+  for (const registration of registrations) {
+    features[registration.setting.key] = false;
+    await sessionModule.reconcileSessionFeatureAccess(ctx);
+    assert.equal(active.has(registration.id), false);
+    assert.equal(calls.filter(call => call === `${registration.id}:stop`).length, 1);
+  }
+  Object.assign(features, { hotkeysHelp: true, magnifier: true, minimap: true });
+  await sessionModule.reconcileSessionFeatureAccess(ctx);
+  await sessionModule.reconcileSessionFeatureAccess(ctx, 'unrelated-settings');
+  assert.equal(active.size, 3);
+  for (const registration of registrations) {
+    assert.equal(calls.filter(call => call === `${registration.id}:factory`).length, 2);
+  }
+  for (const name of ['installHotkeysHelpServiceProvider', 'installMagnifierServiceProvider', 'installMinimapServiceProvider']) {
+    assert.equal(installedServices.filter(value => value === name).length, 1);
+  }
+  await sessionModule.deactivateSessionFeatures(ctx);
+  await sessionModule.reconcileSessionFeatureAccess(ctx);
+  assert.equal(active.size, 0, 'settings cannot activate surfaces on an inactive route');
+  await sessionModule.stopSessionRuntime(ctx);
 });
 
 class Element {

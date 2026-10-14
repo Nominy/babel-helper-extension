@@ -64,7 +64,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
     const targets = [];
     const containers = api.site.discoverWaveformContainers();
     for (const row of helper.getTranscriptRows()) {
-      if (!(row instanceof HTMLTableRowElement)) {
+      if (!(row instanceof HTMLElement)) {
         continue;
       }
 
@@ -105,11 +105,9 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
   function getAutoSegmentTargetDiagnostics() {
     const rows = helper.getTranscriptRows();
-    const fallbackRows = api.site.getFallbackTranscriptRows();
     const containers = api.site.discoverWaveformContainers();
     return {
       rowCount: rows.length,
-      fallbackRowCount: fallbackRows.length,
       containerCount: containers.length,
       rows: rows.slice(0, 5).map((row) => {
         const labels = api.site.getRowTimeLabels(row);
@@ -117,7 +115,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           speakerKey: helper.getRowSpeakerKey(row),
           startText: labels ? labels.startText : '',
           endText: labels ? labels.endText : '',
-          hasTextarea: Boolean(row.querySelector('textarea'))
+          hasEditor: Boolean(helper.getRowEditor(row))
         };
       }),
       containers: containers.slice(0, 5).map((container) => ({
@@ -151,7 +149,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   function getAutoSegmentRowActionSnapshot(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -233,6 +231,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   async function mergeAutoSegmentCloseRows(options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const skipped = new Set();
     let mergeCount = 0;
@@ -262,6 +261,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         });
       }
 
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', mergeCount };
       const result = await helper.mergeSegmentWithNativeAction({
         direction: 'below',
         annotationId: plan.current.annotationId,
@@ -312,7 +312,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   function findNearestSameSpeakerAutoSegmentRow(silent) {
-    if (!silent || !(silent.row instanceof HTMLTableRowElement)) {
+    if (!silent || !(silent.row instanceof HTMLElement)) {
       return null;
     }
 
@@ -325,7 +325,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
     let bestDistance = Infinity;
     let bestBefore = false;
     for (const candidate of helper.getTranscriptRows()) {
-      if (!(candidate instanceof HTMLTableRowElement) || candidate === silent.row) {
+      if (!(candidate instanceof HTMLElement) || candidate === silent.row) {
         continue;
       }
 
@@ -363,7 +363,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   function stitchAutoSegmentSilentText(silent, nearest) {
-    if (!silent || !nearest || !(nearest.row instanceof HTMLTableRowElement)) {
+    if (!silent || !nearest || !(nearest.row instanceof HTMLElement)) {
       return { ok: false, reason: 'missing-nearest-row' };
     }
 
@@ -372,9 +372,9 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       return { ok: true, changed: false };
     }
 
-    const nearestTextarea = helper.getRowTextarea(nearest.row);
-    if (!(nearestTextarea instanceof HTMLTextAreaElement)) {
-      return { ok: false, reason: 'missing-nearest-textarea' };
+    const nearestEditor = helper.getRowEditor(nearest.row);
+    if (!nearestEditor || nearestEditor.readOnly) {
+      return { ok: false, reason: nearestEditor?.readOnly ? 'read-only' : 'missing-nearest-editor' };
     }
 
     const nearestText = helper.getRowTextValue(nearest.row);
@@ -389,7 +389,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       return { ok: true, changed: false };
     }
 
-    if (!helper.setEditableValue(nearestTextarea, nextText)) {
+    if (!helper.setEditableValue(nearestEditor, nextText)) {
       return { ok: false, reason: 'text-stitch-failed' };
     }
 
@@ -484,10 +484,12 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   async function cleanupAutoSegmentSilentRows(options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     let silentRows = [];
     try {
       silentRows = await collectAutoSegmentSilentRowPlans(options);
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
     } catch (error) {
       return {
         ok: false,
@@ -526,6 +528,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
     const rowsToDelete = silentRows.reverse();
     for (let index = 0; index < rowsToDelete.length; index += 1) {
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
       const silent = rowsToDelete[index];
       try {
         if (progressPhase) {
@@ -536,7 +539,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
             detail: 'Removed ' + deleteCount + ' silent rows'
           });
         }
-        if (!(silent.row instanceof HTMLTableRowElement) || !silent.row.isConnected) {
+        if (!(silent.row instanceof HTMLElement) || !silent.row.isConnected) {
           continue;
         }
 
@@ -559,6 +562,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           }
         }
 
+        if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
         const deleteResult = await helper.deleteSegmentWithNativeAction({
           annotationId: silent.annotationId,
           rowIdentity: silent.rowIdentity,
@@ -610,7 +614,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   function getAutoSegmentRedistributionRowSegment(row, index) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -764,22 +768,24 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
     for (let index = 0; index < group.segments.length; index += 1) {
       const segment = group.segments[index];
       const allocation = allocations[index];
-      if (!(segment.row instanceof HTMLTableRowElement) || !segment.row.isConnected) {
+      if (!(segment.row instanceof HTMLElement) || !segment.row.isConnected ||
+          (segment.rowIdentity && !helper.rowMatchesIdentity(segment.row, segment.rowIdentity))) {
+        return { ok: false, reason: 'stale-row', changedCount };
+      }
+
+      const editor = helper.getRowEditor(segment.row);
+      if (!editor || editor.readOnly) {
+        return { ok: false, reason: editor?.readOnly ? 'read-only' : 'missing-editor', changedCount };
+      }
+
+      if (allocation.text === normalizeAutoSegmentRedistributionText(editor.value || '')) {
         continue;
       }
 
-      const textarea = helper.getRowTextarea(segment.row);
-      if (!(textarea instanceof HTMLTextAreaElement)) {
-        continue;
+      if (!helper.setEditableValue(editor, allocation.text)) {
+        return { ok: false, reason: 'text-write-failed', changedCount };
       }
-
-      if (allocation.text === normalizeAutoSegmentRedistributionText(textarea.value || '')) {
-        continue;
-      }
-
-      if (helper.setEditableValue(textarea, allocation.text)) {
-        changedCount += 1;
-      }
+      changedCount += 1;
     }
 
     return {
@@ -791,22 +797,18 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
   function getL0TimingLaneAliases(row, fallback) {
     const identity =
-      row instanceof HTMLTableRowElement && typeof helper.getRowIdentity === 'function'
+      row instanceof HTMLElement && typeof helper.getRowIdentity === 'function'
         ? helper.getRowIdentity(row) || {}
         : {};
-    const speakerCell =
-      row instanceof HTMLTableRowElement && row.children[1] instanceof HTMLElement
-        ? helper.normalizeText(row.children[1])
-        : '';
     return buildL0TimingLaneAliases(identity, [
       fallback,
-      row instanceof HTMLTableRowElement ? helper.getRowSpeakerKey(row) : '',
-      speakerCell
+      row instanceof HTMLElement ? helper.getRowSpeakerKey(row) : ''
     ]);
   }
 
 
   async function redistributeAutoSegmentTextWithL0Timing(baselineGroups, options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const timingIndex = options && options.timingIndex;
     const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
@@ -882,6 +884,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
       let applyResult = null;
       try {
+        if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
         applyResult = applyAutoSegmentTextRedistributionAllocations(
           group,
           timedResult.allocations
@@ -935,6 +938,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   async function redistributeAutoSegmentTextWithLegacyModels(baselineGroups, options) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const progressPhase = options && typeof options.progressPhase === 'string' ? options.progressPhase : '';
     const groups = collectAutoSegmentTextRedistributionGroups(baselineGroups);
     if (!groups.length) {
@@ -1028,6 +1032,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         }
       }
 
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed' };
       const applied = applyAutoSegmentTextRedistributionAllocations(group, allocations);
       if (!applied || !applied.ok) {
         skippedCount += 1;
@@ -1114,7 +1119,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
     const speakerKey =
       typeof plan.speakerKey === 'string' && plan.speakerKey ? plan.speakerKey : '';
     for (const row of helper.getTranscriptRows()) {
-      if (!(row instanceof HTMLTableRowElement)) {
+      if (!(row instanceof HTMLElement)) {
         continue;
       }
 
@@ -1135,7 +1140,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       }
     }
 
-    return plan.row instanceof HTMLTableRowElement && plan.row.isConnected ? plan.row : null;
+    return plan.row instanceof HTMLElement && plan.row.isConnected ? plan.row : null;
   }
 
 
@@ -1186,6 +1191,9 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
 
   helper.autoSegmentVisibleSilences = async function autoSegmentVisibleSilences() {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    const isSameReviewTask = captureL0TaskGuard();
+    if (helper.getEditorSnapshot?.()?.readOnly) return { ok: false, reason: 'read-only', splitCount: 0 };
     if (helper.state.autoSegmentationPending) {
       return {
         ok: false,
@@ -1204,6 +1212,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         detail: 'Waiting for background word timing'
       });
       const timingWaitResult = await waitForAutoSegmentL0Timing();
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount: 0 };
       if (
         timingWaitResult &&
         timingWaitResult.reason === 'task-changed'
@@ -1235,6 +1244,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         keepProgress: true,
         progressPhase: 'preTrim'
       });
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount: 0 };
       if (!(preTrimResult && preTrimResult.ok)) {
         emitAutoSegmentDebug({
           phase: 'complete',
@@ -1256,6 +1266,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       const mergeResult = await mergeAutoSegmentCloseRows({
         progressPhase: 'merge'
       });
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount: 0 };
       if (!mergeResult || !mergeResult.ok) {
         emitAutoSegmentDebug({
           phase: 'complete',
@@ -1318,6 +1329,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           detail: 'Detected ' + silenceRunCount + ' silence runs'
         });
         const silenceResult = await requestAutoSegmentSilenceRuns(targets[index]);
+        if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
         silenceResults.push(silenceResult);
         silenceRunCount += silenceResult && Array.isArray(silenceResult.runs) ? silenceResult.runs.length : 0;
         updateAutoSegmentProgress({
@@ -1344,6 +1356,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       });
 
       for (let index = 0; index < splitPlans.length; index += 1) {
+        if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
         updateAutoSegmentProgress({
           phase: 'split',
           current: index,
@@ -1353,7 +1366,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
 
         const plan = splitPlans[index];
         const row = findCurrentAutoSegmentSplitRow(plan);
-        if (!(row instanceof HTMLTableRowElement)) {
+        if (!(row instanceof HTMLElement)) {
           continue;
         }
 
@@ -1361,7 +1374,12 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         const range = api.site.getRowTimeRange(row);
         const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
         const smartSplitPlan = api.split.buildSmartSplitPlanForRow(row, plan.splitSeconds, plan.speakerKey);
+        const textParts = smartSplitPlan ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
         const splitResult = await helper.splitSegmentAtTime({
+          ...(textParts?.wordCount ? {
+            sourceText: smartSplitPlan.sourceText,
+            texts: [textParts.firstText, textParts.secondText]
+          } : {}),
           annotationId: plan.annotationId,
           rowIdentity: rowIdentity || plan.rowIdentity || null,
           startText: labels ? labels.startText : '',
@@ -1371,6 +1389,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           speakerKey: plan.speakerKey,
           splitSeconds: plan.splitSeconds
         });
+        if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
 
         if (!splitResult || !splitResult.ok) {
           continue;
@@ -1383,9 +1402,6 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           total: splitPlans.length,
           detail: 'Created ' + splitCount + ' splits'
         });
-        if (smartSplitPlan) {
-          await api.split.applySmartSplit(smartSplitPlan);
-        }
         await helper.sleep(AUTO_SEGMENT_SPLIT_SETTLE_MS);
       }
 
@@ -1395,12 +1411,14 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         total: 1,
         detail: 'Preparing post-trim pass'
       });
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
       const postTrimResult = await helper.trimAllSegmentsToAudio({
         amplitudeThreshold: AUTO_SEGMENT_STRUCTURAL_SILENCE_THRESHOLD,
         progressLabel: 'Post-trimming segmented draft',
         keepProgress: true,
         progressPhase: 'postTrim'
       });
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
       if (!(postTrimResult && postTrimResult.ok)) {
         emitAutoSegmentDebug({
           phase: 'complete',
@@ -1428,6 +1446,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       }).catch((error) =>
         createAutoSegmentCleanupFailureResult(error)
       );
+      if (!isCurrentTask()) return { ok: false, reason: 'task-changed', splitCount };
       const redistributionResult = await (
         useLegacyRedistribution
           ? redistributeAutoSegmentTextWithLegacyModels(textBaselineGroups, {
@@ -1478,8 +1497,10 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       });
       return result;
     } finally {
-      helper.state.autoSegmentationPending = false;
-      api.progress.dismissLongTaskProgress();
+      if (isSameReviewTask()) {
+        helper.state.autoSegmentationPending = false;
+        api.progress.dismissLongTaskProgress();
+      }
     }
   };
 

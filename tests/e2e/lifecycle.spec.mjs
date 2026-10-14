@@ -1,5 +1,5 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
-import { editors, ready, selectText, openAppearance } from './helper-editing-utils.mjs';
+import { editors, ready, fillText, readText, selectText, openAppearance, transcriptScroll } from './helper-editing-utils.mjs';
 
 export const featureScenarios = {
   hotkeysHelp: ['hotkeysHelp: native shortcut dialog reflects enabled features without duplicates'],
@@ -49,12 +49,12 @@ test(featureScenarios.selectedNumberToSkaz[0], async ({ page, babel }) => {
     await expect(options.locator('[data-role="status"]')).toContainText('Saved.');
     await page.bringToFront();
     const editor = editors(page).first();
-    await editor.fill('пять');
+    await fillText(editor, 'пять');
     await selectText(editor, 0, 4);
     await page.keyboard.press('5');
-    await expect(editor).toHaveValue(enabled ? '5 {СКАЗ: пять}' : '5');
+    await expect.poll(() => readText(editor)).toBe(enabled ? '5 {СКАЗ: пять}' : '5');
     await editors(page).nth(1).click();
-    await expect(editor).toHaveValue(enabled ? '5 {СКАЗ: пять}' : '5');
+    await expect.poll(() => readText(editor)).toBe(enabled ? '5 {СКАЗ: пять}' : '5');
     await options.bringToFront();
   }
   await options.reload();
@@ -98,10 +98,10 @@ test(featureScenarios.focusToggle[0], async ({ page, babel }) => {
     await expect(editor).not.toBeFocused();
     await page.keyboard.press('Escape');
     await expect(editor).toBeFocused();
-    await editor.fill('пять');
+    await fillText(editor, 'пять');
     await selectText(editor, 0, 4);
     await page.keyboard.press('5');
-    await expect(editor).toHaveValue('5 {СКАЗ: пять}');
+    await expect.poll(() => readText(editor)).toBe('5 {СКАЗ: пять}');
     // Two leaked toggle handlers would cancel each other and leave the panel closed.
     await page.keyboard.press('Alt+Shift+KeyP');
     await expect(page.locator('[data-babel-helper-appearance-panel]').getByRole('dialog')).toBeVisible();
@@ -110,7 +110,7 @@ test(featureScenarios.focusToggle[0], async ({ page, babel }) => {
   }
   await babel.reset();
   await ready(page);
-  await expect(editors(page).first()).toHaveValue('Привет, это тестовая запись.');
+  await expect.poll(() => readText(editors(page).first())).toBe('Привет, это тестовая запись.');
   const panel = await openAppearance(page);
   await expect(panel).toBeVisible();
 });
@@ -119,16 +119,16 @@ test(featureScenarios.extendedDiffView[0], async ({ page, babel }) => {
   await babel.reset('diff');
   const original = (await babel.state()).action.annotations;
   await expect(page.getByRole('button', { name: 'Hotkeys', exact: true })).toBeVisible();
-  const diffSwitch = page.getByRole('switch').first();
+  const diffSwitch = page.locator('#diff-mode[role="switch"]');
   await diffSwitch.setChecked(true);
   const modes = page.locator('#bh-segmentation-mode-controls');
   await expect(modes).toBeVisible();
   await modes.locator('[data-mode="fusion"]').click();
-  const table = page.locator('table').filter({ hasText: 'Speaker' }).first();
-  await expect(table).toContainText('пробная');
-  await expect(table).toContainText('тестовая');
-  await expect(table).toContainText('[смех]');
-  await expect(table).toContainText('Удалённая тестовая фраза.');
+  const transcript = transcriptScroll(page);
+  await expect(transcript).toContainText('пробная');
+  await expect(transcript).toContainText('тестовая');
+  await expect(transcript).toContainText('[смех]');
+  await expect(transcript).toContainText('Удалённая тестовая фраза.');
   // Both reference and current boundaries are genuinely drawn over the decoded waveform.
   const oldTime = page.locator('[title*="timestamp shift"][title*="old segment 0.200s-2.800s"]');
   const newTime = page.locator('[title*="timestamp shift"][title*="new segment 0.500s-2.500s"]');
@@ -139,12 +139,12 @@ test(featureScenarios.extendedDiffView[0], async ({ page, babel }) => {
   expect(oldBox.width).toBeGreaterThan(newBox.width);
   await expect(page.locator('[title*="old segment"][title*="deleted"]')).toBeVisible();
   await modes.locator('[data-mode="reference"]').click();
-  await expect(table).toContainText('Привет это пробная запись');
-  await expect(table).not.toContainText('Привет, это тестовая запись.');
+  await expect(transcript).toContainText('Привет это пробная запись');
+  await expect(transcript).not.toContainText('Привет, это тестовая запись.');
   await modes.locator('[data-mode="current"]').click();
-  await expect(table).toContainText('Привет, это тестовая запись.');
-  await expect(table).not.toContainText('пробная');
-  await expect(table).not.toContainText('[смех]');
+  await expect(transcript).toContainText('Привет, это тестовая запись.');
+  await expect(transcript).not.toContainText('пробная');
+  await expect(transcript).not.toContainText('[смех]');
   await page.keyboard.press('Alt+Shift+KeyF');
   await page.keyboard.press('KeyD');
   expect((await babel.state()).action.annotations).toEqual(original);
@@ -184,8 +184,8 @@ test(distributionScenarios['dist/userscript/babel-mods.js'][0], async ({ page, b
   await expect(page.getByRole('button', { name: /Consumer userscript counter:/ })).toHaveCount(0);
   await page.evaluate(() => window.e2eUserscriptButton.click());
   expect(await page.evaluate(() => window.e2eUserscriptClicks)).toBe(1);
-  await editors(page).first().fill('пять');
+  await fillText(editors(page).first(), 'пять');
   await selectText(editors(page).first(), 0, 4);
   await page.keyboard.press('5');
-  await expect(editors(page).first()).toHaveValue('5 {СКАЗ: пять}');
+  await expect.poll(() => readText(editors(page).first())).toBe('5 {СКАЗ: пять}');
 });

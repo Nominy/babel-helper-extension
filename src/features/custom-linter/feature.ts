@@ -168,6 +168,7 @@ export function requestAutoFix(scope: 'current' | 'all'): Promise<{ ok: boolean;
 export function createCustomLinterFeature(): FeatureModule {
   let startPromise: Promise<boolean> | null = null;
   let bridgeReady = false;
+  let activation = 0;
 
   async function ensureBridgeReady(ctx: FeatureContext): Promise<boolean> {
     if (!startPromise) {
@@ -192,8 +193,9 @@ export function createCustomLinterFeature(): FeatureModule {
       ctx.helper.requestAutoFix = requestAutoFix;
     },
     async onLoaded(ctx: FeatureContext) {
+      const generation = ++activation;
       const ready = bridgeReady || (await ensureBridgeReady(ctx));
-      if (!ready) {
+      if (!ready || generation !== activation) {
         return;
       }
 
@@ -201,6 +203,7 @@ export function createCustomLinterFeature(): FeatureModule {
       setBridgeEnabled(true);
     },
     async activate(ctx: FeatureContext, reason: string) {
+      const generation = ++activation;
       if (!bridgeReady) {
         const ready = await ensureBridgeReady(ctx);
         if (!ready) {
@@ -208,14 +211,17 @@ export function createCustomLinterFeature(): FeatureModule {
         }
       }
 
+      if (generation !== activation) return;
       ctx.helper.perf?.count?.('bridge.inject.enabled', { id: 'custom-linter', reason });
       setBridgeConfig(ctx);
       setBridgeEnabled(true);
     },
     deactivate() {
+      ++activation;
       setBridgeEnabled(false);
     },
     stop(ctx: FeatureContext) {
+      ++activation;
       bridgeReady = false;
       setBridgeEnabled(false);
       if (ctx.helper.requestAutoFix === requestAutoFix) {

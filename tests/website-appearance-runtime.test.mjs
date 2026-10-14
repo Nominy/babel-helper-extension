@@ -15,7 +15,7 @@ async function importRuntime() {
   return import(`data:text/javascript;base64,${source}`);
 }
 
-async function importKernelHarness() {
+async function importKernelHarness({ realController = false } = {}) {
   const harnessKey = '__babelHelperAppearanceKernelHarness';
   globalThis[harnessKey] = {
     controllerApplies: [],
@@ -80,7 +80,7 @@ async function importKernelHarness() {
          start() {},
          ready() {},
          updateSettings() {},
-         activateSession(_reason, action) { return action(); },
+         activateSession(_reason, action) { return action(() => true); },
          deactivateSession(_reason, action) { return action(); },
          stop(_reason, action) { return action(); }
        });`
@@ -114,6 +114,7 @@ async function importKernelHarness() {
        };`
     ]
   ]);
+  if (realController) modules.delete('../content/mod-controller');
   const result = await build({
     entryPoints: ['src/core/kernel.ts'],
     bundle: true,
@@ -1438,7 +1439,6 @@ test('a bridge that loads after dispose never receives a stale enabled config', 
 });
 
 const SCOPE_ATTRIBUTE = 'data-babel-helper-scope';
-const ROW_TEXTAREA_PLACEHOLDER = 'What was said…';
 
 // The scope marks live on the page rather than on the root, so these fixtures need a body,
 // a MutationObserver and a clock. All three reach the controller through the document's own
@@ -1509,23 +1509,22 @@ function scopeFixture() {
   };
 }
 
-function rowTextarea({ placeholder = true } = {}) {
-  const textarea = new FakeElement('textarea');
-  if (placeholder) {
-    textarea.setAttribute('placeholder', ROW_TEXTAREA_PLACEHOLDER);
-  } else {
-    textarea.setAttribute('class', 'w-full text-xs');
-  }
-  return textarea;
-}
-
-function mountTranscript(parent) {
+function mountTranscript(parent, { readOnly = false, empty = false } = {}) {
   const main = new FakeElement('main');
-  const table = new FakeElement('table');
-  table.appendChild(rowTextarea());
-  main.appendChild(table);
+  const panel = new FakeElement('div');
+  panel.setAttribute('data-transcript-scroll', '');
+  if (!empty) {
+    const row = new FakeElement('section');
+    row.setAttribute('data-annotation-id', 'turn-one');
+    const text = new FakeElement('div');
+    if (!readOnly) { text.setAttribute('role', 'textbox'); text.setAttribute('aria-label', 'Edit turn text'); }
+    text.textContent = 'Native turn';
+    row.appendChild(text);
+    panel.appendChild(row);
+  }
+  main.appendChild(panel);
   parent.appendChild(main);
-  return { main, table };
+  return { main, panel };
 }
 
 function scopeMarks(document) {
@@ -1536,12 +1535,11 @@ function scopeMarks(document) {
 
 test('the transcript scope is marked while the master switch is on', () => {
   const fixture = scopeFixture();
-  const { main, table } = mountTranscript(fixture.body);
-  // The sheet's old gate accepted `textarea.w-full` as a row marker too, so a second
-  // transcript table keeps its palette, and a table without rows never had one.
-  const wideTable = new FakeElement('table');
-  wideTable.appendChild(rowTextarea({ placeholder: false }));
-  main.appendChild(wideTable);
+  const { main, panel } = mountTranscript(fixture.body)
+  // Empty native transcripts remain themeable without any editable control.
+  const emptyPanel = new FakeElement('div');
+  emptyPanel.setAttribute('data-transcript-scroll', '');
+  main.appendChild(emptyPanel);
   const chromeTable = new FakeElement('table');
   main.appendChild(chromeTable);
   const controller = createWebsiteAppearanceController(fixture.document);
@@ -1550,12 +1548,12 @@ test('the transcript scope is marked while the master switch is on', () => {
 
   assert.deepEqual(scopeMarks(fixture.document), [
     ['MAIN', 'transcript'],
-    ['TABLE', 'transcript-table'],
-    ['TABLE', 'transcript-table']
+    ['DIV', 'transcript-turns'],
+    ['DIV', 'transcript-turns']
   ]);
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
-  assert.equal(wideTable.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
+  assert.equal(emptyPanel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
   assert.equal(chromeTable.getAttribute(SCOPE_ATTRIBUTE), null);
   assert.equal(fixture.document.documentElement.getAttribute(SCOPE_ATTRIBUTE), null);
 
@@ -1572,15 +1570,27 @@ test('the transcript scope is marked while the master switch is on', () => {
   controller.dispose();
 });
 
+test('readonly native transcripts receive the same reversible appearance scope', () => {
+  const fixture = scopeFixture();
+  const { main, panel } = mountTranscript(fixture.body, { readOnly: true });
+  const controller = createWebsiteAppearanceController(fixture.document);
+  controller.apply(appearance({ themeEnabled: true, textEnabled: true }));
+  assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
+  assert.equal(panel.querySelector('[role=\"textbox\"]'), null);
+  controller.dispose();
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), null);
+});
+
 test('a page without a transcript is never marked', () => {
   const fixture = scopeFixture();
-  // A main the transcript does not live in, and a transcript table outside every main.
+  // A settings main and a detached transcript panel are not transcript scopes.
   const settingsMain = new FakeElement('main');
   settingsMain.appendChild(new FakeElement('table'));
   fixture.body.appendChild(settingsMain);
-  const strayTable = new FakeElement('table');
-  strayTable.appendChild(rowTextarea());
-  fixture.body.appendChild(strayTable);
+  const strayPanel = new FakeElement('div');
+  strayPanel.setAttribute('data-transcript-scroll', '');
+  fixture.body.appendChild(strayPanel);
   const controller = createWebsiteAppearanceController(fixture.document);
 
   controller.apply(appearance({ themeEnabled: true, textEnabled: true }));
@@ -1593,13 +1603,13 @@ test('a page without a transcript is never marked', () => {
   );
 
   // The transcript arriving on a route change is what the observer is for.
-  const { main, table } = mountTranscript(fixture.body);
+  const { main, panel } = mountTranscript(fixture.body)
   fixture.emit([
     { type: 'childList', target: fixture.body, addedNodes: [main], removedNodes: [] }
   ]);
   fixture.flush();
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
 
   controller.dispose();
 });
@@ -1622,7 +1632,7 @@ test('a replaced transcript is re-marked once per mutation burst', () => {
     }
   ]);
   fixture.emit([
-    { type: 'childList', target: second.main, addedNodes: [second.table], removedNodes: [] }
+    { type: 'childList', target: second.main, addedNodes: [second.panel], removedNodes: [] }
   ]);
   assert.equal(fixture.pending(), 1, 'a burst of mutations coalesces into one pass');
   assert.deepEqual(fixture.delays(), [150]);
@@ -1630,10 +1640,10 @@ test('a replaced transcript is re-marked once per mutation burst', () => {
   fixture.flush();
   assert.deepEqual(scopeMarks(fixture.document), [
     ['MAIN', 'transcript'],
-    ['TABLE', 'transcript-table']
+    ['DIV', 'transcript-turns']
   ]);
   assert.equal(second.main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(second.table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(second.panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
   assert.equal(
     first.main.getAttribute(SCOPE_ATTRIBUTE),
     null,
@@ -1643,10 +1653,10 @@ test('a replaced transcript is re-marked once per mutation burst', () => {
   // Typing in a row is text, and a row that only changes attributes is not a transcript
   // moving: neither may cost a pass.
   fixture.emit([
-    { type: 'childList', target: second.table, addedNodes: [{ nodeType: 3 }], removedNodes: [] }
+    { type: 'childList', target: second.panel, addedNodes: [{ nodeType: 3 }], removedNodes: [] }
   ]);
   fixture.emit([
-    { type: 'childList', target: second.table, addedNodes: [], removedNodes: [] }
+    { type: 'childList', target: second.panel, addedNodes: [], removedNodes: [] }
   ]);
   assert.equal(fixture.pending(), 0);
 
@@ -1655,28 +1665,28 @@ test('a replaced transcript is re-marked once per mutation burst', () => {
 
 test('disable and dispose put the transcript back exactly as it was', () => {
   const fixture = scopeFixture();
-  const { main, table } = mountTranscript(fixture.body);
+  const { main, panel } = mountTranscript(fixture.body)
   main.setAttribute(SCOPE_ATTRIBUTE, 'app-owned');
   const controller = createWebsiteAppearanceController(fixture.document);
 
   controller.apply(appearance({ themeEnabled: true }));
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
 
   controller.apply(appearance({ enabled: false, themeEnabled: true }));
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'app-owned', 'a captured value comes back');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), null, 'a mark of ours leaves nothing');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), null, 'a mark of ours leaves nothing');
   assert.equal(fixture.observers[0].disconnected, true, 'disable disconnects the observer');
   assert.equal(fixture.pending(), 0);
 
   controller.apply(appearance({ themeEnabled: true }));
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
   assert.equal(fixture.observers.length, 2, 'a re-enable takes a fresh observer');
 
   controller.dispose();
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'app-owned');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), null);
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), null);
   assert.deepEqual(
     scopeMarks(fixture.document),
     [['MAIN', 'app-owned']],
@@ -1723,7 +1733,7 @@ test('an outside hand on a scope mark is repaired, never clobbered', () => {
 
 test('a palette drag never touches the DOM to keep the scope marks', () => {
   const fixture = scopeFixture();
-  const { main, table } = mountTranscript(fixture.body);
+  const { main, panel } = mountTranscript(fixture.body)
   let queries = 0;
   const search = fixture.body.querySelectorAll.bind(fixture.body);
   fixture.body.querySelectorAll = (selector) => {
@@ -1740,7 +1750,7 @@ test('a palette drag never touches the DOM to keep the scope marks', () => {
   }
   assert.equal(queries, 1, 'a live observer is the whole apply-time check');
   assert.equal(main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
 
   controller.dispose();
 });
@@ -1759,7 +1769,7 @@ test('without a MutationObserver the marks are reconciled on the next apply', ()
   const second = mountTranscript(fixture.body);
   controller.apply(appearance({ themeEnabled: true }));
   assert.equal(second.main.getAttribute(SCOPE_ATTRIBUTE), 'transcript');
-  assert.equal(second.table.getAttribute(SCOPE_ATTRIBUTE), 'transcript-table');
+  assert.equal(second.panel.getAttribute(SCOPE_ATTRIBUTE), 'transcript-turns');
   assert.equal(first.main.getAttribute(SCOPE_ATTRIBUTE), null);
   assert.equal(fixture.pending(), 0, 'no timer, no polling');
 
@@ -1854,6 +1864,74 @@ async function waitForWrites(storage, count) {
     await Promise.resolve();
   }
   assert.equal(storage.writes.length, count);
+}
+
+for (const interruption of ['navigation', 'stop']) {
+  test(`kernel cancels stale feature mounting after a delayed session import and ${interruption}`, async () => {
+    installFakeStorage();
+    const { createHelperKernel } = await importKernelHarness({ realController: true });
+    const harness = globalThis.__babelHelperAppearanceKernelHarness;
+    const importing = Promise.withResolvers();
+    const releaseImport = Promise.withResolvers();
+    const root = new FakeElement('main');
+    const mounted = [];
+    harness.importing = importing;
+    harness.releaseImport = releaseImport;
+    harness.activateFeatures = ({ helper }) => {
+      const panel = new FakeElement('section');
+      panel.setAttribute('data-task', helper.state.reviewActionId);
+      root.appendChild(panel);
+      mounted.push(panel);
+      return true;
+    };
+    harness.deactivateFeatures = () => {
+      for (const panel of root.children.slice()) panel.remove();
+      return true;
+    };
+    const moduleSource = `
+      const harness = globalThis.__babelHelperAppearanceKernelHarness;
+      harness.importing.resolve();
+      await harness.releaseImport.promise;
+      export const activateSessionFeatures = harness.activateFeatures;
+      export const deactivateSessionFeatures = harness.deactivateFeatures;
+      export const stopSessionRuntime = harness.deactivateFeatures;
+      // ${crypto.randomUUID()}
+    `;
+    chrome.runtime.getURL = () => `data:text/javascript;base64,${Buffer.from(moduleSource).toString('base64')}`;
+    const kernel = createHelperKernel();
+    try {
+      await kernel.start();
+      kernel.helper.state.reviewActionId = 'old-task';
+      const oldActivation = kernel.onLoaded('old-task');
+      await importing.promise;
+      assert.equal(root.children.length, 0);
+      let nextActivation;
+      let interruptionResult;
+      if (interruption === 'navigation') {
+        interruptionResult = kernel.helper.runtime.deactivateFeature('session', 'projects');
+        kernel.helper.state.reviewActionId = 'next-task';
+        nextActivation = kernel.onLoaded('next-task');
+      } else {
+        interruptionResult = kernel.stop('document-unloaded');
+      }
+      releaseImport.resolve();
+      assert.equal(await oldActivation, false);
+      await interruptionResult;
+      if (nextActivation) {
+        assert.equal(await nextActivation, true);
+        assert.equal(mounted.length, 1, 'The stale import must not mount then tear down features on the next task');
+        assert.equal(root.children.length, 1);
+        assert.equal(root.children[0].getAttribute('data-task'), 'next-task');
+      } else {
+        assert.equal(mounted.length, 0, 'An unloaded kernel must never start the delayed feature');
+        assert.equal(root.children.length, 0);
+      }
+    } finally {
+      releaseImport.resolve();
+      await kernel.stop('test-cleanup');
+      releaseKernelHarness();
+    }
+  });
 }
 
 test('kernel enables enhancement without other extensions and appearance edits retain its saved preference', async () => {

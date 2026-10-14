@@ -23,32 +23,17 @@ export function registerTimestampEditService(helper: any) {
   }
 
   function getRowTimeLabels(row) {
-    if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
-
-    return {
-      startText: helper.normalizeText(row.children[2]),
-      endText: helper.normalizeText(row.children[3])
-    };
+    const identity = helper.getRowIdentity(row);
+    return identity?.startText && identity?.endText
+      ? { startText: identity.startText, endText: identity.endText }
+      : null;
   }
 
   function getRowTimeRange(row) {
-    const labels = getRowTimeLabels(row);
-    if (!labels) {
-      return null;
-    }
-
-    const startSeconds = parseTimeValue(labels.startText);
-    const endSeconds = parseTimeValue(labels.endText);
-    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
-      return null;
-    }
-
-    return {
-      startSeconds,
-      endSeconds
-    };
+    return helper.getRowTimeRange(row);
   }
 
   function findRowByTimeRange(startSeconds, endSeconds, options) {
@@ -137,7 +122,7 @@ export function registerTimestampEditService(helper: any) {
     let bestScore = Infinity;
 
     for (const row of rows) {
-      if (!(row instanceof HTMLTableRowElement)) {
+      if (!(row instanceof HTMLElement)) {
         continue;
       }
 
@@ -287,10 +272,12 @@ export function registerTimestampEditService(helper: any) {
     const staleTaskResult = (attempts) => ({
       ok: false, reason: 'stale-task', attempts, backend, verification: null
     });
+    let lastResult = null;
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (!isCurrentTask()) return staleTaskResult(attempt);
       const bridgeResult = await callTimestampBridge(operation, buildPayload(), isCurrentTask);
+      lastResult = bridgeResult;
       if (!isCurrentTask()) return staleTaskResult(attempt + 1);
       if (bridgeResult && bridgeResult.ok) {
         return {
@@ -303,13 +290,26 @@ export function registerTimestampEditService(helper: any) {
           verification: bridgeResult
         };
       }
+      if (bridgeResult && (
+        settings.expectedHistoryRevision !== undefined ||
+        settings.expectedHistoryToken !== undefined ||
+        bridgeResult.reason === 'history-conflict' ||
+        bridgeResult.reason === 'read-only' ||
+        bridgeResult.reason === 'stale-task' ||
+        (Number.isInteger(bridgeResult.previousHistoryRevision) &&
+          bridgeResult.historyRevision !== bridgeResult.previousHistoryRevision)
+        || (typeof bridgeResult.previousHistoryToken === 'string' &&
+          bridgeResult.historyToken !== bridgeResult.previousHistoryToken)
+      )) {
+        return { ...bridgeResult, attempts: attempt + 1, backend, verification: bridgeResult };
+      }
       if (attempt < attempts - 1 && retryDelayMs > 0) {
         await helper.sleep(retryDelayMs);
         if (!isCurrentTask()) return staleTaskResult(attempt + 1);
       }
     }
 
-    return { ok: false, attempts, backend, verification: null };
+    return { ...lastResult, ok: false, attempts, backend, verification: lastResult };
   }
 
   function resolveRowMutationPayload(settings) {
@@ -325,6 +325,9 @@ export function registerTimestampEditService(helper: any) {
       });
     const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
     return {
+      expectedReviewActionId: settings.expectedReviewActionId,
+      expectedHistoryRevision: settings.expectedHistoryRevision,
+      expectedHistoryToken: settings.expectedHistoryToken,
       startText: settings.startText,
       endText: settings.endText,
       startSeconds: settings.startSeconds,
@@ -346,8 +349,11 @@ export function registerTimestampEditService(helper: any) {
 
   helper.snapshotTranscriptWithNativeBridge =
     async function snapshotTranscriptWithNativeBridge() {
-      return callTimestampBridge('snapshot-transcript', {});
+      return callTimestampBridge('flush-transcript', {});
     };
+  helper.undoTranscriptWithNativeBridge = async function undoTranscriptWithNativeBridge(options) {
+    return callTimestampBridge('undo-transcript', options, captureL0TaskGuard());
+  };
   helper.setSegmentBoundaryTime = async function setSegmentBoundaryTime(options) {
     const settings = options || {};
     const side = settings.side === 'left' ? 'left' : 'right';
@@ -373,6 +379,9 @@ export function registerTimestampEditService(helper: any) {
         });
       const rowIdentity = row ? helper.getRowIdentity(row) : settings.rowIdentity || null;
       return {
+        expectedReviewActionId: settings.expectedReviewActionId,
+        expectedHistoryRevision: settings.expectedHistoryRevision,
+        expectedHistoryToken: settings.expectedHistoryToken,
         side,
         startText: settings.startText,
         endText: settings.endText,
@@ -402,6 +411,10 @@ export function registerTimestampEditService(helper: any) {
     return retryTimestampMutation(settings, 'split-segment-at-time', 'page-react-split-annotation', () => {
       const payload = resolveRowMutationPayload(settings);
       payload.splitSeconds = splitSeconds;
+      if (settings.texts !== undefined) {
+        payload.texts = settings.texts;
+        payload.sourceText = settings.sourceText;
+      }
       return payload;
     });
   };
@@ -431,6 +444,9 @@ export function registerTimestampEditService(helper: any) {
     }
 
     return retryTimestampMutation(settings, 'create-segment', 'page-react-create-annotation', () => ({
+      expectedReviewActionId: settings.expectedReviewActionId,
+      expectedHistoryRevision: settings.expectedHistoryRevision,
+      expectedHistoryToken: settings.expectedHistoryToken,
       annotationId:
         typeof settings.annotationId === 'string' && settings.annotationId
           ? settings.annotationId

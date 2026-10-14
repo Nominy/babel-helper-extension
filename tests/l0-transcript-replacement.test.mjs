@@ -48,8 +48,8 @@ function formatTime(seconds) {
 
 function makeRow({ annotationId, processedRecordingId, lane, startSeconds, endSeconds, text }) {
   return {
-    children: ['', lane, formatTime(startSeconds), formatTime(endSeconds)],
-    textarea: { value: text },
+    editor: { value: text, readOnly: false },
+    metadata: { warningAssertions: ['native-warning'], emotion: 'calm' },
     identity: {
       annotationId,
       processedRecordingId,
@@ -68,12 +68,12 @@ function nativeSnapshotRow(row, index) {
     processedRecordingId: row.identity.processedRecordingId,
     speakerKey: row.identity.speakerKey,
     trackLabel: row.identity.trackLabel,
-    lane: row.children[1],
+    lane: row.identity.trackLabel,
     startText: row.identity.startText,
     endText: row.identity.endText,
     startSeconds: Number(row.identity.startText.split(':').at(-1)),
     endSeconds: Number(row.identity.endText.split(':').at(-1)),
-    text: row.textarea.value
+    text: row.editor.value
   };
 }
 
@@ -100,11 +100,22 @@ function createHelper(options = {}) {
   let generatedId = 0;
   let requestedCreateCount = 0;
   const laneByTrack = { 'track-1': 'Speaker 1', 'track-2': 'Speaker 2' };
+  const history = [];
+  const historyIds = new WeakMap();
+  const emptyHistory = {};
+  let nextHistoryId = 0;
+  function historyToken() {
+    const head = history.at(-1) || emptyHistory;
+    let id = historyIds.get(head);
+    if (!id) { id = ++nextHistoryId; historyIds.set(head, id); }
+    return `native-test-history:${history.length}:${id}`;
+  }
 
   return {
     state: { sessionLifecycleRevision: 1 },
     rows,
     mutations,
+    history,
     async snapshotTranscriptWithNativeBridge() {
       if (options.bridgeFailure) {
         throw new Error('fake bridge failure');
@@ -114,6 +125,10 @@ function createHelper(options = {}) {
       }
       return {
         ok: true,
+        reviewActionId: 'task-one',
+        historyRevision: history.length,
+        historyToken: historyToken(),
+        readOnly: Boolean(options.readOnly),
         backend: 'page-react-transcript-snapshot',
         lanes: Object.entries(laneByTrack).map(([id, label]) => ({ processedRecordingId: id, trackLabel: label })),
         rows: rows.map(nativeSnapshotRow)
@@ -132,8 +147,8 @@ function createHelper(options = {}) {
       }
       return row.identity;
     },
-    getRowTextarea(row) {
-      return row.textarea;
+    getRowEditor(row) {
+      return row.editor;
     },
     findRowByIdentity(identity) {
       return rows.find((row) => row.identity.annotationId === identity.annotationId) || null;
@@ -141,22 +156,36 @@ function createHelper(options = {}) {
     normalizeText(value) {
       return typeof value === 'string' ? value : '';
     },
-    setEditableValue(textarea, text) {
-      textarea.value = text;
+    setEditableValue(editor, text) {
+      if (editor.readOnly) return false;
+      editor.value = text;
       mutations.push(['text', text]);
       return true;
     },
     async deleteSegmentWithNativeAction(call) {
+      const previousHistoryRevision = history.length;
+      const previousHistoryToken = historyToken();
+      if (call.expectedHistoryRevision !== history.length || call.expectedHistoryToken !== previousHistoryToken ||
+          call.expectedReviewActionId !== 'task-one') {
+        return { ok: false, reason: 'history-conflict', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
+      }
       mutations.push(['delete', call.annotationId]);
       const index = rows.findIndex((row) => row.identity.annotationId === call.annotationId);
       if (call.annotationId === options.failDeleteAnnotationId) {
-        return { ok: false, reason: 'fake-delete-failure' };
+        return { ok: false, reason: 'fake-delete-failure', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
       }
-      if (index < 0) return { ok: false, reason: 'not-found' };
+      if (index < 0) return { ok: false, reason: 'not-found', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
+      history.push(structuredClone(rows));
       rows.splice(index, 1);
-      return { ok: true };
+      return { ok: true, previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
     },
     async createSegmentWithNativeAction(call) {
+      const previousHistoryRevision = history.length;
+      const previousHistoryToken = historyToken();
+      if (call.expectedHistoryRevision !== history.length || call.expectedHistoryToken !== previousHistoryToken ||
+          call.expectedReviewActionId !== 'task-one') {
+        return { ok: false, reason: 'history-conflict', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
+      }
       const restoring = typeof call.annotationId === 'string' && call.annotationId;
       if (!restoring) requestedCreateCount += 1;
       mutations.push([
@@ -168,9 +197,10 @@ function createHelper(options = {}) {
       ]);
       const shouldFail = !restoring && requestedCreateCount === options.failRequestedCreateNumber;
       if (shouldFail && !options.failCreateAfterMutation) {
-        return { ok: false, reason: 'fake-create-failure' };
+        return { ok: false, reason: 'fake-create-failure', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
       }
       const annotationId = restoring || `created-${++generatedId}`;
+      history.push(structuredClone(rows));
       rows.push(
         makeRow({
           annotationId,
@@ -181,18 +211,35 @@ function createHelper(options = {}) {
           text: call.text
         })
       );
-      if (shouldFail) return { ok: false, reason: 'fake-create-failure-after-mutation' };
-      return { ok: true, verification: { annotationId } };
+      if (shouldFail) return { ok: false, reason: 'fake-create-failure-after-mutation', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
+      return { ok: true, verification: { annotationId, previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() } };
+    },
+    async undoTranscriptWithNativeBridge(call) {
+      const previousHistoryRevision = history.length;
+      const previousHistoryToken = historyToken();
+      if (call.reviewActionId !== 'task-one' || call.expectedHistoryRevision !== history.length ||
+          call.expectedHistoryToken !== previousHistoryToken || !history.length) {
+        return { ok: false, reason: 'history-conflict', previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
+      }
+      mutations.push(['undo', history.length]);
+      rows.splice(0, rows.length, ...history.pop());
+      return { ok: true, previousHistoryRevision, previousHistoryToken, historyRevision: history.length, historyToken: historyToken() };
     }
   };
 }
 
-function request(rows) {
+function request(rows, helper) {
   return {
     type: 'babel-gold-drafting:l0-replace-request',
     version: 1,
     requestId: 'request-1',
-    rows
+    rows,
+    expectedReviewActionId: 'task-one',
+    expectedRows: helper.rows.map(nativeSnapshotRow).map((row, index) => ({
+      rowId: row.annotationId, processedRecordingId: row.processedRecordingId,
+      speakerKey: row.speakerKey, startSeconds: row.startSeconds,
+      endSeconds: row.endSeconds, text: row.text, index
+    }))
   };
 }
 
@@ -210,17 +257,17 @@ test('replacement without a starting task identity performs no snapshot or mutat
     publishedReviewActionId = 'task-two';
     throw new Error('An unidentified task must not reach the bridge');
   };
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'stale-task');
   assert.equal(snapshots, 0);
   assert.deepEqual(helper.mutations, []);
-  assert.deepEqual(helper.rows.map(row => row.textarea.value), ['Original one', 'Original two']);
+  assert.deepEqual(helper.rows.map(row => row.editor.value), ['Original one', 'Original two']);
 });
 
 test('valid replacement deletes in reverse order, creates deterministically, and maps identities', async () => {
   const helper = createHelper();
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, true);
   assert.deepEqual(
@@ -240,7 +287,7 @@ test('valid replacement deletes in reverse order, creates deterministically, and
 
 test('authoritative bridge snapshot replaces despite incomplete isolated React identity', async () => {
   const helper = createHelper({ isolatedIdentityIncomplete: true });
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, true);
   assert.deepEqual(
@@ -252,7 +299,7 @@ test('authoritative bridge snapshot replaces despite incomplete isolated React i
 test('replacement creates segments on a waveform lane with no existing annotations', async () => {
   const helper = createHelper();
   helper.rows.splice(1, 1);
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
   assert.equal(result.ok, true, result.message);
   assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'delete'), [['delete', 'original-1']]);
   assert.deepEqual(helper.rows.map((row) => row.identity.processedRecordingId), ['track-1', 'track-2']);
@@ -261,16 +308,16 @@ test('replacement creates segments on a waveform lane with no existing annotatio
 test('replacement populates an empty transcript using native waveform lane identities', async () => {
   const helper = createHelper();
   helper.rows.splice(0);
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
   assert.equal(result.ok, true, result.message);
   assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'delete'), []);
-  assert.deepEqual(helper.rows.map(row => row.textarea.value).sort(), requestedRows.map(row => row.text).sort());
+  assert.deepEqual(helper.rows.map(row => row.editor.value).sort(), requestedRows.map(row => row.text).sort());
   assert.deepEqual(helper.rows.map(row => row.identity.processedRecordingId), ['track-1', 'track-2']);
 });
 
 test('bridge failure performs zero transcript mutation', async () => {
   const helper = createHelper({ bridgeFailure: true, isolatedIdentityIncomplete: true });
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'snapshot-invalid');
@@ -298,7 +345,7 @@ test('malformed bridge snapshot performs zero transcript mutation', async () => 
       ]
     }
   });
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'snapshot-invalid');
@@ -311,62 +358,56 @@ test('request and lane validation finish before the first native mutation', asyn
   const duplicate = request([
     requestedRows[0],
     { ...requestedRows[1], id: requestedRows[0].id }
-  ]);
+  ], helper);
   const duplicateResult = await runtime.replaceTranscriptSegmentation(helper, duplicate);
   assert.equal(duplicateResult.reason, 'duplicate-row-id');
   assert.deepEqual(helper.mutations, []);
 
   const missingLaneResult = await runtime.replaceTranscriptSegmentation(
     helper,
-    request([{ ...requestedRows[0], lane: 'Speaker 3' }])
+    request([{ ...requestedRows[0], lane: 'Speaker 3' }], helper)
   );
   assert.equal(missingLaneResult.reason, 'lane-not-found');
   assert.deepEqual(helper.mutations, []);
 });
 
-test('partial deletion failure recreates the deleted original row and text before failing', async () => {
+test('partial deletion failure undoes the original row with native metadata intact', async () => {
   const helper = createHelper({ failDeleteAnnotationId: 'original-1' });
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const original = structuredClone(helper.rows);
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'delete-failed');
   assert.match(result.message, /Original transcript restored/);
   assert.deepEqual(
-    helper.rows.map((row) => [row.identity.annotationId, row.textarea.value]).sort(),
+    helper.rows.map((row) => [row.identity.annotationId, row.editor.value]).sort(),
     [['original-1', 'Original one'], ['original-2', 'Original two']]
   );
-  assert.deepEqual(
-    helper.mutations.filter(([kind]) => kind === 'create'),
-    [['create', 'original-2', 4, 'track-2', 'Original two']]
-  );
+  assert.deepEqual(helper.rows, original);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'create'), []);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'undo'), [['undo', 1]]);
 });
 
 test('creation failure removes new rows and restores every original identity and text', async () => {
   const helper = createHelper({ failRequestedCreateNumber: 2, failCreateAfterMutation: true });
-  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const original = structuredClone(helper.rows);
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'create-failed');
   assert.match(result.message, /Original transcript restored/);
   assert.deepEqual(
-    helper.rows.map((row) => [row.identity.annotationId, row.textarea.value]).sort(),
+    helper.rows.map((row) => [row.identity.annotationId, row.editor.value]).sort(),
     [['original-1', 'Original one'], ['original-2', 'Original two']]
   );
-  assert.ok(helper.mutations.some(([kind, id]) => kind === 'delete' && id === 'created-1'));
-  assert.ok(helper.mutations.some(([kind, id]) => kind === 'delete' && id === 'created-2'));
-  assert.deepEqual(
-    helper.mutations
-      .filter(([kind, annotationId]) => kind === 'create' && annotationId)
-      .map((entry) => entry.slice(1)),
-    [
-      ['original-1', 0, 'track-1', 'Original one'],
-      ['original-2', 4, 'track-2', 'Original two']
-    ]
-  );
+  assert.deepEqual(helper.rows, original, 'native undo preserves metadata and original order');
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'undo'), [
+    ['undo', 4], ['undo', 3], ['undo', 2], ['undo', 1]
+  ]);
 });
 
 function rowSummary(row) {
-  return [row.identity.annotationId, row.textarea.value];
+  return [row.identity.annotationId, row.editor.value];
 }
 
 test('navigation during replacement or rollback leaves the new task untouched', async (t) => {
@@ -394,22 +435,16 @@ test('navigation during replacement or rollback leaves the new task untouched', 
       pause: (call) => !call.annotationId
     },
     {
-      name: 'rollback cleanup',
+      name: 'native rollback first undo',
       options: { failRequestedCreateNumber: 2 },
-      method: 'deleteSegmentWithNativeAction',
-      pause: (call) => call.annotationId === 'created-1'
+      method: 'undoTranscriptWithNativeBridge',
+      pause: (_call, count) => count === 1
     },
     {
-      name: 'rollback snapshot',
-      options: { failDeleteAnnotationId: 'original-1' },
-      method: 'snapshotTranscriptWithNativeBridge',
+      name: 'native rollback later undo',
+      options: { failRequestedCreateNumber: 2 },
+      method: 'undoTranscriptWithNativeBridge',
       pause: (_call, count) => count === 2
-    },
-    {
-      name: 'rollback recreation before text restoration',
-      options: { failRequestedCreateNumber: 2 },
-      method: 'createSegmentWithNativeAction',
-      pause: (call) => call.annotationId === 'original-1'
     }
   ];
 
@@ -431,7 +466,7 @@ test('navigation during replacement or rollback leaves the new task untouched', 
         return result;
       };
 
-      const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
       await paused;
       helper.state.sessionLifecycleRevision += 1;
       publishedReviewActionId = 'task-two';
@@ -478,7 +513,7 @@ test('a task change before the first mutation reports stale-task without touchin
   const snapshot = await helper.snapshotTranscriptWithNativeBridge();
   let finishSnapshot;
   helper.snapshotTranscriptWithNativeBridge = () => new Promise((resolve) => { finishSnapshot = resolve; });
-  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
   publishedReviewActionId = 'task-two';
   finishSnapshot(snapshot);
 
@@ -506,7 +541,7 @@ test('same-task empty rebuild and lifecycle refresh preserve replacement and rol
         return result;
       };
       publishedReviewActionId = 'task-one';
-      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
       assert.equal(emptied, true);
       if (failCreation) {
         assert.equal(result.reason, 'create-failed');
@@ -516,7 +551,7 @@ test('same-task empty rebuild and lifecycle refresh preserve replacement and rol
         );
       } else {
         assert.equal(result.ok, true);
-        assert.deepEqual(helper.rows.map((row) => row.textarea.value), ['First text', 'Later text']);
+        assert.deepEqual(helper.rows.map((row) => row.editor.value), ['First text', 'Later text']);
       }
     });
   }
@@ -541,7 +576,7 @@ test('switching audio during replacement restores the same review task transcrip
         }
         return result;
       };
-      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
       assert.equal(result.reason, 'stale-task');
       assert.match(result.message, /Original transcript restored/);
       const content = rows => rows.map(row => [row.annotationId, row.processedRecordingId, row.startSeconds, row.endSeconds, row.text]).sort();
@@ -589,10 +624,10 @@ test('a lost publication, remounted rows, or a same-route URL change mid-replace
         }
         return result;
       };
-      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+      const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
       assert.equal(disturbed, true);
       assert.equal(result.ok, true, result.message);
-      assert.deepEqual(helper.rows.map((row) => row.textarea.value), ['First text', 'Later text']);
+      assert.deepEqual(helper.rows.map((row) => row.editor.value), ['First text', 'Later text']);
     });
   }
 });
@@ -609,7 +644,7 @@ test('a pathname change aborts before lifecycle state catches up', async (t) => 
   const snapshot = await helper.snapshotTranscriptWithNativeBridge();
   let finishSnapshot;
   helper.snapshotTranscriptWithNativeBridge = () => new Promise((resolve) => { finishSnapshot = resolve; });
-  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows));
+  const replacement = runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
   taskLocation.href = 'https://babel.test/projects';
   taskLocation.pathname = '/projects';
   taskLocation.search = '';
@@ -651,15 +686,16 @@ test('listener replacement and disposal prevent duplicate boot handlers', async 
   const protocolWindow = new FakeWindow();
   const staleHelper = createHelper();
   const activeHelper = createHelper();
+  const helper = activeHelper;
 
   const disposeStale = runtime.registerL0ReplaceListener(staleHelper, protocolWindow);
   const disposeActive = runtime.registerL0ReplaceListener(activeHelper, protocolWindow);
-  protocolWindow.send(request(requestedRows), {});
+  protocolWindow.send(request(requestedRows, helper), {});
   await settle();
   assert.equal(protocolWindow.responses.length, 0);
   assert.deepEqual(activeHelper.mutations, []);
 
-  protocolWindow.send(request(requestedRows));
+  protocolWindow.send(request(requestedRows, helper));
   await settle();
   assert.equal(protocolWindow.responses.length, 1);
   assert.deepEqual(staleHelper.mutations, []);
@@ -667,7 +703,119 @@ test('listener replacement and disposal prevent duplicate boot handlers', async 
 
   disposeStale();
   disposeActive();
-  protocolWindow.send({ ...request(requestedRows), requestId: 'request-after-stop' });
+  protocolWindow.send({ ...request(requestedRows, helper), requestId: 'request-after-stop' });
   await settle();
   assert.equal(protocolWindow.responses.length, 1);
+});
+
+test('queued replacement rejects hidden turn edits and task identity changes before mutation', async t => {
+  for (const change of ['text', 'time', 'lane', 'insert', 'delete', 'task']) {
+    await t.test(change, async () => {
+      const helper = createHelper();
+      const pending = request(requestedRows, helper);
+      if (change === 'text') helper.rows[1].editor.value = 'User edit on hidden speaker';
+      if (change === 'time') helper.rows[1].identity.endText = formatTime(9);
+      if (change === 'lane') helper.rows[1].identity.processedRecordingId = 'track-1';
+      if (change === 'insert') helper.rows.push(makeRow({ annotationId: 'user-row', processedRecordingId: 'track-1', lane: 'Speaker 1', startSeconds: 8, endSeconds: 9, text: 'Keep me' }));
+      if (change === 'delete') helper.rows.pop();
+      if (change === 'task') pending.expectedReviewActionId = 'task-before-navigation';
+      const before = structuredClone(helper.rows);
+      const result = await runtime.replaceTranscriptSegmentation(helper, pending);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, change === 'task' ? 'stale-task' : 'stale-transcript');
+      assert.deepEqual(helper.mutations, []);
+      assert.deepEqual(helper.rows, before);
+    });
+  }
+});
+
+test('readonly snapshot and missing originating snapshot refuse replacement', async () => {
+  const helper = createHelper({ readOnly: true });
+  const pending = request(requestedRows, helper);
+  const result = await runtime.replaceTranscriptSegmentation(helper, pending);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /read-only/);
+  delete pending.expectedRows;
+  assert.equal((await runtime.replaceTranscriptSegmentation(helper, pending)).reason, 'invalid-expected-snapshot');
+  assert.deepEqual(helper.mutations, []);
+});
+
+test('rollback refuses an intervening native user edit instead of undoing it', async () => {
+  const helper = createHelper({ failRequestedCreateNumber: 1 });
+  const create = helper.createSegmentWithNativeAction.bind(helper);
+  helper.createSegmentWithNativeAction = async call => {
+    const result = await create(call);
+    helper.history.push(structuredClone(helper.rows));
+    helper.rows.push(makeRow({ annotationId: 'user-row', processedRecordingId: 'track-1', lane: 'Speaker 1', startSeconds: 1, endSeconds: 2, text: 'Do not undo' }));
+    return result;
+  };
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Rollback incomplete/);
+  assert.deepEqual(helper.rows.map(rowSummary), [['user-row', 'Do not undo']]);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'undo'), []);
+});
+
+test('rollback rejects a same-depth Undo and manual-edit fork without touching the manual edit', async () => {
+  const helper = createHelper({ failRequestedCreateNumber: 1 });
+  const create = helper.createSegmentWithNativeAction.bind(helper);
+  let depthAtFailure;
+  helper.createSegmentWithNativeAction = async call => {
+    const result = await create(call);
+    depthAtFailure = helper.history.length;
+    const restored = helper.history.pop();
+    helper.rows.splice(0, helper.rows.length, ...restored);
+    helper.history.push(structuredClone(helper.rows));
+    helper.rows[0].editor.value = 'Manual edit after native Undo';
+    return result;
+  };
+  const result = await runtime.replaceTranscriptSegmentation(helper, request(requestedRows, helper));
+  assert.equal(result.ok, false);
+  assert.equal(helper.history.length, depthAtFailure, 'depth alone cannot distinguish the user command');
+  assert.match(result.message, /Rollback incomplete/);
+  assert.deepEqual(helper.rows.map(rowSummary), [['original-1', 'Manual edit after native Undo']]);
+  assert.deepEqual(helper.mutations.filter(([kind]) => kind === 'undo'), []);
+});
+
+test('missing history identity refuses replacement and depth-only rollback receipts are rejected', async () => {
+  const missingSnapshot = createHelper();
+  const snapshot = await missingSnapshot.snapshotTranscriptWithNativeBridge();
+  delete snapshot.historyToken;
+  missingSnapshot.snapshotTranscriptWithNativeBridge = async () => snapshot;
+  const refused = await runtime.replaceTranscriptSegmentation(missingSnapshot, request(requestedRows, missingSnapshot));
+  assert.equal(refused.reason, 'snapshot-invalid');
+  assert.deepEqual(missingSnapshot.mutations, []);
+
+  const missingReceipt = createHelper({ failRequestedCreateNumber: 1 });
+  const remove = missingReceipt.deleteSegmentWithNativeAction.bind(missingReceipt);
+  missingReceipt.deleteSegmentWithNativeAction = async call => {
+    const result = await remove(call);
+    delete result.previousHistoryToken;
+    delete result.historyToken;
+    return result;
+  };
+  const result = await runtime.replaceTranscriptSegmentation(missingReceipt, request(requestedRows, missingReceipt));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Rollback incomplete/);
+  assert.deepEqual(missingReceipt.mutations.filter(([kind]) => kind === 'undo'), []);
+});
+
+test('disposing replacement listener cancels queued work without interrupting an active native transaction', async () => {
+  const protocolWindow = new FakeWindow();
+  const helper = createHelper();
+  const snapshot = helper.snapshotTranscriptWithNativeBridge.bind(helper);
+  let release;
+  helper.snapshotTranscriptWithNativeBridge = () => new Promise(resolve => { release = async () => resolve(await snapshot()); });
+  const dispose = runtime.registerL0ReplaceListener(helper, protocolWindow);
+  const first = request(requestedRows, helper);
+  protocolWindow.send(first);
+  await settle();
+  const second = { ...first, requestId: 'queued' };
+  protocolWindow.send(second);
+  dispose();
+  await release();
+  await settle();
+  assert.equal(protocolWindow.responses.find(result => result.requestId === first.requestId)?.ok, true);
+  assert.equal(protocolWindow.responses.find(result => result.requestId === 'queued')?.reason, 'service-disposed');
+  assert.equal(helper.mutations.filter(([kind]) => kind === 'create').length, 2);
 });

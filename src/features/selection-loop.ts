@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerSelectionLoop(helper: any, api: Pick<TimelineModules, 'site' | 'selection'>) {
   const SELECTION_LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
@@ -90,8 +91,9 @@ export function registerSelectionLoop(helper: any, api: Pick<TimelineModules, 's
       return false;
     }
 
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const timeRange = await api.selection.ensurePreviewTimeRange(preview);
-    if (!timeRange) {
+    if (!timeRange || !isCurrentTask() || helper.state.cutPreview !== preview) {
       setSelectionLoopDebug('no-time-range');
       return false;
     }
@@ -128,6 +130,12 @@ export function registerSelectionLoop(helper: any, api: Pick<TimelineModules, 's
         startSeconds: timeRange.startSeconds,
         endSeconds: timeRange.endSeconds
       });
+      if (!isCurrentTask() || helper.state.cutPreview !== preview || !host.isConnected) {
+        if (bridgeResult?.ok && isCurrentTask()) {
+          void api.site.callSelectionBridge('loop-stop', { hostMarker });
+        }
+        return false;
+      }
       if (bridgeResult && bridgeResult.ok) {
         helper.state.selectionLoop = {
           preview,
@@ -176,7 +184,7 @@ export function registerSelectionLoop(helper: any, api: Pick<TimelineModules, 's
       }
 
       const activePreview = helper.state.cutPreview;
-      if (!activePreview || activePreview !== preview) {
+      if (!activePreview || activePreview !== preview || !isCurrentTask()) {
         setSelectionLoopDebug('lost-preview');
         helper.stopSelectionLoop();
         return;

@@ -1,6 +1,7 @@
 ﻿// @ts-nocheck
 import { createEditorInput } from '../features/editor-input';
 import { registerPlaybackRowTracking } from '../features/playback-row-tracking';
+import { readNativeSessionState } from '../site/editor-control';
 
 export function registerLifecycle(helper: any) {
   if (!helper || helper.__mainInitialized) {
@@ -16,7 +17,8 @@ export function registerLifecycle(helper: any) {
   helper.state.onLoadedInFlightRevision = -1;
 
   const input = createEditorInput(helper);
-  const { handleKeydown, handleNativeArrowSuppress, handleGlobalKeyup, handleWindowBlur } = input;
+  const { handleKeydown, handleKeyCapture, handleKeyBubble, handleNativeTextInput,
+    handleNativeSelectionChange, handleNativePointerDown, handleComposition, handleGlobalKeyup, handleWindowBlur } = input;
   helper.runtime.editorHooks = input.hooks;
   registerPlaybackRowTracking(helper);
   helper.handleKeydown = handleKeydown;
@@ -26,6 +28,9 @@ export function registerLifecycle(helper: any) {
   const ROUTE_REFRESH_MAX_WINDOW_MS = 10000;
   const URL_POLL_INTERVAL_MS = 2000;
   const SESSION_BIND_RETRY_DELAYS_MS = [250, 750, 1500, 3000];
+  let disposed = false;
+  let sessionAccessInFlight = false;
+  let lastPolledNativeSession = '';
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -39,30 +44,36 @@ export function registerLifecycle(helper: any) {
     return /^\/transcription(?:\/|$)/.test(window.location.pathname || '');
   }
 
-  function isReadOnlyFeedbackRoute() {
-    const params = new URLSearchParams(window.location.search || '');
-    const displayFeedback = params.get('displayFeedback');
-    if (displayFeedback === 'true') {
-      return true;
-    }
-
-    return Boolean(
-      params.has('reviewActionId') &&
-      displayFeedback != null &&
-      displayFeedback !== 'false'
-    );
+  function requestNativeSessionAccess() {
+    if (disposed || sessionAccessInFlight) return;
+    sessionAccessInFlight = true;
+    const href = window.location.href;
+    const revision = helper.state.sessionLifecycleRevision;
+    // Lifecycle registration can precede snapshot-service registration during
+    // kernel boot. Resolve that dependency on the next microtask, not from URL.
+    void Promise.resolve()
+      .then(() => {
+        if (disposed || href !== window.location.href || revision !== helper.state.sessionLifecycleRevision) return;
+        return helper.refreshEditorSnapshot?.('native-session-access');
+      })
+      .then(() => {
+        if (!disposed && href === window.location.href && revision === helper.state.sessionLifecycleRevision &&
+            readNativeSessionState()) helper.runtime.scheduleRouteRefresh('native-session-ready', 0);
+      })
+      .finally(() => { sessionAccessInFlight = false; });
   }
 
   function hasTranscriptSurface() {
-    // The native table remains mounted when a track filter has no annotations.
-    return Boolean(document.querySelector('main table'));
+    // The native scroll surface also exists for empty and speaker-filtered tasks.
+    return Boolean(document.querySelector('[data-transcript-scroll]'));
   }
 
   helper.runtime.isSessionInteractive = function isSessionInteractive() {
     return Boolean(
+      !disposed &&
       isTranscriptionRoute() &&
-      !isReadOnlyFeedbackRoute() &&
-      hasTranscriptSurface()
+      hasTranscriptSurface() &&
+      readNativeSessionState()?.readOnly === false
     );
   };
 
@@ -175,7 +186,7 @@ export function registerLifecycle(helper: any) {
     }
 
     const observer = new MutationObserver(() => {
-      if (!isTranscriptionRoute() || isReadOnlyFeedbackRoute()) {
+      if (!isTranscriptionRoute() || disposed) {
         return;
       }
 
@@ -188,9 +199,9 @@ export function registerLifecycle(helper: any) {
       helper.runtime.scheduleRouteRefresh('recovery-observer');
     });
 
-    observer.observe(document.body, {
+    observer.observe(document.documentElement || document.body, {
       attributes: true,
-      attributeFilter: ['placeholder'],
+      attributeFilter: ['data-transcript-scroll', 'data-babel-review-action-id', 'role', 'contenteditable', 'disabled'],
       childList: true,
       subtree: true
     });
@@ -205,10 +216,17 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
-    window.addEventListener('keydown', handleNativeArrowSuppress, true);
+    window.addEventListener('keydown', handleKeyCapture, true);
     window.addEventListener('keyup', handleGlobalKeyup, true);
     window.addEventListener('blur', handleWindowBlur, true);
+    window.addEventListener('selectionchange', handleNativeSelectionChange, true);
+    window.addEventListener('pointerdown', handleNativePointerDown, true);
+    window.addEventListener('compositionstart', handleComposition, true);
+    window.addEventListener('compositionend', handleComposition, true);
     document.addEventListener('keydown', helper.handleKeydown, true);
+    document.addEventListener('keydown', handleKeyBubble, false);
+    document.addEventListener('beforeinput', handleNativeTextInput, true);
+    document.addEventListener('paste', handleNativeTextInput, true);
     helper.state.keydownBound = true;
     helper.state.nativeArrowSuppressBound = true;
   }
@@ -218,10 +236,17 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
-    window.removeEventListener('keydown', handleNativeArrowSuppress, true);
+    window.removeEventListener('keydown', handleKeyCapture, true);
     window.removeEventListener('keyup', handleGlobalKeyup, true);
     window.removeEventListener('blur', handleWindowBlur, true);
+    window.removeEventListener('selectionchange', handleNativeSelectionChange, true);
+    window.removeEventListener('pointerdown', handleNativePointerDown, true);
+    window.removeEventListener('compositionstart', handleComposition, true);
+    window.removeEventListener('compositionend', handleComposition, true);
     document.removeEventListener('keydown', helper.handleKeydown, true);
+    document.removeEventListener('keydown', handleKeyBubble, false);
+    document.removeEventListener('beforeinput', handleNativeTextInput, true);
+    document.removeEventListener('paste', handleNativeTextInput, true);
     helper.state.keydownBound = false;
     helper.state.nativeArrowSuppressBound = false;
     helper.state.rightShiftPressed = false;
@@ -296,6 +321,14 @@ export function registerLifecycle(helper: any) {
         lastPolledHref = currentHref;
         handleRouteEvent('url-poll');
       }
+      else if (isTranscriptionRoute() && hasTranscriptSurface()) {
+        const status = readNativeSessionState();
+        const key = status ? `${status.reviewActionId}:${status.readOnly}` : '';
+        if (key !== lastPolledNativeSession) {
+          lastPolledNativeSession = key;
+          handleRouteEvent('native-session-change');
+        }
+      }
     }, URL_POLL_INTERVAL_MS);
   }
 
@@ -362,6 +395,8 @@ export function registerLifecycle(helper: any) {
   }
 
   helper.runtime.disposeLifecycle = function disposeLifecycle(reason) {
+    if (disposed) return;
+    disposed = true;
     document.removeEventListener('DOMContentLoaded', helper.init, false);
     helper.runtime.clearRuntimeTimer();
     clearSessionFeatures(reason || 'lifecycle-dispose');
@@ -440,21 +475,18 @@ export function registerLifecycle(helper: any) {
     helper.runtime.scheduleRouteRefresh(reason || 'session-bind-retry', getSessionBindRetryDelay());
   }
 
-  function isCurrentSessionSurface(href) {
-    return Boolean(
-      href === window.location.href &&
-      isTranscriptionRoute() &&
-      !isReadOnlyFeedbackRoute() &&
-      hasTranscriptSurface()
-    );
+  function isCurrentSessionSurface(href, reviewActionId) {
+    if (disposed || href !== window.location.href || !isTranscriptionRoute() || !hasTranscriptSurface()) return false;
+    const status = readNativeSessionState();
+    return Boolean(status?.readOnly === false && status.reviewActionId === reviewActionId);
   }
 
-  function runSessionOnLoaded(reason, bindHref, lifecycleRevision) {
+  function runSessionOnLoaded(reason, bindHref, lifecycleRevision, reviewActionId) {
     if (
       helper.state.onLoadedCalledRevision === lifecycleRevision ||
       helper.state.onLoadedInFlightRevision === lifecycleRevision ||
       lifecycleRevision !== helper.state.sessionLifecycleRevision ||
-      !isCurrentSessionSurface(bindHref)
+      !isCurrentSessionSurface(bindHref, reviewActionId)
     ) {
       return;
     }
@@ -468,12 +500,13 @@ export function registerLifecycle(helper: any) {
     helper.state.onLoadedInFlight = true;
     helper.state.onLoadedInFlightRevision = lifecycleRevision;
     Promise.resolve()
-      .then(() => helper.runtime.onLoaded(reason || 'session-ready'))
+      .then(() => lifecycleRevision === helper.state.sessionLifecycleRevision &&
+        isCurrentSessionSurface(bindHref, reviewActionId) ? helper.runtime.onLoaded(reason || 'session-ready') : false)
       .then((activated) => {
         if (
           activated === false ||
           lifecycleRevision !== helper.state.sessionLifecycleRevision ||
-          !isCurrentSessionSurface(bindHref)
+          !isCurrentSessionSurface(bindHref, reviewActionId)
         ) {
           return;
         }
@@ -496,7 +529,41 @@ export function registerLifecycle(helper: any) {
       });
   }
 
-  async function bindSessionFeatures(reason) {
+  helper.runtime.reconcileSessionSettings = function reconcileSessionSettings() {
+    if (!helper.state.sessionActive || !helper.runtime.isSessionInteractive()) return;
+    if (isFeatureEnabled('timelineSelection')) {
+      helper.bindCutPreview?.();
+    } else {
+      helper.clearCutPreview?.();
+      helper.unbindCutPreview?.();
+    }
+    if (isFeatureEnabled('disableNativeTimelineDoubleClick')) {
+      helper.bindNativeTimelineDoubleClickBlocker?.();
+    } else {
+      helper.unbindNativeTimelineDoubleClickBlocker?.();
+    }
+    if (isFeatureEnabled('hotkeysHelp')) {
+      helper.enhanceHotkeysDialog?.();
+      startHotkeysObserver();
+    } else {
+      stopHotkeysObserver();
+      stopHotkeysEnhanceFrame();
+    }
+    if (isFeatureEnabled('waveformScaleUnlock')) {
+      helper.bindWaveformScaleUnlock?.();
+    } else {
+      helper.unbindWaveformScaleUnlock?.();
+    }
+    if (isFeatureEnabled('timelineSelection') && isFeatureEnabled('timelineZoomDefaults')) {
+      helper.bindZoomPersistence?.();
+    } else {
+      helper.unbindZoomPersistence?.();
+    }
+    if (!isFeatureEnabled('proportionalCursorRestore')) helper.stopGhostCursor?.();
+  };
+
+
+  async function bindSessionFeatures(reason, reviewActionId) {
     if (helper.state.sessionBindPromise) {
       return helper.state.sessionBindPromise;
     }
@@ -512,7 +579,7 @@ export function registerLifecycle(helper: any) {
       await helper.runtime.ensureSessionRuntime?.(reason || 'session-ready');
       if (
         lifecycleRevision !== helper.state.sessionLifecycleRevision ||
-        !isCurrentSessionSurface(bindHref)
+        !isCurrentSessionSurface(bindHref, reviewActionId)
       ) {
         return false;
       }
@@ -603,17 +670,31 @@ export function registerLifecycle(helper: any) {
   };
 
   helper.runtime.refreshRouteSession = function refreshRouteSession(reason) {
+    if (disposed) return false;
     if (!isTranscriptionRoute()) {
       clearSessionFeatures(reason || 'route-exit');
       stopRouteRecoveryObserver();
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
       helper.state.routeRefreshWindowStartedAt = 0;
+      lastPolledNativeSession = '';
       return false;
     }
 
-    if (isReadOnlyFeedbackRoute()) {
-      clearSessionFeatures(reason || 'read-only-route');
+    const hasSurface = hasTranscriptSurface();
+    const status = hasSurface ? readNativeSessionState() : null;
+    if (status) {
+      const key = `${status.reviewActionId}:${status.readOnly}`;
+      if (lastPolledNativeSession && key !== lastPolledNativeSession &&
+          (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise)) {
+        clearSessionFeatures('native-session-change');
+      }
+      lastPolledNativeSession = key;
+    }
+    if (status?.readOnly === true) {
+      if (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise) {
+        clearSessionFeatures(reason || 'native-read-only');
+      }
       startRouteRecoveryObserver();
       helper.runtime.clearRuntimeTimer();
       helper.state.routeRefreshAttempts = 0;
@@ -621,9 +702,9 @@ export function registerLifecycle(helper: any) {
       return false;
     }
 
-    if (hasTranscriptSurface()) {
+    if (status?.readOnly === false) {
       const bindHref = window.location.href;
-      void bindSessionFeatures(reason || 'transcript-surface')
+      void bindSessionFeatures(reason || 'transcript-surface', status.reviewActionId)
         .then((bound) => {
           if (!bound) {
             if (bindHref === window.location.href) {
@@ -634,7 +715,8 @@ export function registerLifecycle(helper: any) {
           runSessionOnLoaded(
             reason || 'transcript-surface',
             bindHref,
-            bound.lifecycleRevision
+            bound.lifecycleRevision,
+            status.reviewActionId
           );
         })
         .catch((error) => {
@@ -648,6 +730,10 @@ export function registerLifecycle(helper: any) {
     }
 
     startRouteRecoveryObserver();
+    if (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise) {
+      clearSessionFeatures(reason || 'native-session-unavailable');
+    }
+    requestNativeSessionAccess();
 
     const startedAt = helper.state.routeRefreshWindowStartedAt || Date.now();
     if (!helper.state.routeRefreshWindowStartedAt) {
@@ -668,7 +754,7 @@ export function registerLifecycle(helper: any) {
   };
 
   helper.init = function init() {
-    if (helper.state.runtimeBound) {
+    if (disposed || helper.state.runtimeBound) {
       return;
     }
 

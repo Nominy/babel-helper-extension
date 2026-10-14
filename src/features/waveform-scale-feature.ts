@@ -2,6 +2,7 @@
 import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
 
 import { createMagnifierBridgeClient } from '../services/bridge-client-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 import {
   loadWorkflowDefaults,
   updateWorkflowDefaults,
@@ -27,6 +28,9 @@ export function registerWaveformScaleService(helper: any) {
   let applyingSavedScales = false;
   let controlsBound = false;
   let activeEditor = null;
+  let scalesRestored = false;
+  let bindingPending = false;
+  let bindingRevision = 0;
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -59,6 +63,7 @@ export function registerWaveformScaleService(helper: any) {
   }
 
   function getWaveformScaleRows() {
+    const snapshot = helper.getEditorSnapshot();
     const sliders = Array.from(
       document.querySelectorAll<HTMLElement>('[role="slider"][data-orientation="vertical"]')
     );
@@ -69,9 +74,12 @@ export function registerWaveformScaleService(helper: any) {
         const heading = lane?.querySelector('h3');
         const label = heading instanceof HTMLElement ? helper.normalizeText(heading) : '';
         const key = label || 'lane-' + index;
+        const tracks = (snapshot?.tracks || []).filter(track => track.label === label);
         return {
           index,
           key,
+          trackId: tracks.length === 1 ? tracks[0].id : '',
+          reviewActionId: snapshot?.reviewActionId || '',
           label: label || 'Lane ' + (index + 1),
           slider,
           lane: lane instanceof HTMLElement ? lane : slider.parentElement
@@ -94,11 +102,12 @@ export function registerWaveformScaleService(helper: any) {
   }
 
   async function persistCurrentScales() {
-    if (applyingSavedScales) {
+    if (!controlsBound || !scalesRestored || applyingSavedScales) {
       return;
     }
 
     const defaults = await ensureDefaults();
+    if (!controlsBound || !scalesRestored || applyingSavedScales) return;
     const nextScales = {
       ...(defaults.waveformScales || {})
     };
@@ -127,22 +136,25 @@ export function registerWaveformScaleService(helper: any) {
   }
 
   async function setScaleForRow(row, value) {
+    const isCurrentTask = captureL0TaskGuard();
+    if (!isFeatureEnabled('waveformScaleUnlock') || !row.slider.isConnected || !row.trackId || !row.reviewActionId) return false;
     const normalized = normalizeWaveformScaleValue(value);
     if (!Number.isFinite(normalized)) {
       return false;
     }
 
     const result = await callBridge('waveform-scale-set', {
-      index: row.index,
+      trackId: row.trackId,
+      reviewActionId: row.reviewActionId,
       value: normalized,
       max: getTargetMax()
     });
 
-    if (!result || !result.ok) {
+    if (!result || !result.ok || !isCurrentTask() || !isFeatureEnabled('waveformScaleUnlock') || !row.slider.isConnected) {
       return false;
     }
 
-    row.slider.setAttribute('aria-valuenow', String(result.current ?? normalized));
+    if (!applyingSavedScales) scalesRestored = true;
     queuePersistCurrentScales();
     return true;
   }
@@ -237,29 +249,32 @@ export function registerWaveformScaleService(helper: any) {
     input.select();
   }
 
-  async function applySavedScales() {
-    const defaults = await ensureDefaults();
-    const savedScales = defaults.waveformScales || {};
-    const rows = getWaveformScaleRows();
-    if (!rows.length) {
-      return false;
-    }
-
+  async function applySavedScales(revision) {
+    const isCurrentTask = captureL0TaskGuard();
+    const isCurrentBinding = () => revision === bindingRevision && isCurrentTask() && isFeatureEnabled('waveformScaleUnlock');
     applyingSavedScales = true;
+    clearPersistTimer();
     try {
+      const defaults = await ensureDefaults();
+      // getEditorSnapshot starts its first refresh asynchronously. Await the
+      // committed recording IDs before issuing any saved-scale mutation.
+      const snapshot = await helper.refreshEditorSnapshot('waveform-scale-restore');
+      if (!isCurrentBinding() || !snapshot) return false;
+      const rows = getWaveformScaleRows();
+      if (!rows.length) return false;
+      const savedScales = defaults.waveformScales || {};
       for (const row of rows) {
+        if (!isCurrentBinding()) return false;
         const saved = normalizeWaveformScaleValue(savedScales[row.key]);
-        if (!Number.isFinite(saved)) {
-          continue;
-        }
-
-        await setScaleForRow(row, saved);
+        if (!Number.isFinite(saved)) continue;
+        if (!await setScaleForRow(row, saved)) return false;
       }
+      if (!isCurrentBinding()) return false;
+      scalesRestored = true;
+      return true;
     } finally {
-      applyingSavedScales = false;
+      if (revision === bindingRevision) applyingSavedScales = false;
     }
-
-    return true;
   }
 
   function handleDocumentInput(event) {
@@ -362,21 +377,33 @@ export function registerWaveformScaleService(helper: any) {
   }
 
   helper.bindWaveformScaleUnlock = function bindWaveformScaleUnlock() {
+    const isCurrentTask = captureL0TaskGuard();
     if (!isFeatureEnabled('waveformScaleUnlock')) {
       helper.unbindWaveformScaleUnlock();
       return false;
     }
+    if (controlsBound || bindingPending) return true;
+    const revision = ++bindingRevision;
+    bindingPending = true;
 
     void callBridge('waveform-scale-unlock-enable', {
       max: getTargetMax()
-    }).then(() => {
+    }).then(async result => {
+      if (revision !== bindingRevision || !isCurrentTask() ||
+          !isFeatureEnabled('waveformScaleUnlock') || !result?.ok) return;
       bindUiObservers();
-      void applySavedScales();
+      await applySavedScales(revision);
+    }).finally(() => {
+      if (revision === bindingRevision) bindingPending = false;
     });
     return true;
   };
 
   helper.unbindWaveformScaleUnlock = function unbindWaveformScaleUnlock() {
+    bindingRevision += 1;
+    bindingPending = false;
+    scalesRestored = false;
+    applyingSavedScales = false;
     unbindUiObservers();
     void callBridge('waveform-scale-unlock-disable', {});
   };

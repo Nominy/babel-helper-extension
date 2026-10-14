@@ -15,6 +15,12 @@ declare global {
 }
 
 async function boot() {
+  // Drain feature-owned native restoration before removing its MAIN listeners.
+  // A failed stop must retain its truthful audio state and block replacement.
+  const previousKernel = window.__babelHelperKernel;
+  if (previousKernel && typeof previousKernel.stop === 'function') {
+    await previousKernel.stop('kernel-replaced');
+  }
   window.dispatchEvent(new CustomEvent('babel-helper-bridge-teardown'));
   document
     .querySelectorAll(
@@ -23,10 +29,6 @@ async function boot() {
     .forEach((script) => script.remove());
   const linterBridgePreload = preloadCustomLinterBridge();
 
-  const previousKernel = window.__babelHelperKernel;
-  if (previousKernel && typeof previousKernel.stop === 'function') {
-    await previousKernel.stop('kernel-replaced').catch(() => {});
-  }
 
   const kernel = createHelperKernel();
   window.__babelHelperKernel = kernel;

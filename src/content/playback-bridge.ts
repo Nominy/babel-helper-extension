@@ -82,8 +82,13 @@ export function initPlaybackBridge() {
     let after = stateFromBindings(bindings);
     while (after.paused !== desired && Date.now() < deadline) {
       await new Promise(resolve => window.setTimeout(resolve, 16));
-      if (readBabelPlaybackBindings()?.reviewActionId !== bindings.reviewActionId) return { ok: false, reason: 'stale-task' };
-      after = stateFromBindings(bindings);
+      const current = readBabelPlaybackBindings();
+      if (current?.reviewActionId !== bindings.reviewActionId) return { ok: false, reason: 'stale-task' };
+      if (current.waves.length !== bindings.waves.length ||
+          current.waves.some((wave, index) => wave !== bindings.waves[index])) {
+        return { ok: false, reason: 'playback-unavailable' };
+      }
+      after = stateFromBindings(current);
     }
     return { ...after, ok: after.ok && after.paused === desired, changed: after.paused !== before.paused,
       previousPaused: before.paused, via: 'native-callback' };
@@ -147,6 +152,11 @@ export function initPlaybackBridge() {
     if (!id) {
       return;
     }
+    if (operation !== 'state' && payload.reviewActionId &&
+        payload.reviewActionId !== readBabelPlaybackBindings()?.reviewActionId) {
+      respond(id, { ok: false, reason: 'stale-task' });
+      return;
+    }
 
     if (operation === 'seek') {
       respond(id, invokeService('seekPlaybackBySeconds', payload.deltaSeconds));
@@ -171,7 +181,13 @@ export function initPlaybackBridge() {
 
     if (operation === 'adjust-speed') {
       respond(id, invokeService('adjustPlaybackSpeed', payload.direction, payload.steps));
+      return;
     }
+    if (operation === 'set-speed') {
+      respond(id, invokeService('setPlaybackSpeed', payload.speed));
+      return;
+    }
+    respond(id, { ok: false, reason: 'unknown-operation' });
   }
 
   let disposed = false;

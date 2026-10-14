@@ -1,23 +1,31 @@
 import { expect } from '@nominy/babel-extension-e2e/test';
 
-export const transcriptSelector = 'tbody textarea[placeholder="What was said…"]';
+import {
+  TEXT as transcriptSelector, row, rowMenu, rowValues, transcriptScroll, readText, selectText, textSelection, focusTranscript, fillText,
+} from '@nominy/babel-extension-e2e/native-helpers';
+
+export { transcriptSelector, row, rowMenu, transcriptScroll, readText, selectText, textSelection, fillText };
 export const editors = (page) => page.locator(transcriptSelector);
-export const row = (page, index) => editors(page).nth(index).locator('xpath=ancestor::tr');
+
+
+export async function readRows(page) {
+  const seconds = (value) => value.split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
+  return (await rowValues(page)).map((entry) => ({
+    ...entry, start: seconds(entry.start), end: seconds(entry.end),
+  }));
+}
 
 export async function ready(page, count = 4) {
   await expect(editors(page)).toHaveCount(count);
   await expect(page.getByRole('button', { name: 'Website Appearance', exact: true })).toBeVisible();
+  await editors(page).first().click();
   await expect(editors(page).first()).toBeEditable();
+  await focusTranscript(page);
 }
 
-// Only the browser's selection primitive is used; mutations always enter through native UI events.
-export async function selectText(editor, start, end = start) {
-  await editor.focus();
-  await editor.evaluate((element, selection) => element.setSelectionRange(...selection), [start, end]);
-}
 
 export async function caret(editor, position) {
-  await expect.poll(() => editor.evaluate((element) => [element.selectionStart, element.selectionEnd])).toEqual([position, position]);
+  await expect.poll(() => textSelection(editor)).toEqual([position, position]);
 }
 
 export async function enableOnlyLinterRules(babel, enabled) {
@@ -39,7 +47,8 @@ export async function enableOnlyLinterRules(babel, enabled) {
 }
 
 export function lane(page, number) {
-  return page.getByRole('heading', { name: `Speaker ${number}`, exact: true }).locator('..').locator('..');
+  return page.getByRole('button', { name: /^(Show|Hide) track$/ }).nth(number - 1)
+    .locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " flex-row ")][1]');
 }
 
 export async function openAppearance(page) {

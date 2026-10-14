@@ -253,9 +253,10 @@ export function createAudioEnhancementFeature(): FeatureModule {
 
   function render(): void {
     if (!active || !panel) return;
-    const toolbar = document.querySelector('#babel-gold-drafting-magic-button')?.parentElement ||
-      document.querySelector('[aria-label="Play all tracks"]')?.parentElement ||
-      document.querySelector('.flex.w-full.items-center.justify-start.gap-2');
+    const anchor = document.querySelector('[data-babel-helper-appearance-button]') ??
+      document.querySelector('#babel-gold-drafting-magic-button') ??
+      document.querySelector('[aria-label="Play all tracks"], [aria-label="Pause all tracks"]');
+    const toolbar = anchor?.parentElement;
     if (toolbar && panel.parentElement !== toolbar) toolbar.appendChild(panel);
     const shadow = panel.shadowRoot!;
     const status = shadow.querySelector<HTMLElement>('[data-status]')!;
@@ -572,12 +573,15 @@ export function createAudioEnhancementFeature(): FeatureModule {
       if (bridgeLoaded) {
         const requestId = crypto.randomUUID();
         const { promise, resolve } = Promise.withResolvers<void>();
-        const timeout = window.setTimeout(() => {
+        // A loaded producer may still be restoring native buffers. Elapsed time
+        // cannot prove it released the writer; only its correlated ack can.
+        // A cancelled script injection never received enable and has no writer.
+        const timeout = pendingInjection ? window.setTimeout(() => {
           disabledRequests.delete(requestId);
           resolve();
-        }, pendingInjection ? 3000 : 300000);
+        }, 3000) : null;
         disabledRequests.set(requestId, () => {
-          window.clearTimeout(timeout);
+          if (timeout !== null) window.clearTimeout(timeout);
           disabledRequests.delete(requestId);
           resolve();
         });

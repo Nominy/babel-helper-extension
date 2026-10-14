@@ -384,7 +384,7 @@ function createEnvironment() {
   const cells = [];
   const pageWindow = new FakeWindow();
   const body = new FakeElement();
-  const pageDocument = {
+  const pageDocument = Object.assign(new EventTarget(), {
     body,
     documentElement: new FakeElement(),
     querySelectorAll: (selector) => {
@@ -392,9 +392,9 @@ function createEnvironment() {
       if (selector === 'div') {
         return hosts.slice();
       }
-      return selector === 'td[style*="color"]' ? cells.slice() : [];
+      return selector === 'section[data-annotation-id] select[id^="speaker-"]' ? cells.slice() : [];
     }
-  };
+  });
 
   FakeMutationObserver.instances = [];
   measurements.computedStyle = 0;
@@ -486,11 +486,15 @@ function createEnvironment() {
     return { tracks, lanes, mount };
   }
 
-  function addSpeakerCell(text) {
+  function addSpeakerCell(trackId, text = '') {
+    const row = new FakeElement();
+    row.parentElement = body;
+    row.setAttribute('data-annotation-id', `turn-${cells.length}`);
     const cell = new FakeElement();
-    cell.parentElement = body;
+    cell.parentElement = row;
+    cell.value = trackId;
     cell.textContent = text;
-    cell.style.setProperty('color', 'rgb(32, 154, 255)');
+    cell.closest = (selector) => selector === 'section[data-annotation-id]' ? row : null;
     cells.push(cell);
     return cell;
   }
@@ -1240,18 +1244,18 @@ test('a lane that moves up sheds its old stamp and takes the new slot', async ()
   bridge.dispose();
 });
 
-test('speaker table cells are stamped with the slot of the lane whose label they carry', async () => {
+test('native speaker selects and turns follow recording identity, not label or colour', async () => {
   const env = createEnvironment();
-  env.addLaneStack(['Speaker 1', 'Speaker 2', 'Speaker 3']);
-  const cellOne = env.addSpeakerCell('  Speaker 1  ');
-  const cellThree = env.addSpeakerCell('Speaker 3');
-  const unrelated = env.addSpeakerCell('Total');
+  env.addLaneStack(['Same speaker', 'Same speaker', 'Speaker 3']);
+  const cellOne = env.addSpeakerCell('rec-1', 'Same speakerSame speakerSpeaker 3');
+  const cellThree = env.addSpeakerCell('rec-3', 'Same speakerSame speakerSpeaker 3');
+  const unrelated = env.addSpeakerCell('missing-recording', 'Same speaker');
   const bridge = await installBridge();
 
   bridge.applyConfig(THEME);
 
   assert.equal(cellOne.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
-  assert.equal(cellOne.getAttribute(LANE_LABEL_ATTRIBUTE), 'Speaker 1');
+  assert.equal(cellOne.getAttribute(LANE_LABEL_ATTRIBUTE), 'Same speaker');
   assert.equal(
     cellThree.getAttribute(LANE_SLOT_ATTRIBUTE),
     '3',
@@ -1260,15 +1264,22 @@ test('speaker table cells are stamped with the slot of the lane whose label they
   assert.equal(cellThree.getAttribute(LANE_INDEX_ATTRIBUTE), '3');
   assert.equal(unrelated.getAttribute(LANE_SLOT_ATTRIBUTE), null);
 
-  cellOne.textContent = 'Speaker 2';
+  assert.equal(cellOne.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
+  cellOne.value = 'rec-2';
   assert.equal(bridge.refresh(), 3);
   assert.equal(cellOne.getAttribute(LANE_SLOT_ATTRIBUTE), '2', 'a re-rendered cell follows its new speaker');
+  assert.equal(cellOne.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), '2');
+  cellThree.value = 'missing-recording';
+  bridge.refresh();
+  assert.equal(cellThree.getAttribute(LANE_SLOT_ATTRIBUTE), null);
+  assert.equal(cellThree.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), null);
 
   bridge.applyConfig(DISABLED);
 
   assert.equal(cellOne.getAttribute(LANE_SLOT_ATTRIBUTE), null);
   assert.equal(cellOne.getAttribute(LANE_LABEL_ATTRIBUTE), null);
   assert.equal(cellThree.getAttribute(LANE_INDEX_ATTRIBUTE), null);
+  assert.equal(cellOne.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), null);
   bridge.dispose();
 });
 
@@ -1277,7 +1288,7 @@ test('disabling restores every lane colour, stamp and region and stops observing
   const stack = env.addLaneStack(['Speaker 1', 'Speaker 2']);
   const region = createRegion('r1', stack.lanes[0].track.processedRecordingId);
   stack.lanes[0].regions.regions.push(region);
-  const cell = env.addSpeakerCell('Speaker 2');
+  const cell = env.addSpeakerCell('rec-2', 'Speaker 2');
   const bridge = await installBridge();
 
   env.sendConfig(THEME);
@@ -1308,7 +1319,7 @@ test('teardown restores lane stamps and region colours as completely as a disabl
   const [lane] = stack.lanes;
   const region = createRegion('r1', lane.track.processedRecordingId);
   lane.regions.regions.push(region);
-  const cell = env.addSpeakerCell('Speaker 1');
+  const cell = env.addSpeakerCell('rec-1', 'Speaker 1');
   await installBridge();
 
   env.sendConfig(THEME);
@@ -1390,7 +1401,7 @@ test('switching lane palettes repaints only what changed', async () => {
 test('a repeated identical config performs no scan, no host probe and no instance write', async () => {
   const env = createEnvironment();
   const stack = env.addLaneStack(['Speaker 1', 'Speaker 2', 'Speaker 3']);
-  const cell = env.addSpeakerCell('Speaker 1');
+  const cell = env.addSpeakerCell('rec-1', 'Speaker 1');
   const bridge = await installBridge();
 
   assert.equal(bridge.applyConfig(THEME), 3);
@@ -1437,5 +1448,27 @@ test('a repeated identical config performs no scan, no host probe and no instanc
 
   assert.equal(cell.attributes.size, 0);
   assert.equal(bridge.instanceCount(), 0);
+  bridge.dispose();
+});
+
+test('native long transcripts theme every mounted turn and region and restore the final entry', async () => {
+  const env = createEnvironment();
+  const { lanes } = env.addLaneStack(['Speaker 1']);
+  const lane = lanes[0];
+  for (let index = 0; index < 650; index += 1) {
+    lane.regions.regions.push(createRegion(`region-${index}`, lane.track.id));
+    env.addSpeakerCell(lane.track.id, 'Speaker 1');
+  }
+  const lastTurn = env.addSpeakerCell(lane.track.id, 'Speaker 1');
+  const lastRegion = lane.regions.regions.at(-1);
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  assert.equal(lastTurn.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
+  assert.equal(lastTurn.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
+  assert.notEqual(lastRegion.element.style.getPropertyValue('background-color'), APP_REGION_FILL);
+  bridge.applyConfig(DISABLED);
+  assert.equal(lastTurn.getAttribute(LANE_SLOT_ATTRIBUTE), null);
+  assert.equal(lastTurn.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), null);
+  assert.equal(lastRegion.element.style.getPropertyValue('background-color'), APP_REGION_FILL);
   bridge.dispose();
 });

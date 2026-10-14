@@ -1,4 +1,5 @@
 ﻿import { sleep } from '@nominy/babel-babel-runtime';
+import { isEditorControl, getEditorControlFromTarget } from '../site/editor-control';
 
 export function normalizeText(element: unknown) {
   if (!(element instanceof HTMLElement)) {
@@ -9,6 +10,9 @@ export function normalizeText(element: unknown) {
 }
 
 export function setEditableValue(element: unknown, value: unknown) {
+  if (isEditorControl(element)) return element.replaceValue(String(value ?? ''));
+  const editor = element instanceof HTMLElement ? getEditorControlFromTarget(element) : null;
+  if (editor) return editor.replaceValue(String(value ?? ''));
   if (!(element instanceof HTMLElement)) {
     return false;
   }

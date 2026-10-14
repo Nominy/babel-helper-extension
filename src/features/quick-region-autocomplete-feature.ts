@@ -54,10 +54,12 @@ function injectBridge(): Promise<boolean> {
 
 export function createQuickRegionAutocompleteFeature(): FeatureModule {
   let startPromise: Promise<boolean> | null = null;
+  let activation = 0;
 
   return {
     id: 'quick-region-autocomplete',
     async onLoaded(ctx: FeatureContext) {
+      const generation = ++activation;
       if (!startPromise) {
         startPromise = injectBridge();
       }
@@ -69,9 +71,10 @@ export function createQuickRegionAutocompleteFeature(): FeatureModule {
         return;
       }
 
-      setBridgeEnabled(true);
+      if (generation === activation) setBridgeEnabled(true);
     },
     async activate(ctx: FeatureContext, reason: string) {
+      const generation = ++activation;
       if (!startPromise) {
         startPromise = injectBridge();
       }
@@ -83,13 +86,16 @@ export function createQuickRegionAutocompleteFeature(): FeatureModule {
         return;
       }
 
+      if (generation !== activation) return;
       ctx.helper.perf?.count?.('bridge.inject.enabled', { id: 'quick-region-autocomplete', reason });
       setBridgeEnabled(true);
     },
     deactivate() {
+      ++activation;
       setBridgeEnabled(false);
     },
     stop() {
+      ++activation;
       setBridgeEnabled(false);
     }
   };

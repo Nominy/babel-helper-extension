@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules, 'segmentation' | 'site' | 'loop' | 'progress' | 'trim'>) {
   const AUTO_INSERT_SEGMENT_SCAN_WINDOW_SECONDS = 1;
@@ -144,7 +145,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
           startText,
           endText
         });
-        if (byIdentity instanceof HTMLTableRowElement) {
+        if (byIdentity instanceof HTMLElement) {
           return byIdentity;
         }
       }
@@ -155,7 +156,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         const byLabels = api.site.findRowByTimeLabels(startText, endText, {
           speakerKey
         });
-        if (byLabels instanceof HTMLTableRowElement) {
+        if (byLabels instanceof HTMLElement) {
           return byLabels;
         }
       }
@@ -178,7 +179,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         const byRange = api.site.findRowByTimeRange(startSeconds, endSeconds, {
           speakerKey
         });
-        if (byRange instanceof HTMLTableRowElement) {
+        if (byRange instanceof HTMLElement) {
           return byRange;
         }
       }
@@ -190,7 +191,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
   function buildAutoInsertTrimTarget(target, createResult, islandResult) {
     const row = findAutoInsertCreatedRow(target, createResult, islandResult);
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -358,7 +359,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
 
   async function mergeAutoInsertAdjacentRows(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return {
         ok: false,
         changed: false,
@@ -390,7 +391,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
       caretPosition = 'end';
       leftTextLength = Number(leftResult.neighborTextLength) || 0;
       caretOffset = leftTextLength;
-      if (leftResult.row instanceof HTMLTableRowElement) {
+      if (leftResult.row instanceof HTMLElement) {
         currentRow = leftResult.row;
       }
     }
@@ -406,7 +407,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         caretPosition = 'start';
         caretOffset = 0;
       }
-      if (rightResult.row instanceof HTMLTableRowElement) {
+      if (rightResult.row instanceof HTMLElement) {
         currentRow = rightResult.row;
       }
     }
@@ -433,22 +434,22 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
       rowIdentity && typeof helper.findRowByIdentity === 'function'
         ? helper.findRowByIdentity(rowIdentity)
         : null;
-    if (byIdentity instanceof HTMLTableRowElement) {
+    if (byIdentity instanceof HTMLElement) {
       return byIdentity;
     }
 
-    const row = mergeResult && mergeResult.row instanceof HTMLTableRowElement ? mergeResult.row : null;
+    const row = mergeResult && mergeResult.row instanceof HTMLElement ? mergeResult.row : null;
     if (row && row.isConnected) {
       return row;
     }
 
-    return fallbackRow instanceof HTMLTableRowElement ? fallbackRow : null;
+    return fallbackRow instanceof HTMLElement ? fallbackRow : null;
   }
 
 
   function getAutoInsertRowTextLength(row) {
-    const textarea = helper.getRowTextarea(row);
-    return textarea instanceof HTMLTextAreaElement ? (textarea.value || '').length : 0;
+    const editor = helper.getRowEditor(row);
+    return Boolean(editor) ? (editor.value || '').length : 0;
   }
 
 
@@ -472,7 +473,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
   function focusAutoInsertResultRow(fallbackRow, mergeResult) {
     const row = getAutoInsertFocusedRow(fallbackRow, mergeResult);
-    if (!(row instanceof HTMLTableRowElement) || typeof helper.focusRow !== 'function') {
+    if (!(row instanceof HTMLElement) || typeof helper.focusRow !== 'function') {
       return {
         ok: false,
         reason: 'missing-row'
@@ -532,7 +533,10 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
       };
     }
 
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    const isSameReviewTask = captureL0TaskGuard();
     const targets = await collectAutoInsertSegmentLaneTargets();
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount: 0 };
     if (!targets.length) {
       return {
         ok: false,
@@ -561,9 +565,11 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
       let trimCount = 0;
       let mergeCount = 0;
       let skippedCount = 0;
+      let focusedExistingCount = 0;
       const results = [];
 
       for (let index = 0; index < scanned.length; index += 1) {
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         const { target, islandResult } = scanned[index];
         api.progress.updateLongTaskProgress({
           label: 'Creating segment near caret',
@@ -584,12 +590,28 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
         if (islandResult.skipped || !islandResult.foundAudio) {
           skippedCount += 1;
+          let focus = null;
+          if (islandResult.reason === 'covered-at-caret' && Number.isFinite(islandResult.caretSeconds)) {
+            const existing = helper.getTranscriptRows().find(row => {
+              const identity = helper.getRowIdentity(row);
+              const range = api.site.getRowTimeRange(row);
+              return identity?.processedRecordingId === target.trackId && range &&
+                islandResult.caretSeconds >= range.startSeconds && islandResult.caretSeconds < range.endSeconds;
+            });
+            if (existing) {
+              const labels = api.site.getRowTimeLabels(existing);
+              if (labels) api.site.rememberTimelineSegmentTarget(existing, target.container, labels, helper.getRowSpeakerKey(existing));
+              focus = focusAutoInsertResultRow(existing, null);
+              if (focus.ok) focusedExistingCount += 1;
+            }
+          }
           results.push({
             ok: true,
             changed: false,
             trackId: target.trackId,
             reason: islandResult.reason || 'no-nearest-speech',
-            island: islandResult
+            island: islandResult,
+            focus
           });
           continue;
         }
@@ -614,6 +636,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
           attempts: 2,
           retryDelayMs: 80
         });
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         if (!createResult || !createResult.ok) {
           results.push({
             ok: false,
@@ -627,6 +650,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
         createCount += 1;
         const trimTarget = await waitForAutoInsertTrimTarget(target, createResult, islandResult);
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         const trimOptions = {
           progressLabel: 'Trimming inserted segment',
           keepProgress: true
@@ -634,10 +658,12 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         const trimResult = trimTarget
           ? await api.trim.trimSegmentTarget(trimTarget, trimOptions)
           : null;
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         const mergeResult =
           trimTarget && trimResult && trimResult.ok
             ? await mergeAutoInsertAdjacentRows(trimTarget.row)
             : null;
+        if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         const focusResult =
           trimTarget && trimResult && trimResult.ok
             ? focusAutoInsertResultRow(trimTarget.row, mergeResult)
@@ -668,22 +694,25 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         await helper.sleep(16);
       }
 
-      const ok = createCount > 0;
+      const ok = createCount > 0 || focusedExistingCount > 0;
       const finalResult = {
         ok,
-        changed: ok,
+        changed: createCount > 0,
         reason: ok ? null : 'no-nearest-speech',
         laneCount: targets.length,
         createCount,
         trimCount,
+        focusedExistingCount,
         mergeCount,
         skippedCount,
         results
       };
       return finalResult;
     } finally {
-      helper.state.autoSegmentationPending = false;
-      api.progress.dismissLongTaskProgress();
+      if (isSameReviewTask()) {
+        helper.state.autoSegmentationPending = false;
+        api.progress.dismissLongTaskProgress();
+      }
     }
   };
 

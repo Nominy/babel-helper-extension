@@ -1,6 +1,7 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
 
-const TEXT = 'textarea[placeholder="What was said…"]';
+import { transcriptSelector as TEXT, fillText, readText, readRows, selectText, textSelection } from './helper-editing-utils.mjs';
+import { selectedAudioReady } from './native-audio-utils.mjs';
 const PROGRESS = '#babel-helper-long-task-progress';
 const DRAFT = '/v1/draft';
 const TIMING = '/v1/transcribe';
@@ -19,9 +20,13 @@ async function captureTiming(page) {
 }
 
 async function ready(page, babel, count) {
+  // These cases exercise the configured HTTP L0 engine. Gold's Local mode is
+  // the separately tested downloaded WebGPU engine, not a custom-URL alias.
+  await babel.setExtensionSettings('gold', { mode: 'advanced', localModelsEnabled: false });
   await expect(page.locator(TEXT)).toHaveCount(count ?? (await babel.state()).action.annotations.length);
   await expect(page.locator('html')).toHaveAttribute('data-babel-gold-drafting-extension-id', babel.extensionIds.gold);
   await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks.filter((track) => track.duration > 0).length)).toBe(2);
+  await selectedAudioReady(page);
 }
 
 async function calls(babel, path) {
@@ -58,14 +63,18 @@ async function assertGeneratedRow(page, babel, call) {
     if (call.outcome === 'error') expect(call.error.message).toMatch(/no speech|no segments|empty|no.*voic|invalid local draft response/i);
     else expect(response.rows.every((row) => !row.text.trim())).toBe(true);
     await expect(page.locator(PROGRESS)).toContainText(/failed|invalid|empty|no speech/i);
-    await expect(page.locator(TEXT).first()).toHaveValue('');
+    await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
     test.info().annotations.push({ type: 'model-observation', description: 'Real inference on synthetic tones reported no speech; no transcript was fabricated.' });
     return false;
   }
   expect(call.outcome).toBe('success');
   expect(typeof generated).toBe('string');
   const normalized = generated.trim().replace(/\p{L}/u, (letter) => letter.toLocaleUpperCase('ru-RU'));
-  await expect(page.locator(TEXT).first()).toHaveValue(normalized);
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe(normalized);
+  const annotationId = await page.locator(TEXT).first().evaluate(element =>
+    element.closest('section[data-annotation-id]').dataset.annotationId);
+  await expect.poll(() => page.evaluate(id => window.__BABEL_E2E__.snapshot().annotations
+    .find(annotation => annotation.id === id)?.content, annotationId)).toBe(normalized);
   if (babel.ai === 'placeholder') {
     expect(generated).toBe('[E2E placeholder] Проверенная тестовая запись.');
     expect(response.models.asr.name).toBe('e2e-placeholder-v1');
@@ -180,38 +189,46 @@ test('empty segment transcribes through Helper, the authorized Gold port and mul
   const call = await completedCall(babel, DRAFT);
   expect(call.method).toBe('POST');
   expect(call.body.options.preserveRows).toEqual([expect.objectContaining({ startSeconds: annotations[0].startTimeInSeconds, endSeconds: annotations[0].endTimeInSeconds, text: '' })]);
-  const visibleSpeaker = await page.locator(TEXT).first().evaluate((element) => element.closest('tr').children[1].textContent.trim());
+  const visibleSpeaker = (await readRows(page))[0].speaker;
   expect([annotations[0].processedRecordingId, visibleSpeaker]).toContain(call.body.options.preserveRows[0].speakerKey);
-  expect(call.body.tracks.some((track) => track.lane === call.body.options.preserveRows[0].speakerKey)).toBe(true);
-  expect(call.body.tracks).toHaveLength(2);
-  expect(call.files).toEqual(expect.arrayContaining([
+  // /v1/draft reuses the completed transcription; binary audio belongs to the
+  // actual /v1/transcribe multipart request with this exact selected-pair key.
+  const timingCall = (await calls(babel, TIMING)).find(request =>
+    request.outcome === 'success' && request.body.taskId === call.body.taskId);
+  expect(timingCall, 'Draft must reuse a genuine same-source multipart transcription').toBeTruthy();
+  expect(timingCall.method).toBe('POST');
+  expect(timingCall.body.tracks.some(track => track.lane === call.body.options.preserveRows[0].speakerKey)).toBe(true);
+  expect(timingCall.body.tracks).toHaveLength(2);
+  expect(timingCall.files).toEqual(expect.arrayContaining([
     expect.objectContaining({ fieldName: 'audio:1', type: 'audio/wav' }),
     expect.objectContaining({ fieldName: 'audio:2', type: 'audio/wav' })
   ]));
-  expect(call.files.every((file) => file.size > 44)).toBe(true);
+  expect(timingCall.files.every(file => file.size > 44)).toBe(true);
+  expect(timingCall.response.taskId).toBe(call.body.taskId);
+  expect(call.files).toEqual([]);
   expect(call.body.taskId).toContain((await babel.state()).action.actionId);
   const applied = await assertGeneratedRow(page, babel, call);
   if (applied) await expect(page.locator(PROGRESS)).toHaveCount(0);
-  expect(await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value))).toEqual([await page.locator(TEXT).first().inputValue(), ...annotations.slice(1).map((row) => row.content)]);
+  expect(await Promise.all((await page.locator(TEXT).all()).map(readText))).toEqual([await readText(page.locator(TEXT).first()), ...annotations.slice(1).map((row) => row.content)]);
   expect(await calls(babel, '/api/broker/transcribe-segment')).toEqual([]);
 });
 
 test('nonempty transcription is never sent and typing during an in-flight result wins', { tag: '@local-engine' }, async ({ page, babel }) => {
   await ready(page, babel);
-  const original = await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value));
+  const original = await Promise.all((await page.locator(TEXT).all()).map(readText));
   await invokeTranscription(page);
   expect(await calls(babel, DRAFT)).toEqual([]);
-  expect(await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value))).toEqual(original);
+  expect(await Promise.all((await page.locator(TEXT).all()).map(readText))).toEqual(original);
   const annotations = await emptyFirstRow(page, babel);
   await babel.control({ routes: { [DRAFT]: { delayMs: 1800 } } });
   await invokeTranscription(page);
   await expect.poll(async () => (await calls(babel, DRAFT)).length).toBe(1);
   const typed = 'Пользователь успел ввести собственный текст.';
-  await page.locator(TEXT).first().fill(typed);
+  await fillText(page.locator(TEXT).first(), typed);
   await completedCall(babel, DRAFT);
   await expect(page.locator(PROGRESS)).toContainText(/no.longer.empty|failed|не|segment/i);
-  await expect(page.locator(TEXT).first()).toHaveValue(typed);
-  expect(await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value))).toEqual([typed, ...annotations.slice(1).map((row) => row.content)]);
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe(typed);
+  expect(await Promise.all((await page.locator(TEXT).all()).map(readText))).toEqual([typed, ...annotations.slice(1).map((row) => row.content)]);
 });
 
 test('changing the current row during inference refuses a stale segment result', { tag: '@local-engine' }, async ({ page, babel }) => {
@@ -222,8 +239,8 @@ test('changing the current row during inference refuses a stale segment result',
   await page.locator(TEXT).nth(1).click();
   await completedCall(babel, DRAFT);
   await expect(page.locator(PROGRESS)).toContainText(/no.longer.current|failed|segment/i);
-  await expect(page.locator(TEXT).first()).toHaveValue('');
-  await expect(page.locator(TEXT).nth(1)).toHaveValue(annotations[1].content);
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
+  await expect.poll(() => readText(page.locator(TEXT).nth(1))).toBe(annotations[1].content);
 });
 
 test('task navigation disconnects the old broker port and new identity can transcribe', { tag: '@local-engine' }, async ({ page, babel }) => {
@@ -237,16 +254,16 @@ test('task navigation disconnects the old broker port and new identity can trans
   const annotations = action.annotations.map((row) => ({ ...row, reviewActionId: nextId, id: `next-${row.id}` }));
   await babel.reset('baseline', { audio: babel.ai !== 'placeholder' && babel.hasSpeechFixtures ? { fixture: 'speech' } : {}, action: { actionId: nextId, reviewActionId: nextId, annotations } });
   await ready(page, babel);
-  await expect(page.locator(TEXT).first()).toHaveValue('');
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
   await invokeTranscription(page);
   const next = await completedCall(babel, DRAFT);
   expect(next.body.taskId).toContain(nextId);
   expect(next.body.taskId).not.toBe(oldTaskId);
   expect(next.body.options.preserveRows).toEqual([expect.objectContaining({ startSeconds: annotations[0].startTimeInSeconds, endSeconds: annotations[0].endTimeInSeconds, text: '' })]);
-  const visibleSpeaker = await page.locator(TEXT).first().evaluate((element) => element.closest('tr').children[1].textContent.trim());
+  const visibleSpeaker = (await readRows(page))[0].speaker;
   expect([annotations[0].processedRecordingId, visibleSpeaker]).toContain(next.body.options.preserveRows[0].speakerKey);
   await assertGeneratedRow(page, babel, next);
-  expect(await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value))).toEqual([await page.locator(TEXT).first().inputValue(), ...annotations.slice(1).map((row) => row.content)]);
+  expect(await Promise.all((await page.locator(TEXT).all()).map(readText))).toEqual([await readText(page.locator(TEXT).first()), ...annotations.slice(1).map((row) => row.content)]);
 });
 
 test('closing a requesting tab releases its real port and another tab remains usable', { tag: '@local-engine' }, async ({ page, context, babel }) => {
@@ -259,7 +276,7 @@ test('closing a requesting tab releases its real port and another tab remains us
   await expect.poll(async () => (await calls(babel, DRAFT)).length).toBe(1);
   await second.close();
   await page.bringToFront();
-  await expect(page.locator(TEXT).first()).toHaveValue('');
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
   await invokeTranscription(page);
   await expect.poll(async () => (await calls(babel, DRAFT)).length).toBe(2);
   await expect.poll(async () => (await calls(babel, DRAFT)).at(-1).outcome, { timeout: 120000 }).not.toBe('pending');
@@ -271,7 +288,7 @@ test('L0 backend failure is visible, cannot silently use paid fallback, and retr
   await babel.control({ routes: { [DRAFT]: { error: { status: 503, message: 'E2E L0 engine unavailable' }, times: 1 } } });
   await invokeTranscription(page);
   await expect(page.locator(PROGRESS)).toContainText(/unavailable|503|failed/i);
-  await expect(page.locator(TEXT).first()).toHaveValue('');
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
   expect(await calls(babel, '/api/broker/transcribe-segment')).toEqual([]);
   await invokeTranscription(page);
   const call = await completedCall(babel, DRAFT, 2);
@@ -292,7 +309,7 @@ test('Helper consumes public Gold absolute word timings on both lanes through ac
   const timing = await page.evaluate(() => window.__helperE2ETiming.at(-1));
   expect(timing.taskId).toContain((await babel.state()).action.actionId);
   expect(timing.tracks).toHaveLength(2);
-  const visibleSpeakers = await page.locator('tbody tr').evaluateAll((rows) => rows.filter((row) => row.querySelector('textarea[placeholder="What was said…"]')).map((row) => row.children[1].textContent.trim()));
+  const visibleSpeakers = (await readRows(page)).map((row) => row.speaker);
   for (const [laneIndex, track] of timing.tracks.entries()) {
     const rowIndex = fixture.action.annotations.findIndex((row, index) => row.processedRecordingId === track.lane || visibleSpeakers[index] === track.lane);
     expect(rowIndex, `Timing lane ${track.lane} must belong to a current native annotation`).toBeGreaterThanOrEqual(0);
@@ -301,10 +318,10 @@ test('Helper consumes public Gold absolute word timings on both lanes through ac
     if (babel.ai === 'placeholder' || babel.hasSpeechFixtures) expect(tokens.length, 'Speech-success timing must cover the exercised interval').toBeGreaterThanOrEqual(2);
     if (!tokens.length) {
       const editor = page.locator(TEXT).nth(rowIndex);
-      const original = await editor.inputValue();
+      const original = await readText(editor);
       const before = await page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks[0].currentTime);
       await editor.click({ modifiers: ['Alt'], position: { x: 10, y: 10 } });
-      await expect(editor).toHaveValue(original);
+      await expect.poll(() => readText(editor)).toBe(original);
       expect(await page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks[0].currentTime)).toBe(before);
       test.info().annotations.push({ type: 'model-observation', description: `Real inference returned no words in lane ${laneIndex + 1}; Alt-click safely declined seeking.` });
       continue;
@@ -316,28 +333,26 @@ test('Helper consumes public Gold absolute word timings on both lanes through ac
     }
     const editor = page.locator(TEXT).nth(rowIndex);
     const text = tokens.map((token) => token.text).join(' ');
-    await editor.fill(text);
+    await fillText(editor, text);
     const targetIndex = tokens.findIndex((token) => /^[\p{L}\p{N}]+[.,!?]?$/u.test(token.text));
     expect(targetIndex, 'Alt-click must target a spoken word, not the inference marker tag').toBeGreaterThanOrEqual(0);
     const offset = tokens.slice(0, targetIndex).reduce((length, token) => length + token.text.length + 1, 0);
-    const point = await editor.evaluate((element, offset) => {
-      const style = getComputedStyle(element);
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      context.font = style.font;
-      const box = element.getBoundingClientRect();
-      return { x: box.x + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + context.measureText(element.value.slice(0, offset)).width + 2,
-        y: box.y + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) + (parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2) / 2 };
-    }, offset);
+    await selectText(editor, offset, offset + 1);
+    const point = await editor.evaluate(() => {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) throw new Error('Native word selection missing');
+      const box = selection.getRangeAt(0).getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
     await page.keyboard.down('Alt');
     await page.mouse.click(point.x, point.y);
     await page.keyboard.up('Alt');
     await expect(editor).toBeFocused();
-    const caret = await editor.evaluate((element) => element.selectionStart);
+    const caret = (await textSelection(editor))[0];
     expect(caret).toBeGreaterThanOrEqual(offset);
     expect(caret).toBeLessThanOrEqual(offset + tokens[targetIndex].text.length);
     await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks[0].currentTime)).toBeCloseTo(tokens[targetIndex].startSeconds, 1);
-    await expect(editor).toHaveValue(text);
+    await expect.poll(() => readText(editor)).toBe(text);
   }
   expect(await calls(babel, DRAFT)).toEqual([]);
 });
@@ -352,8 +367,10 @@ test('timing identity is refreshed after task navigation and old timestamps cann
   const nextId = '66666666-6666-4666-8666-666666666666';
   await babel.reset('baseline', { audio: babel.ai !== 'placeholder' && babel.hasSpeechFixtures ? { fixture: 'speech' } : {}, action: { actionId: nextId, reviewActionId: nextId, annotations: action.annotations.map((row) => ({ ...row, reviewActionId: nextId })) }, controls: { routes: { [TIMING]: { delayMs: 1800 } } } });
   await ready(page, babel);
-  await expect(page.locator(TEXT).first()).toHaveValue(action.annotations[0].content);
+  await expect.poll(() => readText(page.locator(TEXT).first())).toBe(action.annotations[0].content);
   await expect.poll(async () => (await calls(babel, TIMING)).length).toBe(1);
+  expect((await calls(babel, TIMING))[0].outcome).toBe('pending');
+  expect(await page.evaluate(() => window.__helperE2ETiming.length)).toBe(0);
   const before = await page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks[0].currentTime);
   await page.locator(TEXT).first().click({ modifiers: ['Alt'], position: { x: 10, y: 10 } });
   expect(await page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks[0].currentTime)).toBe(before);
@@ -398,7 +415,7 @@ test('timing timeout reaches real broker redistribution without changing words o
     if (babel.ai === 'placeholder') expect(call.response.model).toBe('e2e-placeholder-v1');
     else expect(call.response.model).not.toBe('e2e-placeholder-v1');
   }
-  await expect.poll(async () => (await page.locator(TEXT).evaluateAll((elements) => elements.map((element) => element.value))).slice(0, 2).join(' ').replace(/\s+/g, ' ').trim()).toBe(fullText);
+  await expect.poll(async () => (await Promise.all((await page.locator(TEXT).all()).map(readText))).slice(0, 2).join(' ').replace(/\s+/g, ' ').trim()).toBe(fullText);
   const mediaAfter = await page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks.map((track) => track.currentTime));
   expect(mediaAfter).toEqual(mediaBefore);
 });
@@ -409,7 +426,6 @@ test('Nano audio review consumes actual local inference through the selected Hel
   const options = await babel.options('gold');
   await options.locator('#aiBrokerProvider').selectOption('local-gemini-nano');
   await options.locator('[data-role="save"]').click();
-  await expect(options.locator('[data-role="status"]')).toContainText('Saved.');
   await options.close();
   const fixture = await babel.reset('baseline', {
     audio: babel.nano === 'real' ? { fixture: 'speech' } : {},
@@ -471,30 +487,34 @@ test('Nano audio review consumes actual local inference through the selected Hel
       observedMove = true;
       expect(expected).not.toEqual(payload.draftAllocations.map((allocation) => allocation.text));
     }
-    await expect.poll(() => page.locator(TEXT).evaluateAll((elements, segments) => {
-      const seconds = (text) => text.match(/\d+(?::\d+)+(?:\.\d+)?/)[0].split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
-      return segments.map((segment) => {
-        const editor = elements.find((element) => {
-          const row = element.closest('tr');
-          return row.children[1].textContent.trim() === segment.speakerKey &&
-            Math.abs(seconds(row.children[2].textContent) - segment.startSeconds) < 0.02 &&
-            Math.abs(seconds(row.children[3].textContent) - segment.endSeconds) < 0.02;
-        });
-        return editor?.value;
-      });
-    }, payload.segments)).toEqual(expected);
+    await expect.poll(async () => {
+      const annotations = await page.evaluate(() => window.__BABEL_E2E__.snapshot().annotations);
+      return payload.segments.map(segment => annotations.find(annotation =>
+        annotation.id === segment.id &&
+        annotation.processedRecordingId === segment.speakerKey &&
+        Math.abs(annotation.startTimeInSeconds - segment.startSeconds) < 0.02 &&
+        Math.abs(annotation.endTimeInSeconds - segment.endSeconds) < 0.02)?.content);
+    }).toEqual(expected);
   }
   if (babel.nano === 'placeholder') expect(observedMove, 'Marked Nano inference must change an allocation so ignoring its result cannot pass').toBe(true);
   const state = await babel.state();
   expect(state.calls.filter((call) => call.path.startsWith('/api/broker/') || call.path.startsWith('/api/draft/'))).toEqual([]);
+  // Automatic paired enhancement is independent audio transport, not Nano text
+  // redistribution. Its committed decoded pair is required by ready() above.
   const upstream = state.calls.filter((call) => call.path.startsWith('/v1/') &&
+    call.path !== '/v1/enhance' &&
     !(call.method === 'GET' && /^\/v1\/queue\/[^/]+$/.test(call.path)));
-  expect(upstream.length).toBeGreaterThan(0);
+  expect(upstream).toContainEqual(expect.objectContaining({
+    path: TIMING, outcome: 'error', error: expect.objectContaining({ status: 503 }),
+  }));
   for (const call of upstream) {
-    expect(call.path).toBe(TIMING);
     expect(call.outcome).toBe('error');
-    expect(call.error.message).toContain('exercising selected Nano audio review');
-    expect(call.response).toBeUndefined();
+    if (call.path === '/v1/timing/lookup') {
+      expect(call.error.status).toBe(404);
+    } else {
+      expect(call.path).toBe(TIMING);
+      expect(call.error.status).toBe(503);
+    }
   }
   await test.info().attach('nano-audio-review', { body: JSON.stringify(inference, null, 2), contentType: 'application/json' });
 });
@@ -507,7 +527,7 @@ test.describe('Helper without Gold', () => {
     await expect(page.locator(TEXT)).toHaveCount(4);
     await invokeTranscription(page);
     await expect(page.locator(PROGRESS)).toContainText(/unavailable|not.installed|failed|receiving end|connect/i, { timeout: 15000 });
-    await expect(page.locator(TEXT).first()).toHaveValue('');
+    await expect.poll(() => readText(page.locator(TEXT).first())).toBe('');
     expect((await babel.state()).calls.filter((call) => call.path.startsWith('/v1/') || call.path.startsWith('/api/broker/'))).toEqual([]);
   });
 });

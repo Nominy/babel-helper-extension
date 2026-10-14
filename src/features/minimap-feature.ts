@@ -13,7 +13,6 @@ export function registerMinimapService(helper: any) {
   const MINIMAP_ATTR = 'data-babel-helper-minimap';
   const HOST_ATTR = 'data-babel-helper-minimap-host';
   const MINIMAP_HEIGHT = 44;
-  const MINIMAP_MAX_TRACKS = 2;
   const MUTATION_DEBOUNCE_MS = 220;
 
   const callBridge = createMagnifierBridgeClient('minimap-request-');
@@ -53,7 +52,7 @@ export function registerMinimapService(helper: any) {
   function resolveWaveformHosts() {
     const discovered = discoverWaveformHosts();
     if (discovered.length) {
-      return discovered.slice(0, MINIMAP_MAX_TRACKS);
+      return discovered;
     }
 
     const stamped = Array.from(document.querySelectorAll('div[' + HOST_ATTR + ']')).filter((node) => {
@@ -72,7 +71,7 @@ export function registerMinimapService(helper: any) {
       );
     });
     if (stamped.length) {
-      return stamped.slice(0, MINIMAP_MAX_TRACKS);
+      return stamped;
     }
     return [];
   }
@@ -156,6 +155,11 @@ export function registerMinimapService(helper: any) {
   }
 
   function layoutTrackLanes(minimap, count) {
+    while (minimap.lanes.length < count) {
+      const lane = createTrackLane();
+      minimap.surface.insertBefore(lane.lane, minimap.viewport);
+      minimap.lanes.push(lane);
+    }
     const lanes = minimap.lanes;
     const visibleCount = Math.max(1, Math.min(count || 1, lanes.length));
     const laneHeight = 100 / visibleCount;
@@ -282,6 +286,7 @@ export function registerMinimapService(helper: any) {
   }
 
   function clearRender(minimap) {
+    minimap.duration = 0;
     minimap.fullSyncOk = false;
     minimap.primaryContentSignature = '';
     layoutTrackLanes(minimap, 1);
@@ -532,7 +537,7 @@ export function registerMinimapService(helper: any) {
     surface.style.overflow = 'hidden';
 
     const lanes = [];
-    for (let index = 0; index < MINIMAP_MAX_TRACKS; index += 1) {
+    for (let index = 0; index < 1; index += 1) {
       const lane = createTrackLane();
       surface.appendChild(lane.lane);
       lanes.push(lane);
@@ -661,7 +666,11 @@ export function registerMinimapService(helper: any) {
       document.querySelector('main') ||
       container.parentElement;
     if (observerRoot instanceof HTMLElement && typeof MutationObserver === 'function') {
-      state.mutationObserver = new MutationObserver(() => requestDebouncedFullSync(state));
+      state.mutationObserver = new MutationObserver((mutations) => {
+        if (mutations.some((mutation) => !state.container.contains(mutation.target))) {
+          requestDebouncedFullSync(state);
+        }
+      });
       state.mutationObserver.observe(observerRoot, {
         childList: true,
         subtree: true,
@@ -691,8 +700,10 @@ export function registerMinimapService(helper: any) {
 
     minimap.navigateInFlight = true;
     void (async () => {
+      const route = location.href;
       try {
-        while (minimap.navigatePendingTime != null && !minimap.destroyed) {
+        while (minimap.navigatePendingTime != null && !minimap.destroyed &&
+               location.href === route && primaryHostStillCurrent(minimap)) {
           const nextTime = minimap.navigatePendingTime;
           minimap.navigatePendingTime = null;
           await callBridge('navigate-source', {
@@ -718,6 +729,7 @@ export function registerMinimapService(helper: any) {
     }
 
     minimap.syncPending = true;
+    const route = location.href;
 
     try {
       if (!ensureContainer(minimap)) {
@@ -753,17 +765,19 @@ export function registerMinimapService(helper: any) {
           hostMarker,
           peakBins
         });
-        if (result && result.ok) {
-          tracks.push(result);
+        if (minimap.destroyed || location.href !== route || !host.isConnected ||
+            helper.state.minimap !== minimap || resolveWaveformHosts()[index] !== host) {
+          return;
         }
+        tracks.push(result?.ok ? result : null);
       }
 
-      if (!tracks.length) {
+      if (!tracks[0]) {
         clearRender(minimap);
         return;
       }
 
-      const duration = tracks.reduce((max, track) => Math.max(max, Number(track.duration) || 0), 0);
+      const duration = tracks.reduce((max, track) => Math.max(max, Number(track?.duration) || 0), 0);
       minimap.duration = duration;
 
       layoutTrackLanes(minimap, tracks.length);
@@ -834,7 +848,7 @@ export function registerMinimapService(helper: any) {
     }
 
     if (minimap.container instanceof HTMLElement) {
-      minimap.container.replaceChildren();
+      minimap.container.remove();
     }
 
     helper.state.minimap = null;
@@ -856,42 +870,21 @@ export function registerMinimapService(helper: any) {
   };
 
   helper.unbindMinimap = function unbindMinimap() {
-    const minimap = helper.state.minimap;
-    if (!minimap) {
-      return;
-    }
-
-    if (minimap.viewportRafId) {
-      window.cancelAnimationFrame(minimap.viewportRafId);
-      minimap.viewportRafId = 0;
-    }
-    if (minimap.mutationDebounceTimer) {
-      window.clearTimeout(minimap.mutationDebounceTimer);
-      minimap.mutationDebounceTimer = 0;
-    }
-    disconnectHostObservers(minimap);
-    minimap.hostSignature = '';
-    minimap.primaryContentSignature = '';
-    minimap.fullSyncOk = false;
-    if (minimap.mutationObserver) {
-      minimap.mutationObserver.disconnect();
-      minimap.mutationObserver = null;
-    }
-    if (typeof minimap.onWindowResize === 'function') {
-      window.removeEventListener('resize', minimap.onWindowResize, true);
-      minimap.onWindowResize = null;
-    }
+    helper.clearMinimap();
   };
 }
 
 export function createMinimapFeature(): FeatureModule {
   return {
     id: 'minimap',
-    start: async (context) => {
-      // Basic initialization if needed
+    activate: async (context) => {
+      context.services.minimap.bindMinimap();
     },
     onLoaded: async (context) => {
       context.services.minimap.bindMinimap();
+    },
+    deactivate: async (context) => {
+      context.services.minimap.clearMinimap();
     },
     stop: async (context) => {
       context.services.minimap.unbindMinimap();

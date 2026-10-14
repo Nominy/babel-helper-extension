@@ -1,4 +1,3 @@
-import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
 import {
   WEBSITE_APPEARANCE_SPEAKER_SLOT_COUNT,
   normalizeWebsiteAppearanceSettings,
@@ -32,15 +31,12 @@ const ENABLED_VALUE = 'enabled';
 // gating only — never geometry, never a value the page can read a size out of.
 const SCOPE_ATTRIBUTE = 'data-babel-helper-scope';
 const TRANSCRIPT_SCOPE_VALUE = 'transcript';
-const TRANSCRIPT_TABLE_SCOPE_VALUE = 'transcript-table';
+const TRANSCRIPT_TURNS_SCOPE_VALUE = 'transcript-turns';
 
-// The transcript main is the one holding a row textarea; the transcript table is a table
-// inside it that does. The table marker also answers to `textarea.w-full`, exactly as the
-// sheet's `:has()` gate did, so a renamed placeholder cannot silently strip the table's
-// palette while the rest of the transcript keeps it.
+// The native scroll container remains mounted when all turns are filtered or
+// deleted. Scope the panel without depending on editable text or row count.
 const TRANSCRIPT_MAIN_SELECTOR = 'main, [role="main"]';
-const TRANSCRIPT_TABLE_SELECTOR = 'table';
-const TRANSCRIPT_TABLE_TEXTAREA_SELECTOR = `${BABEL_ROW_TEXTAREA_SELECTOR}, textarea.w-full`;
+const TRANSCRIPT_TURNS_SELECTOR = '[data-transcript-scroll]';
 
 // A route change swaps the transcript wholesale, so the marks are reconciled from a
 // debounced observer instead of from apply: a burst of mutations coalesces into one
@@ -763,12 +759,7 @@ export function createWebsiteAppearanceController(targetDocument?: Document) {
     }
   }
 
-  /**
-   * Every main the page has, and inside each transcript main every table that holds a row
-   * textarea. The pass is bounded by the mains and tables that exist — a dashboard has a
-   * handful — and never by the rows, which is what the `:has()` gate this replaces had to
-   * walk on every recalc.
-   */
+  /** Scope the mounted native transcript, including empty and readonly tasks. */
   function collectScopeTargets(): Map<HTMLElement, string> {
     const targets = new Map<HTMLElement, string>();
     const searchRoot = resolvedDocument?.body ?? resolvedDocument?.documentElement ?? null;
@@ -779,19 +770,16 @@ export function createWebsiteAppearanceController(targetDocument?: Document) {
     const mains = searchRoot.querySelectorAll<HTMLElement>(TRANSCRIPT_MAIN_SELECTOR);
     for (let index = 0; index < mains.length; index += 1) {
       const main = mains[index];
-      if (!main.querySelector(BABEL_ROW_TEXTAREA_SELECTOR)) {
+      if (!main.querySelector(TRANSCRIPT_TURNS_SELECTOR)) {
         continue;
       }
       if (!targets.has(main)) {
         targets.set(main, TRANSCRIPT_SCOPE_VALUE);
       }
-      const tables = main.querySelectorAll<HTMLElement>(TRANSCRIPT_TABLE_SELECTOR);
-      for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
-        const table = tables[tableIndex];
-        if (targets.has(table) || !table.querySelector(TRANSCRIPT_TABLE_TEXTAREA_SELECTOR)) {
-          continue;
-        }
-        targets.set(table, TRANSCRIPT_TABLE_SCOPE_VALUE);
+      const panels = main.querySelectorAll<HTMLElement>(TRANSCRIPT_TURNS_SELECTOR);
+      for (let index = 0; index < panels.length; index += 1) {
+        const panel = panels[index];
+        if (!targets.has(panel)) targets.set(panel, TRANSCRIPT_TURNS_SCOPE_VALUE);
       }
     }
     return targets;

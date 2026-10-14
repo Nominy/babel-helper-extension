@@ -1,1334 +1,385 @@
 // @ts-nocheck
-import { readBabelEditorState } from '@nominy/babel-babel-runtime';
-import { BABEL_ROW_TEXTAREA_SELECTOR } from '../core/babel-editor-contract';
+import { readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
 import { parseTimeValue } from '../hooks/parsing';
 
 export function initTimestampBridge() {
-  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
-  const existingBridge = window.__babelHelperTimestampBridge;
-  if (existingBridge) {
-    if (
-      typeof existingBridge.createSegment === 'function' &&
-      typeof existingBridge.snapshotTranscript === 'function'
-    ) {
-      return;
-    }
-
-    if (typeof existingBridge.dispose === 'function') {
-      existingBridge.dispose();
-    } else {
-      delete window.__babelHelperTimestampBridge;
-    }
-  }
-
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
   const RESPONSE_EVENT = 'babel-helper-timestamp-response';
+  const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const SERVICE_ID = 'page.timestamp';
-  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
+  window.__babelHelperTimestampBridge?.dispose();
+  let disposed = false;
+  const routeKey = () => `${location.pathname}${location.search}`;
+  const timeText = value => Number.isFinite(value)
+    ? `${String(Math.floor(value / 60)).padStart(2, '0')}:${(value % 60).toFixed(2).padStart(5, '0')}` : '';
+  const turns = binding => binding.annotations.filter(turn => turn.type === 'transcription')
+    .slice().sort((a, b) => (a.startTimeInSeconds ?? 0) - (b.startTimeInSeconds ?? 0));
+  const failure = (backend, reason) => ({ ok: false, backend, reason });
+  const historyEpoch = crypto.randomUUID();
+  const commandIds = new WeakMap();
+  let nextCommandId = 0;
 
-  function safe(callback, fallbackValue) {
+  function historyToken(binding, depth = binding?.history?.undoStack.length) {
+    const history = binding?.history;
+    if (!history || !Number.isInteger(depth) || depth < 0 || depth > history.undoStack.length) return null;
+    const command = depth ? history.undoStack[depth - 1] : history.undo;
+    if (!command || (typeof command !== 'object' && typeof command !== 'function')) return null;
+    let id = commandIds.get(command);
+    if (!id) { id = ++nextCommandId; commandIds.set(command, id); }
+    return `${historyEpoch}:${binding.reviewActionId}:${depth}:${id}`;
+  }
+
+  function matchesExpectedHistory(binding, payload) {
+    return Number.isInteger(payload?.expectedHistoryRevision) && payload.expectedHistoryRevision >= 0 &&
+      payload.expectedHistoryRevision === binding?.history?.undoStack.length &&
+      typeof payload.expectedHistoryToken === 'string' &&
+      payload.expectedHistoryToken === historyToken(binding);
+  }
+
+  function invokeNativeCommand(context, invoke) {
+    const binding = current(context);
+    if (!binding) return { error: failure(context.backend, 'stale-task') };
+    if (context.guarded && (!matchesExpectedHistory(binding, context.payload) ||
+        Object.keys(binding.pendingTextById || {}).length)) return { error: failure(context.backend, 'history-conflict') };
+    const previousHistoryToken = historyToken(binding);
+    if (!previousHistoryToken) return { error: failure(context.backend, 'history-unavailable') };
+    const receipt = { previousHistoryRevision: binding.history.undoStack.length, previousHistoryToken,
+      historyRevision: null, historyToken: null };
+    context.execution.receipt = receipt;
+    let value;
     try {
-      const value = callback();
-      return value == null ? fallbackValue : value;
-    } catch (_error) {
-      return fallbackValue;
+      value = invoke(binding);
+    } finally {
+      // Native Zustand history updates synchronously. Capture this command's
+      // identity now, never a possibly unrelated head after awaiting React.
+      const after = current(context);
+      receipt.historyRevision = after?.history?.undoStack.length ?? null;
+      receipt.historyToken = historyToken(after);
     }
+    if (!receipt.historyToken) return { error: failure(context.backend, 'history-unavailable') };
+    return { value, receipt, annotationsBefore: binding.annotations };
   }
 
-  function sleep(ms) {
-    return new Promise((resolve) => {
-      window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
-    });
-  }
-
-  async function waitFor(callback, timeoutMs = 1200, intervalMs = 40) {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt <= timeoutMs) {
-      const value = safe(() => callback(), null);
-      if (value) {
-        return value;
-      }
-
-      await sleep(intervalMs);
-    }
-
-    return null;
-  }
-
-  function respond(id, result) {
-    window.dispatchEvent(
-      new CustomEvent(RESPONSE_EVENT, {
-        detail: {
-          id,
-          result
-        }
-      })
-    );
-  }
-
-  function normalizeText(value) {
-    return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-  }
-
-  function getReactInternalValue(element, prefix) {
-    if (!(element instanceof Element) || typeof prefix !== 'string' || !prefix) {
-      return null;
-    }
-
-    for (const name of Object.getOwnPropertyNames(element)) {
-      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
-        return element[name];
-      }
-    }
-
-    return null;
-  }
-
-  function getReactFiber(element) {
-    return getReactInternalValue(element, '__reactFiber$');
-  }
-
-  function getTranscriptRows() {
-    return Array.from(document.querySelectorAll('tbody tr')).filter(
-      (row) => row instanceof HTMLTableRowElement && row.querySelector(ROW_TEXTAREA_SELECTOR)
-    );
-  }
-
-  function getRowSpeakerKey(row) {
-    if (!(row instanceof HTMLTableRowElement) || row.children.length < 2) {
-      return '';
-    }
-
-    return normalizeText(row.children[1]?.textContent || '');
-  }
-
-  function getRowTimeLabels(row) {
-    if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
-      return null;
-    }
-
-    return {
-      startText: normalizeText(row.children[2]?.textContent || ''),
-      endText: normalizeText(row.children[3]?.textContent || '')
-    };
-  }
-
-  function getRowTimeRange(row) {
-    const labels = getRowTimeLabels(row);
-    if (!labels) {
-      return null;
-    }
-
-    const startSeconds = parseTimeValue(labels.startText);
-    const endSeconds = parseTimeValue(labels.endText);
-    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
-      return null;
-    }
-
-    return {
-      startSeconds,
-      endSeconds
-    };
-  }
-
-  function resolveRowAnnotation(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return null;
-    }
-
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
-    }
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 24) {
-      const props = current.memoizedProps;
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id) {
-        return annotation;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    return null;
+  function snapshotRow(annotation, index, binding) {
+    const trackLabel = binding.tracks.find(track => track.id === annotation.processedRecordingId)?.label || '';
+    return { index, annotationId: annotation.id, processedRecordingId: annotation.processedRecordingId,
+      trackLabel, speakerKey: annotation.processedRecordingId || trackLabel, lane: trackLabel,
+      startText: timeText(annotation.startTimeInSeconds), endText: timeText(annotation.endTimeInSeconds),
+      startSeconds: annotation.startTimeInSeconds, endSeconds: annotation.endTimeInSeconds,
+      text: binding.pendingTextById?.[annotation.id] ?? annotation.content ?? '' };
   }
 
   function snapshotTranscript() {
-    resolveCreateAnnotationBinding();
-    const lanes = (readBabelEditorState()?.tracks || []).map((track) => ({
-      processedRecordingId: track.id, speakerKey: track.id,
-      trackLabel: track.label, lane: track.label
+    const binding = readBabelTranscriptBindings();
+    const backend = 'page-react-transcript-snapshot';
+    if (!binding) return failure(backend, 'binding-not-found');
+    return { ok: true, backend, reviewActionId: binding.reviewActionId, readOnly: binding.readOnly,
+      historyRevision: binding.history?.undoStack.length ?? null,
+      historyToken: historyToken(binding),
+      rows: turns(binding).map((turn, index) => snapshotRow(turn, index, binding)),
+      lanes: binding.tracks.map(track => ({ processedRecordingId: track.id, speakerKey: track.id,
+        trackLabel: track.label, lane: track.label })) };
+  }
+
+  function begin(payload, backend, execution) {
+    const binding = readBabelTranscriptBindings();
+    if (!binding || disposed) return { error: failure(backend, 'binding-not-found') };
+    if (binding.readOnly) return { error: failure(backend, 'read-only') };
+    const taskId = payload?.expectedReviewActionId || payload?.reviewActionId || payload?.rowIdentity?.reviewActionId;
+    if ((taskId && taskId !== binding.reviewActionId) || (payload?.routeKey && payload.routeKey !== routeKey())) {
+      return { error: failure(backend, 'stale-task') };
+    }
+    const guarded = payload?.expectedHistoryRevision !== undefined || payload?.expectedHistoryToken !== undefined;
+    if (guarded && (!matchesExpectedHistory(binding, payload) || Object.keys(binding.pendingTextById || {}).length)) {
+      return { error: failure(backend, 'history-conflict') };
+    }
+    return { binding, taskId: binding.reviewActionId, route: routeKey(), backend, guarded, payload, execution };
+  }
+
+  function current(context) {
+    const binding = readBabelTranscriptBindings();
+    return !disposed && routeKey() === context.route && binding?.reviewActionId === context.taskId && !binding.readOnly
+      ? binding : null;
+  }
+
+  async function settle(context, predicate, command = null) {
+    const deadline = Date.now() + 1600;
+    do {
+      const binding = current(context);
+      if (!binding) return { error: failure(context.backend, 'stale-task') };
+      if (command && historyToken(binding) !== command.receipt.historyToken) {
+        return { error: failure(context.backend, 'history-conflict') };
+      }
+      const value = (!command || binding.annotations !== command.annotationsBefore) && predicate(binding);
+      if (value) return { binding, value };
+      await new Promise(resolve => window.setTimeout(resolve, 16));
+    } while (Date.now() < deadline);
+    return { error: failure(context.backend, 'verify-timeout') };
+  }
+
+  function resolveTurn(binding, payload, boundary = null) {
+    const id = payload?.annotationId || payload?.rowIdentity?.annotationId;
+    if (id) return turns(binding).find(turn => turn.id === id) || null;
+    const lane = payload?.processedRecordingId || payload?.speakerKey;
+    const candidates = turns(binding).filter(turn => !lane || turn.processedRecordingId === lane ||
+      binding.tracks.find(track => track.id === turn.processedRecordingId)?.label === lane);
+    const start = payload?.startSeconds == null ? parseTimeValue(payload?.startText || '') : Number(payload.startSeconds);
+    const end = payload?.endSeconds == null ? parseTimeValue(payload?.endText || '') : Number(payload.endSeconds);
+    if (!boundary && (!Number.isFinite(start) || !Number.isFinite(end) || end <= start)) return null;
+    let best = null;
+    let score = Infinity;
+    for (const turn of candidates) {
+      const left = turn.startTimeInSeconds, right = turn.endTimeInSeconds;
+      if (!Number.isFinite(left) || !Number.isFinite(right)) continue;
+      const next = boundary ? Math.abs((boundary.side === 'left' ? left : right) - boundary.time)
+        : Math.abs(left - start) + Math.abs(right - end) - 100 * Math.max(0, Math.min(end, right) - Math.max(start, left));
+      if (next < score) { best = turn; score = next; }
+    }
+    return best;
+  }
+
+  async function flushEdits(context, annotations) {
+    const expected = annotations.map(turn => ({
+      id: turn.id, committedText: turn.content ?? '', text: context.binding.pendingTextById?.[turn.id] ?? turn.content ?? ''
     }));
-    const rows = getTranscriptRows().map((row, index) => {
-      const annotation = resolveRowAnnotation(row);
-      const labels = getRowTimeLabels(row);
-      const range = getRowTimeRange(row);
-      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-      const visibleLane = getRowSpeakerKey(row);
-      const processedRecordingId =
-        annotation && annotation.processedRecordingId != null
-          ? String(annotation.processedRecordingId).trim()
-          : '';
-      const trackLabel =
-        annotation && typeof annotation.trackLabel === 'string' && annotation.trackLabel.trim()
-          ? annotation.trackLabel.trim()
-          : visibleLane;
-      const annotationStart = Number(annotation?.startTimeInSeconds);
-      const annotationEnd = Number(annotation?.endTimeInSeconds);
-      const startSeconds = Number.isFinite(annotationStart)
-        ? annotationStart
-        : range?.startSeconds ?? null;
-      const endSeconds = Number.isFinite(annotationEnd)
-        ? annotationEnd
-        : range?.endSeconds ?? null;
-      const speakerKey = processedRecordingId || trackLabel || visibleLane;
-
-      return {
-        index,
-        annotationId:
-          annotation && typeof annotation.id === 'string' ? annotation.id.trim() : '',
-        processedRecordingId,
-        trackLabel,
-        speakerKey,
-        lane: visibleLane || trackLabel || speakerKey,
-        startText: labels?.startText || '',
-        endText: labels?.endText || '',
-        startSeconds,
-        endSeconds,
-        text: textarea && typeof textarea.value === 'string' ? textarea.value : ''
-      };
+    let changed = false;
+    const result = await settle(context, latest => {
+      const byId = new Map(latest.annotations.map(turn => [turn.id, turn]));
+      let committed = true;
+      for (const turn of expected) {
+        const annotation = byId.get(turn.id);
+        const pending = latest.pendingTextById?.[turn.id];
+        if (!annotation || (pending !== undefined && pending !== turn.text) ||
+            (annotation.content !== turn.committedText && annotation.content !== turn.text)) {
+          changed = true;
+          return true;
+        }
+        if (annotation.content !== turn.text) committed = false;
+      }
+      return committed;
     });
+    return changed ? failure(context.backend, 'stale-transcript') : result.error || null;
+  }
 
-    return {
-      ok: true,
-      backend: 'page-react-transcript-snapshot',
-      rows,
-      lanes
+  async function flushTranscript(payload, execution) {
+    const binding = readBabelTranscriptBindings();
+    if (binding?.readOnly) return snapshotTranscript();
+    const context = begin(payload, 'page-react-transcript-snapshot', execution);
+    if (context.error) return context.error;
+    const error = await flushEdits(context, turns(context.binding));
+    return error || snapshotTranscript();
+  }
+
+  async function createSegment(payload, execution) {
+    const backend = 'page-react-create-annotation';
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const start = Number(payload?.startSeconds), end = Number(payload?.endSeconds);
+    const trackId = payload?.processedRecordingId;
+    if (!context.binding.tracks.some(track => track.id === trackId) || !Number.isFinite(start) ||
+        !Number.isFinite(end) || start < 0 || end <= start) return failure(backend, 'invalid-segment');
+    const annotationId = payload?.annotationId || crypto.randomUUID();
+    if (context.binding.annotations.some(turn => turn.id === annotationId)) return failure(backend, 'duplicate-annotation');
+    if (typeof context.binding.panel.onCreateAnnotation !== 'function') return failure(backend, 'binding-not-found');
+    const rowCountBefore = turns(context.binding).length;
+    const command = invokeNativeCommand(context, latest => latest.panel.onCreateAnnotation({
+      id: annotationId, type: 'transcription', content: payload?.text || '',
+      processedRecordingId: trackId, startTimeInSeconds: start, endTimeInSeconds: end, intensity: null }));
+    if (command.error) return command.error;
+    const result = await settle(context, latest => latest.annotations.find(turn => turn.id === annotationId), command);
+    if (result.error) return result.error;
+    return { ok: true, backend, ...snapshotRow(result.value, 0, result.binding), rowCountBefore,
+      rowCountAfter: turns(result.binding).length };
+  }
+
+  async function deleteSegment(payload, execution) {
+    const backend = 'page-react-row-action';
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const turn = resolveTurn(context.binding, payload);
+    if (!turn) return failure(backend, 'row-not-found');
+    if (context.binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
+    const flushed = await flushEdits(context, [turn]);
+    if (flushed) return flushed;
+    const binding = current(context);
+    if (!binding) return failure(backend, 'stale-task');
+    if (typeof binding.panel.onDeleteAnnotation !== 'function') return failure(backend, 'binding-not-found');
+    const rowCountBefore = turns(binding).length;
+    const command = invokeNativeCommand(context, latest => latest.panel.onDeleteAnnotation(turn.id));
+    if (command.error) return command.error;
+    const result = await settle(context, latest => !latest.annotations.some(item => item.id === turn.id), command);
+    if (result.error) return result.error;
+    return { ok: true, backend, annotationId: turn.id, rowCountBefore, rowCountAfter: turns(result.binding).length };
+  }
+
+  async function mergeSegment(payload, execution) {
+    const backend = 'page-react-row-action';
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const direction = payload?.direction === 'below' ? 'below' : 'above';
+    const turn = resolveTurn(context.binding, payload);
+    if (!turn) return failure(backend, 'row-not-found');
+    if (context.binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
+    const lane = turns(context.binding).filter(item => item.processedRecordingId === turn.processedRecordingId);
+    const adjacent = lane[lane.findIndex(item => item.id === turn.id) + (direction === 'below' ? 1 : -1)];
+    if (!adjacent) return failure(backend, 'merge-disabled');
+    const flushed = await flushEdits(context, [turn, adjacent]);
+    if (flushed) return flushed;
+    const binding = current(context);
+    if (!binding) return failure(backend, 'stale-task');
+    if (!binding.annotations.some(item => item.id === adjacent.id) || !binding.annotations.some(item => item.id === turn.id)) {
+      return failure(backend, 'row-not-found');
+    }
+    if (typeof binding.panel.onMergeAnnotations !== 'function') return failure(backend, 'binding-not-found');
+    const rowCountBefore = turns(binding).length;
+    const command = invokeNativeCommand(context, latest => latest.panel.onMergeAnnotations(turn.id, direction));
+    if (command.error) return command.error;
+    const result = await settle(context, latest => !latest.annotations.some(item => item.id === adjacent.id), command);
+    if (result.error) return result.error;
+    return { ok: true, backend, annotationId: turn.id, direction, rowCountBefore, rowCountAfter: turns(result.binding).length };
+  }
+
+  async function setBoundaryTime(payload, execution) {
+    const backend = 'page-react-row-time-change';
+    const target = Number(payload?.targetSeconds), side = payload?.side === 'left' ? 'left' : 'right';
+    if (!Number.isFinite(target) || target < 0) return failure(backend, 'invalid-target');
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const turn = resolveTurn(context.binding, payload, { side, time: target });
+    if (!turn) return failure(backend, 'row-not-found');
+    const range = { start: side === 'left' ? target : turn.startTimeInSeconds,
+      end: side === 'right' ? target : turn.endTimeInSeconds };
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.end <= range.start) return failure(backend, 'next-range-invalid');
+    const flushed = await flushEdits(context, [turn]);
+    if (flushed) return flushed;
+    const binding = current(context);
+    if (!binding) return failure(backend, 'stale-task');
+    if (typeof binding.panel.onChangeAnnotationTime !== 'function') return failure(backend, 'binding-not-found');
+    const command = invokeNativeCommand(context, latest => latest.panel.onChangeAnnotationTime(turn.id, range));
+    if (command.error) return command.error;
+    const result = await settle(context, latest => {
+      const updated = latest.annotations.find(item => item.id === turn.id);
+      return updated && Math.abs((side === 'left' ? updated.startTimeInSeconds : updated.endTimeInSeconds) - target) < 0.001 && updated;
+    }, command);
+    if (result.error) return result.error;
+    return { ok: true, backend, ...snapshotRow(result.value, 0, result.binding), side, targetSeconds: target };
+  }
+
+  async function splitSegmentAtTime(payload, execution) {
+    const backend = 'page-react-split-annotation';
+    const time = Number(payload?.splitSeconds);
+    const texts = payload?.texts;
+    if (texts !== undefined && (!Array.isArray(texts) || texts.length !== 2 ||
+        typeof texts[0] !== 'string' || typeof texts[1] !== 'string' || typeof payload?.sourceText !== 'string')) {
+      return failure(backend, 'invalid-split');
+    }
+    if (!Number.isFinite(time)) return failure(backend, 'invalid-split');
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const turn = resolveTurn(context.binding, payload);
+    if (!turn) return failure(backend, 'row-not-found');
+    if (context.binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
+    if (time <= turn.startTimeInSeconds + 0.1 || time >= turn.endTimeInSeconds - 0.1) {
+      return failure(backend, 'split-out-of-range');
+    }
+    if (texts !== undefined && (context.binding.pendingTextById?.[turn.id] ?? turn.content ?? '') !== payload.sourceText) {
+      return failure(backend, 'stale-transcript');
+    }
+    const flushed = await flushEdits(context, [turn]);
+    if (flushed) return flushed;
+    const binding = current(context);
+    if (!binding) return failure(backend, 'stale-task');
+    const currentTurn = binding.annotations.find(item => item.id === turn.id);
+    if (texts !== undefined && (!currentTurn ||
+        (binding.pendingTextById?.[turn.id] ?? currentTurn.content ?? '') !== payload.sourceText)) {
+      return failure(backend, 'stale-transcript');
+    }
+    if (typeof binding.controller?.split !== 'function') return failure(backend, 'binding-not-found');
+    const command = invokeNativeCommand(context, latest => latest.controller.split(turn.id, time, texts));
+    if (command.error) return command.error;
+    const ids = command.value;
+    if (!Array.isArray(ids) || ids.length !== 2) return failure(backend, 'split-rejected');
+    const result = await settle(context, latest => ids.map(id => latest.annotations.find(item => item.id === id)).every(Boolean), command);
+    if (result.error) return result.error;
+    const [left, right] = ids.map(id => snapshotRow(result.binding.annotations.find(item => item.id === id), 0, result.binding));
+    return { ok: true, backend, annotationId: turn.id, splitSeconds: time,
+      leftAnnotationId: ids[0], rightAnnotationId: ids[1], leftStartText: left.startText, leftEndText: left.endText,
+      rightStartText: right.startText, rightEndText: right.endText, leftStartSeconds: left.startSeconds,
+      leftEndSeconds: left.endSeconds, rightStartSeconds: right.startSeconds, rightEndSeconds: right.endSeconds };
+  }
+
+  async function undoTranscript(payload, execution) {
+    const backend = 'page-react-transcript-undo';
+    const context = begin(payload, backend, execution);
+    if (context.error) return context.error;
+    const history = context.binding.history;
+    // Undo is always guarded; depth without native command identity is unsafe.
+    if (!matchesExpectedHistory(context.binding, payload) || Object.keys(context.binding.pendingTextById || {}).length) {
+      return failure(backend, 'history-conflict');
+    }
+    if (!history?.undoStack.length || typeof history.undo !== 'function') return failure(backend, 'history-unavailable');
+    const expectedAfter = historyToken(context.binding, history.undoStack.length - 1);
+    const command = invokeNativeCommand(context, latest => latest.history.undo());
+    if (command.error) return command.error;
+    if (command.receipt.historyToken !== expectedAfter) return failure(backend, 'history-conflict');
+    const result = await settle(context, () => true, command);
+    return result.error || { ok: true, backend };
+  }
+
+  const nativeService = { snapshotTranscript };
+  // Include receipts on failures as well: a callback may mutate native history
+  // before a later commit timeout. Callers must not recreate approximate rows.
+  for (const [name, operation] of Object.entries({ createSegment, deleteSegment, mergeSegment,
+    setBoundaryTime, splitSegmentAtTime, undoTranscript, flushTranscript })) {
+    nativeService[name] = async payload => {
+      const before = readBabelTranscriptBindings();
+      const execution = { receipt: null };
+      const previousHistoryRevision = before?.history?.undoStack.length ?? null;
+      const previousHistoryToken = historyToken(before);
+      let result;
+      try { result = await operation(payload, execution); }
+      catch (error) { result = { ok: false, reason: 'apply-threw', message: String(error) }; }
+      const after = readBabelTranscriptBindings();
+      const sameTask = before && after?.reviewActionId === before.reviewActionId;
+      const receipt = execution.receipt || { previousHistoryRevision, previousHistoryToken,
+        historyRevision: sameTask ? after.history?.undoStack.length ?? null : null,
+        historyToken: sameTask ? historyToken(after) : null };
+      if (!execution.receipt && name !== 'flushTranscript' && sameTask &&
+          receipt.historyToken !== previousHistoryToken) {
+        // No Helper command ran: a user commit during the wait is not a
+        // transaction receipt and must never become an authorized rollback.
+        result = { ...result, ok: false, reason: 'history-conflict' };
+      }
+      return { ...receipt, ...result };
     };
   }
-
-  function findRowByTimeRange(startSeconds, endSeconds, options) {
-    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
-      return null;
-    }
-
-    const settings = options || {};
-    const speakerKey =
-      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
-    const rows = getTranscriptRows();
-    let bestRow = null;
-    let bestScore = -Infinity;
-
-    for (const row of rows) {
-      if (speakerKey && getRowSpeakerKey(row) !== speakerKey) {
-        continue;
-      }
-
-      const range = getRowTimeRange(row);
-      if (!range) {
-        continue;
-      }
-
-      const overlap = Math.max(
-        0,
-        Math.min(endSeconds, range.endSeconds) - Math.max(startSeconds, range.startSeconds)
-      );
-      const distance =
-        Math.abs(range.startSeconds - startSeconds) + Math.abs(range.endSeconds - endSeconds);
-      const score = overlap > 0 ? overlap * 100 - distance : -distance;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestRow = row;
-      }
-    }
-
-    return bestRow;
-  }
-
-  function findRowByTimeLabels(startText, endText, options) {
-    if (!startText || !endText) {
-      return null;
-    }
-
-    const settings = options || {};
-    const speakerKey =
-      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
-    const rows = getTranscriptRows();
-    const exactMatch =
-      rows.find((row) => {
-        if (speakerKey && getRowSpeakerKey(row) !== speakerKey) {
-          return false;
-        }
-
-        const labels = getRowTimeLabels(row);
-        return labels && labels.startText === startText && labels.endText === endText;
-      }) || null;
-    if (exactMatch) {
-      return exactMatch;
-    }
-
-    const targetStart = parseTimeValue(startText);
-    const targetEnd = parseTimeValue(endText);
-    if (!Number.isFinite(targetStart) || !Number.isFinite(targetEnd) || targetEnd <= targetStart) {
-      return null;
-    }
-
-    return findRowByTimeRange(targetStart, targetEnd, {
-      speakerKey
-    });
-  }
-
-  function findRowNearBoundary(side, targetSeconds, options) {
-    if (!Number.isFinite(targetSeconds)) {
-      return null;
-    }
-
-    const settings = options || {};
-    const speakerKey =
-      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
-    const boundarySide = side === 'left' ? 'left' : 'right';
-    const rows = getTranscriptRows();
-    let bestRow = null;
-    let bestScore = Infinity;
-
-    for (const row of rows) {
-      if (!(row instanceof HTMLTableRowElement)) {
-        continue;
-      }
-
-      if (speakerKey && getRowSpeakerKey(row) !== speakerKey) {
-        continue;
-      }
-
-      const range = getRowTimeRange(row);
-      if (!range) {
-        continue;
-      }
-
-      const boundarySeconds =
-        boundarySide === 'left' ? range.startSeconds : range.endSeconds;
-      let score = Math.abs(boundarySeconds - targetSeconds);
-
-      if (range.startSeconds <= targetSeconds && range.endSeconds >= targetSeconds) {
-        score -= 2;
-      }
-
-      if (boundarySide === 'right') {
-        if (range.startSeconds >= targetSeconds + 0.01) {
-          score += 1000;
-        } else if (range.endSeconds < targetSeconds - 5) {
-          score += 25;
-        }
-      } else if (range.endSeconds <= targetSeconds - 0.01) {
-        score += 1000;
-      } else if (range.startSeconds > targetSeconds + 5) {
-        score += 25;
-      }
-
-      if (score < bestScore) {
-        bestScore = score;
-        bestRow = row;
-      }
-    }
-
-    return bestRow;
-  }
-
-  function resolveRowTimeChangeBinding(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return null;
-    }
-
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      fiber = getReactFiber(row.querySelector(ROW_TEXTAREA_SELECTOR));
-    }
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 16) {
-      const props = current.memoizedProps;
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      const onTimeChange =
-        props && typeof props === 'object' && typeof props.onTimeChange === 'function'
-          ? props.onTimeChange
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id && onTimeChange) {
-        return {
-          annotationId: annotation.id,
-          onTimeChange,
-          startSeconds: Number(annotation.startTimeInSeconds),
-          endSeconds: Number(annotation.endTimeInSeconds)
-        };
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    return null;
-  }
-
-  function getCommittedReactPath(fiber) {
-    const ancestry = [];
-    while (fiber.return) {
-      ancestry.push(fiber);
-      fiber = fiber.return;
-      if (ancestry.length > 256) {
-        return [];
-      }
-    }
-    let current = fiber.stateNode?.current;
-    if (!current) {
-      return [];
-    }
-    const committed = [current];
-    for (let index = ancestry.length - 1; index >= 0; index -= 1) {
-      const expected = ancestry[index];
-      let child = current.child;
-      while (child && child !== expected && child !== expected.alternate) {
-        child = child.sibling;
-      }
-      if (!child) {
-        return [];
-      }
-      committed.push(child);
-      current = child;
-    }
-    return committed;
-  }
-
-  // Host nodes retain a fiber from either render branch. Prefer the committed
-  // root's child links over potentially stale return pointers; when that
-  // descent cannot be resolved (root unreachable, path mismatch), fall back to
-  // the bounded `.return` walk so a fiber-read miss never strips a binding.
-  // Returns fibers leaf-first, at most `maxDepth` of them.
-  function getReactAncestry(element, maxDepth) {
-    const fiber = getReactFiber(element);
-    if (!fiber || typeof fiber !== 'object') {
-      return [];
-    }
-    const committed = getCommittedReactPath(fiber);
-    if (committed.length) {
-      return committed.slice(Math.max(0, committed.length - maxDepth)).reverse();
-    }
-    const ancestry = [];
-    let current = fiber;
-    while (current && typeof current === 'object' && ancestry.length < maxDepth) {
-      ancestry.push(current);
-      current = current.return;
-    }
-    return ancestry;
-  }
-
-  function resolveRowActionBinding(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return null;
-    }
-
-    let path = getReactAncestry(row, 24);
-    if (!path.length) {
-      path = getReactAncestry(row.querySelector(ROW_TEXTAREA_SELECTOR), 24);
-    }
-
-    for (const fiber of path) {
-      const props = fiber.memoizedProps;
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id) {
-        const onMergeAbove =
-          props && typeof props === 'object' && typeof props.onMergeAbove === 'function'
-            ? props.onMergeAbove
-            : null;
-        const onMergeBelow =
-          props && typeof props === 'object' && typeof props.onMergeBelow === 'function'
-            ? props.onMergeBelow
-            : null;
-        const onDelete =
-          props && typeof props === 'object' && typeof props.onDelete === 'function'
-            ? props.onDelete
-            : null;
-        if (onMergeAbove || onMergeBelow || onDelete) {
-          return {
-            annotation,
-            annotationId: annotation.id,
-            canMergeAbove: Boolean(props.canMergeAbove),
-            canMergeBelow: Boolean(props.canMergeBelow),
-            onDelete,
-            onMergeAbove,
-            onMergeBelow,
-            startSeconds: Number(annotation.startTimeInSeconds),
-            endSeconds: Number(annotation.endTimeInSeconds)
-          };
-        }
-      }
-    }
-
-    return null;
-  }
-
-  function findRowByAnnotationId(annotationId) {
-    if (typeof annotationId !== 'string' || !annotationId) {
-      return null;
-    }
-
-    for (const row of getTranscriptRows()) {
-      const binding = resolveRowTimeChangeBinding(row);
-      if (binding && binding.annotationId === annotationId) {
-        return row;
-      }
-    }
-
-    return null;
-  }
-
-  function findSplitAnnotationCallback(startElement) {
-    let fiber = getReactFiber(startElement);
-    if (!fiber && startElement instanceof HTMLTableRowElement) {
-      fiber = getReactFiber(startElement.querySelector(ROW_TEXTAREA_SELECTOR));
-    }
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 40) {
-      let hook = current.memoizedState;
-      let hookIndex = 0;
-      while (hook && typeof hook === 'object' && hookIndex < 180) {
-        const memoizedState = hook.memoizedState;
-        const candidate =
-          Array.isArray(memoizedState) && typeof memoizedState[0] === 'function'
-            ? memoizedState[0]
-            : typeof memoizedState === 'function'
-              ? memoizedState
-              : null;
-        if (candidate) {
-          const source = Function.prototype.toString.call(candidate);
-          if (
-            candidate.length === 2 &&
-            source.includes('crypto.randomUUID') &&
-            source.includes('startTimeInSeconds') &&
-            source.includes('endTimeInSeconds') &&
-            source.includes('lowConfidenceResolved') &&
-            source.includes('.05') &&
-            source.includes('undo')
-          ) {
-            return candidate;
-          }
-        }
-
-        hook = hook.next;
-        hookIndex += 1;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    return null;
-  }
-
-  function resolveRowSplitBinding(row) {
-    const timeBinding = resolveRowTimeChangeBinding(row);
-    const splitAnnotation = findSplitAnnotationCallback(row);
-    if (!timeBinding || typeof timeBinding.annotationId !== 'string' || !timeBinding.annotationId) {
-      return null;
-    }
-
-    if (typeof splitAnnotation !== 'function') {
-      return null;
-    }
-
-    return {
-      annotationId: timeBinding.annotationId,
-      splitAnnotation,
-      startSeconds: timeBinding.startSeconds,
-      endSeconds: timeBinding.endSeconds
-    };
-  }
-
-  function createAnnotationId() {
-    const randomId =
-      typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : '';
-    return randomId || 'babel-helper-created-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-  }
-
-  let cachedCreateAnnotationBinding = null;
-
-  function resolveCreateAnnotationBinding() {
-    const seeds = [];
-    for (const row of getTranscriptRows()) {
-      seeds.push(row);
-      const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-      if (textarea instanceof HTMLElement) {
-        seeds.push(textarea);
-      }
-    }
-    for (const seed of document.querySelectorAll('tbody, table, main')) {
-      if (seed instanceof Element) {
-        seeds.push(seed);
-      }
-    }
-
-    for (const seed of seeds) {
-      for (const fiber of getReactAncestry(seed, 90)) {
-        const props = fiber.memoizedProps;
-        const onCreateAnnotation =
-          props && typeof props === 'object' && typeof props.onCreateAnnotation === 'function'
-            ? props.onCreateAnnotation
-            : null;
-        if (onCreateAnnotation) {
-          cachedCreateAnnotationBinding = {
-            onCreateAnnotation,
-            annotations: Array.isArray(props.annotations) ? props.annotations : [],
-            tracks: Array.isArray(props.tracks) ? props.tracks : []
-          };
-          return cachedCreateAnnotationBinding;
-        }
-      }
-    }
-
-    return cachedCreateAnnotationBinding;
-  }
-
-  function findRowsAroundSplit(annotationId, splitSeconds, options) {
-    const settings = options || {};
-    const speakerKey =
-      typeof settings.speakerKey === 'string' && settings.speakerKey ? settings.speakerKey : '';
-    const originalStart = Number(settings.startSeconds);
-    const originalEnd = Number(settings.endSeconds);
-    const leftTargetEnd = splitSeconds - 0.05;
-    const rightTargetStart = splitSeconds + 0.05;
-    const tolerance = 0.09;
-    let leftRow = null;
-    let rightRow = null;
-
-    for (const row of getTranscriptRows()) {
-      if (speakerKey && getRowSpeakerKey(row) !== speakerKey) {
-        continue;
-      }
-
-      const binding = resolveRowTimeChangeBinding(row);
-      if (binding && binding.annotationId === annotationId) {
-        continue;
-      }
-
-      const range = getRowTimeRange(row);
-      if (!range) {
-        continue;
-      }
-
-      if (
-        Number.isFinite(originalStart) &&
-        Math.abs(range.startSeconds - originalStart) <= tolerance &&
-        Math.abs(range.endSeconds - leftTargetEnd) <= tolerance
-      ) {
-        leftRow = row;
-      }
-
-      if (
-        Number.isFinite(originalEnd) &&
-        Math.abs(range.startSeconds - rightTargetStart) <= tolerance &&
-        Math.abs(range.endSeconds - originalEnd) <= tolerance
-      ) {
-        rightRow = row;
-      }
-    }
-
-    return leftRow && rightRow ? { leftRow, rightRow } : null;
-  }
-
-  function resolveRowFromPayload(payload) {
-    let row =
-      (payload?.annotationId ? findRowByAnnotationId(payload.annotationId) : null) ||
-      findRowByTimeLabels(payload?.startText, payload?.endText, {
-        speakerKey: payload?.speakerKey
-      }) ||
-      findRowByTimeRange(Number(payload?.startSeconds), Number(payload?.endSeconds), {
-        speakerKey: payload?.speakerKey
-      });
-    if (!(row instanceof HTMLTableRowElement) && payload?.rowIdentity && typeof payload.rowIdentity === 'object') {
-      row = findRowByAnnotationId(payload.rowIdentity.annotationId || '');
-    }
-    return row instanceof HTMLTableRowElement ? row : null;
-  }
-
-  async function createSegment(payload) {
-    const processedRecordingId =
-      typeof payload?.processedRecordingId === 'string' ? payload.processedRecordingId : '';
-    const speakerKey = typeof payload?.speakerKey === 'string' ? payload.speakerKey : processedRecordingId;
-    const content = typeof payload?.text === 'string' ? payload.text : '';
-    const startSeconds = Number(payload?.startSeconds);
-    const endSeconds = Number(payload?.endSeconds);
-    if (!processedRecordingId || !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
-      return {
-        ok: false,
-        backend: 'page-react-create-annotation',
-        reason: 'invalid-segment'
-      };
-    }
-
-    const binding = resolveCreateAnnotationBinding();
-    if (!binding || typeof binding.onCreateAnnotation !== 'function') {
-      return {
-        ok: false,
-        backend: 'page-react-create-annotation',
-        reason: 'binding-not-found'
-      };
-    }
-
-    const annotationId =
-      typeof payload?.annotationId === 'string' && payload.annotationId
-        ? payload.annotationId
-        : createAnnotationId();
-    const rowCountBefore = getTranscriptRows().length;
-    try {
-      binding.onCreateAnnotation({
-        id: annotationId,
-        type: 'transcription',
-        content,
-        processedRecordingId,
-        startTimeInSeconds: startSeconds,
-        endTimeInSeconds: endSeconds,
-        intensity: null
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        backend: 'page-react-create-annotation',
-        reason: 'apply-threw',
-        message: error instanceof Error ? error.message : String(error || '')
-      };
-    }
-
-    const createdRow = await waitFor(() => {
-      const byId = findRowByAnnotationId(annotationId);
-      if (byId instanceof HTMLTableRowElement) {
-        return byId;
-      }
-
-      return findRowByTimeRange(startSeconds, endSeconds, {
-        speakerKey: speakerKey || processedRecordingId
-      });
-    }, 1600, 40);
-
-    if (!(createdRow instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-create-annotation',
-        reason: 'verify-timeout',
-        annotationId
-      };
-    }
-
-    const labels = getRowTimeLabels(createdRow);
-    const range = getRowTimeRange(createdRow);
-    const timeBinding = resolveRowTimeChangeBinding(createdRow);
-    return {
-      ok: true,
-      backend: 'page-react-create-annotation',
-      annotationId: timeBinding?.annotationId || annotationId,
-      processedRecordingId,
-      speakerKey,
-      startText: labels?.startText || '',
-      endText: labels?.endText || '',
-      startSeconds: range?.startSeconds ?? startSeconds,
-      endSeconds: range?.endSeconds ?? endSeconds,
-      rowCountBefore,
-      rowCountAfter: getTranscriptRows().length
-    };
-  }
-
-  // Flushes pending native label edits on the merged rows so the merge closure
-  // observes the latest content. A commit timeout must prevent the merge from
-  // discarding text that is still present only in the editor.
-  async function commitMergeEdits(row, direction) {
-    const warnings = [];
-    const speaker = getRowSpeakerKey(row);
-    const laneRows = getTranscriptRows().filter((candidate) => getRowSpeakerKey(candidate) === speaker);
-    const index = laneRows.indexOf(row);
-    const adjacent = laneRows[index + (direction === 'below' ? 1 : -1)];
-    if (!adjacent) {
-      return warnings;
-    }
-    const edits = [row, adjacent].map((candidate) => {
-      const textarea = candidate.querySelector(ROW_TEXTAREA_SELECTOR);
-      const binding = resolveRowActionBinding(candidate);
-      return { row: candidate, textarea, annotationId: binding?.annotationId, text: textarea?.value };
-    });
-    const deadline = Date.now() + 1000;
-    for (const edit of edits) {
-      // Rows without a plain textarea (low-confidence, TTS, diff modes) have
-      // no debounced label edit to flush.
-      if (!(edit.textarea instanceof HTMLTextAreaElement) || !edit.annotationId) {
-        continue;
-      }
-      const isCommitted = () => {
-        const binding = resolveRowActionBinding(edit.row);
-        return binding?.annotationId === edit.annotationId && binding.annotation.content === edit.text;
-      };
-      if (isCommitted()) {
-        continue;
-      }
-      // Native blur flushes the row's debounced label update. Commit each row
-      // before the next so its callback observes the latest annotation state.
-      edit.textarea.focus({ preventScroll: true });
-      edit.textarea.blur();
-      if (!await waitFor(isCommitted, Math.max(0, deadline - Date.now()), 16)) {
-        warnings.push('pending-edit-commit-timeout:' + edit.annotationId);
-      }
-    }
-    return warnings;
-  }
-
-  async function mergeSegment(payload) {
-    const direction = payload && payload.direction === 'below' ? 'below' : 'above';
-    const row = resolveRowFromPayload(payload);
-    if (!(row instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'row-not-found'
-      };
-    }
-
-    const warnings = await commitMergeEdits(row, direction);
-    if (warnings.length) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'pending-edit-commit-timeout',
-        warning: warnings.join(',')
-      };
-    }
-    // Never retain a merge closure across the native label-update commits.
-    const binding = resolveRowActionBinding(row);
-    const action = direction === 'below' ? binding?.onMergeBelow : binding?.onMergeAbove;
-    const canMerge = direction === 'below' ? binding?.canMergeBelow : binding?.canMergeAbove;
-    if (!binding || typeof action !== 'function' || typeof binding.annotationId !== 'string' || !binding.annotationId) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'binding-not-found'
-      };
-    }
-
-    if (!canMerge) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'merge-disabled',
-        annotationId: binding.annotationId,
-        direction
-      };
-    }
-
-    const rowCountBefore = getTranscriptRows().length;
-    try {
-      if (direction === 'below') {
-        binding.onMergeBelow(binding.annotationId);
-      } else {
-        binding.onMergeAbove(binding.annotationId);
-      }
-    } catch (error) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'apply-threw',
-        message: error instanceof Error ? error.message : String(error || '')
-      };
-    }
-
-    const settled = await waitFor(() => {
-      const rows = getTranscriptRows();
-      if (rows.length < rowCountBefore) {
-        return { rowCountAfter: rows.length, removed: true };
-      }
-
-      const current = findRowByAnnotationId(binding.annotationId);
-      if (!(current instanceof HTMLTableRowElement)) {
-        return { rowCountAfter: rows.length, removed: true };
-      }
-
-      return null;
-    }, 1600, 40);
-
-    if (!settled) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'verify-timeout',
-        annotationId: binding.annotationId,
-        direction
-      };
-    }
-
-    return {
-      ok: true,
-      backend: 'page-react-row-action',
-      annotationId: binding.annotationId,
-      direction,
-      rowCountBefore,
-      rowCountAfter: settled.rowCountAfter
-    };
-  }
-
-  async function deleteSegment(payload) {
-    const row = resolveRowFromPayload(payload);
-    if (!(row instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'row-not-found'
-      };
-    }
-
-    const binding = resolveRowActionBinding(row);
-    if (
-      !binding ||
-      typeof binding.onDelete !== 'function' ||
-      typeof binding.annotationId !== 'string' ||
-      !binding.annotationId
-    ) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'binding-not-found'
-      };
-    }
-
-    const rowCountBefore = getTranscriptRows().length;
-    try {
-      binding.onDelete(binding.annotationId);
-    } catch (error) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'apply-threw',
-        message: error instanceof Error ? error.message : String(error || '')
-      };
-    }
-
-    const settled = await waitFor(() => {
-      const rows = getTranscriptRows();
-      if (rows.length < rowCountBefore) {
-        return { rowCountAfter: rows.length, removed: true };
-      }
-
-      const current = findRowByAnnotationId(binding.annotationId);
-      if (!(current instanceof HTMLTableRowElement)) {
-        return { rowCountAfter: rows.length, removed: true };
-      }
-
-      return null;
-    }, 1600, 40);
-
-    if (!settled) {
-      return {
-        ok: false,
-        backend: 'page-react-row-action',
-        reason: 'verify-timeout',
-        annotationId: binding.annotationId
-      };
-    }
-
-    return {
-      ok: true,
-      backend: 'page-react-row-action',
-      annotationId: binding.annotationId,
-      rowCountBefore,
-      rowCountAfter: settled.rowCountAfter
-    };
-  }
-
-  async function setBoundaryTime(payload) {
-    const side = payload && payload.side === 'left' ? 'left' : 'right';
-    const targetSeconds = Number(payload?.targetSeconds);
-    if (!Number.isFinite(targetSeconds)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'invalid-target'
-      };
-    }
-
-    let row =
-      resolveRowFromPayload(payload) ||
-      findRowNearBoundary(side, targetSeconds, {
-        speakerKey: payload?.speakerKey
-      });
-    if (!(row instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'row-not-found'
-      };
-    }
-
-    const binding = resolveRowTimeChangeBinding(row);
-    if (
-      !binding ||
-      typeof binding.onTimeChange !== 'function' ||
-      typeof binding.annotationId !== 'string' ||
-      !binding.annotationId
-    ) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'binding-not-found'
-      };
-    }
-
-    const rowRange = getRowTimeRange(row);
-    const currentStart = Number.isFinite(binding.startSeconds)
-      ? binding.startSeconds
-      : rowRange
-        ? rowRange.startSeconds
-        : null;
-    const currentEnd = Number.isFinite(binding.endSeconds)
-      ? binding.endSeconds
-      : rowRange
-        ? rowRange.endSeconds
-        : null;
-    if (!Number.isFinite(currentStart) || !Number.isFinite(currentEnd)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'current-range-invalid'
-      };
-    }
-
-    const nextRange =
-      side === 'left'
-        ? {
-            start: targetSeconds,
-            end: currentEnd
-          }
-        : {
-            start: currentStart,
-            end: targetSeconds
-          };
-    if (!Number.isFinite(nextRange.start) || !Number.isFinite(nextRange.end) || nextRange.end <= nextRange.start) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'next-range-invalid'
-      };
-    }
-
-    try {
-      binding.onTimeChange(binding.annotationId, nextRange);
-    } catch (error) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'apply-threw',
-        message: error instanceof Error ? error.message : String(error || '')
-      };
-    }
-
-    const updatedRow = await waitFor(() => {
-      const candidate =
-        findRowByAnnotationId(binding.annotationId) ||
-        findRowNearBoundary(side, targetSeconds, {
-          speakerKey: payload?.speakerKey
-        });
-      if (!(candidate instanceof HTMLTableRowElement)) {
-        return null;
-      }
-
-      const range = getRowTimeRange(candidate);
-      if (!range) {
-        return null;
-      }
-
-      const boundarySeconds = side === 'left' ? range.startSeconds : range.endSeconds;
-      return Math.abs(boundarySeconds - targetSeconds) <= 0.03 ? candidate : null;
-    }, 1200, 40);
-
-    if (!(updatedRow instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-row-time-change',
-        reason: 'verify-timeout'
-      };
-    }
-
-    const updatedLabels = getRowTimeLabels(updatedRow);
-    const updatedRange = getRowTimeRange(updatedRow);
-    return {
-      ok: true,
-      backend: 'page-react-row-time-change',
-      annotationId: binding.annotationId,
-      side,
-      targetSeconds,
-      startText: updatedLabels?.startText || '',
-      endText: updatedLabels?.endText || '',
-      startSeconds: updatedRange?.startSeconds ?? null,
-      endSeconds: updatedRange?.endSeconds ?? null
-    };
-  }
-
-  async function splitSegmentAtTime(payload) {
-    const splitSeconds = Number(payload?.splitSeconds);
-    if (!Number.isFinite(splitSeconds)) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'invalid-split'
-      };
-    }
-
-    let row = resolveRowFromPayload(payload);
-    if (!(row instanceof HTMLTableRowElement)) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'row-not-found'
-      };
-    }
-
-    const binding = resolveRowSplitBinding(row);
-    if (
-      !binding ||
-      typeof binding.splitAnnotation !== 'function' ||
-      typeof binding.annotationId !== 'string' ||
-      !binding.annotationId
-    ) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'binding-not-found'
-      };
-    }
-
-    const rowRange = getRowTimeRange(row);
-    const currentStart = Number.isFinite(binding.startSeconds)
-      ? binding.startSeconds
-      : rowRange
-        ? rowRange.startSeconds
-        : null;
-    const currentEnd = Number.isFinite(binding.endSeconds)
-      ? binding.endSeconds
-      : rowRange
-        ? rowRange.endSeconds
-        : null;
-    if (!Number.isFinite(currentStart) || !Number.isFinite(currentEnd)) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'current-range-invalid'
-      };
-    }
-
-    if (splitSeconds <= currentStart || splitSeconds >= currentEnd - 0.1) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'split-out-of-range'
-      };
-    }
-
-    try {
-      binding.splitAnnotation(binding.annotationId, splitSeconds);
-    } catch (error) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'apply-threw',
-        message: error instanceof Error ? error.message : String(error || '')
-      };
-    }
-
-    const splitRows = await waitFor(
-      () =>
-        findRowsAroundSplit(binding.annotationId, splitSeconds, {
-          speakerKey: payload?.speakerKey,
-          startSeconds: currentStart,
-          endSeconds: currentEnd
-        }),
-      1200,
-      40
-    );
-
-    if (!splitRows) {
-      return {
-        ok: false,
-        backend: 'page-react-split-annotation',
-        reason: 'verify-timeout'
-      };
-    }
-
-    const leftLabels = getRowTimeLabels(splitRows.leftRow);
-    const rightLabels = getRowTimeLabels(splitRows.rightRow);
-    const leftRange = getRowTimeRange(splitRows.leftRow);
-    const rightRange = getRowTimeRange(splitRows.rightRow);
-    const leftBinding = resolveRowTimeChangeBinding(splitRows.leftRow);
-    const rightBinding = resolveRowTimeChangeBinding(splitRows.rightRow);
-    return {
-      ok: true,
-      backend: 'page-react-split-annotation',
-      annotationId: binding.annotationId,
-      leftAnnotationId: leftBinding?.annotationId || '',
-      rightAnnotationId: rightBinding?.annotationId || '',
-      splitSeconds,
-      leftStartText: leftLabels?.startText || '',
-      leftEndText: leftLabels?.endText || '',
-      rightStartText: rightLabels?.startText || '',
-      rightEndText: rightLabels?.endText || '',
-      leftStartSeconds: leftRange?.startSeconds ?? null,
-      leftEndSeconds: leftRange?.endSeconds ?? null,
-      rightStartSeconds: rightRange?.startSeconds ?? null,
-      rightEndSeconds: rightRange?.endSeconds ?? null
-    };
-  }
-
-  const nativeService = {
-    createSegment,
-    deleteSegment,
-    mergeSegment,
-    setBoundaryTime,
-    snapshotTranscript,
-    splitSegmentAtTime
-  };
-  const serviceRegistry = window.BabelMods?.unsafe?.services;
-  if (
-    !serviceRegistry ||
-    typeof serviceRegistry.provide !== 'function' ||
-    typeof serviceRegistry.invoke !== 'function'
-  ) {
-    throw new Error('BabelMods page service registry is unavailable');
-  }
-  const provider = serviceRegistry.provide(SERVICE_ID, nativeService, {
-    owner: 'builtin:timestamp'
-  });
-
-  function invokeService(method, ...args) {
-    return serviceRegistry.invoke(SERVICE_ID, method, ...args);
-  }
-
+  const services = window.BabelMods?.unsafe?.services;
+  if (!services?.provide || !services?.invoke) throw new Error('BabelMods page service registry is unavailable');
+  const provider = services.provide(SERVICE_ID, nativeService, { owner: 'builtin:timestamp' });
+  const operations = { 'snapshot-transcript': 'snapshotTranscript', 'flush-transcript': 'flushTranscript', 'set-boundary-time': 'setBoundaryTime',
+    'split-segment-at-time': 'splitSegmentAtTime', 'merge-segment': 'mergeSegment',
+    'create-segment': 'createSegment', 'delete-segment': 'deleteSegment', 'undo-transcript': 'undoTranscript' };
   function handleRequest(event) {
-    const detail = event.detail || {};
-    const id = detail.id;
-    const operation = detail.operation;
-    const payload = detail.payload || {};
-    if (!id) {
-      return;
-    }
-
-    if (operation === 'snapshot-transcript') {
-      Promise.resolve(invokeService('snapshotTranscript'))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-transcript-snapshot',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-      return;
-    }
-
-    if (operation === 'set-boundary-time') {
-      Promise.resolve(invokeService('setBoundaryTime', payload))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-row-time-change',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-    } else if (operation === 'split-segment-at-time') {
-      Promise.resolve(invokeService('splitSegmentAtTime', payload))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-split-annotation',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-    } else if (operation === 'merge-segment') {
-      Promise.resolve(invokeService('mergeSegment', payload))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-row-action',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-    } else if (operation === 'create-segment') {
-      Promise.resolve(invokeService('createSegment', payload))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-create-annotation',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-    } else if (operation === 'delete-segment') {
-      Promise.resolve(invokeService('deleteSegment', payload))
-        .then((result) => respond(id, result))
-        .catch((error) =>
-          respond(id, {
-            ok: false,
-            backend: 'page-react-row-action',
-            reason: 'bridge-error',
-            message: error instanceof Error ? error.message : String(error || '')
-          })
-        );
-    }
+    const { id, operation, payload = {} } = event.detail || {};
+    if (!id) return;
+    Promise.resolve().then(() => operations[operation]
+      ? services.invoke(SERVICE_ID, operations[operation], payload) : failure('page-react-transcript', 'unknown-operation'))
+      .then(result => window.dispatchEvent(new CustomEvent(RESPONSE_EVENT, { detail: { id, result } })),
+        error => window.dispatchEvent(new CustomEvent(RESPONSE_EVENT, { detail: { id,
+          result: { ok: false, reason: 'bridge-error', message: String(error) } } })));
   }
-
-  let disposed = false;
   function dispose() {
-    if (disposed) {
-      return;
-    }
+    if (disposed) return;
     disposed = true;
-    cachedCreateAnnotationBinding = null;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     provider.dispose();
-    if (window.__babelHelperTimestampBridge === facade) {
-      delete window.__babelHelperTimestampBridge;
-    }
+    if (window.__babelHelperTimestampBridge === facade) delete window.__babelHelperTimestampBridge;
   }
-
+  const facade = { dispose };
+  for (const method of Object.keys(nativeService)) facade[method] = (...args) => services.invoke(SERVICE_ID, method, ...args);
   window.addEventListener(REQUEST_EVENT, handleRequest, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
-
-  const facade = {
-    createSegment: (...args) => invokeService('createSegment', ...args),
-    deleteSegment: (...args) => invokeService('deleteSegment', ...args),
-    mergeSegment: (...args) => invokeService('mergeSegment', ...args),
-    setBoundaryTime: (...args) => invokeService('setBoundaryTime', ...args),
-    snapshotTranscript: (...args) => invokeService('snapshotTranscript', ...args),
-    splitSegmentAtTime: (...args) => invokeService('splitSegmentAtTime', ...args),
-    dispose
-  };
   window.__babelHelperTimestampBridge = facade;
 }
 

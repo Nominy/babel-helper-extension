@@ -1,7 +1,7 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
-import { openAppearance } from './helper-editing-utils.mjs';
+import { openAppearance, transcriptSelector as TEXT, readRows as rows, row as nativeRow, transcriptScroll, fillText, readText, selectText, textSelection } from './helper-editing-utils.mjs';
+import { selectedAudioReady, fitNativeTimeline } from './native-audio-utils.mjs';
 
-const TEXT = 'textarea[placeholder="What was said…"]';
 const HOST = '[data-babel-helper-minimap-host]';
 const ZOOM = '[role="slider"][data-orientation="horizontal"][aria-valuemin="10"][aria-valuemax="2000"]';
 const PREVIEW = '[data-babel-helper-cut-preview]';
@@ -17,6 +17,7 @@ async function audio(page) {
 async function ready(page, rowCount = 4) {
   await expect(page.locator(TEXT)).toHaveCount(rowCount);
   await expect.poll(async () => (await audio(page)).filter((track) => track.duration === 12).length).toBe(2);
+  await selectedAudioReady(page);
   await expect(page.locator(HOST)).toHaveCount(2);
   await expect(page.locator(HOST).first().locator('canvas').first()).toBeVisible();
   await page.locator(ZOOM).focus();
@@ -24,16 +25,6 @@ async function ready(page, rowCount = 4) {
   await expect(page.locator(ZOOM)).toHaveAttribute('aria-valuenow', '10');
 }
 
-async function rows(page) {
-  return page.locator('tbody tr').evaluateAll((elements) => elements.filter((row) => row.querySelector('textarea[placeholder="What was said…"]')).map((row) => {
-    const time = (index) => {
-      const text = row.children[index].textContent.match(/\d+(?::\d+)+(?:\.\d+)?/)?.[0];
-      if (!text) throw new Error('Native transcript timestamp missing');
-      return text.split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
-    };
-    return { speaker: row.children[1].textContent.trim(), start: time(2), end: time(3), text: row.querySelector('textarea').value };
-  }));
-}
 
 async function pointAt(page, seconds, lane = 0) {
   const box = await page.locator(HOST).nth(lane).locator('[part="wrapper"]').boundingBox();
@@ -86,9 +77,9 @@ test('speed keys change real playback, preserve position and clamp to the native
   const editor = page.locator(TEXT).first();
   await editor.click();
   await editor.press('End');
-  const before = await editor.inputValue();
+  const before = await readText(editor);
   await page.keyboard.press('Shift+Digit1');
-  await expect(editor).toHaveValue(`${before}!`);
+  await expect.poll(() => readText(editor)).toBe(`${before}!`);
   expect((await audio(page)).map((track) => track.playbackRate)).toEqual([0.25, 0.25]);
 });
 
@@ -97,15 +88,15 @@ test('native speed dropdown preserves both lane positions while paused and playi
   await seek(page, 4);
   const paused = await audio(page);
   await page.getByRole('combobox').filter({ hasText: /^1x$/ }).click();
-  await page.getByRole('option', { name: '2x', exact: true }).click();
-  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([2, 2]);
+  await page.getByRole('option', { name: '0.75x', exact: true }).click();
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([0.75, 0.75]);
   (await audio(page)).forEach((track, index) => {
     expect(track.playing).toBe(false);
     expect(track.currentTime).toBeCloseTo(paused[index].currentTime, 3);
   });
   await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
   await expect.poll(async () => (await audio(page)).every(track => track.playing)).toBe(true);
-  await page.getByRole('combobox').filter({ hasText: /^2x$/ }).click();
+  await page.getByRole('combobox').filter({ hasText: /^0.75x$/ }).click();
   const before = await audio(page);
   await page.getByRole('option', { name: '0.5x', exact: true }).click();
   await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([0.5, 0.5]);
@@ -142,8 +133,8 @@ test('Escape executes focused/unfocused pause/restore states with proportional f
   await seek(page, 0.8);
   const editor = page.locator(TEXT).first();
   await editor.click();
-  await editor.evaluate((element) => element.setSelectionRange(1, 1));
-  const savedOffset = await editor.evaluate((element) => element.selectionStart);
+  await selectText(editor, 1, 1);
+  const savedOffset = (await textSelection(editor))[0];
   await page.keyboard.press('Escape');
   await expect(editor).not.toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
@@ -151,26 +142,26 @@ test('Escape executes focused/unfocused pause/restore states with proportional f
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
-  const restoredOffset = await editor.evaluate((element) => element.selectionStart);
+  const restoredOffset = (await textSelection(editor))[0];
   expect(restoredOffset).toBeGreaterThan(savedOffset);
-  expect(restoredOffset).toBeLessThanOrEqual((await editor.inputValue()).length);
+  expect(restoredOffset).toBeLessThanOrEqual((await readText(editor)).length);
   await editor.press('End');
-  const endOffset = await editor.evaluate((element) => element.selectionStart);
+  const endOffset = (await textSelection(editor))[0];
   await page.keyboard.press('Escape');
   await expect(editor).not.toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
-  expect(await editor.evaluate((element) => element.selectionStart)).toBe(endOffset);
+  expect((await textSelection(editor))[0]).toBe(endOffset);
   await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
   // Playing + focused is a separate transition: pause without blurring or moving the caret.
   await page.getByRole('button', { name: 'Play all tracks', exact: true }).click();
   await editor.click();
-  await editor.evaluate((element) => element.setSelectionRange(0, 0));
+  await selectText(editor, 0, 0);
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
-  expect(await editor.evaluate((element) => element.selectionStart)).toBe(0);
+  expect((await textSelection(editor))[0]).toBe(0);
 });
 
 test('stopping playback seeks to the ghost cursor inside an oversized wrapped row', async ({ page, babel }) => {
@@ -181,19 +172,19 @@ test('stopping playback seeks to the ghost cursor inside an oversized wrapped ro
   });
   await ready(page);
   const editor = page.locator(TEXT).first();
-  await editor.fill('Когда мы вступили в отношения, стабильная работа помогала мне двигаться дальше, и каждый день я возвращался к этим словам. '.repeat(70));
+  await fillText(editor, 'Когда мы вступили в отношения, стабильная работа помогала мне двигаться дальше, и каждый день я возвращался к этим словам. '.repeat(70));
   const panel = await openAppearance(page);
   await panel.getByLabel('Enable custom appearance', { exact: true }).check();
   await panel.getByLabel('Enable Text', { exact: true }).check();
   await panel.getByLabel('Transcript editor text size in pixels').fill('30');
   await panel.getByRole('button', { name: 'Close Website Appearance editor' }).click();
-  const row = editor.locator('xpath=ancestor::tr');
-  const scroll = row.locator('xpath=ancestor::div[contains(@class, "overflow-y-auto")]').first();
+  const row = nativeRow(page, 0);
+  const scroll = transcriptScroll(page);
   await expect.poll(() => row.evaluate((element) => element.getBoundingClientRect().height))
     .toBeGreaterThan(await scroll.evaluate((element) => element.clientHeight));
   await seek(page, 7);
   await editor.focus();
-  await editor.evaluate((element) => element.setSelectionRange(0, 0));
+  await selectText(editor, 0, 0);
   await page.keyboard.press('Escape');
   await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
   const ghost = page.locator('[data-babel-helper-ghost-cursor]');
@@ -209,7 +200,7 @@ test('stopping playback seeks to the ghost cursor inside an oversized wrapped ro
   const desired = scrollBefore + ghostTop - pane.y - pane.height / 2;
   await expect.poll(async () => Math.abs((await scroll.evaluate((element) => element.scrollTop)) - desired))
     .toBeLessThan(180);
-  expect(await editor.evaluate((element) => element.selectionStart)).toBeGreaterThan(0);
+  expect((await textSelection(editor))[0]).toBeGreaterThan(0);
 });
 
 test('disabled proportional restore restores the exact caret instead of advancing it', async ({ page, babel }) => {
@@ -221,12 +212,12 @@ test('disabled proportional restore restores the exact caret instead of advancin
   await editor.click();
   await editor.press('Home');
   await editor.press('ArrowRight');
-  const before = await editor.evaluate((element) => element.selectionStart);
+  const before = (await textSelection(editor))[0];
   await page.keyboard.press('Escape');
   await expect.poll(async () => (await audio(page))[0].currentTime).toBeGreaterThan(1.4);
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
-  expect(await editor.evaluate((element) => element.selectionStart)).toBe(before);
+  expect((await textSelection(editor))[0]).toBe(before);
 });
 
 test('double-click suppression retains the clicked time rather than jumping to a region start', async ({ page }) => {
@@ -239,14 +230,7 @@ test('double-click suppression retains the clicked time rather than jumping to a
 
 test('L loops an Alt-drag audio selection and cancelling releases the loop without editing', async ({ page }) => {
   await ready(page);
-  // At native minimum zoom this track is only 120px wide: 0.8s hits the
-  // region's left resize handle rather than its body. Zoom with the real slider.
-  const scroll = page.locator('[part="scroll"]').first();
-  const visibleWidth = await scroll.evaluate((element) => element.clientWidth);
-  const zoomTrack = page.locator('[data-orientation="horizontal"]').filter({ has: page.locator(ZOOM) }).first();
-  const zoomBox = await zoomTrack.boundingBox();
-  await zoomTrack.click({ position: { x: zoomBox.width * (visibleWidth * 0.8 / 12 - 10) / 1990, y: zoomBox.height / 2 } });
-  await expect.poll(() => scroll.locator('[part="wrapper"]').evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(visibleWidth * 0.5);
+  await fitNativeTimeline(page);
   const before = await rows(page);
   const from = await pointAt(page, 0.8);
   const to = await pointAt(page, 2.2);
@@ -321,13 +305,14 @@ test('Alt+C creates an empty native region only over uncovered speech, then D de
   await page.keyboard.press('Alt+KeyC');
   await expect(page.locator(TEXT)).toHaveCount(4);
   await assertEdges(page, 1, 3.6, 4.9);
-  await expect(page.locator(TEXT).nth(1)).toHaveValue('');
+  await expect.poll(() => readText(page.locator(TEXT).nth(1))).toBe('');
   await seek(page, 3.8);
   await page.keyboard.press('Alt+KeyC');
   await expect(page.locator(TEXT)).toHaveCount(4);
   // Auto-insert focuses the matching segment; D deletes only outside text entry.
   await expect(page.locator(TEXT).nth(1)).toBeFocused();
-  await page.keyboard.press('Escape');
+  // Move focus without Escape's separate playback-resume behavior.
+  await page.locator(ZOOM).focus();
   await expect(page.locator(TEXT).nth(1)).not.toBeFocused();
   await page.keyboard.press('KeyD');
   await expect(page.locator(TEXT)).toHaveCount(3);
@@ -355,6 +340,10 @@ test('auto segmentation splits known long silence and aligns text using genuine 
   await assertEdges(page, 0, 0.6, 2);
   await assertEdges(page, 1, 3.5, 4.9);
   await expect.poll(async () => (await rows(page)).slice(0, 2).map((row) => row.text).join(' ').replace(/\s+/g, ' ').trim()).toBe(fullText);
+  await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().annotations
+    .filter(annotation => annotation.processedRecordingId === 'speaker-1')
+    .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds)
+    .map(annotation => annotation.content).join(' ').replace(/\s+/g, ' ').trim())).toBe(fullText);
   await expect(page.locator('#babel-helper-long-task-progress')).toHaveCount(0);
   expect((await rows(page)).slice(2).map((row) => row.text)).toEqual(otherLane.map((row) => row.content));
   await test.info().attach('silence-segmented-native-waveforms', { body: await page.screenshot(), contentType: 'image/png' });

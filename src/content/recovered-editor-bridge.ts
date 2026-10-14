@@ -1,12 +1,12 @@
 // @ts-nocheck
+import { findBabelEditorFiber, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
+import { BABEL_EDITOR_CONTRACT_VERSION } from '../core/babel-editor-contract';
 import {
-  BABEL_EDITOR_CONTRACT_VERSION,
-  BABEL_ROW_TEXTAREA_SELECTOR,
-  BABEL_TABLE_COLUMN_INDEX,
-  isBabelActiveRowClassList,
-  normalizeBabelContractText,
-  parseBabelDisplayedTime
-} from '../core/babel-editor-contract';
+  findNativeDescendant, findNativeTurnFiber, readNativeTurn, readNativeSlateSelection, replaceNativeTurn, selectNativeSlate, nativeDomPointOffset,
+  TRANSCRIPT_ROW_SELECTOR
+} from './native-transcript';
+import { SEGMENT_CLICK_SEEK_ATTRIBUTE } from '../features/native-segment-click-seek-feature';
+import { handleNativeTagDropdownKeydown } from './native-tag-dropdown-keyboard';
 
 export function initRecoveredEditorBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -15,13 +15,67 @@ export function initRecoveredEditorBridge() {
   const SERVICE_ID = 'page.recoveredEditor';
   let serviceRegistry = null;
   let serviceProviderHandle = null;
+  let disposed = false;
+  const pendingNativeSelections = new WeakMap();
   const existingBridge = window.__babelHelperRecoveredEditorBridge;
   let extendedDiffPatch = null;
   let extendedDiffFetchPatch = null;
-  let extendedDiffMutationRecords = [];
-  let extendedDiffMutationKeys = new WeakMap();
+  const extendedDiffQueryRecords = new Map();
+  let nativeActivationPatch = null;
   if (existingBridge && typeof existingBridge.dispose === 'function') {
     existingBridge.dispose();
+  }
+
+  function restoreNativeActivation() {
+    const patch = nativeActivationPatch;
+    if (patch && patch.handlers.onActivate === patch.wrapped) {
+      patch.handlers.onActivate = patch.original;
+    }
+    nativeActivationPatch = null;
+  }
+
+  function handleNativeActivationCapture(event) {
+    if (disposed || document.documentElement.getAttribute(SEGMENT_CLICK_SEEK_ATTRIBUTE) !== 'true') {
+      restoreNativeActivation();
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest(TRANSCRIPT_ROW_SELECTOR)) return;
+    const binding = readBabelTranscriptBindings();
+    const handlers = binding?.transcript?.handlers;
+    if (!handlers || typeof handlers.onActivate !== 'function') return;
+    if (nativeActivationPatch?.handlers === handlers && handlers.onActivate === nativeActivationPatch.wrapped) return;
+    restoreNativeActivation();
+    const original = handlers.onActivate;
+    const reviewActionId = binding.reviewActionId;
+    const wrapped = function (...args) {
+      if (disposed || document.documentElement.getAttribute(SEGMENT_CLICK_SEEK_ATTRIBUTE) !== 'true') {
+        return original.apply(this, args);
+      }
+      const playback = readBabelPlaybackBindings();
+      if (playback?.reviewActionId !== reviewActionId) return original.apply(this, args);
+      const patches = [];
+      try {
+        for (const wave of playback.waves) {
+          if (typeof wave.seekTo !== 'function') continue;
+          const descriptor = Object.getOwnPropertyDescriptor(wave, 'seekTo');
+          const blockedSeek = () => {};
+          wave.seekTo = blockedSeek;
+          patches.push({ wave, descriptor, blockedSeek });
+        }
+        // Native activation still selects/highlights the turn. Only its
+        // synchronous incidental seek is suppressed, never seeked back afterward.
+        return original.apply(this, args);
+      } finally {
+        for (const { wave, descriptor, blockedSeek } of patches) {
+          if (wave.seekTo !== blockedSeek) continue;
+          if (descriptor) Object.defineProperty(wave, 'seekTo', descriptor);
+          else delete wave.seekTo;
+        }
+      }
+    };
+    handlers.onActivate = wrapped;
+    nativeActivationPatch = { handlers, original, wrapped };
   }
 
   function respond(id, result) {
@@ -35,41 +89,15 @@ export function initRecoveredEditorBridge() {
     );
   }
 
-  function getReactInternalValue(element, prefix) {
-    if (!(element instanceof Element) || typeof prefix !== 'string' || !prefix) {
-      return null;
-    }
-
-    for (const name of Object.getOwnPropertyNames(element)) {
-      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
-        return element[name];
-      }
-    }
-
-    return null;
-  }
-
-  function getReactFiber(element) {
-    return getReactInternalValue(element, '__reactFiber$');
-  }
 
   function getFiberProps(fiber) {
-    return fiber && typeof fiber === 'object' ? fiber.memoizedProps || fiber.pendingProps || null : null;
+    return fiber && typeof fiber === 'object' ? fiber.memoizedProps || null : null;
   }
 
   function getRootFiber() {
-    const seed =
-      document.querySelector(BABEL_ROW_TEXTAREA_SELECTOR) ||
-      document.querySelector('tbody tr') ||
-      document.querySelector('[role="switch"]') ||
-      document.body;
-    let current = getReactFiber(seed);
-    let depth = 0;
-    while (current && current.return && depth < 200) {
-      current = current.return;
-      depth += 1;
-    }
-    return current || null;
+    let current = findBabelEditorFiber();
+    while (current?.return) current = current.return;
+    return current?.stateNode?.current || null;
   }
 
   function findFiberProps(predicate) {
@@ -108,21 +136,21 @@ export function initRecoveredEditorBridge() {
     );
   }
 
-  function matchesCurrentTranscriptionDiffResult(data, action) {
-    if (!data || typeof data !== 'object' || !Array.isArray(data.speakerDiffs)) {
-      return false;
-    }
-
-    const actionId = getString(action?.id);
-    if (!actionId) {
-      return true;
-    }
-
-    return data.referenceReviewActionId === actionId || data.currentReviewActionId === actionId;
+  function matchesCurrentTranscriptionDiffResult(data, action, reviewActionId = readBabelTranscriptBindings()?.reviewActionId) {
+    if (!data || !Array.isArray(data.speakerDiffs) || !reviewActionId || !action?.id) return false;
+    return (data.referenceReviewActionId === action.id && data.currentReviewActionId === reviewActionId) ||
+      (data.currentReviewActionId === action.id && data.referenceReviewActionId === reviewActionId);
   }
 
-  function findCurrentTranscriptionDiffQueryResult(action) {
-    const root = getRootFiber();
+  function isCurrentExtendedDiffPatch(patch) {
+    const editor = findBabelEditorFiber();
+    return Boolean(patch && extendedDiffPatch === patch && patch.routeKey === getRouteKey() &&
+      patch.reviewActionId === readBabelTranscriptBindings()?.reviewActionId &&
+      (editor === patch.editorFiber || editor?.alternate === patch.editorFiber));
+  }
+
+  function findCurrentTranscriptionDiffObserver(action) {
+    const root = findBabelEditorFiber();
     if (!root) {
       return null;
     }
@@ -142,13 +170,10 @@ export function initRecoveredEditorBridge() {
       while (hook && typeof hook === 'object' && !seenHooks.has(hook) && depth < 700) {
         seenHooks.add(hook);
         const memoizedState = hook.memoizedState;
-        if (
-          memoizedState &&
-          typeof memoizedState === 'object' &&
-          Array.isArray(memoizedState.data?.speakerDiffs) &&
-          typeof memoizedState.refetch === 'function' &&
-          matchesCurrentTranscriptionDiffResult(memoizedState.data, action)
-        ) {
+        if (typeof memoizedState?.getCurrentResult === 'function' &&
+            typeof memoizedState.getCurrentQuery === 'function' &&
+            typeof memoizedState.refetch === 'function' &&
+            matchesCurrentTranscriptionDiffResult(memoizedState.getCurrentResult()?.data, action)) {
           return memoizedState;
         }
 
@@ -157,27 +182,22 @@ export function initRecoveredEditorBridge() {
       }
 
       if (fiber.child) stack.push(fiber.child);
-      if (fiber.sibling) stack.push(fiber.sibling);
+      if (fiber !== root && fiber.sibling) stack.push(fiber.sibling);
     }
 
     return null;
   }
 
-  function scheduleCurrentTranscriptionDiffRefetch(action) {
-    window.setTimeout(() => {
-      const queryResult = findCurrentTranscriptionDiffQueryResult(action);
-      if (!queryResult) {
-        return;
-      }
+  function findCurrentTranscriptionDiffQueryResult(action) {
+    return findCurrentTranscriptionDiffObserver(action)?.getCurrentResult() || null;
+  }
 
-      try {
-        const result = queryResult.refetch();
-        if (result && typeof result.catch === 'function') {
-          result.catch(() => {});
-        }
-      } catch (_error) {
-        // Best-effort repaint trigger; fetch patching remains active for native refreshes.
-      }
+  function scheduleCurrentTranscriptionDiffRepaint(action) {
+    const patch = extendedDiffPatch;
+    const operation = patch?.operation;
+    window.setTimeout(() => {
+      if (!isCurrentExtendedDiffPatch(patch) || patch.operation !== operation) return;
+      patchCurrentDiffResult(action, patch);
     }, 50);
     return true;
   }
@@ -199,68 +219,9 @@ export function initRecoveredEditorBridge() {
     return value === 'reference' || value === 'current' ? value : 'fusion';
   }
 
-  function recordExtendedDiffMutation(target, key, value) {
-    if (!target || typeof target !== 'object') {
-      return false;
-    }
-
-    let keys = extendedDiffMutationKeys.get(target);
-    if (!keys) {
-      keys = new Set();
-      extendedDiffMutationKeys.set(target, keys);
-    }
-
-    if (!keys.has(key)) {
-      keys.add(key);
-      extendedDiffMutationRecords.push({
-        target,
-        key,
-        hadKey: Object.prototype.hasOwnProperty.call(target, key),
-        value: target[key]
-      });
-    }
-
-    target[key] = value;
-    return true;
-  }
-
-  function setExtendedDiffValue(target, key, value, restorable) {
-    if (!target || typeof target !== 'object') {
-      return false;
-    }
-
-    if (restorable) {
-      return recordExtendedDiffMutation(target, key, value);
-    }
-
-    target[key] = value;
-    return true;
-  }
-
-  function restoreExtendedDiffMutations() {
-    for (let index = extendedDiffMutationRecords.length - 1; index >= 0; index -= 1) {
-      const record = extendedDiffMutationRecords[index];
-      if (!record || !record.target || typeof record.target !== 'object') {
-        continue;
-      }
-
-      if (record.hadKey) {
-        record.target[record.key] = record.value;
-      } else {
-        delete record.target[record.key];
-      }
-    }
-
-    extendedDiffMutationRecords = [];
-    extendedDiffMutationKeys = new WeakMap();
-  }
 
   function splitFullDiffTokens(text) {
     return String(text || '').match(/\S+/g) || [];
-  }
-
-  function buildPlainWordDiffs(text) {
-    return splitFullDiffTokens(text).map((value) => ({ status: 'unchanged', value }));
   }
 
   function buildFullWordDiffs(beforeText, afterText) {
@@ -331,27 +292,24 @@ export function initRecoveredEditorBridge() {
     return { substitutions, insertions, deletions };
   }
 
-  function patchSegmentWordRanges(segments, restorable) {
-    if (!Array.isArray(segments)) {
-      return;
-    }
-
+  function patchSegmentWordRanges(segments) {
     let offset = 0;
-    for (const segment of segments) {
-      if (!segment || typeof segment !== 'object') {
-        continue;
-      }
-
+    for (const segment of Array.isArray(segments) ? segments : []) {
+      if (!segment || typeof segment !== 'object') continue;
       const length = splitFullDiffTokens(segment.text).length;
-      setExtendedDiffValue(segment, 'wordRange', [offset, offset + length], restorable);
+      segment.wordRange = [offset, offset + length];
       offset += length;
     }
   }
 
-  function patchTranscriptionDiffPayload(payload, restorable = false, textMode = 'fusion') {
+  function patchTranscriptionDiffPayload(payload, textMode = 'fusion', reviewActionId = '') {
     textMode = normalizeExtendedDiffTextMode(textMode);
     if (!payload || typeof payload !== 'object' || !Array.isArray(payload.speakerDiffs)) {
       return false;
+    }
+    // "Current" is the open task, even when the server orders a newer comparison as side B.
+    if (textMode !== 'fusion' && payload.referenceReviewActionId === reviewActionId) {
+      textMode = textMode === 'reference' ? 'current' : 'reference';
     }
 
     let patched = false;
@@ -370,17 +328,25 @@ export function initRecoveredEditorBridge() {
 
         const referenceText = getString(mapping.referenceText);
         const hypothesisText = getString(mapping.hypothesisText);
-        const sideText = textMode === 'reference' ? referenceText : textMode === 'current' ? hypothesisText : null;
-        const wordDiffs = sideText == null ? buildFullWordDiffs(referenceText, hypothesisText) : buildPlainWordDiffs(sideText);
-        const editCounts = textMode === 'fusion'
-          ? countFullWordDiffEdits(wordDiffs)
-          : { substitutions: 0, insertions: 0, deletions: 0 };
-        const referenceWordCount = splitFullDiffTokens(referenceText).length;
-        const hypothesisWordCount = splitFullDiffTokens(hypothesisText).length;
-        const sideWordCount = sideText == null ? null : splitFullDiffTokens(sideText).length;
+        const wordDiffs = buildFullWordDiffs(referenceText, hypothesisText);
+        const editCounts = countFullWordDiffEdits(wordDiffs);
+        const tags = new Map((mapping.wordDiffs || []).filter(word => word.kind === 'tag')
+          .map(word => [word.value, word]));
+        for (let index = 0; index < wordDiffs.length; index += 1) {
+          const word = wordDiffs[index];
+          const tag = tags.get(word.value);
+          if (tag) wordDiffs[index] = { ...tag, ...word };
+          // Native multi-turn slicing counts tokens on the displayed task's side.
+          // Keep alignment/status slots while hiding the other side's text; turning
+          // everything into "unchanged" truncates reference text after a split/merge.
+          if ((textMode === 'reference' && word.status === 'added') ||
+              (textMode === 'current' && word.status === 'removed')) {
+            wordDiffs[index].value = '';
+          }
+        }
 
-        totalReferenceWords += sideWordCount ?? referenceWordCount;
-        totalHypothesisWords += sideWordCount ?? hypothesisWordCount;
+        totalReferenceWords += splitFullDiffTokens(referenceText).length;
+        totalHypothesisWords += splitFullDiffTokens(hypothesisText).length;
         totalSubstitutions += editCounts.substitutions;
         totalInsertions += editCounts.insertions;
         totalDeletions += editCounts.deletions;
@@ -389,33 +355,30 @@ export function initRecoveredEditorBridge() {
           continue;
         }
 
-        patched = setExtendedDiffValue(mapping, 'wordDiffs', wordDiffs, restorable) || patched;
-        patched = setExtendedDiffValue(mapping, 'substitutions', editCounts.substitutions, restorable) || patched;
-        patched = setExtendedDiffValue(mapping, 'insertions', editCounts.insertions, restorable) || patched;
-        patched = setExtendedDiffValue(mapping, 'deletions', editCounts.deletions, restorable) || patched;
-        patchSegmentWordRanges(mapping.segmentsA, restorable);
-        patchSegmentWordRanges(mapping.segmentsB, restorable);
+        mapping.wordDiffs = wordDiffs;
+        mapping.substitutions = editCounts.substitutions;
+        mapping.insertions = editCounts.insertions;
+        mapping.deletions = editCounts.deletions;
+        patchSegmentWordRanges(mapping.segmentsA);
+        patchSegmentWordRanges(mapping.segmentsB);
+        patched = true;
       }
     }
 
     if (patched) {
-      setExtendedDiffValue(payload, 'totalReferenceWords', totalReferenceWords, restorable);
-      setExtendedDiffValue(payload, 'totalHypothesisWords', totalHypothesisWords, restorable);
-      setExtendedDiffValue(payload, 'totalSubstitutions', totalSubstitutions, restorable);
-      setExtendedDiffValue(payload, 'totalInsertions', totalInsertions, restorable);
-      setExtendedDiffValue(payload, 'totalDeletions', totalDeletions, restorable);
-      setExtendedDiffValue(
-        payload,
-        'overallWordErrorRate',
-        (totalSubstitutions + totalInsertions + totalDeletions) / Math.max(1, totalReferenceWords),
-        restorable
-      );
+      payload.totalReferenceWords = totalReferenceWords;
+      payload.totalHypothesisWords = totalHypothesisWords;
+      payload.totalSubstitutions = totalSubstitutions;
+      payload.totalInsertions = totalInsertions;
+      payload.totalDeletions = totalDeletions;
+      payload.overallWordErrorRate =
+        (totalSubstitutions + totalInsertions + totalDeletions) / Math.max(1, totalReferenceWords);
     }
 
     return patched;
   }
 
-  function patchTranscriptionDiffJson(root, restorable = false, textMode = 'fusion') {
+  function patchTranscriptionDiffJson(root, textMode = 'fusion', patch = null) {
     textMode = normalizeExtendedDiffTextMode(textMode);
     let patched = false;
     const stack = [root];
@@ -428,8 +391,10 @@ export function initRecoveredEditorBridge() {
       }
       seen.add(value);
 
-      if (Array.isArray(value.speakerDiffs)) {
-        patched = patchTranscriptionDiffPayload(value, restorable, textMode) || patched;
+      if (Array.isArray(value.speakerDiffs) && (!patch ||
+          matchesCurrentTranscriptionDiffResult(value, { id: patch.lastAppliedActionId }, patch.reviewActionId))) {
+        if (patch) patch.originalPayloads.set(diffPayloadKey(value), structuredClone(value));
+        patched = patchTranscriptionDiffPayload(value, textMode, patch?.reviewActionId) || patched;
       }
 
       if (Array.isArray(value)) {
@@ -442,11 +407,11 @@ export function initRecoveredEditorBridge() {
     return patched;
   }
 
-  function patchTranscriptionDiffResponseText(text, textMode = 'fusion') {
+  function patchTranscriptionDiffResponseText(text, textMode = 'fusion', patch = null) {
     textMode = normalizeExtendedDiffTextMode(textMode);
     try {
       const json = JSON.parse(text);
-      return patchTranscriptionDiffJson(json, false, textMode) ? JSON.stringify(json) : text;
+      return patchTranscriptionDiffJson(json, textMode, patch) ? JSON.stringify(json) : text;
     } catch (_error) {
       const lines = text.split(/\r?\n/);
       let patched = false;
@@ -457,7 +422,7 @@ export function initRecoveredEditorBridge() {
 
         try {
           const json = JSON.parse(line);
-          if (patchTranscriptionDiffJson(json, false, textMode)) {
+          if (patchTranscriptionDiffJson(json, textMode, patch)) {
             patched = true;
             return JSON.stringify(json);
           }
@@ -489,15 +454,15 @@ export function initRecoveredEditorBridge() {
     return getFetchRequestUrl(input).includes('/api/trpc/transcriptions.getTranscriptionDiff');
   }
 
-  async function patchTranscriptionDiffFetchResponse(response) {
+  async function patchTranscriptionDiffFetchResponse(response, patch) {
     if (!(response instanceof Response) || !response.ok) {
       return response;
     }
 
     try {
       const text = await response.clone().text();
-      const textMode = normalizeExtendedDiffTextMode(extendedDiffPatch?.textMode);
-      const patchedText = patchTranscriptionDiffResponseText(text, textMode);
+      if (!isCurrentExtendedDiffPatch(patch)) return response;
+      const patchedText = patchTranscriptionDiffResponseText(text, patch.textMode, patch);
       if (patchedText === text) {
         return response;
       }
@@ -523,8 +488,10 @@ export function initRecoveredEditorBridge() {
     }
 
     const patchedFetch = async function patchedExtendedDiffFetch(...args) {
+      const patch = extendedDiffPatch;
       const response = await originalFetch.apply(this, args);
-      return isTranscriptionDiffFetch(args[0]) ? patchTranscriptionDiffFetchResponse(response) : response;
+      return isCurrentExtendedDiffPatch(patch) && isTranscriptionDiffFetch(args[0])
+        ? patchTranscriptionDiffFetchResponse(response, patch) : response;
     };
 
     extendedDiffFetchPatch = { originalFetch, patchedFetch };
@@ -543,8 +510,42 @@ export function initRecoveredEditorBridge() {
     extendedDiffFetchPatch = null;
   }
 
-  function patchCurrentDiffResult(toolbarProps, textMode) {
-    return patchTranscriptionDiffPayload(toolbarProps?.diffResult, true, textMode);
+  function diffPayloadKey(payload) {
+    return `${payload.referenceReviewActionId}:${payload.currentReviewActionId}`;
+  }
+
+  function patchCurrentDiffResult(action, patch) {
+    const observer = findCurrentTranscriptionDiffObserver(action);
+    const query = observer?.getCurrentQuery();
+    if (!isCurrentExtendedDiffPatch(patch) || typeof query?.setData !== 'function') return false;
+    const data = query.state?.data;
+    if (!matchesCurrentTranscriptionDiffResult(data, action, patch.reviewActionId)) return false;
+    const previous = extendedDiffQueryRecords.get(query);
+    const original = patch.originalPayloads.get(diffPayloadKey(data)) ||
+      (previous?.applied === data ? previous.original : data);
+    const projected = structuredClone(original);
+    if (!patchTranscriptionDiffPayload(projected, patch.textMode, patch.reviewActionId)) return false;
+    // Never mutate a memoized prop/cache value: both React and Query's structural sharing
+    // must observe a new diff root to rebuild the native per-turn/deleted-turn maps.
+    const applied = query.setData(projected, { manual: true });
+    extendedDiffQueryRecords.set(query, { original, applied });
+    return true;
+  }
+
+  function restoreExtendedDiffQueries(patch) {
+    if (isCurrentExtendedDiffPatch(patch)) {
+      const observer = findCurrentTranscriptionDiffObserver({ id: patch.lastAppliedActionId });
+      const query = observer?.getCurrentQuery();
+      if (query && !extendedDiffQueryRecords.has(query)) {
+        const original = patch.originalPayloads.get(diffPayloadKey(query.state.data));
+        if (original) extendedDiffQueryRecords.set(query, { original });
+      }
+      for (const [query, record] of extendedDiffQueryRecords) {
+        const original = patch.originalPayloads.get(diffPayloadKey(record.original)) || record.original;
+        query.setData(original, { manual: true });
+      }
+    }
+    extendedDiffQueryRecords.clear();
   }
 
   function findExtendedDiffReviewAction(toolbarProps, payload) {
@@ -628,136 +629,251 @@ export function initRecoveredEditorBridge() {
     };
   }
 
-  function getTranscriptRows() {
-    return Array.from(document.querySelectorAll('tbody tr')).filter(
-      (row) => row instanceof HTMLTableRowElement && row.querySelector(BABEL_ROW_TEXTAREA_SELECTOR)
-    );
-  }
 
-  function getFiberPropsForRow(row) {
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      fiber = getReactFiber(row.querySelector(BABEL_ROW_TEXTAREA_SELECTOR));
-    }
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 24) {
-      const props = current.memoizedProps || current.pendingProps;
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id) {
-        return props;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    return null;
-  }
-
-  function getWorkbenchProps() {
-    const seed = document.querySelector(BABEL_ROW_TEXTAREA_SELECTOR) || document.querySelector('tbody tr');
-    let current = getReactFiber(seed);
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 80) {
-      const props = current.memoizedProps || current.pendingProps;
-      if (
-        props &&
-        typeof props === 'object' &&
-        Array.isArray(props.annotations) &&
-        (Array.isArray(props.tracks) || typeof props.reviewActionId === 'string')
-      ) {
-        return props;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-    return null;
-  }
-
-  function getRowCellText(row, key) {
-    const index = BABEL_TABLE_COLUMN_INDEX[key];
-    const cell = row.children[index];
-    return cell instanceof HTMLElement ? normalizeBabelContractText(cell.innerText || cell.textContent || '') : '';
-  }
-
-  function getRowSnapshot(row, index) {
-    const props = getFiberPropsForRow(row);
-    const annotation =
-      props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-        ? props.annotation
-        : null;
-    const textarea = row.querySelector(BABEL_ROW_TEXTAREA_SELECTOR);
-    const speakerLabel =
-      typeof annotation?.trackLabel === 'string' && annotation.trackLabel
-        ? annotation.trackLabel
-        : getRowCellText(row, 'speaker');
-    const processedRecordingId =
-      annotation?.processedRecordingId != null ? String(annotation.processedRecordingId) : null;
-    const startText = getRowCellText(row, 'start');
-    const endText = getRowCellText(row, 'end');
-    const isActive =
-      Boolean(props && typeof props === 'object' && props.isActive === true) ||
-      isBabelActiveRowClassList(row.classList);
-
-    return {
-      index,
-      annotationId: typeof annotation?.id === 'string' ? annotation.id : '',
-      processedRecordingId,
-      speakerKey: processedRecordingId || speakerLabel,
-      speakerLabel,
-      startText,
-      endText,
-      startSeconds:
-        Number.isFinite(Number(annotation?.startTimeInSeconds))
-          ? Number(annotation.startTimeInSeconds)
-          : parseBabelDisplayedTime(startText),
-      endSeconds:
-        Number.isFinite(Number(annotation?.endTimeInSeconds))
-          ? Number(annotation.endTimeInSeconds)
-          : parseBabelDisplayedTime(endText),
-      text:
-        typeof annotation?.content === 'string'
-          ? annotation.content
-          : textarea instanceof HTMLTextAreaElement
-            ? textarea.value || ''
-            : '',
-      isActive
-    };
-  }
-
-  function collectTracks(rows) {
-    const props = getWorkbenchProps();
-    if (props && Array.isArray(props.tracks)) {
-      return props.tracks
-        .map((track) => ({
-          id: typeof track?.id === 'string' ? track.id : '',
-          label: typeof track?.label === 'string' ? track.label : '',
-          collapsed: typeof track?.collapsed === 'boolean' ? track.collapsed : null
-        }))
-        .filter((track) => track.id || track.label);
-    }
-
-    const seen = new Set();
-    const tracks = [];
-    for (const row of rows) {
-      const id = row.processedRecordingId || row.speakerKey || row.speakerLabel;
-      if (!id || seen.has(id)) {
-        continue;
-      }
-      seen.add(id);
-      tracks.push({
-        id,
-        label: row.speakerLabel || id,
-        collapsed: null
+  function getEditorSnapshot() {
+    const binding = readBabelTranscriptBindings();
+    const trackState = readBabelTrackBindings()?.tracks;
+    const rows = (binding?.annotations || []).filter(annotation => annotation.type === 'transcription')
+      .slice().sort((a, b) => (a.startTimeInSeconds ?? 0) - (b.startTimeInSeconds ?? 0))
+      .map((annotation, index) => {
+        const speakerLabel = binding.tracks.find(track => track.id === annotation.processedRecordingId)?.label || '';
+        return { index, annotationId: annotation.id, processedRecordingId: annotation.processedRecordingId,
+          speakerKey: annotation.processedRecordingId || speakerLabel, speakerLabel,
+          startText: formatTime(annotation.startTimeInSeconds), endText: formatTime(annotation.endTimeInSeconds),
+          startSeconds: annotation.startTimeInSeconds, endSeconds: annotation.endTimeInSeconds,
+          text: binding.pendingTextById?.[annotation.id] ?? annotation.content ?? '', isActive: binding.transcript?.activeIds?.has(annotation.id) === true };
       });
+    return { contractVersion: BABEL_EDITOR_CONTRACT_VERSION, capturedAt: Date.now(), routeKey: getRouteKey(),
+      reviewActionId: binding?.reviewActionId || '', readOnly: binding?.readOnly ?? true,
+      activeRowId: rows.find(row => row.isActive)?.annotationId || null, rows,
+      tracks: (binding?.tracks || []).map(track => ({ id: track.id, label: track.label,
+        collapsed: trackState?.find(state => state.id === track.id)?.collapsed ?? null })), playback: getPlaybackSnapshot() };
+  }
+
+  function formatTime(value) {
+    return Number.isFinite(value) ? `${String(Math.floor(value / 60)).padStart(2, '0')}:${(value % 60).toFixed(2).padStart(5, '0')}` : '';
+  }
+
+  function caretRect(row, state, offset) {
+    let target = null, localOffset = 0;
+    if (state.editor) {
+      let start = 0;
+      const nodes = row.querySelectorAll('[data-slate-node="text"]');
+      for (const [index, node] of state.editor.children[0].children.entries()) {
+        const length = (node.text ?? node.raw ?? '').length;
+        if (typeof node.text === 'string' && offset <= start + length) {
+          target = nodes[index]; localOffset = Math.max(0, offset - start); break;
+        }
+        start += length;
+      }
+    } else {
+      for (const node of row.querySelectorAll('[data-offset]')) {
+        const start = Number(node.getAttribute('data-offset'));
+        const chip = Number(node.getAttribute('data-chip')) || 0;
+        const length = chip || node.textContent.length;
+        if (offset >= start && offset <= start + length) {
+          if (chip) {
+            const rect = node.getBoundingClientRect();
+            const x = offset - start < length / 2 ? rect.left : rect.right;
+            return { top: rect.top, bottom: rect.bottom, left: x, right: x, width: 0, height: rect.height };
+          }
+          target = node; localOffset = offset - start; break;
+        }
+      }
     }
-    return tracks;
+    if (!target) return null;
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      if (localOffset <= textNode.length) {
+        const range = document.createRange();
+        range.setStart(textNode, localOffset); range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+      }
+      localOffset -= textNode.length;
+    }
+    return null;
+  }
+
+  function getStartNativeEdit(annotationId) {
+    return findNativeDescendant(findNativeTurnFiber(annotationId),
+      fiber => typeof fiber.memoizedProps?.onStartEdit === 'function')?.memoizedProps.onStartEdit;
+  }
+
+  function handleEditorControl(event) {
+    if (disposed) return;
+    let request;
+    try { request = typeof event.detail === 'string' ? JSON.parse(event.detail) : event.detail; } catch { return; }
+    if (!request?.id) return;
+    if (request.operation === 'session') {
+      if (event.target !== document.documentElement) return;
+      const binding = readBabelSessionState();
+      const ok = Boolean(binding && typeof binding.reviewActionId === 'string' && binding.reviewActionId.length > 0);
+      document.documentElement.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+        id: request.id, ok, reviewActionId: ok ? binding.reviewActionId : '',
+        readOnly: ok ? binding.readOnly : true, routeKey: getRouteKey()
+      }));
+      return;
+    }
+    const responseRow = event.target instanceof Element ? event.target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
+    if (!responseRow) return;
+    if (request.operation === 'identity') {
+      const annotationId = responseRow.getAttribute('data-annotation-id');
+      const identity = annotationId === request.annotationId ? readBabelTurnIdentity(annotationId) : null;
+      const ok = Boolean(identity && (!request.reviewActionId || request.reviewActionId === identity.reviewActionId));
+      responseRow.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+        ...identity, id: request.id, ok
+      }));
+      return;
+    }
+    let row = responseRow;
+    let binding = readBabelTranscriptBindings();
+    const annotationId = row.getAttribute('data-annotation-id');
+    const taskId = binding?.reviewActionId;
+    let state = binding && readNativeTurn(annotationId, binding);
+    let ok = Boolean(state && annotationId === request.annotationId &&
+      (!request.reviewActionId || request.reviewActionId === binding.reviewActionId));
+    let reason = ok ? undefined : 'stale-task';
+    const operation = request.operation;
+    const selectAll = operation === 'select' && request.selectAll === true;
+    let pointerOffset = null;
+    let acceptedSelection = null;
+    if (ok && !['read', 'caretRect', 'offsetAtPoint'].includes(operation) && binding.readOnly) { ok = false; reason = 'read-only'; }
+    const activating = operation === 'focus' ||
+      (operation === 'select' && !selectAll && (!state?.editor || Boolean(request.activateRow))) ||
+      (operation === 'replace' && Boolean(request.focus));
+    if (ok && activating) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.isConnected &&
+          focused.matches('[data-slate-editor="true"]') &&
+          focused.closest(TRANSCRIPT_ROW_SELECTOR) !== row) {
+        // Native activation can replace the other turn before browser default
+        // blur. Flush/blur while that editor's native DOM mapping still exists.
+        const routeAtBlur = getRouteKey();
+        focused.blur();
+        binding = readBabelTranscriptBindings();
+        row = Array.from(document.querySelectorAll(TRANSCRIPT_ROW_SELECTOR))
+          .find(candidate => candidate.getAttribute('data-annotation-id') === annotationId) || null;
+        state = binding && row && readNativeTurn(annotationId, binding);
+        ok = Boolean(!disposed && getRouteKey() === routeAtBlur &&
+          binding?.reviewActionId === taskId && row && state && !binding.readOnly);
+        if (!ok) reason = binding?.reviewActionId === taskId && binding?.readOnly ? 'read-only' : 'stale-task';
+      }
+    }
+    if (ok) {
+      const start = selectAll ? 0 : Math.max(0, Math.min(Number(request.start ?? state.start), state.text.length));
+      const end = selectAll ? state.text.length : Math.max(start, Math.min(Number(request.end ?? start), state.text.length));
+      if (!Number.isFinite(start) || !Number.isFinite(end)) { ok = false; reason = 'invalid-selection'; }
+      else if (selectAll) {
+        const element = row.querySelector('[data-slate-editor="true"]');
+        const selection = window.getSelection();
+        if (!state.editor || !element?.isConnected || document.activeElement !== element) {
+          ok = false; reason = 'editor-not-focused';
+        } else if (!selection || typeof selection.selectAllChildren !== 'function') {
+          ok = false; reason = 'selection-unavailable';
+        } else {
+          pendingNativeSelections.delete(row);
+          ok = selectNativeSlate(state.editor, 0, state.text.length, 'forward');
+          const model = ok && readNativeSlateSelection(state.editor);
+          ok = Boolean(model && model.start === 0 && model.end === state.text.length);
+          if (ok) {
+            selection.selectAllChildren(element);
+            const range = selection.rangeCount === 1 ? selection.getRangeAt(0) : null;
+            ok = Boolean(element.isConnected && document.activeElement === element &&
+              range?.startContainer === element && range.startOffset === 0 &&
+              range.endContainer === element && range.endOffset === element.childNodes.length);
+            if (ok) acceptedSelection = model;
+          }
+          if (!ok) reason = 'selection-unavailable';
+        }
+      }
+      else if (operation === 'focus' || operation === 'select') {
+        if (request.activateRow) binding.transcript?.handlers?.onActivate(annotationId);
+        if (state.editor) {
+          if (activating) row.querySelector('[data-slate-editor="true"]')?.focus({ preventScroll: true });
+          ok = selectNativeSlate(state.editor, start, end, request.direction);
+        } else {
+          const startEdit = getStartNativeEdit(annotationId);
+          ok = Boolean(startEdit);
+          startEdit?.({ anchor: request.direction === 'backward' ? end : start, focus: request.direction === 'backward' ? start : end });
+        }
+        if (ok) acceptedSelection = (state.editor && readNativeSlateSelection(state.editor)) ||
+          { start, end, direction: request.direction || 'none' };
+      } else if (operation === 'replace') {
+        const startEdit = !state.editor && request.focus ? getStartNativeEdit(annotationId) : null;
+        ok = (!request.focus || state.editor || startEdit) && replaceNativeTurn(annotationId, request.text, request);
+        if (ok) {
+          const nextStart = Math.max(0, Math.min(request.start ?? request.text.length, request.text.length));
+          const nextEnd = Math.max(nextStart, Math.min(request.end ?? nextStart, request.text.length));
+          acceptedSelection = (state.editor && readNativeSlateSelection(state.editor)) ||
+            { start: nextStart, end: nextEnd, direction: request.direction || 'none' };
+          if (request.focus) {
+            if (state.editor) row.querySelector('[data-slate-editor="true"]')?.focus({ preventScroll: true });
+            else startEdit({ anchor: request.direction === 'backward' ? nextEnd : nextStart,
+              focus: request.direction === 'backward' ? nextStart : nextEnd });
+          }
+        }
+      } else if (operation === 'syncSelection') {
+        const element = row.querySelector('[data-slate-editor="true"]');
+        const selection = window.getSelection();
+        // Synchronize only the actual active text selection. Static turns and
+        // selections outside their editor are intentionally untouched.
+        let pending = pendingNativeSelections.get(row);
+        if (pending && (pending.taskId !== taskId || pending.text !== state.text ||
+            (pending.editor && pending.editor !== state.editor))) {
+          pendingNativeSelections.delete(row);
+          pending = null;
+        }
+        if (request.source === 'intent') {
+          pendingNativeSelections.delete(row);
+          pending = null;
+        }
+        if (request.source === 'intent') {
+          acceptedSelection = state.editor && readNativeSlateSelection(state.editor);
+        } else if (state.editor && element?.contains(selection?.anchorNode) && element.contains(selection?.focusNode)) {
+          const model = pending && readNativeSlateSelection(state.editor);
+          if (pending) pending.editor = state.editor;
+          // A native focus/select can commit before Slate projects its range into
+          // the DOM. Neither notification nor text input makes old DOM new selection intent.
+          if (pending && (!model || model.start !== state.start || model.end !== state.end ||
+              model.direction !== state.direction)) {
+            acceptedSelection = model;
+            if (!model) { ok = false; reason = 'native-selection-pending'; }
+          } else {
+            pendingNativeSelections.delete(row);
+            ok = selectNativeSlate(state.editor, state.start, state.end, state.direction);
+            if (ok) acceptedSelection = { start: state.start, end: state.end, direction: state.direction };
+          }
+        }
+      } else if (operation === 'offsetAtPoint') {
+        const point = document.caretPositionFromPoint?.(request.x, request.y);
+        const range = point ? null : document.caretRangeFromPoint?.(request.x, request.y);
+        pointerOffset = nativeDomPointOffset(row, point?.offsetNode || range?.startContainer,
+          point ? point.offset : range?.startOffset, state.editor);
+        ok = pointerOffset !== null;
+        if (!ok) reason = 'point-outside-text';
+      } else if (operation !== 'read' && operation !== 'caretRect') { ok = false; reason = 'unknown-operation'; }
+    }
+    const latest = state && readNativeTurn(annotationId);
+    if (ok && acceptedSelection && (operation === 'focus' || operation === 'select' ||
+        (operation === 'replace' && (state.editor || request.focus)))) {
+      pendingNativeSelections.set(row, { taskId, editor: state.editor,
+        text: operation === 'replace' && !state.editor ? request.text : latest?.text ?? state.text });
+    }
+    const text = operation === 'replace' && ok ? request.text : latest?.text ?? '';
+    responseRow.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+      id: request.id, ok: Boolean(ok), reason, text,
+      start: pointerOffset ?? acceptedSelection?.start ?? latest?.start ?? 0,
+      end: pointerOffset ?? acceptedSelection?.end ?? latest?.end ?? 0,
+      direction: pointerOffset === null ? acceptedSelection?.direction ?? latest?.direction ?? 'none' : 'none',
+      readOnly: binding?.readOnly ?? true,
+      annotationId, reviewActionId: binding?.reviewActionId ?? '', processedRecordingId: state?.annotation.processedRecordingId ?? '',
+      trackLabel: binding?.tracks.find(track => track.id === state?.annotation.processedRecordingId)?.label ?? '',
+      startSeconds: state?.annotation.startTimeInSeconds ?? null, endSeconds: state?.annotation.endTimeInSeconds ?? null,
+      isActive: binding?.transcript?.activeIds?.has(annotationId) === true,
+      ...(operation === 'caretRect' && ok ? { rect: caretRect(row, state, request.start ?? state.start) } : {})
+    }));
   }
 
   function getPlaybackSnapshot() {
@@ -792,22 +908,16 @@ export function initRecoveredEditorBridge() {
     };
   }
 
-  function getEditorSnapshot() {
-    const rows = getTranscriptRows().map((row, index) => getRowSnapshot(row, index));
-    const activeRow = rows.find((row) => row.isActive) || null;
-    return {
-      contractVersion: BABEL_EDITOR_CONTRACT_VERSION,
-      capturedAt: Date.now(),
-      routeKey: `${window.location.pathname || ''}${window.location.search || ''}`,
-      activeRowId: activeRow && activeRow.annotationId ? activeRow.annotationId : null,
-      rows,
-      tracks: collectTracks(rows),
-      playback: getPlaybackSnapshot()
-    };
-  }
 
   function applyExtendedDiffState(payload) {
+    if (payload?.routeKey && payload.routeKey !== getRouteKey()) return { ok: false, reason: 'stale-task' };
     const toolbarProps = getTranscriptionDiffToolbarProps();
+    const reviewActionId = readBabelTranscriptBindings()?.reviewActionId;
+    if (!reviewActionId) return { ok: false, reason: 'transcription-task-not-found' };
+    if ((payload?.referenceReviewActionId || payload?.currentReviewActionId) &&
+        payload.referenceReviewActionId !== reviewActionId && payload.currentReviewActionId !== reviewActionId) {
+      return { ok: false, reason: 'stale-task' };
+    }
     if (!toolbarProps) {
       return {
         ok: false,
@@ -830,9 +940,13 @@ export function initRecoveredEditorBridge() {
     const routeKey = getString(payload?.routeKey) || getRouteKey();
     const textMode = normalizeExtendedDiffTextMode(payload?.textMode);
 
-    if (!extendedDiffPatch || extendedDiffPatch.routeKey !== routeKey) {
+    if (!isCurrentExtendedDiffPatch(extendedDiffPatch)) {
+      extendedDiffQueryRecords.clear();
       extendedDiffPatch = {
         routeKey,
+        reviewActionId,
+        editorFiber: findBabelEditorFiber(),
+        originalPayloads: new Map(),
         previousIsDiffMode: currentIsDiffMode,
         previousSelectedCompareActionId: currentSelectedCompareActionId,
         syntheticExtendedDiffActionId: ensuredAction.syntheticExtendedDiffActionId,
@@ -850,22 +964,15 @@ export function initRecoveredEditorBridge() {
       extendedDiffPatch.lastAppliedActionId = action.id;
       extendedDiffPatch.textMode = textMode;
     }
+    extendedDiffPatch.operation = {};
 
     const fetchPatchInstalled = installExtendedDiffFetchPatch();
-    const patchedCurrentDiffResult = patchCurrentDiffResult(toolbarProps, textMode);
-    const shouldRefreshSelection = currentIsDiffMode && currentSelectedCompareActionId === action.id;
-
-    toolbarProps.onToggleDiffMode(true);
-    if (shouldRefreshSelection) {
-      toolbarProps.onSelectCompareAction(null);
-      window.setTimeout(() => {
-        const latestToolbarProps = getTranscriptionDiffToolbarProps() || toolbarProps;
-        latestToolbarProps.onSelectCompareAction(action.id);
-      }, 0);
-    } else {
-      toolbarProps.onSelectCompareAction(action.id);
-    }
-    const refetchScheduled = scheduleCurrentTranscriptionDiffRefetch(action);
+    const patchedCurrentDiffResult = patchCurrentDiffResult(action, extendedDiffPatch);
+    // Do not bounce the selected action through null: it races native query activation
+    // and can reselect an old action after a newer mode/task request.
+    if (!currentIsDiffMode) toolbarProps.onToggleDiffMode(true);
+    if (currentSelectedCompareActionId !== action.id) toolbarProps.onSelectCompareAction(action.id);
+    const repaintScheduled = scheduleCurrentTranscriptionDiffRepaint(action);
 
     return {
       ok: true,
@@ -874,8 +981,7 @@ export function initRecoveredEditorBridge() {
       syntheticActionInserted: Boolean(ensuredAction.syntheticExtendedDiffActionId),
       fetchPatchInstalled,
       patchedCurrentDiffResult,
-      refreshedSelection: shouldRefreshSelection,
-      refetchScheduled,
+      repaintScheduled,
       textMode,
       previousIsDiffMode: extendedDiffPatch.previousIsDiffMode,
       previousSelectedCompareActionId: extendedDiffPatch.previousSelectedCompareActionId
@@ -883,7 +989,7 @@ export function initRecoveredEditorBridge() {
   }
 
   function clearExtendedDiffState() {
-    restoreExtendedDiffMutations();
+    restoreExtendedDiffQueries(extendedDiffPatch);
     uninstallExtendedDiffFetchPatch();
 
     if (!extendedDiffPatch) {
@@ -891,6 +997,10 @@ export function initRecoveredEditorBridge() {
         ok: true,
         restored: false
       };
+    }
+    if (!isCurrentExtendedDiffPatch(extendedDiffPatch)) {
+      extendedDiffPatch = null;
+      return { ok: true, restored: false, reason: 'stale-task' };
     }
 
     const toolbarProps = getTranscriptionDiffToolbarProps();
@@ -931,8 +1041,9 @@ export function initRecoveredEditorBridge() {
     }
 
     if (extendedDiffPatch.previousIsDiffMode) {
-      toolbarProps.onToggleDiffMode(true);
-      toolbarProps.onSelectCompareAction(extendedDiffPatch.previousSelectedCompareActionId);
+      if (currentSelectedCompareActionId !== extendedDiffPatch.previousSelectedCompareActionId) {
+        toolbarProps.onSelectCompareAction(extendedDiffPatch.previousSelectedCompareActionId);
+      }
     } else {
       toolbarProps.onToggleDiffMode(false);
     }
@@ -1031,7 +1142,10 @@ export function initRecoveredEditorBridge() {
   }
 
   function dispose() {
+    if (disposed) return;
+    disposed = true;
     clearExtendedDiffState();
+    restoreNativeActivation();
     if (serviceProviderHandle && typeof serviceProviderHandle.dispose === 'function') {
       serviceProviderHandle.dispose();
     }
@@ -1039,12 +1153,20 @@ export function initRecoveredEditorBridge() {
     serviceRegistry = null;
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    window.removeEventListener('babel-helper:editor-control', handleEditorControl, true);
+    window.removeEventListener('mousedown', handleNativeActivationCapture, true);
+    window.removeEventListener('focusin', handleNativeActivationCapture, true);
+    window.removeEventListener('keydown', handleNativeTagDropdownKeydown, true);
     delete window.__babelHelperRecoveredEditorBridge;
   }
 
   ensureServiceProvider();
   window.addEventListener(REQUEST_EVENT, handleRequest, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
+  window.addEventListener('babel-helper:editor-control', handleEditorControl, true);
+  window.addEventListener('mousedown', handleNativeActivationCapture, true);
+  window.addEventListener('focusin', handleNativeActivationCapture, true);
+  window.addEventListener('keydown', handleNativeTagDropdownKeydown, true);
 
   window.__babelHelperRecoveredEditorBridge = {
     getEditorSnapshot: (...args) => invokeService('getEditorSnapshot', ...args),

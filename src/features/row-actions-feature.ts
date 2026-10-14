@@ -90,7 +90,7 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
   function getMergeActionPlan(actionName, row, rows, originalIndex) {
     if (
       (actionName !== 'mergePrevious' && actionName !== 'mergeNext') ||
-      !(row instanceof HTMLTableRowElement) ||
+      !(row instanceof HTMLElement) ||
       !Array.isArray(rows) ||
       originalIndex < 0
     ) {
@@ -99,7 +99,7 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
 
     const direction = actionName === 'mergePrevious' ? -1 : 1;
     const adjacentRow = rows[originalIndex + direction];
-    if (!(adjacentRow instanceof HTMLTableRowElement)) {
+    if (!(adjacentRow instanceof HTMLElement)) {
       return null;
     }
 
@@ -136,17 +136,17 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
     }
 
     const candidates = [];
-    if (plan.survivingRow instanceof HTMLTableRowElement && plan.survivingRow.isConnected) {
+    if (plan.survivingRow instanceof HTMLElement && plan.survivingRow.isConnected) {
       candidates.push(plan.survivingRow);
     }
 
     const indexed = updatedRows[plan.targetIndex];
-    if (indexed instanceof HTMLTableRowElement && !candidates.includes(indexed)) {
+    if (indexed instanceof HTMLElement && !candidates.includes(indexed)) {
       candidates.push(indexed);
     }
 
     for (const row of updatedRows) {
-      if (row instanceof HTMLTableRowElement && !candidates.includes(row)) {
+      if (row instanceof HTMLElement && !candidates.includes(row)) {
         candidates.push(row);
       }
     }
@@ -175,12 +175,12 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
 
 
   function restoreMergeSelection(row, caretOffset) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return false;
     }
 
-    const textarea = helper.getRowTextarea(row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getRowEditor(row);
+    if (!textarea || textarea.readOnly) {
       return false;
     }
 
@@ -211,18 +211,8 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
 
     const rowIdentity = helper.getRowIdentity(row) || {};
     const timeRange = api.time.getRowTimeRange(row) || {};
-    const startText =
-      typeof rowIdentity.startText === 'string' && rowIdentity.startText
-        ? rowIdentity.startText
-        : row.children[2] instanceof HTMLElement
-          ? helper.normalizeText(row.children[2])
-          : '';
-    const endText =
-      typeof rowIdentity.endText === 'string' && rowIdentity.endText
-        ? rowIdentity.endText
-        : row.children[3] instanceof HTMLElement
-          ? helper.normalizeText(row.children[3])
-          : '';
+    const startText = rowIdentity.startText || '';
+    const endText = rowIdentity.endText || '';
 
     return {
       annotationId:
@@ -305,7 +295,7 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
     const mergedRow = await helper.waitFor(() => {
       const updatedRows = helper.getTranscriptRows();
       const candidate = findMergedRow(mergePlan, updatedRows);
-      if (!(candidate instanceof HTMLTableRowElement)) {
+      if (!(candidate instanceof HTMLElement)) {
         return null;
       }
 
@@ -317,13 +307,13 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
           text.includes(mergePlan.survivingText) &&
           (!mergePlan.adjacentText || text.includes(mergePlan.adjacentText)));
       const adjacentRemoved =
-        !(mergePlan.adjacentRow instanceof HTMLTableRowElement) || !mergePlan.adjacentRow.isConnected;
+        !(mergePlan.adjacentRow instanceof HTMLElement) || !mergePlan.adjacentRow.isConnected;
 
       return rowCountSettled || textSettled || adjacentRemoved ? candidate : null;
     }, 1200, 40);
 
     const resolvedRow =
-      (mergedRow instanceof HTMLTableRowElement && mergedRow) ||
+      (mergedRow instanceof HTMLElement && mergedRow) ||
       findMergedRow(mergePlan, helper.getTranscriptRows());
     if (resolvedRow) {
       helper.setCurrentRow(resolvedRow);
@@ -447,38 +437,34 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     acceptingWarnings = true;
     const href = window.location.href;
     const revision = helper.state.sessionLifecycleRevision;
-    const table = document.querySelector('main table');
-    const attemptedRows = new Set();
+    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const transcript = helper.getTranscriptRows()[0]?.parentElement;
+    const attemptedWarnings = new WeakSet<HTMLElement>();
     const isCurrentSession = () =>
       isFeatureEnabled('rowActions') &&
       helper.runtime.isSessionInteractive() &&
       helper.state.sessionLifecycleRevision === revision &&
       window.location.href === href &&
-      table?.isConnected &&
-      document.querySelector('main table') === table;
+      (!reviewActionId || document.documentElement?.getAttribute('data-babel-review-action-id') === reviewActionId) &&
+      transcript?.isConnected &&
+      helper.getTranscriptRows()[0]?.parentElement === transcript;
     try {
       while (isCurrentSession()) {
         let warning = null;
         // Requery after every native click: React handlers capture the current
         // acknowledgement list, so a batch of stale handlers loses earlier clicks.
         for (const row of helper.getTranscriptRows()) {
-          const editor = helper.getRowTextarea(row);
-          if (!(editor instanceof HTMLTextAreaElement) ||
-              !editor.isConnected || editor.readOnly || editor.disabled ||
-              editor.matches(':disabled, [aria-disabled="true"]') ||
-              !table.contains(row)) {
+          const editor = helper.getRowEditor(row);
+          if (!editor || !editor.isConnected || editor.readOnly || !transcript.contains(row)) {
             continue;
           }
-          const identity = helper.getRowIdentity(row);
-          const key = identity?.annotationId || row;
-          if (attemptedRows.has(key)) continue;
-          warning = Array.from(row.querySelectorAll('.cursor-pointer')).find((element) =>
+          warning = Array.from(row.querySelectorAll('button')).find((element) =>
             element instanceof HTMLElement &&
+            !attemptedWarnings.has(element) &&
             !element.matches(':disabled, [aria-disabled="true"]') &&
-            Array.from(element.children).some((child) =>
-              child instanceof HTMLElement && String(child.className || '').includes('bg-yellow')));
+            element.textContent?.trim() === 'My transcription is correct');
           if (warning) {
-            attemptedRows.add(key);
+            attemptedWarnings.add(warning);
             break;
           }
         }
@@ -527,7 +513,7 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
     if (
       isFeatureEnabled('rowActions') &&
       matchesShortcut(helper.config?.shortcuts, 'row.delete', event, helper.state?.rightShiftPressed) &&
-      !helper.isEditable(event.target instanceof HTMLElement ? event.target : null)
+      !isTypingInTextControl(event)
     ) {
       if (tryDeleteCurrentRow(event)) {
         if (helper.analytics) {

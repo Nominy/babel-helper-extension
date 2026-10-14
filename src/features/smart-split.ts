@@ -2,7 +2,7 @@
 import { splitAutoSegmentTextAtFloorOffset } from './auto-segmentation/text-allocation';
 import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { computeL0CompletedWordCharacterOffset } from '../services/l0-word-timing-alignment';
-import { buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
+import { buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import type { TimelineModules } from '../services/timeline-selection-service';
 
 export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site' | 'segmentation' | 'selection' | 'edge'>) {
@@ -59,14 +59,11 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       typeof helper.getGhostCursorTarget === 'function'
         ? helper.getGhostCursorTarget()
         : null;
-    const activeTextarea =
-      typeof helper.getActiveRowTextarea === 'function'
-        ? helper.getActiveRowTextarea()
+    const activeEditor =
+      typeof helper.getActiveRowEditor === 'function'
+        ? helper.getActiveRowEditor()
         : null;
-    const activeRow =
-      activeTextarea instanceof HTMLTextAreaElement
-        ? activeTextarea.closest('tr')
-        : null;
+    const activeRow = activeEditor?.row || null;
     const remembered = helper.state.lastBlur;
     const currentRow =
       typeof helper.getCurrentRow === 'function' ? helper.getCurrentRow() : null;
@@ -75,8 +72,8 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       {
         row: activeRow,
         offset:
-          activeTextarea instanceof HTMLTextAreaElement
-            ? activeTextarea.selectionStart
+          Boolean(activeEditor)
+            ? activeEditor.selectionStart
             : null
       },
       {
@@ -103,7 +100,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
   function buildSmartSplitPlanForRow(row, splitSeconds, speakerKey) {
-    if (!(row instanceof HTMLTableRowElement) || !Number.isFinite(splitSeconds)) {
+    if (!(row instanceof HTMLElement) || !Number.isFinite(splitSeconds)) {
       return null;
     }
 
@@ -128,8 +125,8 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       ? rows.filter((candidate) => helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
       : rows;
     const sourceSpeakerIndex = sameSpeakerRows.indexOf(row);
-    const sourceText = helper.getRowTextValue(row).trim();
-    if (!sourceText) {
+    const sourceText = helper.getRowTextValue(row);
+    if (!sourceText.trim()) {
       return null;
     }
 
@@ -165,7 +162,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       (typeof settings.speakerKey === 'string' && settings.speakerKey) ||
       helper.getRowSpeakerKey(sourceRow);
     const pairMatchesSpeaker = (leftRow, rightRow) => {
-      if (!(leftRow instanceof HTMLTableRowElement) || !(rightRow instanceof HTMLTableRowElement)) {
+      if (!(leftRow instanceof HTMLElement) || !(rightRow instanceof HTMLElement)) {
         return false;
       }
 
@@ -180,7 +177,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     for (let index = Math.min(sourceRowIndex, rows.length - 1); index >= 0; index -= 1) {
       const candidate = rows[index];
       if (
-        candidate instanceof HTMLTableRowElement &&
+        candidate instanceof HTMLElement &&
         (!sourceSpeakerKey || helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
       ) {
         leftRow = candidate;
@@ -192,7 +189,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     for (let index = Math.max(0, sourceRowIndex + 1); index < rows.length; index += 1) {
       const candidate = rows[index];
       if (
-        candidate instanceof HTMLTableRowElement &&
+        candidate instanceof HTMLElement &&
         (!sourceSpeakerKey || helper.getRowSpeakerKey(candidate) === sourceSpeakerKey)
       ) {
         rightRow = candidate;
@@ -394,16 +391,13 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
   function applySmartSplitTextParts(leftRow, rightRow, parts) {
-    const leftTextarea = helper.getRowTextarea(leftRow);
-    const rightTextarea = helper.getRowTextarea(rightRow);
-    if (
-      !(leftTextarea instanceof HTMLTextAreaElement) ||
-      !(rightTextarea instanceof HTMLTextAreaElement)
-    ) {
+    const leftEditor = helper.getRowEditor(leftRow);
+    const rightEditor = helper.getRowEditor(rightRow);
+    if (!leftEditor || !rightEditor || leftEditor.readOnly || rightEditor.readOnly) {
       return false;
     }
-    const wroteLeft = helper.setEditableValue(leftTextarea, parts.firstText);
-    const wroteRight = helper.setEditableValue(rightTextarea, parts.secondText);
+    const wroteLeft = helper.setEditableValue(leftEditor, parts.firstText);
+    const wroteRight = helper.setEditableValue(rightEditor, parts.secondText);
     return Boolean(wroteLeft && wroteRight);
   }
 
@@ -413,13 +407,14 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       return false;
     }
 
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const detected = await waitForDuplicateSplitRows(
       context.rows,
       context.speakerKey,
       CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS
     );
 
-    if (!detected) {
+    if (!detected || !isCurrentTask()) {
       return false;
     }
 
@@ -465,11 +460,12 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       return false;
     }
 
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount, {
       speakerKey: plan.speakerKey,
       sourceSpeakerIndex: plan.sourceSpeakerIndex
     });
-    if (!rows) {
+    if (!rows || !isCurrentTask()) {
       return false;
     }
 
@@ -484,13 +480,14 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     }
 
     const applyOnce = () =>
-      applySmartSplitTextParts(rows.leftRow, rows.rightRow, parts);
+      isCurrentTask() && applySmartSplitTextParts(rows.leftRow, rows.rightRow, parts);
 
     if (!applyOnce()) {
       return false;
     }
 
     await helper.sleep(140);
+    if (!isCurrentTask()) return false;
 
     const leftCurrent = helper.getRowTextValue(rows.leftRow).trim();
     const rightCurrent = helper.getRowTextValue(rows.rightRow).trim();
@@ -511,7 +508,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       speakerKey
     });
 
-    if (!(sourceRow instanceof HTMLTableRowElement) && container instanceof HTMLElement) {
+    if (!(sourceRow instanceof HTMLElement) && container instanceof HTMLElement) {
       const laneTimeScale = api.site.getLaneTimeScale(container);
       if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
         const startSeconds = laneTimeScale.offsetSeconds + entry.leftPx * laneTimeScale.secondsPerPx;
@@ -522,7 +519,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       }
     }
 
-    if (!(sourceRow instanceof HTMLTableRowElement)) {
+    if (!(sourceRow instanceof HTMLElement)) {
       return null;
     }
 
@@ -537,8 +534,8 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       : rows;
     const sourceSpeakerIndex = sameSpeakerRows.indexOf(sourceRow);
 
-    const sourceText = helper.getRowTextValue(sourceRow).trim();
-    if (!sourceText) {
+    const sourceText = helper.getRowTextValue(sourceRow);
+    if (!sourceText.trim()) {
       return null;
     }
 
@@ -732,5 +729,5 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     void applySmartSplit(draft);
   }
 
-  return { buildSmartSplitPlanForRow, applySmartSplit, captureRowSnapshot, buildSmartSplitPlanForRegion, dispatchSplitClick, waitForDuplicateSplitRows, CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS, applySmartSplitFromDuplicateRows, captureSmartSplitClickDraft, handleSmartSplitClick };
+  return { buildSmartSplitPlanForRow, getSmartSplitTextParts, applySmartSplit, captureRowSnapshot, buildSmartSplitPlanForRegion, dispatchSplitClick, waitForDuplicateSplitRows, CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS, applySmartSplitFromDuplicateRows, captureSmartSplitClickDraft, handleSmartSplitClick };
 }

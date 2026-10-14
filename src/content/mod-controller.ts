@@ -22,6 +22,7 @@ export interface ModControllerOptions {
 }
 
 type SessionOperation = () => void | boolean | Promise<void | boolean>;
+type ActivationOperation = (isCurrent: () => boolean) => void | boolean | Promise<void | boolean>;
 type StopOperation = () => void | Promise<void>;
 
 type ControllerPhase = 'created' | 'started' | 'ready' | 'active' | 'stopping' | 'stopped';
@@ -190,29 +191,18 @@ export function createModController(options: ModControllerOptions = {}) {
     return result;
   }
 
-  function activateSession(reason: string, operation: SessionOperation) {
+  function activateSession(reason: string, operation: ActivationOperation) {
     if (phase === 'created' || phase === 'started' || isStoppingOrStopped()) {
       return Promise.resolve(false);
     }
 
     const transition = ++sessionTransition;
+    const isCurrent = () => transition === sessionTransition &&
+      isCurrentGeneration() && !isStoppingOrStopped();
     return enqueueSessionTransition(async () => {
-      if (
-        transition !== sessionTransition ||
-        !isCurrentGeneration() ||
-        isStoppingOrStopped()
-      ) {
-        return false;
-      }
-      const committed = await operation();
-      if (
-        committed === false ||
-        transition !== sessionTransition ||
-        !isCurrentGeneration() ||
-        isStoppingOrStopped()
-      ) {
-        return false;
-      }
+      if (!isCurrent()) return false;
+      const committed = await operation(isCurrent);
+      if (committed === false || !isCurrent()) return false;
       if (phase === 'active') {
         return true;
       }

@@ -17,6 +17,7 @@ export function createPlaybackSiteApi(helper: any) {
   let playbackBridgeLoadPromise = null;
 
   let playbackBridgeRequestId = 0;
+  let pendingStateRead = null;
 
 
   function injectPlaybackBridge() {
@@ -75,8 +76,15 @@ export function createPlaybackSiteApi(helper: any) {
 
 
   async function callPlaybackBridge(operation, payload) {
+    // Commands invalidate sharing, never queue behind a polling read.
+    if (operation !== 'state') pendingStateRead = null;
+    const href = window.location.href;
+    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const lifecycleRevision = helper.state?.sessionLifecycleRevision;
     const ready = await injectPlaybackBridge();
-    if (!ready) {
+    if (!ready || window.location.href !== href ||
+        reviewActionId !== (document.documentElement?.getAttribute('data-babel-review-action-id') || '') ||
+        lifecycleRevision !== helper.state?.sessionLifecycleRevision) {
       return null;
     }
 
@@ -93,7 +101,11 @@ export function createPlaybackSiteApi(helper: any) {
         settled = true;
         window.removeEventListener(PLAYBACK_BRIDGE_RESPONSE_EVENT, handleResponse, true);
         window.clearTimeout(timeoutId);
-        resolve(result || null);
+        if (operation !== 'state') pendingStateRead = null;
+        const current = window.location.href === href &&
+          reviewActionId === (document.documentElement?.getAttribute('data-babel-review-action-id') || '') &&
+          lifecycleRevision === helper.state?.sessionLifecycleRevision;
+        resolve(current ? result || null : null);
       };
 
       const handleResponse = (event) => {
@@ -112,7 +124,7 @@ export function createPlaybackSiteApi(helper: any) {
           detail: {
             id,
             operation,
-            payload: payload || {}
+            payload: { ...(payload || {}), reviewActionId }
           }
         })
       );
@@ -143,7 +155,21 @@ export function createPlaybackSiteApi(helper: any) {
 
 
   helper.getPlaybackState = function getPlaybackState() {
-    return callPlaybackBridge('state').then(result => result || unavailablePlaybackState());
+    const href = window.location.href;
+    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const revision = helper.state?.sessionLifecycleRevision;
+    if (pendingStateRead?.href === href && pendingStateRead.reviewActionId === reviewActionId &&
+        pendingStateRead.revision === revision) return pendingStateRead.promise;
+    // Share only concurrent reads, not cached clocks. The next sample after
+    // settlement must observe native pause, seek and playback-rate changes.
+    const flight = { href, reviewActionId, revision, promise: null };
+    flight.promise = callPlaybackBridge('state')
+      .then(result => result || unavailablePlaybackState())
+      .finally(() => {
+        if (pendingStateRead === flight) pendingStateRead = null;
+      });
+    pendingStateRead = flight;
+    return flight.promise;
   };
 
 

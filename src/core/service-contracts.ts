@@ -1,3 +1,5 @@
+import type { EditorControl } from '../site/editor-control';
+
 export type ServiceOptions = Readonly<Record<string, unknown>>;
 
 export interface SessionService {
@@ -5,15 +7,16 @@ export interface SessionService {
 }
 
 export interface RowService {
-  getTranscriptRows(): HTMLTableRowElement[];
+  getTranscriptRows(): HTMLElement[];
   getCurrentActionRow(options?: { allowFallback?: boolean }): HTMLElement | null;
   getRowIdentity(row: HTMLElement): RowIdentity | null;
   findRowByIdentity(identity: RowIdentity): HTMLElement | null;
-  getRowTextarea(row: HTMLElement): HTMLTextAreaElement | null;
+  getRowEditor(row: HTMLElement): EditorControl | null;
   getRowTextValue(row: HTMLElement): string;
 }
 
 export interface RowIdentity {
+  reviewActionId?: string;
   annotationId: string | null;
   processedRecordingId: string | null;
   trackLabel: string;
@@ -21,6 +24,8 @@ export interface RowIdentity {
   isActive: boolean;
   startText: string;
   endText: string;
+  startSeconds?: number | null;
+  endSeconds?: number | null;
 }
 
 export interface ActionMenuService {

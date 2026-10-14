@@ -7,6 +7,7 @@ const PAGE_TASK_ID_ATTRIBUTE = 'data-babel-review-action-id';
 type TaskLocation = Pick<Location, 'pathname' | 'search'>;
 
 export type L0TimingRowIdentity = {
+  reviewActionId?: unknown;
   processedRecordingId?: unknown;
   speakerKey?: unknown;
   trackLabel?: unknown;
@@ -23,7 +24,6 @@ type TimingIdentityHelper = {
   getTranscriptRows?: () => unknown[];
   getRowIdentity?: (row: unknown) => L0TimingRowIdentity | null | undefined;
   getRowSpeakerKey?: (row: unknown) => unknown;
-  getRowTextarea?: (row: unknown) => unknown;
 };
 
 function trimmedString(value: unknown): string {
@@ -45,54 +45,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function getReactFiber(element: unknown): Record<string, unknown> | null {
-  const record = asRecord(element);
-  if (!record) return null;
-
-  try {
-    const fiberKey = Object.getOwnPropertyNames(record).find((name) =>
-      name.startsWith('__reactFiber$')
-    );
-    return fiberKey ? asRecord(record[fiberKey]) : null;
-  } catch {
-    return null;
-  }
-}
-
-function getRowTextarea(helper: TimingIdentityHelper, row: unknown): unknown {
-  if (typeof helper.getRowTextarea === 'function') {
-    const textarea = helper.getRowTextarea(row);
-    if (textarea) return textarea;
-  }
-
-  const querySelector = asRecord(row)?.querySelector;
-  if (typeof querySelector !== 'function') return null;
-  try {
-    return querySelector.call(row, 'textarea');
-  } catch {
-    return null;
-  }
-}
-
-function getReviewActionIdFromFiber(element: unknown): string {
-  let fiber = getReactFiber(element);
-  const seen = new Set<Record<string, unknown>>();
-  for (let ancestorDepth = 0; fiber && ancestorDepth <= 30; ancestorDepth += 1) {
-    if (seen.has(fiber)) return '';
-    seen.add(fiber);
-    const reviewActionId = trimmedString(asRecord(fiber.memoizedProps)?.reviewActionId);
-    if (reviewActionId) return reviewActionId;
-    fiber = asRecord(fiber.return);
-  }
-  return '';
-}
 
 function getReviewActionIdFromRows(helper: TimingIdentityHelper, rows: readonly unknown[]): string {
   for (const row of rows) {
-    const rowReviewActionId = getReviewActionIdFromFiber(row);
-    if (rowReviewActionId) return rowReviewActionId;
-    const textareaReviewActionId = getReviewActionIdFromFiber(getRowTextarea(helper, row));
-    if (textareaReviewActionId) return textareaReviewActionId;
+    const reviewActionId = trimmedString(helper.getRowIdentity?.(row)?.reviewActionId);
+    if (reviewActionId) return reviewActionId;
   }
   return '';
 }

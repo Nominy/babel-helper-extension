@@ -3,11 +3,13 @@ import { matchesShortcut } from '../core/shortcuts';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
 import { autoConvertSelectedNumberText, isTextControl, getSelectedTextFromTextControl, convertSelectionWithDigit } from '../hooks/selected-number-to-skaz';
+import { getEditorControlFromTarget } from '../site/editor-control';
 
 export function registerSelectedNumberInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
   const { isFeatureEnabled, isTypingInTextControl } = input;
 
   hooks.on('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return false;
     if (
       isFeatureEnabled('selectedNumberToSkaz') &&
       event.code.startsWith('Digit') &&
@@ -16,8 +18,9 @@ export function registerSelectedNumberInput(helper: any, hooks: EditorHooks, inp
       !event.metaKey
     ) {
       const target = event.target;
-      if (isTextControl(target)) {
-        const selectedText = getSelectedTextFromTextControl(target);
+      const control = getEditorControlFromTarget(target) || (isTextControl(target) ? target : null);
+      if (control) {
+        const selectedText = getSelectedTextFromTextControl(control);
         if (selectedText && selectedText.trim().length > 0) {
           const handled = convertSelectionWithDigit(target, event.key);
           if (handled) {

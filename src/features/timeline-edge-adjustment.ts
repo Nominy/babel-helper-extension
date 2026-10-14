@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerTimelineEdgeAdjustment(helper: any, api: Pick<TimelineModules, 'selection' | 'site' | 'loop' | 'trim'>) {
   helper.state.timelineEdgeClickDraft = null;
@@ -170,7 +171,7 @@ export function registerTimelineEdgeAdjustment(helper: any, api: Pick<TimelineMo
       const row = api.site.findRowByTimeLabels(entry.startText, entry.endText, {
         speakerKey
       });
-      if (!(row instanceof HTMLTableRowElement)) {
+      if (!(row instanceof HTMLElement)) {
         continue;
       }
 
@@ -244,7 +245,9 @@ export function registerTimelineEdgeAdjustment(helper: any, api: Pick<TimelineMo
 
 
   helper.adjustNearestTimelineSegmentEdgeFromAltClick = async function adjustNearestTimelineSegmentEdgeFromAltClick(draft, event) {
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     const bridgeTargetSeconds = await resolveAltClickTimelinePointSeconds(draft, event);
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
     if (draft && typeof draft === 'object') {
       if (Number.isFinite(bridgeTargetSeconds)) {
         draft.bridgeTargetSeconds = bridgeTargetSeconds;
@@ -265,6 +268,7 @@ export function registerTimelineEdgeAdjustment(helper: any, api: Pick<TimelineMo
     try {
       api.site.rememberTimelineSegmentTarget(move.row, move.container, move.entry, move.speakerKey);
       const result = await api.trim.moveSegmentBoundary(move.side, move.labels, move.speakerKey, move.targetSeconds, move.row);
+      if (!isCurrentTask()) return { ok: false, reason: 'stale-task' };
       if (!result || !result.ok) {
         return {
           ok: false,

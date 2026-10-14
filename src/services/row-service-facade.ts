@@ -5,7 +5,7 @@ type RowServiceHelper = {
   getCurrentActionRow?: RowService['getCurrentActionRow'];
   getRowIdentity?: RowService['getRowIdentity'];
   findRowByIdentity?: RowService['findRowByIdentity'];
-  getRowTextarea?: RowService['getRowTextarea'];
+  getRowEditor?: RowService['getRowEditor'];
   getRowTextValue?: RowService['getRowTextValue'];
 };
 
@@ -14,7 +14,7 @@ export function createRowServiceFacade(helper: RowServiceHelper): RowService {
     getTranscriptRows() {
       const rows = helper.getTranscriptRows?.();
       return Array.isArray(rows)
-        ? rows.filter((row): row is HTMLTableRowElement => row instanceof HTMLTableRowElement)
+        ? rows.filter((row): row is HTMLElement => row instanceof HTMLElement)
         : [];
     },
     getCurrentActionRow(options = { allowFallback: false }) {
@@ -26,8 +26,8 @@ export function createRowServiceFacade(helper: RowServiceHelper): RowService {
     findRowByIdentity(identity: RowIdentity) {
       return helper.findRowByIdentity?.(identity) ?? null;
     },
-    getRowTextarea(row: HTMLElement) {
-      return helper.getRowTextarea?.(row) ?? null;
+    getRowEditor(row: HTMLElement) {
+      return helper.getRowEditor?.(row) ?? null;
     },
     getRowTextValue(row: HTMLElement) {
       return helper.getRowTextValue?.(row) ?? '';

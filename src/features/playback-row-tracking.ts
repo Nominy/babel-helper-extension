@@ -1,7 +1,10 @@
 // @ts-nocheck
+import { BABEL_TRANSCRIPT_ROW_SELECTOR } from '../core/babel-editor-contract';
+import { getEditorControlFromTarget } from '../site/editor-control';
 
 export function registerPlaybackRowTracking(helper: any) {
   const isFeatureEnabled = (key) => helper.isFeatureEnabled?.(key) ?? true;
+  let trackingGeneration = 0;
   function handleRowFocusIn(event) {
     if (!helper.runtime.isSessionInteractive()) {
       return;
@@ -12,8 +15,8 @@ export function registerPlaybackRowTracking(helper: any) {
       return;
     }
 
-    const row = target.closest('tr');
-    if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+    const row = target.closest(BABEL_TRANSCRIPT_ROW_SELECTOR);
+    if (row && row.querySelector(helper.config.rowEditorSelector)) {
       // Reset the cursor baseline when focus moves to a different row,
       // since the baseline is only meaningful within a single segment.
       const rowChanged = helper.state.currentRow && helper.state.currentRow !== row;
@@ -29,7 +32,7 @@ export function registerPlaybackRowTracking(helper: any) {
         helper.analytics.record('row:focus-in', {
           rowId,
           rowChanged,
-          isTextarea: target instanceof HTMLTextAreaElement
+          isEditor: Boolean(getEditorControlFromTarget(target))
         });
       }
     }
@@ -45,27 +48,30 @@ export function registerPlaybackRowTracking(helper: any) {
       return;
     }
 
-    const row = target.closest('tr');
-    if (row && row.querySelector(helper.config.rowTextareaSelector)) {
+    const row = target.closest(BABEL_TRANSCRIPT_ROW_SELECTOR);
+    if (row && row.querySelector(helper.config.rowEditorSelector)) {
+      const active = document.activeElement;
+      if (event.button === 0 && active instanceof HTMLElement && active.isConnected &&
+          active.matches('[data-slate-editor="true"]') &&
+          active.closest(BABEL_TRANSCRIPT_ROW_SELECTOR) !== row) {
+        // Native onMouseDown activates the next turn before the browser's
+        // default blur. Flush the still-mounted Slate editor first.
+        active.blur();
+      }
       helper.setCurrentRow(row);
     }
   }
 
   /**
    * Update the cursor baseline when the user manually interacts with a
-   * transcript textarea.  Covers typing (input), arrow keys / click
+   * transcript editor. Covers typing (input), arrow keys / click
    * selection changes (keyup + pointerup) so that the proportional restore
    * system never drags the cursor backward past a position the user
    * intentionally placed it at.
    */
   function handleCursorBaselineUpdate(event) {
-    const target = event.target;
-    if (
-      !(target instanceof HTMLTextAreaElement) ||
-      !target.matches(helper.config.rowTextareaSelector)
-    ) {
-      return;
-    }
+    const target = getEditorControlFromTarget(event.target);
+    if (!target) return;
 
     const pos = target.selectionStart;
     if (typeof pos === 'number') {
@@ -99,53 +105,69 @@ export function registerPlaybackRowTracking(helper: any) {
       !event.altKey ||
       event.ctrlKey ||
       event.metaKey ||
-      event.shiftKey
+      event.shiftKey ||
+      event.button !== 0
     ) {
       return;
     }
-    const textarea = event.target;
+    const editor = getEditorControlFromTarget(event.target);
+    if (!editor) return;
+    // Native36978 seeks on mousedown (static text) and mouseup (Slate).
+    // Own the complete gesture before either approximate native seek can run.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.type !== 'click') return;
+    const row = editor.row;
+    const offset = editor.getOffsetAtPoint(event.clientX, event.clientY);
     if (
-      !(textarea instanceof HTMLTextAreaElement) ||
-      !textarea.matches(helper.config.rowTextareaSelector)
-    ) {
-      return;
-    }
-    const row = textarea.closest('tr');
-    const offset = textarea.selectionStart;
-    if (
-      !(row instanceof HTMLTableRowElement) ||
+      !(row instanceof HTMLElement) ||
       typeof offset !== 'number' ||
       typeof helper.getL0TimestampForRowOffset !== 'function'
     ) {
       return;
     }
-    const targetSeconds = helper.getL0TimestampForRowOffset(row, offset);
-    if (!Number.isFinite(targetSeconds)) {
-      return;
-    }
-    helper.setCurrentRow(row);
-    void helper.getPlaybackState()
-      .then((playback) => {
-        if (
-          !playback ||
-          !Number.isFinite(playback.currentTime) ||
-          typeof helper.seekPlaybackBySeconds !== 'function'
-        ) {
-          return false;
-        }
-        return helper.seekPlaybackBySeconds(targetSeconds - playback.currentTime);
-      })
-      .then((seekResult) => {
-        if (seekResult !== false && helper.analytics) {
-          helper.analytics.record('playback:seek', {
-            source: 'timestamp-word-alt-click',
-            targetSeconds,
-            rowId: helper.getRowIdentity(row)?.annotationId ?? null,
-            characterOffset: offset
-          });
-        }
-      })
-      .catch(() => undefined);
+    const revision = helper.state.sessionLifecycleRevision;
+    // Slate's pointer handlers still own the mounted editor for this event.
+    // Activate/select only after the whole gesture has finished dispatching.
+    queueMicrotask(() => {
+      if (!editor.isConnected || !editor.state ||
+          revision !== helper.state.sessionLifecycleRevision ||
+          !helper.runtime.isSessionInteractive() || !isFeatureEnabled('rowActions')) return;
+      let targetSeconds = helper.getL0TimestampForRowOffset(row, offset);
+      if (!Number.isFinite(targetSeconds)) return;
+      if (helper.getActiveRowEditor()?.row === row) {
+        if (!editor.setSelectionRange(offset, offset)) return;
+      } else if (!helper.focusRow(row, { selectionStart: offset, selectionEnd: offset, scroll: false })) {
+        return;
+      }
+      helper.setCurrentRow(row);
+      void helper.getPlaybackState()
+        .then((playback) => {
+          if (
+            !editor.isConnected || !editor.state ||
+            revision !== helper.state.sessionLifecycleRevision ||
+            !helper.runtime.isSessionInteractive() || !isFeatureEnabled('rowActions') ||
+            !playback ||
+            !Number.isFinite(playback.currentTime) ||
+            typeof helper.seekPlaybackBySeconds !== 'function'
+          ) {
+            return false;
+          }
+          targetSeconds = helper.getL0TimestampForRowOffset(row, offset);
+          if (!Number.isFinite(targetSeconds)) return false;
+          return helper.seekPlaybackBySeconds(targetSeconds - playback.currentTime);
+        })
+        .then((seekResult) => {
+          if (seekResult !== false && helper.analytics) {
+            helper.analytics.record('playback:seek', {
+              source: 'timestamp-word-alt-click',
+              targetSeconds,
+              rowId: helper.getRowIdentity(row)?.annotationId ?? null,
+              characterOffset: offset
+            });
+          }
+        });
+    });
   }
 
   function clearPlaybackRowSyncTimer() {
@@ -175,8 +197,10 @@ export function registerPlaybackRowTracking(helper: any) {
     }
 
     clearPlaybackRowSyncTimer();
+    const generation = trackingGeneration;
     helper.state.playbackRowSyncTimer = window.setTimeout(() => {
       helper.state.playbackRowSyncTimer = null;
+      if (generation !== trackingGeneration || !helper.state.rowTrackingBound) return;
       if (
         helper.state.playbackRowSyncInFlight ||
         typeof helper.syncCurrentRowToPlayback !== 'function'
@@ -189,9 +213,11 @@ export function registerPlaybackRowTracking(helper: any) {
       let nextDelay = 1250;
       void helper.syncCurrentRowToPlayback()
         .then((result) => {
+          if (generation !== trackingGeneration) return;
           nextDelay = getPlaybackSyncDelay(result);
         })
         .finally(() => {
+          if (generation !== trackingGeneration) return;
           helper.state.playbackRowSyncInFlight = false;
           schedulePlaybackRowSync(nextDelay);
         });
@@ -208,13 +234,17 @@ export function registerPlaybackRowTracking(helper: any) {
     document.addEventListener('input', handleCursorBaselineUpdate, true);
     document.addEventListener('keyup', handleCursorBaselineUpdate, true);
     document.addEventListener('pointerup', handleCursorBaselineUpdate, true);
+    document.addEventListener('mousedown', handleTimestampWordSeekClick, true);
+    document.addEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.addEventListener('click', handleTimestampWordSeekClick, true);
     helper.state.rowTrackingBound = true;
+    trackingGeneration += 1;
     schedulePlaybackRowSync();
     helper.perf?.count?.('row-tracking.bound');
   };
 
   helper.unbindRowTracking = function unbindRowTracking() {
+    trackingGeneration += 1;
     helper.stopGhostCursor?.();
     helper.state.ghostCursorLaneLock = null;
     helper.cancelSpeakerWorkflow?.();
@@ -233,6 +263,8 @@ export function registerPlaybackRowTracking(helper: any) {
     document.removeEventListener('input', handleCursorBaselineUpdate, true);
     document.removeEventListener('keyup', handleCursorBaselineUpdate, true);
     document.removeEventListener('pointerup', handleCursorBaselineUpdate, true);
+    document.removeEventListener('mousedown', handleTimestampWordSeekClick, true);
+    document.removeEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.removeEventListener('click', handleTimestampWordSeekClick, true);
     clearPlaybackRowSyncTimer();
     helper.state.playbackRowSyncInFlight = false;

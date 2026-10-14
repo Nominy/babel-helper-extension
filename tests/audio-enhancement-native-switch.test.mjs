@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { build, transform } from 'esbuild';
 import { join } from 'node:path';
 import { defaultSnapshotDir } from '@nominy/babel-extension-e2e/recreation-snapshot';
+import { AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_PROTOCOL_VERSION, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 
 const { recoveredModuleSources, recoveredEditorModuleId } = await loadEntry(
   join(defaultSnapshotDir, 'app/src/recovered/generated/moduleSources.ts')
@@ -78,9 +79,9 @@ class NativeEditorFixture {
     })) };
     this.initial = structuredClone(this.annotations.current);
     // Execute the recovered annotation command, not an imitation split or event echo.
-    this.splitAnnotation = nativeCallback('Q3', {
+    this.splitAnnotation = nativeCallback('q3', {
       x3: this.annotations, crypto,
-      L3: command => command.do(),
+      D3: command => command.do(),
       C2: update => {
         this.annotations.current = update(this.annotations.current);
         this.writes += 1;
@@ -91,12 +92,12 @@ class NativeEditorFixture {
   select(trackId, regionId) { this.selected = { ...this.selected, [trackId]: { activeRegionId: regionId } }; this.selectionHook.memoizedState = this.selected; }
   register(wave, region) {
     const refs = { [region.id]: { start: {}, end: {}, text: {}, label: { style: {} } } };
-    const bind = nativeCallback('nk2', {
-      nr2: null, Z2: { current: () => ({ region: '#ccc', regionBorder: '#999' }) },
-      W2: () => ({}), eu2: () => {}, es2: { refs: { current: refs } },
-      tb2: {}, eb2: (id, selected) => this.select(id, selected), tI2: { current: new Set() },
-      g2: 'transcription', ek2: this.annotations.current, L2: false, tN2: false,
-      tq2: this.splitAnnotation, tM2: { current: false }, t6: { SHORT: 1 }, setTimeout,
+    const bind = nativeCallback('re2', {
+      nP2: null, X2: { current: () => ({ region: '#ccc', regionBorder: '#999' }) },
+      ey2: () => {}, ex2: { refs: { current: refs } },
+      t_2: {}, eA2: (id, selected) => this.select(id, selected), t42: { current: new Set() },
+      x2: 'transcription', G2: false, tY2: false,
+      ny2: this.splitAnnotation, nn2: { current: false }, nO: { SHORT: 1 }, setTimeout,
       MouseEvent: NativeMouseEventFixture
     });
     bind({ id: wave.id }, region, false);
@@ -160,8 +161,9 @@ class NativeWaveFixture {
     this.muted = true;
     this.scroll = 31;
     this.playing = true;
+    this.playingMarker = 100;
     this.loads = [];
-    this.media = { volume: this.volume, muted: this.muted };
+    this.media = { volume: this.volume, muted: this.muted, decodedMarker: 100 };
     this.regions = new NativeRegionPluginFixture(this, editor);
     this.onLoading = onLoading;
     // Recovered native editor module 73681 invokes zoom on ready, synchronizing
@@ -187,22 +189,26 @@ class NativeWaveFixture {
   }
   emit(type, ...args) { for (const listener of [...(this.listeners.get(type) ?? [])]) listener(...args); }
   zoom() { if (!this.decoded) throw new Error('No audio loaded'); }
-  async loadBlob(blob) {
+  async loadAudio(url, blob) {
+    this.emit('load', url);
+    if (this.isPlaying()) this.pause();
     this.decoded = null;
     this.onLoading(this);
     try {
-      const bytes = await blob.arrayBuffer();
+      const source = blob ?? await (await fetch(url)).blob();
+      const bytes = await source.arrayBuffer();
       const marker = new DataView(bytes).getInt16(44, true);
       this.loads.push(marker);
       this.loadedBytes = bytes;
       const beforeDecode = this.beforeDecode;
       this.beforeDecode = undefined;
       await beforeDecode?.(marker);
-      if (this.failNextOriginal && marker === 100) {
+      if ((this.failNextOriginal || this.failAllOriginal) && marker === 100) {
         this.failNextOriginal = false;
         throw new Error('Native second lane decoder failed');
       }
       this.decoded = decoded(marker);
+      this.media.decodedMarker = marker;
       // Recovered loadBlob itself does not clear the regions plugin.
       this.emit('ready');
     } catch (error) {
@@ -210,13 +216,22 @@ class NativeWaveFixture {
       throw error;
     }
   }
-  async load(url) { const response = await fetch(url); return this.loadBlob(await response.blob()); }
+  // Captured WaveSurfer9794:1091-1105 delegates both public methods to
+  // loadAudio; load(url) must not call the Helper-wrapped public loadBlob.
+  async loadBlob(blob) { return this.loadAudio('', blob); }
+  async load(url) { return this.loadAudio(url); }
   getDecodedData() { return this.decoded; }
   getCurrentTime() { return this.time; }
   getPlaybackRate() { return this.rate; }
   isPlaying() { return this.playing; }
   pause() { this.playing = false; }
-  play() { this.playing = true; }
+  play() {
+    if (!this.playing) {
+      this.playing = true;
+      this.playingMarker = this.media.decodedMarker;
+    }
+    return this.beforePlay?.();
+  }
   setTime(value) { this.time = value; this.emit('timeupdate', value); }
   setPlaybackRate(value) { this.rate = value; }
   getMediaElement() { return this.media; }
@@ -235,6 +250,10 @@ for (const scenario of [
   { name: 'persistent cache hit', cache: { cacheStatus: 'hit' } },
   { name: 'stored pair', cache: { cacheStatus: 'stored' } },
   { name: 'unavailable cache', cache: { cacheStatus: 'unavailable', cacheMessage: 'Storage quota exhausted for the current pair.' } },
+  { name: 'deferred disposal restoration', cache: {}, disposal: 'deferred' },
+  { name: 'failed disposal restoration and explicit retry', cache: {}, disposal: 'failure' },
+  { name: 'newer transport intent during native decoding', cache: {}, transportIntent: true },
+  { name: 'authoritative native editability on a feedback route', cache: {}, nativeAdmission: true },
   { name: 'unknown cache status', cache: { cacheStatus: 'future-status' }, invalid: true },
   { name: 'non-string cache status', cache: { cacheStatus: null }, invalid: true },
   { name: 'non-string cache message', cache: { cacheStatus: 'hit', cacheMessage: {} }, invalid: true }
@@ -249,6 +268,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
   const attributes = new Map();
   const listeners = new Map();
   const publications = [];
+  const messages = [];
   const loading = [];
   let waves = [];
   let editor = new NativeEditorFixture(waves);
@@ -258,15 +278,19 @@ test(`real native split and paired selection remain correct with ${scenario.name
   let resolveCommitted;
   let onSources;
   let enhancementProviders = 0;
+  let pollTick = null;
   const window = {
-    location: { origin: 'https://babel.test', href: 'https://babel.test/transcription?reviewActionId=task-native' },
+    location: { origin: 'https://babel.test', href: 'https://babel.test/transcription?reviewActionId=task-native' +
+      (scenario.nativeAdmission ? '&displayFeedback=true' : '') },
     fetch: async () => new Response(sourceWav(100), { headers: { 'Content-Type': 'audio/wav' } }),
     setTimeout, clearTimeout,
-    setInterval: () => 1, clearInterval() {},
+    setInterval(callback) { pollTick = callback; return 1; },
+    clearInterval() { pollTick = null; },
     addEventListener(type, listener) { const group = listeners.get(type) ?? new Set(); group.add(listener); listeners.set(type, group); },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     dispatchEvent() {},
     postMessage(data) {
+      messages.push(data);
       if (data.type === 'sources-ready') { resolveCaptured(data); onSources?.(data); }
       if (data.type === 'state') {
         publications.push(structuredClone(data.state));
@@ -279,6 +303,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
     } } } }
   };
   const nativeFetch = window.fetch;
+  let expectedFetchAfterDispose = nativeFetch;
   for (const id of ['lane-1', 'lane-2']) waves.push(new NativeWaveFixture(id, () => originalWaves, wave => {
     loading.push({ id: wave.id, state: facade.getState(), active: facade.getActiveAudio('capture', 'task-native').available,
       counterpartDecoded: originalWaves.filter(candidate => candidate !== wave).every(candidate => candidate.getDecodedData() !== null) });
@@ -288,7 +313,18 @@ test(`real native split and paired selection remain correct with ${scenario.name
     originalEditor.selectionHook.memoizedState = originalEditor.selected;
   } } };
   editor.rebuild(editor.annotations.current);
+  const unexpectedTranscriptWrite = () => { throw new Error('Audio work must not invoke transcript mutation callbacks'); };
+  const transcript = { memoizedProps: {
+    get turns() { return editor.annotations.current; },
+    handlers: { onChangeText: unexpectedTranscriptWrite }, readOnly: false
+  } };
+  const panel = { memoizedProps: {
+    get annotations() { return editor.annotations.current; },
+    saveState: {}, renderTranscript: unexpectedTranscriptWrite, onSave: unexpectedTranscriptWrite,
+    tracks: waves.map(wave => ({ id: wave.id, label: wave.id })), readOnly: false
+  }, child: transcript };
   const fiber = {
+    child: panel,
     memoizedProps: { reviewActionId: 'task-native', mode: 'annotation', transcriptionChunkProcessedRecordings: waves.map(wave => ({
       processedRecordingId: wave.id, processedRecordingUrl: `https://babel.test/${wave.id}.wav`, speaker: wave.id
     })) },
@@ -297,6 +333,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
   const root = { stateNode: { current: fiber } };
   const seed = { __reactFiber$fixture: { return: root } };
   install('window', window);
+  install('fetch', (...args) => window.fetch(...args));
   install('document', {
     documentElement: { getAttribute: name => attributes.get(name) ?? null, setAttribute: (name, value) => attributes.set(name, value), removeAttribute: name => attributes.delete(name) },
     querySelectorAll: () => [seed]
@@ -312,6 +349,24 @@ test(`real native split and paired selection remain correct with ${scenario.name
   const splitConsumer = registerSmartSplit({ state: {} }, {});
   facade = window.__babelHelperAudioEnhancementBridge;
   try {
+    if (scenario.nativeAdmission) {
+      fiber.child = null;
+      const beforeUnknown = facade.getState();
+      await facade.setEnabled(true);
+      assert.deepEqual(facade.getState(), beforeUnknown, 'Missing committed transcript bindings cannot start source capture');
+      assert.equal(messages.some(message => message.type === 'sources-ready'), false);
+      assert.deepEqual(waves.map(wave => wave.loads), [[], []]);
+      await facade.setEnabled(false);
+      fiber.child = panel;
+      panel.memoizedProps.readOnly = true;
+      const beforeReadonly = facade.getState();
+      await facade.setEnabled(true);
+      assert.deepEqual(facade.getState(), beforeReadonly, 'Native readonly denies work even without a readonly URL flag');
+      assert.equal(messages.some(message => message.type === 'sources-ready'), false);
+      assert.deepEqual(waves.map(wave => wave.loads), [[], []]);
+      await facade.setEnabled(false);
+      panel.memoizedProps.readOnly = false;
+    }
     await facade.setEnabled(true);
     const sources = await captured;
     assert.equal(facade.getState().desiredStrength, 90, 'Every new task starts with the safe 90/10 mix');
@@ -535,6 +590,72 @@ test(`real native split and paired selection remain correct with ${scenario.name
       assert.deepEqual(facade.getState(), beforeInvalid);
       await facade.selectStrength(100);
     }
+    if (scenario.transportIntent) {
+      for (const playIntent of [false, true]) {
+        const entered = Promise.withResolvers(), finishDecode = Promise.withResolvers();
+        const originalMethods = waves.map(wave => ({ play: wave.play, pause: wave.pause }));
+        const annotations = structuredClone(editor.annotations.current);
+        const writes = editor.writes;
+        waves[playIntent ? 0 : 1].beforeDecode = async () => {
+          entered.resolve();
+          await finishDecode.promise;
+        };
+        const switching = facade.selectStrength(playIntent ? 72 : 71);
+        await entered.promise;
+        assert.equal(facade.getState().status, 'switching');
+        for (let index = 0; index < waves.length; index += 1) {
+          const wave = waves[index];
+          wave.setVolume(index);
+          wave.setMuted(index === 0);
+          wave.setPlaybackRate(1.75);
+          wave.setTime(index === 0 ? 0.05 : 1.23);
+          wave.setScroll(67 + index);
+          if (playIntent) await wave.play();
+          else wave.pause(); // Already temporarily paused: the explicit command still wins.
+        }
+        editor.select('lane-1', 'new-region');
+        editor.select('lane-2', null);
+        const selection = structuredClone(editor.selected);
+        finishDecode.resolve();
+        await switching;
+        assert.equal(facade.getState().status, 'ready');
+        assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [playIntent ? 172 : 171, playIntent ? 172 : 171]);
+        assert.deepEqual(waves.map(wave => wave.getVolume()), [0, 1], 'Decode completion cannot restore the previously isolated speaker');
+        assert.deepEqual(waves.map(wave => wave.getMuted()), [true, false]);
+        assert.deepEqual(waves.map(wave => wave.getPlaybackRate()), [1.75, 1.75]);
+        assert.deepEqual(waves.map(wave => wave.getCurrentTime()), [0.05, 1.23]);
+        assert.deepEqual(waves.map(wave => wave.getScroll()), [67, 68]);
+        assert.deepEqual(waves.map(wave => wave.isPlaying()), [playIntent, playIntent]);
+        if (playIntent) assert.deepEqual(waves.map(wave => wave.playingMarker), [172, 172],
+          'Playback started during decode must resume from the new pair, not its old WebAudio buffer nodes');
+        assert.deepEqual(editor.selected, selection, 'New native selection survives source reload without a captured React state replay');
+        assert.equal(editor.writes, writes);
+        assert.deepEqual(editor.annotations.current, annotations);
+        for (let index = 0; index < waves.length; index += 1) {
+          assert.equal(waves[index].play, originalMethods[index].play);
+          assert.equal(waves[index].pause, originalMethods[index].pause);
+          for (const region of waves[index].regions.getRegions()) {
+            assert.equal(region.element.style.filter, region.id === selection[waves[index].id].activeRegionId ? 'brightness(0.8)' : '');
+          }
+        }
+      }
+      const playing = Promise.withResolvers(), finishPlay = Promise.withResolvers();
+      waves[1].beforePlay = () => {
+        waves[1].beforePlay = undefined;
+        playing.resolve();
+        return finishPlay.promise;
+      };
+      let settled = false;
+      const switching = facade.selectStrength(73).then(() => { settled = true; });
+      await playing.promise;
+      assert.equal(settled, false, 'The source transaction must await the actual deferred native play result');
+      assert.equal(facade.getState().status, 'switching');
+      assert.equal(facade.getActiveAudio('during-resume', 'task-native').available, false);
+      for (const wave of waves) wave.pause();
+      finishPlay.resolve();
+      await switching;
+      assert.deepEqual(waves.map(wave => wave.isPlaying()), [false, false], 'A pause during asynchronous resume must not be replayed away');
+    }
     const editable = waves[0].regions.getRegions()[0];
     editable.data.label = 'text edited after toggles';
     editable.start += 0.005;
@@ -585,9 +706,148 @@ test(`real native split and paired selection remain correct with ${scenario.name
       } });
       assert.equal(facade.getState().revision, nextRevision, 'Old-session selection cannot alter the new task');
     }
+    if (scenario.disposal === 'failure') {
+      const failedOwner = facade;
+      const selectedFetch = window.fetch;
+      let foreignCalls = 0;
+      const foreignFetch = async (...args) => { foreignCalls += 1; return selectedFetch(...args); };
+      window.fetch = foreignFetch;
+      expectedFetchAfterDispose = foreignFetch;
+      const retained = facade.getActiveAudio('retained-before-dispose', 'task-native');
+      waves[1].failAllOriginal = true;
+      let replayQueued = false, replayCompleted = false;
+      const stopReplayWatch = waves[0].on('load', url => {
+        if (!url || replayQueued) return;
+        replayQueued = true;
+        void waves[1].loadBlob(new Blob([sourceWav(999)])).then(() => { replayCompleted = true; });
+      });
+      const beforeDrain = publications.length;
+      await facade.dispose();
+      stopReplayWatch();
+      assert.equal(replayQueued, true, 'A real native load event enqueues a renderer replay during URL fallback');
+      assert.equal(replayCompleted, true, 'Disposal drains replays queued during fallback before acknowledging completion');
+      for (const wave of waves) assert.equal(wave.regions.addRegion, NativeRegionPluginFixture.prototype.addRegion,
+        'Failed restoration releases every temporary region wrapper before retaining its error owner');
+      assert.equal(window.__babelHelperAudioEnhancementBridge, failedOwner);
+      assert.equal(enhancementProviders, 1, 'Failed restoration retains its owner and Original resources');
+      assert.ok(foreignCalls > 0, 'Original URL restoration traverses a foreign wrapper without waiting on its own drain');
+      assert.equal(readAudioEnhancementState().status, 'error');
+      assert.equal(readAudioEnhancementState().desiredStrength, 0);
+      assert.equal(readAudioEnhancementState().strength, retained.strength, 'Failure cannot claim Original is ready');
+      const drainStates = publications.slice(beforeDrain);
+      assert.ok(drainStates.slice(0, -1).every(state => state.status === 'switching' && state.desiredStrength === 0),
+        'Intermediate rollback attempts remain pending until the entire restoration drain fails');
+      assert.equal(drainStates.at(-1).status, 'error');
+      assert.deepEqual(facade.getActiveAudio('retained-original', 'task-native', 'original').tracks.map(track => track.bytes),
+        [sourceWav(100), sourceWav(100)]);
+      bridge.initAudioEnhancementBridge();
+      assert.equal(window.__babelHelperAudioEnhancementBridge, failedOwner, 'A duplicate injection cannot replace a failed restoration owner');
+      const retrySources = Promise.withResolvers();
+      onSources = retrySources.resolve;
+      waves[1].failAllOriginal = false;
+      await facade.setEnabled(true);
+      await retrySources.promise;
+      facade = window.__babelHelperAudioEnhancementBridge;
+      assert.notEqual(facade, failedOwner);
+      assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [100, 100]);
+      const newState = attributes.get('data-babel-audio-enhancement');
+      const newRevision = window.__babelHelperAudioEnhancementRevision;
+      await failedOwner.dispose();
+      assert.equal(window.__babelHelperAudioEnhancementBridge, facade);
+      assert.equal(attributes.get('data-babel-audio-enhancement'), newState);
+      assert.equal(window.__babelHelperAudioEnhancementRevision, newRevision);
+    }
     const finalAnnotations = structuredClone(editor.annotations.current);
     const finalWrites = editor.writes;
-    await facade.dispose();
+    if (scenario.disposal === 'deferred') {
+      const entered = Promise.withResolvers(), releaseLoad = Promise.withResolvers();
+      const secondEntered = Promise.withResolvers(), releaseSecond = Promise.withResolvers();
+      waves[0].beforeDecode = async marker => {
+        assert.equal(marker, 100);
+        entered.resolve();
+        await releaseLoad.promise;
+      };
+      waves[1].beforeDecode = async marker => {
+        assert.equal(marker, 100);
+        secondEntered.resolve();
+        await releaseSecond.promise;
+      };
+      window.location.href = 'https://babel.test/transcription?reviewActionId=task-native&displayFeedback=true';
+      panel.memoizedProps.readOnly = true;
+      pollTick();
+      await entered.promise;
+      assert.equal(readAudioEnhancementState().status, 'switching',
+        'Confirmed native readonly starts Original restoration without waiting for UI disposal');
+      const retiring = facade;
+      const dispatchEvent = window.dispatchEvent;
+      let announced = false, reenteredDisposal;
+      window.dispatchEvent = event => {
+        if (!announced && event.detail?.status === 'switching') {
+          announced = true;
+          reenteredDisposal = facade.dispose();
+        }
+      };
+      const disposal = facade.dispose();
+      window.dispatchEvent = dispatchEvent;
+      assert.equal(reenteredDisposal, disposal, 'Synchronous state observers share the same disposal fence');
+      assert.equal(window.__babelHelperAudioEnhancementBridge, retiring);
+      assert.equal(enhancementProviders, 1);
+      assert.equal(readAudioEnhancementState().status, 'switching');
+      assert.equal(readAudioEnhancementState().desiredStrength, 0);
+      assert.equal(readAudioEnhancementState().strength, 100);
+      assert.equal(facade.getActiveAudio('during-dispose', 'task-native').available, false);
+      bridge.initAudioEnhancementBridge();
+      assert.equal(window.__babelHelperAudioEnhancementBridge, retiring, 'A new injection remains fenced behind the real native drain');
+      assert.equal(enhancementProviders, 1);
+      for (const requestId of ['disable-one', 'disable-two']) {
+        for (const listener of [...listeners.get('message')]) listener({ source: window, origin: window.location.origin, data: {
+          source: stream.AUDIO_ENHANCEMENT_COMMAND_SOURCE, type: 'dispose', requestId
+        } });
+      }
+      for (const listener of [...listeners.get('message')]) listener({ source: window, origin: window.location.origin, data: {
+        type: AUDIO_ENHANCEMENT_ACTIVE_REQUEST, version: AUDIO_ENHANCEMENT_PROTOCOL_VERSION,
+        requestId: 'pending-consumer', taskId: 'task-native'
+      } });
+      await Promise.resolve();
+      assert.equal(messages.find(message => message.requestId === 'pending-consumer').available, false);
+      assert.equal(messages.filter(message => message.type === 'disabled').length, 0, 'No acknowledgement before Original decoding finishes');
+      releaseLoad.resolve();
+      await secondEntered.promise;
+      assert.equal(waves[0].getDecodedData().marker, 100);
+      assert.equal(waves[1].getDecodedData(), null);
+      assert.equal(readAudioEnhancementState().status, 'switching');
+      assert.equal(readAudioEnhancementState().desiredStrength, 0);
+      assert.equal(facade.getActiveAudio('half-restored', 'task-native').available, false);
+      assert.equal(messages.filter(message => message.type === 'disabled').length, 0, 'The second Original buffer must finish too');
+      releaseSecond.resolve();
+      await disposal;
+      await Promise.resolve();
+      assert.deepEqual(messages.filter(message => message.type === 'disabled').map(message => message.requestId).sort(),
+        ['disable-one', 'disable-two']);
+    } else {
+      if (scenario.nativeAdmission) {
+        const owner = window.__babelHelperAudioEnhancementBridge;
+        const before = facade.getState();
+        const beforeLoads = waves.map(wave => wave.loads.length);
+        const sourcesCount = messages.filter(message => message.type === 'sources-ready').length;
+        fiber.child = null;
+        assert.equal(facade.getActiveAudio('unknown-native-view', 'task-native').available, false);
+        pollTick();
+        assert.equal(window.__babelHelperAudioEnhancementBridge, owner);
+        assert.equal(enhancementProviders, 1);
+        assert.deepEqual(waves.map(wave => wave.loads.length), beforeLoads, 'Unknown metadata cannot start new source work');
+        assert.deepEqual(facade.getState(), before, 'Transient missing metadata retains the enabled owner and selected pair');
+        fiber.child = panel;
+        pollTick();
+        assert.equal(facade.getActiveAudio('view-returned', 'task-native').available, true,
+          'The still-enabled preference recovers without a manual toggle');
+        assert.equal(messages.filter(message => message.type === 'sources-ready').length, sourcesCount,
+          'Returning metadata reuses retained Originals instead of recapturing Enhanced buffers');
+        fiber.child = null;
+      }
+      await facade.dispose();
+      if (scenario.nativeAdmission) fiber.child = panel;
+    }
     assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [100, 100]);
     assert.equal(editor.writes, finalWrites, 'Teardown restores Original without annotation mutations');
     assert.deepEqual(editor.annotations.current, finalAnnotations);
@@ -595,7 +855,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
     assert.equal(window.__babelHelperAudioEnhancementRevision, undefined);
     assert.equal(attributes.has('data-babel-audio-enhancement'), false);
     assert.equal(enhancementProviders, 0);
-    assert.equal(window.fetch, nativeFetch);
+    assert.equal(window.fetch, expectedFetchAfterDispose);
     await facade.setEnabled(true);
     assert.equal(enhancementProviders, 0, 'A retained revoked facade cannot reactivate');
     for (const wave of waves) {
@@ -603,7 +863,27 @@ test(`real native split and paired selection remain correct with ${scenario.name
       assert.equal(wave.loadBlob, NativeWaveFixture.prototype.loadBlob);
       assert.equal(wave.regions.addRegion, NativeRegionPluginFixture.prototype.addRegion);
     }
+    if (scenario.disposal === 'deferred') {
+      window.location.href = 'https://babel.test/transcription?reviewActionId=task-native';
+      panel.memoizedProps.readOnly = false;
+    }
     await splitCurrent();
+    if (scenario.disposal === 'deferred') {
+      const retired = facade;
+      const nextSources = Promise.withResolvers();
+      onSources = nextSources.resolve;
+      bridge.initAudioEnhancementBridge();
+      facade = window.__babelHelperAudioEnhancementBridge;
+      await facade.setEnabled(true);
+      await nextSources.promise;
+      const nextState = attributes.get('data-babel-audio-enhancement');
+      const nextRevision = window.__babelHelperAudioEnhancementRevision;
+      await retired.dispose();
+      assert.equal(window.__babelHelperAudioEnhancementBridge, facade);
+      assert.equal(attributes.get('data-babel-audio-enhancement'), nextState, 'An old disposal cannot clear its successor state');
+      assert.equal(window.__babelHelperAudioEnhancementRevision, nextRevision);
+      assert.equal(enhancementProviders, 1);
+    }
   } finally {
     await facade.dispose();
   }

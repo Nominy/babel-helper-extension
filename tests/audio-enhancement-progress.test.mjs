@@ -200,11 +200,14 @@ class TestElement {
   }
 }
 
-async function featureHarness(t, { deferredInjection = false } = {}) {
+async function featureHarness(t, { deferredInjection = false, deferredDisposal = false } = {}) {
   const harness = brokerHarness(t);
   const listeners = new Map();
   const posts = [];
   const toolbar = new TestElement(harness.document);
+  const playbackButton = new TestElement(harness.document, 'button');
+  playbackButton.setAttribute('aria-label', 'Play all tracks');
+  toolbar.appendChild(playbackButton);
   const scripts = [];
   const tabStorage = new Map();
   harness.window.sessionStorage = {
@@ -220,11 +223,12 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
     return element;
   };
   harness.document.body = new TestElement(harness.document, 'body');
+  harness.document.body.appendChild(toolbar);
   const documentEvents = new TestElement(harness.document);
   harness.document.addEventListener = documentEvents.addEventListener.bind(documentEvents);
   harness.document.removeEventListener = documentEvents.removeEventListener.bind(documentEvents);
   harness.document.querySelector = selector => selector === '#babel-shared-components-style' ? {}
-    : selector === '#babel-gold-drafting-magic-button' ? { parentElement: toolbar } : null;
+    : selector === '[aria-label="Play all tracks"], [aria-label="Pause all tracks"]' ? playbackButton : null;
   harness.window.location.href = 'https://babel.test/transcription?reviewActionId=task-1';
   harness.document.documentElement.appendChild = child => {
     scripts.push(child);
@@ -235,7 +239,7 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
   const deliver = data => { for (const listener of [...(listeners.get('message') ?? [])]) listener({ source: harness.window, origin: harness.window.location.origin, data }); };
   harness.window.postMessage = data => {
     posts.push(data);
-    if (data.type === 'dispose') queueMicrotask(() => deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: data.requestId }));
+    if (data.type === 'dispose' && !deferredDisposal) queueMicrotask(() => deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: data.requestId }));
   };
   installGlobals(t, { MutationObserver: class { observe() {} disconnect() { observerDisconnects += 1; } } });
   let feature = featureModule.createAudioEnhancementFeature();
@@ -270,6 +274,8 @@ async function featureHarness(t, { deferredInjection = false } = {}) {
 test('enabled enhancement initializes its toolbar and bridge without another extension', async t => {
   const harness = await featureHarness(t);
   assert.equal(harness.panel.parentElement !== null, true);
+  assert.equal(harness.panel.isConnected, true);
+  assert.equal(harness.document.querySelector('#babel-gold-drafting-magic-button'), null);
   assert.equal(harness.node('[data-strength]').value, '10');
   assert.equal(harness.node('[data-strength]').getAttribute('aria-valuetext'), '90% Enhanced, 10% Original');
   assert.equal(harness.scripts.length, 1);
@@ -317,6 +323,49 @@ test('disable during injection removes the script and cannot enable a late bridg
   assert.equal(harness.posts.some(post => post.type === 'enable'), false);
   assert.equal(harness.scripts[0].parentElement, null);
   assert.equal(harness.panel.parentElement, null);
+  await harness.feature.stop();
+});
+
+test('rapid re-enable waits for correlated native disposal acknowledgement, not elapsed time', async t => {
+  const harness = await featureHarness(t, { deferredDisposal: true });
+  const disabling = harness.feature.deactivate();
+  assert.equal(harness.feature.deactivate(), disabling, 'concurrent disables share one drain');
+  const request = harness.posts.find(post => post.type === 'dispose');
+  let drained = false;
+  void disabling.then(() => { drained = true; });
+  const enabling = harness.feature.activate();
+  harness.timer.advance(300001);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(drained, false, 'the former five-minute timer cannot release a native writer');
+  assert.equal(harness.scripts.length, 1);
+  assert.equal(harness.posts.filter(post => post.type === 'enable').length, 1);
+  harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: 'stale-request' });
+  await Promise.resolve();
+  assert.equal(drained, false);
+  harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: request.requestId });
+  await Promise.all([disabling, enabling]);
+  assert.equal(drained, true);
+  assert.equal(harness.scripts.length, 2);
+  assert.equal(harness.posts.filter(post => post.type === 'enable').length, 2);
+  assert.equal(harness.listeners.get('message')?.size, 1);
+  const stopping = harness.feature.stop();
+  const finalRequest = harness.posts.filter(post => post.type === 'dispose').at(-1);
+  harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'disabled', requestId: finalRequest.requestId });
+  await stopping;
+  assert.equal(harness.listeners.get('message')?.size, 0);
+});
+
+test('cancelled pending injection settles without inventing a native disposal acknowledgement', async t => {
+  const harness = await featureHarness(t, { deferredInjection: true, deferredDisposal: true });
+  const disabling = harness.feature.deactivate();
+  await harness.activation;
+  harness.timer.advance(3000);
+  await disabling;
+  harness.scripts[0].onload();
+  await Promise.resolve();
+  assert.equal(harness.posts.some(post => post.type === 'enable'), false);
+  assert.equal(harness.listeners.get('message')?.size, 0);
   await harness.feature.stop();
 });
 

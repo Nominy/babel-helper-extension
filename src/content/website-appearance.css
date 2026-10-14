@@ -13,27 +13,23 @@
  * transcript subtree for every rule that guards it and a single palette
  * variable invalidates style for the whole document, so the subtree walk was
  * being paid hundreds of times per drag. The controller stamps 'transcript' on
- * the main holding a row textarea and 'transcript-table' on a table inside
- * that main holding one, which is what the two :has() gates used to spell; a
- * stamped table therefore already implies the stamped main, and the html
- * attribute gate already implies body, so neither ancestor step is repeated.
+ * the native main and 'transcript-turns' on its scroll container, including
+ * empty and readonly tasks.
  */
 
-/* Text group — the only non-colour controls. The dashboard's transcript
- * textarea and dense table text use important font utilities, hence the two
- * matching important declarations here. */
+/* Text group — native turn text and compact turn controls use separate sizes. */
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-text='enabled']
   :where([data-babel-helper-scope='transcript'])
-  :where(textarea[placeholder='What was said…'], textarea.w-full) {
+  :where([data-slate-editor='true'], [role='textbox'][aria-label='Edit turn text'], section[data-annotation-id] [data-offset]) {
   font-size: var(--bh-text-size) !important;
   line-height: calc(4 / 3) !important;
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-text='enabled']
   :where(
-    [data-babel-helper-scope='transcript'] .text-xs:not(textarea),
-    table[data-babel-helper-scope='transcript-table'] td,
-    table[data-babel-helper-scope='transcript-table'] tr
+    [data-babel-helper-scope='transcript'] .text-xs,
+    [data-babel-helper-scope='transcript-turns'] select,
+    [data-babel-helper-scope='transcript-turns'] button
   ) {
   font-size: var(--bh-table-text-size) !important;
   line-height: calc(4 / 3) !important;
@@ -147,47 +143,23 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme=
   border-left-color: var(--bh-success);
 }
 
-/* Transcript table. Default and hover rows replace the hardcoded neutral
- * utility; active and selected rows claim both colours so dark palettes remain
- * readable instead of inheriting the dashboard's unchanged dark foreground. */
+/* Native transcript turns. Keep active and hover surfaces legible without
+ * touching the editor layout or relying on removed table utilities. */
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table']) {
+  :where([data-babel-helper-scope='transcript-turns']) {
   background-color: var(--bh-surface);
   border-color: var(--bh-border);
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table'])
-  :where(thead, thead th) {
-  background-color: var(--bh-surface-raised);
-  color: var(--bh-muted);
-  border-color: var(--bh-border);
-}
-
-html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table'])
-  :where(td) {
-  background-color: transparent;
-  border-color: var(--bh-border);
-}
-
-html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table'])
-  :where(tbody > tr):where(
-    :not(:hover):not([aria-selected='true']):not([data-state='selected']):not(
-        [class~='bg-neutral-100'][class~='ring-neutral-300']
-      ):not([class~='bg-green-50'][class~='ring-green-300'])
-  ) {
+  :where([data-babel-helper-scope='transcript-turns'])
+  :where(section[data-annotation-id]:not(:hover):not(.border-orange-300)) {
   background-color: var(--bh-surface);
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table'])
-  :where(tbody > tr:hover):where(
-    :not([aria-selected='true']):not([data-state='selected']):not(
-        [class~='bg-neutral-100'][class~='ring-neutral-300']
-      ):not([class~='bg-green-50'][class~='ring-green-300'])
-  ) {
+  :where([data-babel-helper-scope='transcript-turns'])
+  :where(section[data-annotation-id]:hover:not(.border-orange-300)) {
   background-color: var(--bh-surface-hover);
 }
 
@@ -211,13 +183,8 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme=
   background-color: var(--bh-success-tint);
 }
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
-  :where(table[data-babel-helper-scope='transcript-table'])
-  :where(
-    tbody > tr[aria-selected='true'],
-    tbody > tr[data-state='selected'],
-    tbody > tr[class~='bg-neutral-100'][class~='ring-neutral-300'],
-    tbody > tr[class~='bg-green-50'][class~='ring-green-300']
-  ) {
+  :where([data-babel-helper-scope='transcript-turns'])
+  :where(section[data-annotation-id].border-orange-300) {
   background-color: var(--bh-active-row);
   color: var(--bh-active-row-text);
   --tw-ring-color: var(--bh-border);
@@ -380,21 +347,21 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme=
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where(
-    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='1'][data-babel-helper-speaker-label]
+    select[data-babel-helper-lane-index][data-babel-helper-lane-slot='1'][data-babel-helper-speaker-label]
   ) {
   color: var(--bh-speaker-1) !important;
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where(
-    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='2'][data-babel-helper-speaker-label]
+    select[data-babel-helper-lane-index][data-babel-helper-lane-slot='2'][data-babel-helper-speaker-label]
   ) {
   color: var(--bh-speaker-2) !important;
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where(
-    td[data-babel-helper-lane-index][data-babel-helper-lane-slot='3'][data-babel-helper-speaker-label]
+    select[data-babel-helper-lane-index][data-babel-helper-lane-slot='3'][data-babel-helper-speaker-label]
   ) {
   color: var(--bh-speaker-3) !important;
 }

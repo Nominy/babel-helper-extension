@@ -245,7 +245,7 @@ async function importBundledBridge(relativeEntry) {
     logLevel: 'silent'
   });
   try {
-    await import(`${pathToFileURL(outfile).href}?${Math.random()}`);
+    return await import(`${pathToFileURL(outfile).href}?${Math.random()}`);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -400,6 +400,8 @@ async function createAutocompleteRestoreHarness(t) {
       const raw = bridge.implementation;
       raw.state.suggestions = [{ label: 'emphasis', insertText: '<emphasis> </emphasis>', type: 'style' }];
       raw.contextState.current = {
+        owner: textarea,
+        route: window.location.pathname + window.location.search,
         context: { type: 'style', open: '<', close: '>' },
         partial: '',
         triggerIndex: 0,
@@ -497,4 +499,78 @@ test('autocomplete ignores its queued selection events and repairs a deferred co
   assert.equal(textarea.selectionStart, expectedCaret);
   assert.equal(textarea.selectionEnd, expectedCaret);
   assert.equal(frames.size, 0);
+});
+
+for (const [entry, factory, toggle] of [
+  ['src/features/quick-region-autocomplete-feature.ts', 'createQuickRegionAutocompleteFeature', 'babel-helper-quick-region-autocomplete-toggle'],
+  ['src/features/custom-linter/feature.ts', 'createCustomLinterFeature', 'babel-helper-linter-bridge-toggle']
+]) {
+  test(`${factory}: disabling during script load cannot resurrect the feature`, async () => {
+    const { window, document } = installPageEnvironment();
+    globalThis.chrome = { runtime: { getURL: (value) => `chrome-extension://test/${value}` } };
+    const module = await importBundledBridge(entry);
+    const feature = module[factory]();
+    const context = { helper: { settings: {} }, logger: { warn() {} } };
+    const toggles = [];
+    window.addEventListener(toggle, (event) => toggles.push(event.detail.enabled));
+    feature.start?.(context);
+    const loading = feature.onLoaded(context);
+    const script = document.documentElement.children.at(-1);
+    assert.equal(typeof script.onload, 'function', 'the actual injection is still pending');
+    feature.deactivate(context);
+    script.onload();
+    await loading;
+    assert.deepEqual(toggles, [false]);
+    await feature.activate(context, 'settings');
+    assert.deepEqual(toggles, [false, true]);
+    feature.stop(context);
+    assert.deepEqual(toggles, [false, true, false]);
+  });
+}
+
+test('quick autocomplete refuses a stale suggestion after text, task, ownership, or readonly changes', async (t) => {
+  const { window, document } = installPageEnvironment();
+  await importBundledBridge('src/content/quick-region-autocomplete-bridge.ts');
+  const bridge = window.__babelHelperQuickRegionAutocompleteBridge;
+  t.after(() => bridge.dispose());
+  const owner = document.createElement('textarea');
+  const other = document.createElement('textarea');
+  document.body.appendChild(owner);
+  document.body.appendChild(other);
+  const raw = bridge.implementation;
+  for (const boundary of ['text', 'route', 'owner', 'readonly', 'disconnected']) {
+    owner.isConnected = true;
+    owner.readOnly = false;
+    owner.value = other.value = '<em';
+    window.location.search = '?id=first';
+    raw.state.suggestions = [{ label: 'emphasis', insertText: '<emphasis> </emphasis>', type: 'style' }];
+    raw.contextState.current = {
+      owner, route: window.location.pathname + window.location.search,
+      context: { type: 'style', open: '<', close: '>' },
+      fullText: owner.value, triggerIndex: 0, cursorPosition: owner.value.length, wrapSelection: null
+    };
+    if (boundary === 'text') owner.value = 'newer text';
+    if (boundary === 'route') window.location.search = '?id=second';
+    if (boundary === 'readonly') owner.readOnly = true;
+    if (boundary === 'disconnected') owner.isConnected = false;
+    const target = boundary === 'owner' ? other : owner;
+    const before = target.value;
+    assert.equal(raw.insertSuggestion(target, 0), false, boundary);
+    assert.equal(target.value, before, boundary);
+  }
+});
+
+test('extended diff reads the native comparison switch, never reviewer visibility or stale body text', async () => {
+  const { document } = installPageEnvironment();
+  const { isDiffViewEnabled } = await importBundledBridge('src/features/extended-diff-view-feature.ts');
+  const reviewers = { getAttribute: () => 'true' };
+  let checked = 'false';
+  const comparison = { getAttribute: () => checked };
+  document.body.innerText = 'Show Reviewers Compare: L1';
+  document.querySelector = (selector) => selector.includes('#diff-mode') ? comparison : reviewers;
+  assert.equal(isDiffViewEnabled(), false);
+  checked = 'true';
+  assert.equal(isDiffViewEnabled(), true);
+  document.querySelector = (selector) => selector === '[role=\"switch\"]' ? reviewers : null;
+  assert.equal(isDiffViewEnabled(), false, 'unmounted task controls do not inherit another switch');
 });

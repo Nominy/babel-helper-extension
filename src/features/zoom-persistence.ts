@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { loadWorkflowDefaults, updateWorkflowDefaults, normalizeZoomValue } from '../core/workflow-defaults';
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 'site'>) {
   const ZOOM_PERSIST_DEBOUNCE_MS = 240;
@@ -145,29 +146,10 @@ export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 
   }
 
 
-  function getZoomValueCallbacks(slider) {
-    if (!(slider instanceof HTMLElement)) {
-      return [];
-    }
-
-    const callbacks = [];
-    let node = api.site.getReactFiber(slider);
-    let depth = 0;
-    while (node && typeof node === 'object' && depth < 40) {
-      const props = node.memoizedProps;
-      if (props && typeof props === 'object' && typeof props.onValueChange === 'function') {
-        callbacks.push(props.onValueChange);
-      }
-
-      node = node.return;
-      depth += 1;
-    }
-
-    return callbacks;
-  }
 
 
   async function applyZoomValueToSlider(value) {
+    const isCurrentTask = captureL0TaskGuard();
     const slider = api.site.getZoomSliderElement();
     if (!(slider instanceof HTMLElement)) {
       return false;
@@ -191,27 +173,13 @@ export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 
     }
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      let invoked = false;
+      if (!isCurrentTask() || !slider.isConnected) return false;
       const bridgeResult = await api.site.callSelectionBridge('zoom-set', {
         value: target
       });
-      if (bridgeResult && bridgeResult.ok) {
-        invoked = true;
-      }
+      if (!isCurrentTask() || !slider.isConnected) return false;
 
-      if (!invoked) {
-        const callbacks = getZoomValueCallbacks(slider);
-        for (const callback of callbacks) {
-          try {
-            callback([target]);
-            invoked = true;
-          } catch (_error) {
-            // Ignore callback shape mismatches; additional callbacks may still apply.
-          }
-        }
-      }
-
-      if (!invoked) {
+      if (!bridgeResult?.ok) {
         return false;
       }
 
@@ -289,6 +257,7 @@ export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 
 
 
   helper.applySavedZoomDefault = async function applySavedZoomDefault() {
+    const isCurrentTask = captureL0TaskGuard();
     if (!api.site.isFeatureEnabled('timelineZoomDefaults')) {
       return false;
     }
@@ -296,13 +265,14 @@ export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 
     const slider =
       api.site.getZoomSliderElement() ||
       (await helper.waitFor(() => api.site.getZoomSliderElement(), 1000, 50));
-    if (!(slider instanceof HTMLElement)) {
+    if (!(slider instanceof HTMLElement) || !isCurrentTask()) {
       return false;
     }
 
     helper.bindZoomPersistence();
 
     const defaults = await ensureZoomPersistenceDefaults();
+    if (!isCurrentTask() || !slider.isConnected) return false;
     const targetValue = normalizeZoomValue(defaults.lastZoomValue);
     if (!Number.isFinite(targetValue)) {
       return false;
@@ -321,6 +291,7 @@ export function registerZoomPersistence(helper: any, api: Pick<TimelineModules, 
       // apply instead of leaving the saved default unapplied.
       const ready = await api.site.callSelectionBridge('zoom-ready', { timeoutMs: 30000 });
       if (
+        !isCurrentTask() ||
         ready?.reason === 'missing-slider' ||
         !slider.isConnected ||
         !api.site.isFeatureEnabled('timelineZoomDefaults')

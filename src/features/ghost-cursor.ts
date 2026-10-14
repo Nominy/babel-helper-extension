@@ -18,6 +18,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   let activeTaskGuard: (() => boolean) | null = null;
   let activeReviewActionId = '';
   let releasePendingTick: (() => void) | null = null;
+  let renderedRow: HTMLElement | null = null;
+  let renderedTop: number | null = null;
 
   function invalidatePlaybackContext() {
     playbackGeneration += 1;
@@ -105,7 +107,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   // ---------------------------------------------------------------------------
-  // Ghost cursor: a live-updating orange bar on the blurred textarea row that
+  // Ghost cursor: a live-updating orange bar on the blurred native turn that
   // shows where the cursor WOULD land if the user pressed Escape right now.
   // Gated behind proportionalCursorRestore.
   // ---------------------------------------------------------------------------
@@ -114,110 +116,11 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   // ~15 fps
   const GHOST_CURSOR_ATTR = 'data-babel-helper-ghost-cursor';
 
-  const GHOST_CURSOR_TOGGLE_LANES = ['Speaker 1', 'Speaker 2'];
 
 
-  /** Copied style properties for the mirror-div caret measurement. */
-  const MIRROR_STYLE_PROPS = [
-    'fontFamily', 'fontSize', 'fontWeight', 'fontStyle',
-    'letterSpacing', 'textTransform', 'wordSpacing', 'textIndent',
-    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
-    'lineHeight', 'whiteSpace', 'wordWrap', 'overflowWrap', 'direction',
-    'boxSizing', 'tabSize', 'textAlign'
-  ];
 
-
-  /**
-   * Compute the viewport-pixel coordinates of a character index inside a
-   * textarea using the mirror-div technique.  Returns { top, left, height }
-   * where height is the line-height so the ghost cursor bar can be sized.
-   *
-   * The mirror is overlaid exactly on top of the textarea (via position:fixed
-   * matching the textarea's border-box rect) so the marker span's
-   * getBoundingClientRect() gives direct viewport coordinates.  We only
-   * compensate for textarea scroll offsets.
-   *
-   * The marker span is zero-width (\u200b) so its bounding rect is a single
-   * point at the caret insertion position.  The remaining text after the
-   * caret is placed in a *separate* text node so line-wrap decisions for the
-   * text before the caret remain correct, but the marker rect is not
-   * inflated by wrapped continuation text.
-   */
-  function getCaretPixelPosition(textarea, charIndex) {
-    const mirror = document.createElement('div');
-    try {
-      const computed = window.getComputedStyle(textarea);
-      const textareaRect = textarea.getBoundingClientRect();
-
-      // Position the mirror exactly over the textarea's border box so that
-      // all internal offsets (padding, line wrapping) match pixel-for-pixel.
-      mirror.style.position = 'fixed';
-      mirror.style.top = `${textareaRect.top}px`;
-      mirror.style.left = `${textareaRect.left}px`;
-      mirror.style.visibility = 'hidden';
-      mirror.style.overflow = 'hidden';
-      mirror.style.pointerEvents = 'none';
-
-      for (const prop of MIRROR_STYLE_PROPS) {
-        mirror.style[prop] = computed[prop];
-      }
-
-      // Textarea content wraps like pre-wrap.  The computed style of a
-      // <textarea> may not report this directly, so force it after the loop
-      // to ensure the mirror wraps identically.
-      mirror.style.whiteSpace = 'pre-wrap';
-      mirror.style.wordWrap = 'break-word';
-      mirror.style.overflowWrap = 'break-word';
-
-      // Always size to the textarea's border-box dimensions so wrapping is
-      // identical regardless of the textarea's box-sizing mode.
-      mirror.style.width = `${textarea.offsetWidth}px`;
-      mirror.style.height = `${textarea.offsetHeight}px`;
-      mirror.style.boxSizing = 'border-box';
-
-      const beforeCaret = textarea.value.substring(0, charIndex);
-      const afterCaret = textarea.value.substring(charIndex);
-
-      // 1. Text before the caret — plain text node.
-      mirror.appendChild(document.createTextNode(beforeCaret));
-
-      // 2. Zero-width marker span at the caret position.  Using a single
-      //    zero-width space keeps the span on the same visual line as the
-      //    preceding text and gives getBoundingClientRect() a tight rect
-      //    at the insertion point.
-      const marker = document.createElement('span');
-      marker.textContent = '\u200b';
-      mirror.appendChild(marker);
-
-      // 3. Remaining text after the caret in a *separate* text node.  This
-      //    participates in layout (influencing where the line before the
-      //    caret wraps) without inflating the marker span's bounding rect.
-      if (afterCaret) {
-        mirror.appendChild(document.createTextNode(afterCaret));
-      }
-
-      document.body.appendChild(mirror);
-
-      const markerRect = marker.getBoundingClientRect();
-      const lineHeight = parseFloat(computed.lineHeight) || markerRect.height || 16;
-
-      // Because the mirror is positioned to match the textarea border box,
-      // the marker rect is already in viewport coordinates.  Subtract the
-      // textarea's scroll offsets so the cursor tracks visible content.
-      const top = markerRect.top - textarea.scrollTop;
-      const left = markerRect.left - textarea.scrollLeft;
-
-      return { top, left, height: lineHeight };
-    } finally {
-      if (mirror.parentNode) {
-        mirror.parentNode.removeChild(mirror);
-      }
-    }
-  }
-
-  function getCaretScrollParent(textarea) {
-    let parent = textarea.parentElement;
+  function getCaretScrollParent(editor) {
+    let parent = editor.element?.parentElement;
     while (parent) {
       const overflow = getComputedStyle(parent).overflowY;
       if ((overflow === 'auto' || overflow === 'scroll') &&
@@ -228,11 +131,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
   function scrollToCaret(row, offset) {
-    const textarea = helper.getRowTextarea(row);
-    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    const textarea = helper.getRowEditor(row);
+    if (!textarea) return;
     const scrollParent = getCaretScrollParent(textarea);
     if (!scrollParent) return;
-    const caret = getCaretPixelPosition(textarea, offset);
+    const caret = textarea.getCaretRect(offset);
+    if (!caret) return;
     const viewport = scrollParent.getBoundingClientRect();
     scrollParent.scrollTop += caret.top + caret.height / 2 - (viewport.top + viewport.bottom) / 2;
   }
@@ -263,7 +167,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     const rawOffset = Math.round(ratio * text.length);
     const snapped = snapToWordBoundary(text, rawOffset);
 
-    const floor = typeof baseline === 'number' && baseline >= 0 ? baseline : 0;
+    const floor = typeof baseline === 'number' && baseline >= 0 ? Math.min(text.length, baseline) : 0;
     const final = Math.max(floor, snapped);
     return { offset: final, clamped: final !== snapped };
   }
@@ -277,12 +181,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     }
 
     const identity = helper.getRowIdentity(row) || {};
-    const speakerCell = row.children[1] instanceof HTMLElement
-      ? helper.normalizeText(row.children[1])
-      : '';
     return resolveL0TimingTrack(
       index,
-      buildL0TimingLaneAliases(identity, [api.time.getRowSpeakerKeySafe(row), speakerCell])
+      buildL0TimingLaneAliases(identity, [api.time.getRowSpeakerKeySafe(row)])
     );
   }
 
@@ -292,7 +193,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     if (track) {
       const timedOffset = computeL0TimedCharacterOffset(text, track.tokens, timeRange, currentTime);
       if (timedOffset !== null) {
-        const floor = typeof baseline === 'number' && baseline >= 0 ? baseline : 0;
+        const floor = typeof baseline === 'number' && baseline >= 0 ? Math.min(text.length, baseline) : 0;
         const final = Math.max(floor, timedOffset);
         return { offset: final, clamped: final !== timedOffset };
       }
@@ -304,8 +205,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   helper.getL0TimestampForRowOffset = function getL0TimestampForRowOffset(row, offset) {
     const track = getL0TimingTrackForRow(row);
     const range = api.time.getRowTimeRange(row);
-    const textarea = helper.getRowTextarea(row);
-    if (!track || !range || !(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getRowEditor(row);
+    if (!track || !range || !textarea) {
       return null;
     }
     return computeL0TimestampAtCharacterOffset(
@@ -368,7 +269,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     // a narrow bar at fractional left/top positions.
     el.style.left = '0px';
     el.style.top = '0px';
-    el.style.transition = `transform ${appearance.transitionMs}ms linear`;
+    // Finish within one sample, preserving the relative motion presets without
+    // perpetually retargeting a 220ms animation every 66ms.
+    el.style.transition = `transform ${appearance.transitionMs / 220 * GHOST_CURSOR_INTERVAL_MS}ms linear`;
     el.style.willChange = 'transform, background-position';
     if (clamped) {
       el.style.background = 'rgba(156, 163, 175, 0.6)';
@@ -409,6 +312,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
   function stopGhostCursor(discardPlayback = false) {
     cursorGeneration += 1;
+    renderedRow = null;
+    renderedTop = null;
     window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
     releasePendingTick = null;
     if (discardPlayback) {
@@ -599,6 +504,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     if (!normalized) {
       return '';
     }
+    const track = helper.getEditorSnapshot?.()?.tracks?.find((entry) =>
+      entry.id === label || api.speaker.normalizeSpeakerLabel(entry.label) === normalized);
+    if (track?.id) return track.id;
 
     for (const cachedEntry of api.time.getRowTimeEntries()) {
       const entry = api.time.resolveRowTimeEntry(cachedEntry);
@@ -608,10 +516,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
       const identity = helper.getRowIdentity(entry.row) || {};
       const speakerKey = api.time.getRowSpeakerKeySafe(entry.row);
-      const speakerCell = entry.row.children[1] instanceof HTMLElement
-        ? helper.normalizeText(entry.row.children[1])
-        : '';
-      const candidates = [speakerKey, identity.trackLabel, speakerCell].filter(Boolean);
+      const candidates = [speakerKey, identity.trackLabel].filter(Boolean);
       if (
         candidates.some((candidate) =>
           candidate === normalized || api.speaker.normalizeSpeakerLabel(candidate) === normalized
@@ -626,18 +531,15 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function getGhostCursorToggleSpeakerKeys() {
-    const keys = [];
-    const seen = new Set();
-    for (const label of GHOST_CURSOR_TOGGLE_LANES) {
-      const key = getSpeakerKeyForGhostToggleLabel(label);
-      if (!key || seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-      keys.push(key);
+    const tracks = helper.getEditorSnapshot?.()?.tracks;
+    if (Array.isArray(tracks) && tracks.length) {
+      return [...new Set(tracks.map((track) => track.id).filter(Boolean))];
     }
-    return keys;
+    return [...new Set(api.time.getRowTimeEntries()
+      .map((cached) => api.time.resolveRowTimeEntry(cached))
+      .filter(Boolean)
+      .map((entry) => api.time.getRowSpeakerKeySafe(entry.row))
+      .filter(Boolean))];
   }
 
 
@@ -734,12 +636,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function rememberFocusedGhostCursorProjection() {
-    const textarea = helper.getActiveRowTextarea();
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getActiveRowEditor();
+    if (!textarea) {
       return null;
     }
 
-    const row = textarea.closest('tr');
+    const row = textarea.row;
     if (!(row instanceof HTMLElement)) {
       return null;
     }
@@ -770,8 +672,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       return null;
     }
 
-    const textarea = helper.getRowTextarea(entry.row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getRowEditor(entry.row);
+    if (!textarea) {
       return null;
     }
 
@@ -802,8 +704,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime) {
+  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey) {
     for (const speakerKey of getGhostCursorToggleSpeakerKeys()) {
+      if (speakerKey === activeSpeakerKey) continue;
       const entry = findGhostCursorProjectionEntryByPlaybackTime(currentTime, speakerKey);
       computeGhostCursorProjectionForEntry(entry, currentTime, blurTime);
     }
@@ -836,28 +739,39 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       return false;
     }
 
-    const textarea = helper.getRowTextarea(projection.row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getRowEditor(projection.row);
+    if (!textarea) {
       return false;
     }
 
     const textLength = (textarea.value || '').length;
     const offset = Math.max(0, Math.min(textLength, Math.round(Number(projection.offset) || 0)));
+    // Read transcript geometry before touching the overlay's styles. Style
+    // invalidation here otherwise forces a synchronous layout in getCaretRect.
+    const pos = textarea.getCaretRect(offset);
+    if (!pos) {
+      if (helper.state.ghostCursorElement) helper.state.ghostCursorElement.style.display = 'none';
+      return false;
+    }
+    const scrollParent = getCaretScrollParent(textarea);
+    const viewport = scrollParent?.getBoundingClientRect();
+    const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    const snapToDevicePixel = (value) => Math.round(value * pixelRatio) / pixelRatio;
     let el = helper.state.ghostCursorElement;
     if (!(el instanceof HTMLElement) || !el.isConnected) {
       el = createGhostCursorElement();
       document.body.appendChild(el);
       helper.state.ghostCursorElement = el;
     }
-
+    const previousOffset = helper.state.ghostCursorOffset;
+    const jump = renderedRow !== projection.row ||
+      el.style.display === 'none' || offset < previousOffset || renderedTop !== pos.top;
     applyGhostCursorAppearance(el, projection.clamped);
-    const pos = getCaretPixelPosition(textarea, offset);
-    const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
-    const snapToDevicePixel = (value) => Math.round(value * pixelRatio) / pixelRatio;
-    const scrollParent = getCaretScrollParent(textarea);
-    const viewport = scrollParent?.getBoundingClientRect();
-    // The marker is fixed to the page, not clipped by the transcript pane.
-    // Do not paint a caret over the playback controls when its text is scrolled away.
+    // A row/line change or seek is a discontinuity, not forward cursor motion.
+    if (jump) el.style.transition = 'none';
+    renderedRow = projection.row;
+    renderedTop = pos.top;
+    // The fixed marker must not paint over controls when the text scrolls away.
     el.style.display = viewport && (pos.top < viewport.top || pos.top + pos.height > viewport.bottom)
       ? 'none' : '';
     el.style.transform = `translate3d(${pos.left}px, ${pos.top}px, 0)`;
@@ -875,8 +789,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       return false;
     }
 
-    const textarea = helper.getRowTextarea(projection.row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = helper.getRowEditor(projection.row);
+    if (!textarea) {
       return false;
     }
 
@@ -937,13 +851,13 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     if (!helper.config.features.proportionalCursorRestore) { return; }
     if (!(row instanceof HTMLElement) || !row.isConnected) { return; }
 
-    const textarea = helper.getRowTextarea(row);
-    if (!(textarea instanceof HTMLTextAreaElement)) { return; }
+    const textarea = helper.getRowEditor(row);
+    if (!textarea) { return; }
 
     const timeRange = api.time.getRowTimeRange(row);
     if (!timeRange) { return; }
 
-    const blurTime = helper.state.blurPlaybackTime;
+    let blurTime = helper.state.blurPlaybackTime;
     const existingLock = getGhostCursorLaneLock();
     if (!existingLock || existingLock.source !== 'manual' || !api.time.hasRowsForSpeakerKey(existingLock.speakerKey)) {
       setGhostCursorLaneLock(row, existingLock?.source || 'auto');
@@ -981,6 +895,10 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     releasePendingTick = () => { pendingTick = null; };
 
     async function tick() {
+      if (!helper.config.features.proportionalCursorRestore) {
+        stopGhostCursor(true);
+        return;
+      }
       if (pendingTick) {
         return;
       }
@@ -1007,7 +925,17 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           typeof helper.getPlaybackState === 'function'
             ? await helper.getPlaybackState()
             : api.playback.unavailablePlaybackState();
+        if (!helper.config.features.proportionalCursorRestore) stopGhostCursor(true);
         if (!isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
+        const previousTime = helper.state.ghostCursorPlaybackTime;
+        const rewound = Number.isFinite(previousTime) && Number.isFinite(playback?.currentTime) &&
+          playback.currentTime < previousTime;
+        if (rewound) {
+          // Explicit seeks and native loop wraps retire the forward-only floor.
+          helper.state.cursorBaseline = 0;
+          helper.state.ghostCursorLaneProjections = {};
+          blurTime = playback.currentTime;
+        }
         rememberGhostCursorPlaybackState(playback);
         if (!playback || !playback.ok || typeof playback.currentTime !== 'number') {
           el.style.display = 'none';
@@ -1089,9 +1017,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           return;
         }
 
-        // Re-query textarea in case Babel re-rendered the row.
-        const ta = helper.getRowTextarea(trackedRow);
-        if (!(ta instanceof HTMLTextAreaElement)) {
+        // Re-query the turn control after a native static/Slate replacement.
+        const ta = helper.getRowEditor(trackedRow);
+        if (!ta) {
           el.style.display = 'none';
           return;
         }
@@ -1117,7 +1045,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           return;
         }
 
-        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime);
+        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, api.time.getRowSpeakerKeySafe(trackedRow));
         const activeProjection = rememberGhostCursorProjection(trackedRow, result.offset, {
           source: 'active',
           cursorBaseline: result.offset,
@@ -1130,8 +1058,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           helper.state.ghostCursorOffset = null;
           el.style.display = 'none';
         }
-      } catch (_e) {
-        if (isCurrentPlayback() && helper.state.ghostCursorElement === el) el.style.display = 'none';
+      } catch (error) {
+        // A rejected read owns only the source/cursor that issued it, just as
+        // a successful read does. Retired players cannot tear down a newer one.
+        if (!isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
+        stopGhostCursor(true);
+        throw error;
       } finally {
         if (pendingTick === flight) pendingTick = null;
       }
@@ -1155,7 +1087,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function getGhostCursorTarget() {
-    if (activeTaskGuard && !activeTaskGuard()) {
+    if (!helper.config.features.proportionalCursorRestore || (activeTaskGuard && !activeTaskGuard())) {
       stopGhostCursor(true);
       return null;
     }

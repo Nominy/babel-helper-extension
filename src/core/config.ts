@@ -2,7 +2,7 @@ import type { FeatureSettings } from './settings';
 import { DEFAULT_FEATURE_SETTINGS } from './settings';
 import { getRegisteredHotkeysHelpRows } from '../features/registry';
 import { normalizeShortcutSettings, type ShortcutSettings } from './shortcuts';
-import { BABEL_ROW_ACTION_LABELS, BABEL_ROW_TEXTAREA_SELECTOR } from './babel-editor-contract';
+import { BABEL_ROW_ACTION_LABELS, BABEL_ROW_EDITOR_SELECTOR } from './babel-editor-contract';
 
 export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_SETTINGS, shortcuts?: ShortcutSettings) {
   return {
@@ -10,7 +10,7 @@ export function createConfig(featureSettings: FeatureSettings = DEFAULT_FEATURE_
     features: {
       ...featureSettings
     },
-    rowTextareaSelector: BABEL_ROW_TEXTAREA_SELECTOR,
+    rowEditorSelector: BABEL_ROW_EDITOR_SELECTOR,
     actionTriggerSelector: 'button[aria-haspopup="menu"]',
     hotkeysHelpMarker: 'data-babel-helper-hotkeys',
     hotkeysDialogPatterns: [

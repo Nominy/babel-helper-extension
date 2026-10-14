@@ -17,7 +17,8 @@ import {
 } from "./linter/text-context";
 import { createCustomLinterRules } from "./linter/rules";
 import { getUnnecessaryYoMatches, fixUnnecessaryYo } from "./linter/yo-orthography";
-import { BABEL_ROW_TEXTAREA_SELECTOR } from "../../core/babel-editor-contract";
+import { acquireFeedbackDraftGate, findBabelEditorFiber, readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
+import { readNativeTurn, replaceNativeTurn, TRANSCRIPT_ROW_SELECTOR, TRANSCRIPT_EDITOR_SELECTOR } from '../../content/native-transcript';
 
 export function initLinterBridge() {
   if (window.__babelHelperLinterBridge) {
@@ -30,15 +31,6 @@ export function initLinterBridge() {
   const LINT_PATH = "/api/trpc/transcriptions.lintAnnotations";
   const SAVE_ANNOTATIONS_PATH =
     "/api/trpc/transcriptions.saveAnnotationsByReviewActionId";
-  const TRPC_PATH_PREFIX = "/api/trpc/";
-  const FEEDBACK_DRAFT_PROCEDURE = "transcriptionFeedbackForm.getOrCreateDraft";
-  const FEEDBACK_DEFINITIONS_PROCEDURE = "forms.getFormInputsByStepId";
-  // Upper bound on holding a draft while its definitions request is still in
-  // flight; after the definitions land, the commit normally follows within
-  // one JSON parse plus one React commit, so the grace is much shorter.
-  const FEEDBACK_DRAFT_HOLD_TIMEOUT_MS = 8000;
-  const FEEDBACK_DRAFT_COMMIT_GRACE_MS = 1500;
-  const FEEDBACK_DRAFT_POLL_MS = 25;
   const COMMA_RULE_REASON = 'Commas must be formatted as ", "';
   const PERIOD_SPACING_RULE_REASON =
     'Periods must be spaced as "." followed by one space.';
@@ -93,14 +85,13 @@ export function initLinterBridge() {
   const HIGHLIGHT_SWATCH_ATTR = "data-babel-helper-linter-swatch";
   const HIGHLIGHT_PREVIEW_ATTR = "data-babel-helper-linter-preview";
   const HIGHLIGHT_OBSERVER_DELAY_MS = 50;
-  const NATIVE_LINT_AUGMENT_GLOBAL = "__babelHelperLinterAugmentNativeIssues";
-  const NATIVE_LINT_PATCH_MARK = "__babelHelperLinterWebpackPatched";
   const NATIVE_LINT_STATE_SYNC_DELAY_MS = 1750;
+  const NATIVE_LINT_RENDER_SYNC_DELAY_MS = 50;
   const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
     "babel-helper-highlighted-word-clearances:v1";
   const AUTO_LINT_MAX_ATTEMPTS = 20;
   const AUTO_LINT_RETRY_DELAY_MS = 100;
-  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
+  const ROW_EDITOR_SELECTOR = TRANSCRIPT_EDITOR_SELECTOR;
   const UNICODE_DOUBLE_QUOTE_PATTERN =
     /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
   const UNICODE_DASH_PATTERN =
@@ -124,8 +115,7 @@ export function initLinterBridge() {
   let highlightedRow = null;
   let nativeLintStateTimer = 0;
   let nativeLintStateObserver = null;
-  let nativeLinterWebpackPatchInstalled = false;
-  let nativeLinterWebpackOriginalPush = null;
+  const nativeLintDispatchPatches = new Map();
   let textareaVisibilityObserver = null;
   let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
@@ -141,18 +131,10 @@ export function initLinterBridge() {
     nativeLintDispatch: null,
     nativeReviewFiber: null,
     customRuleErrors: [],
-    feedbackDraftRestore: {
-      enabled: true,
-      pendingHolds: 0,
-      last: null,
-      definitions: null,
-      lastError: null,
+    get feedbackDraftRestore() {
+      return feedbackDraftGate.getDiagnostics();
     },
   };
-  let feedbackDraftRestoreEnabled = true;
-  const feedbackDefinitionsRequests = new Map();
-  const feedbackDraftHolds = new Set();
-  let feedbackDraftPollTimer = 0;
   let highlightedWordsEnabled = true;
   let highlightedWords = normalizeHighlightedWords(DEFAULT_HIGHLIGHTED_WORDS);
   let disabledCustomLinterRuleIds = [];
@@ -2429,6 +2411,7 @@ export function initLinterBridge() {
       reviewActionId: entry.reviewActionId || "",
       reason: rule.reason,
       severity: rule.severity,
+      highlights: compactMatches(matches).map(match => ({ start: match.start, end: match.end })),
       babelHelper: {
         matches: compactMatches(matches),
         sourceText: typeof entry.text === "string" ? entry.text : "",
@@ -2536,6 +2519,16 @@ export function initLinterBridge() {
     return merged;
   }
 
+  function haveSameIssueRanges(left, right) {
+    const count = Array.isArray(left) ? left.length : 0;
+    if (count !== (Array.isArray(right) ? right.length : 0)) return false;
+    for (let index = 0; index < count; index += 1) {
+      if (left[index]?.start !== right[index]?.start || left[index]?.end !== right[index]?.end ||
+          left[index]?.text !== right[index]?.text) return false;
+    }
+    return true;
+  }
+
   function areLintIssueArraysEqual(left, right) {
     const leftItems = Array.isArray(left) ? left : [];
     const rightItems = Array.isArray(right) ? right : [];
@@ -2545,11 +2538,16 @@ export function initLinterBridge() {
 
     return leftItems.every((issue, index) => {
       const other = rightItems[index];
+      if (issue === other) return true;
       if (getLintIssueKey(issue) !== getLintIssueKey(other)) {
         return false;
       }
 
-      return isHelperInjectedIssue(issue) === isHelperInjectedIssue(other);
+      if (isHelperInjectedIssue(issue) !== isHelperInjectedIssue(other)) return false;
+      if (!isHelperInjectedIssue(issue)) return true;
+      return issue.babelHelper.sourceText === other.babelHelper.sourceText &&
+        haveSameIssueRanges(issue.babelHelper.matches, other.babelHelper.matches) &&
+        haveSameIssueRanges(issue.highlights, other.highlights);
     });
   }
 
@@ -2575,298 +2573,45 @@ export function initLinterBridge() {
     };
   }
 
-  function augmentNativeLintIssues(_linter, annotations, nativeIssues) {
-    if (!isPageLinterEnabled()) {
-      return nativeIssues;
-    }
-
-    const annotationEntries = extractAnnotationEntries(annotations);
-    const helperIssues = buildCustomIssues(annotationEntries);
-    setCurrentNativeHelperIssues(
-      annotationEntries,
-      helperIssues,
-      "native-linter-augment",
-    );
-    return mergeNativeAndHelperIssues(nativeIssues, helperIssues);
-  }
-
-  window[NATIVE_LINT_AUGMENT_GLOBAL] = augmentNativeLintIssues;
-
-  function patchNativeLinterModuleFactory(factory) {
-    if (
-      typeof factory !== "function" ||
-      factory.__babelHelperNativeLinterPatched
-    ) {
-      return factory;
-    }
-
-    const source = Function.prototype.toString.call(factory);
-    if (
-      source.indexOf("class eR") === -1 ||
-      source.indexOf("lintAnnotations(e)") === -1
-    ) {
-      return factory;
-    }
-
-    const needle =
-      "if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}return t}constructor";
-    if (source.indexOf(needle) === -1) {
-      debugState.nativeLintPatch = {
-        changed: false,
-        reason: "lint-annotations-needle-not-found",
-        checkedAt: Date.now(),
-      };
-      return factory;
-    }
-
-    const replacement = `if(i.length>0)for(let n of i){let a=n.implementation.call(this,e);t.push(...a.map(e=>({...e,severity:n.severity})))}if("function"==typeof window["${NATIVE_LINT_AUGMENT_GLOBAL}"]){try{t=window["${NATIVE_LINT_AUGMENT_GLOBAL}"](this,e,t)||t}catch(e){}}return t}constructor`;
-    try {
-      const patched = (0, eval)(`(${source.replace(needle, replacement)})`);
-      patched.__babelHelperNativeLinterPatched = true;
-      patched.__babelHelperNativeLinterOriginal = factory;
-      debugState.nativeLintPatch = {
-        changed: true,
-        reason: "module-factory",
-        patchedAt: Date.now(),
-      };
-      return patched;
-    } catch (error) {
-      debugState.nativeLintPatch = {
-        changed: false,
-        reason: "module-factory-eval-failed",
-        error: String(error && error.message ? error.message : error),
-        checkedAt: Date.now(),
-      };
-      return factory;
-    }
-  }
-
-  function patchWebpackChunkEntry(entry) {
-    if (!Array.isArray(entry) || !entry[1] || typeof entry[1] !== "object") {
-      return false;
-    }
-
-    let changed = false;
-    for (const key of Object.keys(entry[1])) {
-      const currentFactory = entry[1][key];
-      const patchedFactory = patchNativeLinterModuleFactory(currentFactory);
-      if (patchedFactory !== currentFactory) {
-        entry[1][key] = patchedFactory;
-        changed = true;
-      }
-    }
-    return changed;
-  }
-
-  function installNativeLinterWebpackPatch() {
-    const chunkName = "webpackChunk_N_E";
-    const chunk = (window[chunkName] = window[chunkName] || []);
-    if (!Array.isArray(chunk)) {
-      return false;
-    }
-
-    for (const entry of chunk) {
-      patchWebpackChunkEntry(entry);
-    }
-
-    if (chunk[NATIVE_LINT_PATCH_MARK]) {
-      nativeLinterWebpackOriginalPush =
-        nativeLinterWebpackOriginalPush ||
-        chunk.push?.__babelHelperNativeLinterOriginalPush ||
-        null;
-      nativeLinterWebpackPatchInstalled = true;
-      return false;
-    }
-
-    const originalPush =
-      nativeLinterWebpackOriginalPush ||
-      chunk.push.__babelHelperNativeLinterOriginalPush ||
-      chunk.push;
-    if (typeof originalPush !== "function") {
-      return false;
-    }
-
-    const patchedPush = function babelHelperNativeLinterPatchedPush(
-      ...entries
-    ) {
-      for (const entry of entries) {
-        patchWebpackChunkEntry(entry);
-      }
-      return originalPush.apply(this, entries);
-    };
-    patchedPush.__babelHelperNativeLinterOriginalPush = originalPush;
-    chunk.push = patchedPush;
-    chunk[NATIVE_LINT_PATCH_MARK] = true;
-    nativeLinterWebpackOriginalPush = originalPush;
-    nativeLinterWebpackPatchInstalled = true;
-    debugState.nativeLintPatch = {
-      changed: true,
-      reason: "webpack-push",
-      patchedAt: Date.now(),
-    };
-    return true;
-  }
-
-  function getReactInternalValue(element, prefix) {
-    if (
-      !(element instanceof Element) ||
-      typeof prefix !== "string" ||
-      !prefix
-    ) {
-      return null;
-    }
-
-    for (const name of Object.getOwnPropertyNames(element)) {
-      if (typeof name === "string" && name.indexOf(prefix) === 0) {
-        return element[name];
-      }
-    }
-
-    return null;
-  }
-
-  function getReactFiber(element) {
-    return getReactInternalValue(element, "__reactFiber$");
-  }
-
-  function getNativeReviewSeedElement() {
-    return (
-      document.querySelector(ROW_TEXTAREA_SELECTOR) ||
-      document.querySelector("tbody tr")
-    );
-  }
-
-  function isNativeReviewProps(props) {
-    return Boolean(
-      props &&
-        typeof props === "object" &&
-        typeof props.reviewActionId === "string" &&
-        Array.isArray(props.annotations) &&
-        Array.isArray(props.linterErrors),
-    );
-  }
-
-  // The proven page-world lookup: walk `.return` from the seed's fiber, reading
-  // pendingProps when a fiber has not committed yet. Used whenever the committed
-  // descent below cannot resolve the seed.
-  function findNativeReviewFiberByReturnWalk(seed) {
-    let current = seed;
-    while (current && typeof current === "object") {
-      if (isNativeReviewProps(current.memoizedProps || current.pendingProps)) {
-        return current;
-      }
-
-      current = current.return;
-    }
-
-    return null;
-  }
-
-  // Prefers the committed child path from the HostRoot, as in the native
-  // timestamp bridge: DOM fibers can retain either alternate and stale return
-  // pointers. Returns null only when the seed cannot be placed under the root;
-  // the caller then falls back to the return walk.
-  function findNativeReviewFiberByCommittedPath(seed) {
-    let current = seed;
-    const ancestry = [];
-    while (current.return) {
-      ancestry.push(current);
-      current = current.return;
-    }
-    current = current.stateNode?.current;
-    if (!current) {
-      return null;
-    }
-    let review = null;
-    for (let index = ancestry.length - 1; index >= 0; index -= 1) {
-      const expected = ancestry[index];
-      let child = current.child;
-      while (child && child !== expected && child !== expected.alternate) {
-        child = child.sibling;
-      }
-      if (!child) {
-        return null;
-      }
-      current = child;
-      if (isNativeReviewProps(current.memoizedProps)) {
-        review = current;
-      }
-    }
-    return review;
-  }
-
   function findNativeReviewFiber() {
-    const seed = getReactFiber(getNativeReviewSeedElement());
-    if (!seed) {
-      debugState.nativeReviewFiber = null;
-      return null;
-    }
-    let review = null;
-    let source = "committed-path";
-    try {
-      review = findNativeReviewFiberByCommittedPath(seed);
-    } catch {
-      review = null;
-    }
-    if (!review) {
-      source = "return-walk";
-      review = findNativeReviewFiberByReturnWalk(seed);
-    }
-    debugState.nativeReviewFiber = review ? source : "not-found";
-    return review;
-  }
-
-  function isNativeAnnotationArray(value) {
-    return (
-      Array.isArray(value) &&
-      value.some(
-        (item) =>
-          item &&
-          typeof item === "object" &&
-          typeof item.id === "string" &&
-          typeof item.content === "string" &&
-          item.type === "transcription",
-      )
-    );
+    const fiber = findBabelEditorFiber();
+    debugState.nativeReviewFiber = fiber ? "committed-root" : "not-found";
+    return fiber;
   }
 
   function getNativeReviewHooks(fiber) {
-    let current = fiber && fiber.memoizedState;
+    const binding = readBabelTranscriptBindings();
+    if (!fiber || !binding || fiber.memoizedProps?.reviewActionId !== binding.reviewActionId) return null;
+    let hook = fiber.memoizedState;
     let index = 0;
-    let annotationHook = null;
-    while (current && typeof current === "object" && index < 120) {
-      if (!annotationHook && isNativeAnnotationArray(current.memoizedState)) {
-        annotationHook = { hook: current, index };
-      } else if (
-        annotationHook &&
-        Array.isArray(current.memoizedState) &&
-        current.queue &&
-        typeof current.queue.dispatch === "function" &&
-        !isNativeAnnotationArray(current.memoizedState)
-      ) {
-        return {
-          annotationHook,
-          lintHook: { hook: current, index },
-        };
+    const seen = new Set();
+    while (hook && !seen.has(hook)) {
+      seen.add(hook);
+      // The committed panel and the native annotationsRef prove ownership.
+      // The controller's incidental memo storage is not part of this contract:
+      // current Babel can expose the same state without that controller memo.
+      const dirty = hook.next, issues = dirty?.next, version = issues?.next, ref = version?.next;
+      if (hook.memoizedState === binding.annotations && typeof hook.queue?.dispatch === 'function' &&
+          typeof dirty?.memoizedState === 'boolean' && typeof dirty.queue?.dispatch === 'function' &&
+          Array.isArray(issues?.memoizedState) && typeof issues.queue?.dispatch === 'function' &&
+          typeof version?.memoizedState === 'number' &&
+          ref?.memoizedState?.current === binding.annotations) {
+        return { annotationHook: { hook, index }, lintHook: { hook: issues, index: index + 2 },
+          reviewActionId: binding.reviewActionId };
       }
-
-      current = current.next;
+      hook = hook.next;
       index += 1;
     }
-
     return null;
   }
 
   function augmentNativeLintDispatchValue(value, hooks, reason) {
-    if (!Array.isArray(value) || !hooks || !hooks.annotationHook) {
+    if (!isPageLinterEnabled() || !Array.isArray(value) || !hooks || !hooks.annotationHook) {
       return value;
     }
 
     const annotations = hooks.annotationHook.hook.memoizedState;
     const annotationEntries = extractAnnotationEntries(annotations);
-    if (!annotationEntries.length) {
-      return value;
-    }
 
     const helperIssues = buildCustomIssues(annotationEntries);
     const mergedIssues = mergeNativeAndHelperIssues(value, helperIssues);
@@ -2912,8 +2657,11 @@ export function initLinterBridge() {
     const originalDispatch =
       queue.dispatch.__babelHelperNativeLintDispatchOriginal || queue.dispatch;
     const patchedDispatch = function babelHelperNativeLintDispatch(action) {
-      const resolveHooks = () =>
-        getNativeReviewHooks(findNativeReviewFiber()) || hooks;
+      const resolveHooks = () => {
+        const latest = getNativeReviewHooks(findNativeReviewFiber());
+        return latest?.reviewActionId === hooks.reviewActionId &&
+          latest.lintHook.hook.queue === queue ? latest : null;
+      };
 
       if (typeof action === "function") {
         return originalDispatch.call(
@@ -2952,6 +2700,7 @@ export function initLinterBridge() {
     patchedDispatch.__babelHelperNativeLintDispatchPatched = true;
     patchedDispatch.__babelHelperNativeLintDispatchOriginal = originalDispatch;
     queue.dispatch = patchedDispatch;
+    nativeLintDispatchPatches.set(queue, { originalDispatch, patchedDispatch });
     debugState.nativeLintDispatch = {
       changed: false,
       reason: `${reason}-dispatch-patched`,
@@ -2976,59 +2725,16 @@ export function initLinterBridge() {
   // touched once the click observer has proven it can see clearances on this
   // task; otherwise native metadata stays exactly as Babel left it.
   function reconcileNativeHighlightedWordAcknowledgements(hooks, annotations) {
-    const dispatch = hooks.annotationHook.hook.queue?.dispatch;
-    if (typeof dispatch !== "function" || !Array.isArray(annotations)) {
-      return;
-    }
-    const stale = new Map();
+    const binding = readBabelTranscriptBindings();
+    if (!binding || binding.readOnly || binding.reviewActionId !== hooks.reviewActionId ||
+        typeof binding.controller?.toggleWarningAssertion !== 'function') return;
     for (const annotation of annotations) {
-      if (!annotation.metadata?.assertedWarnings?.includes(HIGHLIGHTED_WORD_RULE_REASON)) {
-        continue;
-      }
+      if (!annotation.metadata?.assertedWarnings?.includes(HIGHLIGHTED_WORD_RULE_REASON)) continue;
       const entry = getAnnotationEntryFromObject(annotation);
-      if (
-        entry &&
-        hasObservedHighlightedWordClearanceClick(entry) &&
-        !isHighlightedWordCleared(entry)
-      ) {
-        stale.set(annotation.id, annotation.content);
+      if (entry && hasObservedHighlightedWordClearanceClick(entry) && !isHighlightedWordCleared(entry)) {
+        binding.controller.toggleWarningAssertion(annotation.id, HIGHLIGHTED_WORD_RULE_REASON);
       }
     }
-    if (!stale.size) {
-      return;
-    }
-    // Use Babel's annotation state callback, never mutate a hook or its derived
-    // warning-key Set. Keep every unrelated native acknowledgement untouched.
-    dispatch((previous) => {
-      if (!Array.isArray(previous)) {
-        return previous;
-      }
-      let next = previous;
-      for (let index = 0; index < previous.length; index += 1) {
-        const annotation = previous[index];
-        const warnings = annotation.metadata?.assertedWarnings;
-        if (
-          !stale.has(annotation.id) ||
-          stale.get(annotation.id) !== annotation.content ||
-          !Array.isArray(warnings) ||
-          !warnings.includes(HIGHLIGHTED_WORD_RULE_REASON)
-        ) {
-          continue;
-        }
-        const remaining = warnings.filter((warning) => warning !== HIGHLIGHTED_WORD_RULE_REASON);
-        const metadata = { ...annotation.metadata };
-        if (remaining.length) {
-          metadata.assertedWarnings = remaining;
-        } else {
-          delete metadata.assertedWarnings;
-        }
-        if (next === previous) {
-          next = previous.slice();
-        }
-        next[index] = { ...annotation, metadata };
-      }
-      return next;
-    });
   }
 
   function syncNativeLintState(reason) {
@@ -3086,7 +2792,7 @@ export function initLinterBridge() {
     return true;
   }
 
-  function scheduleNativeLintStateSync(reason) {
+  function scheduleNativeLintStateSync(reason, delay = NATIVE_LINT_STATE_SYNC_DELAY_MS) {
     if (!isPageLinterEnabled()) {
       return;
     }
@@ -3098,7 +2804,7 @@ export function initLinterBridge() {
     nativeLintStateTimer = window.setTimeout(() => {
       nativeLintStateTimer = 0;
       syncNativeLintState(reason);
-    }, NATIVE_LINT_STATE_SYNC_DELAY_MS);
+    }, delay);
   }
 
   function isLintIssueLike(value) {
@@ -3658,18 +3364,7 @@ export function initLinterBridge() {
   }
 
   function getHoveredRowText() {
-    const row =
-      highlightedRow instanceof HTMLTableRowElement ? highlightedRow : null;
-    if (!row) {
-      return "";
-    }
-
-    const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-    if (textarea instanceof HTMLTextAreaElement) {
-      return textarea.value || "";
-    }
-
-    return row.innerText || "";
+    return getRowTextValue(highlightedRow);
   }
 
   function getHighlightRuleKey(reason) {
@@ -3883,13 +3578,6 @@ export function initLinterBridge() {
     return true;
   }
 
-  function appendTextRange(parent, text) {
-    if (!text) {
-      return;
-    }
-
-    parent.appendChild(document.createTextNode(text));
-  }
 
   function getOpaqueHighlightColor(color) {
     if (typeof color !== "string") {
@@ -3899,121 +3587,64 @@ export function initLinterBridge() {
     return color.replace(/\/\s*0?\.\d+\)/, "/ 1)");
   }
 
-  function appendRowColorSwatch(textarea, color) {
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      return false;
-    }
 
-    const row = textarea.closest("tr");
-    const parent =
-      row instanceof HTMLElement
-        ? row
-        : textarea.parentElement instanceof HTMLElement
-          ? textarea.parentElement
-          : null;
-    if (!(parent instanceof HTMLElement)) {
-      return false;
-    }
-
-    const parentStyle = window.getComputedStyle(parent);
-    if (parentStyle.position === "static") {
-      parent.style.position = "relative";
-    }
-
-    const textareaRect = textarea.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-    const swatch = document.createElement("span");
-    swatch.setAttribute(HIGHLIGHT_SWATCH_ATTR, "true");
-    swatch.style.backgroundColor = getOpaqueHighlightColor(color);
-    swatch.style.left = `${textareaRect.right - parentRect.left - 16 + parent.scrollLeft}px`;
-    swatch.style.top = `${textareaRect.top - parentRect.top + 6 + parent.scrollTop}px`;
-    parent.appendChild(swatch);
-    return true;
-  }
-
-  function applyTextareaOverlayEntries(textarea, entries) {
-    if (!(textarea instanceof HTMLTextAreaElement) || !Array.isArray(entries)) {
-      return false;
-    }
-
-    const text = textarea.value || "";
-    const validRanges = entries
-      .flatMap((entry) =>
-        Array.isArray(entry.ranges)
-          ? entry.ranges.map((range) => ({
-              range,
-              color: entry.color,
-            }))
-          : [],
-      )
-      .filter(({ range }) => {
-        return (
-          range &&
-          Number.isFinite(range.start) &&
-          Number.isFinite(range.end) &&
-          range.end > range.start
-        );
-      })
-      .map(({ range, color }) => ({
-        start: Math.max(0, Math.min(text.length, range.start)),
-        end: Math.max(0, Math.min(text.length, range.end)),
-        color,
-      }))
-      .filter((range) => range.end > range.start)
-      .sort((left, right) => left.start - right.start || left.end - right.end);
-    if (!validRanges.length) {
-      return false;
-    }
-
-    const parent = textarea.parentElement;
-    if (!(parent instanceof HTMLElement)) {
-      return false;
-    }
-
-    const parentStyle = window.getComputedStyle(parent);
-    if (parentStyle.position === "static") {
-      parent.style.position = "relative";
-    }
-
-    const textareaRect = textarea.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-    const textareaStyle = window.getComputedStyle(textarea);
-    const overlay = document.createElement("div");
-    overlay.setAttribute(HIGHLIGHT_OVERLAY_ATTR, "true");
-    overlay.style.left = `${textareaRect.left - parentRect.left + parent.scrollLeft}px`;
-    overlay.style.top = `${textareaRect.top - parentRect.top + parent.scrollTop}px`;
-    overlay.style.width = `${textareaRect.width}px`;
-    overlay.style.height = `${textareaRect.height}px`;
-    overlay.style.padding = textareaStyle.padding;
-    overlay.style.border = textareaStyle.border;
-    overlay.style.font = textareaStyle.font;
-    overlay.style.letterSpacing = textareaStyle.letterSpacing;
-    overlay.style.lineHeight = textareaStyle.lineHeight;
-    overlay.style.whiteSpace = "pre-wrap";
-    overlay.style.overflowWrap = "break-word";
-    overlay.style.overflow = "hidden";
-    overlay.style.boxSizing = textareaStyle.boxSizing;
-    overlay.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
-
-    let pointer = 0;
-    for (const range of validRanges) {
-      if (range.end <= pointer) {
-        continue;
+  function applyEditorOverlayEntries(element, entries) {
+    const row = element?.closest(TRANSCRIPT_ROW_SELECTOR);
+    const state = row && readNativeTurn(row.getAttribute('data-annotation-id'));
+    if (!state || !Array.isArray(entries)) return false;
+    const segments = [];
+    if (state.editor) {
+      let start = 0;
+      const nodes = element.querySelectorAll('[data-slate-node="text"]');
+      state.editor.children[0]?.children.forEach((node, index) => {
+        const text = node.text ?? node.raw ?? '';
+        segments.push({ element: nodes[index], start, end: start + text.length, chip: typeof node.text !== 'string' });
+        start += text.length;
+      });
+    } else {
+      for (const node of element.querySelectorAll('[data-offset]')) {
+        const start = Number(node.getAttribute('data-offset'));
+        const chip = Number(node.getAttribute('data-chip')) || 0;
+        segments.push({ element: node, start, end: start + (chip || node.textContent.length), chip: Boolean(chip) });
       }
-
-      const start = Math.max(pointer, Math.min(text.length, range.start));
-      const end = Math.max(start, Math.min(text.length, range.end));
-      appendTextRange(overlay, text.slice(pointer, start));
-      const mark = document.createElement("mark");
-      mark.setAttribute(HIGHLIGHT_MARK_ATTR, "true");
-      mark.style.backgroundColor = range.color;
-      mark.textContent = text.slice(start, end);
-      overlay.appendChild(mark);
-      pointer = end;
     }
-    appendTextRange(overlay, text.slice(pointer));
-
-    parent.appendChild(overlay);
+    if (window.getComputedStyle(row).position === 'static') row.style.position = 'relative';
+    const parentRect = row.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    overlay.setAttribute(HIGHLIGHT_OVERLAY_ATTR, 'true');
+    Object.assign(overlay.style, { left: '0', top: '0', width: '100%', height: '100%', overflow: 'hidden' });
+    for (const entry of entries) for (const span of entry.ranges || []) {
+      for (const segment of segments) {
+        const start = Math.max(span.start, segment.start), end = Math.min(span.end, segment.end);
+        if (!segment.element || end <= start) continue;
+        const rects = [];
+        if (segment.chip) rects.push(segment.element.getBoundingClientRect());
+        else {
+          const walker = document.createTreeWalker(segment.element, NodeFilter.SHOW_TEXT);
+          let textNode, offset = segment.start;
+          while ((textNode = walker.nextNode())) {
+            const left = Math.max(start - offset, 0), right = Math.min(end - offset, textNode.length);
+            if (right > left) {
+              const range = document.createRange();
+              range.setStart(textNode, left); range.setEnd(textNode, right);
+              rects.push(...range.getClientRects());
+            }
+            offset += textNode.length;
+          }
+        }
+        for (const rect of rects) {
+          const mark = document.createElement('mark');
+          mark.setAttribute(HIGHLIGHT_MARK_ATTR, 'true');
+          mark.setAttribute('aria-hidden', 'true');
+          Object.assign(mark.style, { position: 'absolute', backgroundColor: entry.color,
+            left: `${rect.left - parentRect.left + row.scrollLeft}px`, top: `${rect.top - parentRect.top + row.scrollTop}px`,
+            width: `${rect.width}px`, height: `${rect.height}px`, padding: '0' });
+          overlay.appendChild(mark);
+        }
+      }
+    }
+    if (!overlay.childNodes.length) return false;
+    row.appendChild(overlay);
     return true;
   }
 
@@ -4092,10 +3723,10 @@ export function initLinterBridge() {
         color: getHighlightColor(index, entries.length),
       }));
       const textarea =
-        highlightedRow instanceof HTMLTableRowElement
-          ? highlightedRow.querySelector(ROW_TEXTAREA_SELECTOR)
+        highlightedRow instanceof HTMLElement
+          ? highlightedRow.querySelector(ROW_EDITOR_SELECTOR) || highlightedRow.querySelector('[data-offset]')?.parentElement
           : null;
-      applyTextareaOverlayEntries(textarea, coloredEntries);
+      applyEditorOverlayEntries(textarea, coloredEntries);
 
       const swatchedReasonNodes = new Set();
       coloredEntries.forEach((entry) => {
@@ -4115,6 +3746,10 @@ export function initLinterBridge() {
         addReasonSwatch(reasonNode, entry.color);
       });
     } finally {
+      // Discard only this synchronous pass's own overlay/swatch mutations.
+      // Observing them would otherwise repaint the same highlights forever.
+      highlightObserver?.takeRecords();
+      nativeLintStateObserver?.takeRecords();
       applyingHighlights = false;
     }
   }
@@ -4149,8 +3784,8 @@ export function initLinterBridge() {
 
   function handleHighlightPointerOver(event) {
     const target = event && event.target;
-    const row = target instanceof Element ? target.closest("tr") : null;
-    if (row instanceof HTMLTableRowElement) {
+    const row = target instanceof Element ? target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
+    if (row instanceof HTMLElement) {
       highlightedRow = row;
       startHighlightObserver();
       scheduleLinterHighlights();
@@ -4180,7 +3815,7 @@ export function initLinterBridge() {
   }
 
   function findActiveHighlightedWordIssueForRow(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -4189,83 +3824,28 @@ export function initLinterBridge() {
       currentHighlightIssues.find(
         (issue) =>
           issue &&
+          issue.annotationId === row.getAttribute('data-annotation-id') &&
           issue.reason === HIGHLIGHTED_WORD_RULE_REASON &&
           getIssueSourceText(issue) === rowText,
       ) || null
     );
   }
 
-  function isNativeLintStatusTrigger(element) {
-    return (
-      element instanceof HTMLElement &&
-      element.classList.contains("cursor-pointer") &&
-      Array.from(element.children).some(
-        (child) =>
-          child instanceof HTMLElement &&
-          String(child.className || "").includes("bg-yellow"),
-      )
-    );
-  }
-
-  function isNativeLintSuccessTrigger(element) {
-    return (
-      element instanceof HTMLElement &&
-      element.classList.contains("cursor-pointer") &&
-      Array.from(element.children).some(
-        (child) =>
-          child instanceof HTMLElement &&
-          String(child.className || "").includes("bg-green"),
-      )
-    );
-  }
-
-  function rememberNativeHighlightedWordWarningUndo(warningTrigger) {
-    if (!(warningTrigger instanceof HTMLElement)) {
-      return false;
-    }
-
-    const row = warningTrigger.closest("tr");
-    const issue = findActiveHighlightedWordIssueForRow(row);
-    if (!issue) {
-      return false;
-    }
-
-    return unmarkHighlightedWordCleared({
-      annotationId: issue.annotationId || "",
-      reviewActionId:
-        typeof issue.reviewActionId === "string" ? issue.reviewActionId : "",
-      text: getIssueSourceText(issue),
-    });
-  }
-
   function observeNativeHighlightedWordWarningClick(event) {
-    const target = event && event.target;
-    const warningTrigger =
-      target instanceof Element ? target.closest(".cursor-pointer") : null;
-    if (!isNativeLintStatusTrigger(warningTrigger)) {
-      if (isNativeLintSuccessTrigger(warningTrigger)) {
-        if (rememberNativeHighlightedWordWarningUndo(warningTrigger)) {
-          scheduleNativeLintStateSync("highlighted-word-unclearance");
-        }
-      }
-      return false;
-    }
-
-    const row = warningTrigger.closest("tr");
+    const button = event.target instanceof Element ? event.target.closest('button') : null;
+    const label = button?.textContent?.trim();
+    if (label !== 'My transcription is correct' && label !== 'Undo') return false;
+    const row = button.closest(TRANSCRIPT_ROW_SELECTOR);
     const issue = findActiveHighlightedWordIssueForRow(row);
-    if (!issue) {
-      return false;
-    }
-
-    const entry = {
-      annotationId: issue.annotationId || "",
-      reviewActionId:
-        typeof issue.reviewActionId === "string" ? issue.reviewActionId : "",
-      text: getIssueSourceText(issue),
-    };
-    markHighlightedWordCleared(entry);
+    if (!issue || readBabelTranscriptBindings()?.readOnly) return false;
+    const card = label === 'Undo' ? button.closest('li') : button.parentElement?.parentElement;
+    if (!card?.textContent.includes(HIGHLIGHTED_WORD_RULE_REASON)) return false;
+    const entry = { annotationId: issue.annotationId || '', reviewActionId: issue.reviewActionId || '',
+      text: getIssueSourceText(issue) };
+    if (label === 'Undo') unmarkHighlightedWordCleared(entry);
+    else markHighlightedWordCleared(entry);
     recordObservedHighlightedWordClearanceClick(entry);
-    scheduleNativeLintStateSync("highlighted-word-clearance");
+    scheduleNativeLintStateSync('highlighted-word-clearance');
     scheduleLinterHighlights();
     return true;
   }
@@ -4274,8 +3854,8 @@ export function initLinterBridge() {
     observeNativeHighlightedWordWarningClick(event);
 
     const target = event && event.target;
-    const row = target instanceof Element ? target.closest("tr") : null;
-    if (row instanceof HTMLTableRowElement) {
+    const row = target instanceof Element ? target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
+    if (row instanceof HTMLElement) {
       highlightedRow = row;
       hideVisibleNativeLintTooltips();
       startHighlightObserver();
@@ -4507,10 +4087,10 @@ export function initLinterBridge() {
     }
 
     return (
-      node.matches?.("tbody tr") ||
-      node.matches?.(ROW_TEXTAREA_SELECTOR) ||
-      Boolean(node.querySelector?.("tbody tr")) ||
-      Boolean(node.querySelector?.(ROW_TEXTAREA_SELECTOR))
+      node.matches?.(TRANSCRIPT_ROW_SELECTOR) ||
+      node.matches?.(ROW_EDITOR_SELECTOR) ||
+      Boolean(node.querySelector?.(TRANSCRIPT_ROW_SELECTOR)) ||
+      Boolean(node.querySelector?.(ROW_EDITOR_SELECTOR))
     );
   }
 
@@ -4524,18 +4104,33 @@ export function initLinterBridge() {
     }
 
     nativeLintStateObserver = new MutationObserver((mutations) => {
-      const shouldSync = mutations.some((mutation) =>
-        [...mutation.addedNodes, ...mutation.removedNodes].some(
-          nodeTouchesTranscriptRows,
-        ),
+      // Native lint callbacks retain the original React setter; replacing
+      // queue.dispatch cannot intercept them. Reconcile their rendered cards
+      // as well as edits, otherwise the later native lint erases Helper issues.
+      const nativeIssueRender = mutations.some((mutation) =>
+        mutation.type === 'childList' &&
+        mutation.target instanceof Element &&
+        mutation.target.closest(TRANSCRIPT_ROW_SELECTOR) &&
+        !mutation.target.closest(ROW_EDITOR_SELECTOR),
+      );
+      const shouldSync = nativeIssueRender || mutations.some((mutation) =>
+        mutation.type === 'characterData'
+          ? Boolean(mutation.target.parentElement?.closest(TRANSCRIPT_ROW_SELECTOR))
+          : Boolean(mutation.target instanceof Element &&
+              mutation.target.closest(ROW_EDITOR_SELECTOR)) ||
+            [...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesTranscriptRows),
       );
       if (shouldSync) {
-        scheduleNativeLintStateSync("dom-mutation");
+        scheduleNativeLintStateSync(
+          nativeIssueRender ? "native-issue-render" : "dom-mutation",
+          nativeIssueRender ? NATIVE_LINT_RENDER_SYNC_DELAY_MS : NATIVE_LINT_STATE_SYNC_DELAY_MS,
+        );
       }
     });
     nativeLintStateObserver.observe(document.body, {
       childList: true,
       subtree: true,
+      characterData: true,
     });
   }
 
@@ -4553,8 +4148,8 @@ export function initLinterBridge() {
   function handleNativeLintTextareaInput(event) {
     const target = event && event.target;
     if (
-      target instanceof HTMLTextAreaElement &&
-      target.matches(ROW_TEXTAREA_SELECTOR)
+      target instanceof HTMLElement &&
+      target.matches(ROW_EDITOR_SELECTOR)
     ) {
       scheduleNativeLintStateSync("textarea-input");
     }
@@ -4580,8 +4175,8 @@ export function initLinterBridge() {
 
   function observeTextareaCandidate(candidate, routeKey, reason) {
     if (
-      !(candidate instanceof HTMLTextAreaElement) ||
-      !candidate.matches(ROW_TEXTAREA_SELECTOR) ||
+      !(candidate instanceof HTMLElement) ||
+      !candidate.matches(ROW_EDITOR_SELECTOR) ||
       !textareaVisibilityObserver
     ) {
       return;
@@ -4619,7 +4214,7 @@ export function initLinterBridge() {
       handleVisibleTextarea(routeKey, reason);
     });
 
-    for (const textarea of document.querySelectorAll(ROW_TEXTAREA_SELECTOR)) {
+    for (const textarea of document.querySelectorAll(ROW_EDITOR_SELECTOR)) {
       observeTextareaCandidate(textarea, routeKey, reason);
       if (!textareaVisibilityObserver) {
         return;
@@ -4640,12 +4235,12 @@ export function initLinterBridge() {
             continue;
           }
 
-          if (node.matches?.(ROW_TEXTAREA_SELECTOR)) {
+          if (node.matches?.(ROW_EDITOR_SELECTOR)) {
             observeTextareaCandidate(node, routeKey, reason);
           }
 
           for (const textarea of node.querySelectorAll?.(
-            ROW_TEXTAREA_SELECTOR,
+            ROW_EDITOR_SELECTOR,
           ) || []) {
             observeTextareaCandidate(textarea, routeKey, reason);
             if (!textareaVisibilityObserver) {
@@ -4768,6 +4363,7 @@ export function initLinterBridge() {
     annotationEntries,
     routeKey,
   ) {
+    if (!isPageLinterEnabled() || routeKey !== getRouteKey()) return response;
     debugState.totalLintCalls += 1;
     if (!(response instanceof Response)) {
       debugState.last = {
@@ -4826,6 +4422,7 @@ export function initLinterBridge() {
       };
       return response;
     }
+    if (!isPageLinterEnabled() || routeKey !== getRouteKey()) return response;
 
     if (!responseText) {
       debugState.last = {
@@ -5025,400 +4622,12 @@ export function initLinterBridge() {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Feedback draft restore
-  //
-  // Babel's L2 feedback hook fires getOrCreateDraft and getFormInputsByStepId
-  // concurrently and maps the draft's input responses exactly once, in the
-  // mutation's onSuccess, through `w2.current ?? N2 ?? null`. When the draft
-  // lands first that map is null and the persisted ratings/comments are
-  // dropped. The wrapper below holds the draft Response, untouched, until the
-  // hook's fiber shows the definitions committed (query data present and the
-  // label ref populated from it), or a bounded fallback releases it as-is.
-  // ---------------------------------------------------------------------------
-
-  function getTrpcProcedures(input) {
-    const rawUrl = getRequestUrl(input);
-    const start = rawUrl.indexOf(TRPC_PATH_PREFIX);
-    if (start === -1) {
-      return null;
-    }
-
-    let path = rawUrl.slice(start + TRPC_PATH_PREFIX.length);
-    const end = path.search(/[?#]/);
-    if (end !== -1) {
-      path = path.slice(0, end);
-    }
-
-    return path ? path.split(",") : null;
-  }
-
-  // tRPC inputs arrive as `{ json: input }` unbatched or `{ "0": { json: input } }`
-  // batched, and without the `json` wrapper when no transformer is configured.
-  function readTrpcProcedureInput(payload, index) {
-    if (!payload || typeof payload !== "object") {
-      return null;
-    }
-
-    let entry = Object.prototype.hasOwnProperty.call(payload, String(index))
-      ? payload[String(index)]
-      : payload;
-    if (entry && typeof entry === "object" && entry.json && typeof entry.json === "object") {
-      entry = entry.json;
-    }
-
-    return entry && typeof entry === "object" ? entry : null;
-  }
-
-  function classifyFeedbackDraftRequest(input) {
-    const procedures = getTrpcProcedures(input);
-    if (!procedures) {
-      return null;
-    }
-
-    const definitionsIndex = procedures.indexOf(FEEDBACK_DEFINITIONS_PROCEDURE);
-    const draftIndex = procedures.indexOf(FEEDBACK_DRAFT_PROCEDURE);
-    if (definitionsIndex !== -1 && draftIndex !== -1) {
-      // One batch carrying both would hold the draft on its own response.
-      return null;
-    }
-    if (draftIndex !== -1) {
-      return { kind: "draft", index: draftIndex };
-    }
-
-    return definitionsIndex === -1
-      ? null
-      : { kind: "definitions", index: definitionsIndex };
-  }
-
-  function isFeedbackInputLabelArray(value) {
-    return (
-      Array.isArray(value) &&
-      value.length > 0 &&
-      value.every(
-        (entry) =>
-          entry &&
-          typeof entry === "object" &&
-          typeof entry.id === "string" &&
-          typeof entry.label === "string" &&
-          Object.keys(entry).length === 2,
-      )
-    );
-  }
-
-  // Matches both tRPC key shapes: `[["forms","getFormInputsByStepId"], {input}]`
-  // and the recreation's `["forms.getFormInputsByStepId", input]`.
-  function feedbackQueryKeyMatches(key, procedure, stepId) {
-    if (!Array.isArray(key)) {
-      return false;
-    }
-
-    let text = "";
-    try {
-      text = JSON.stringify(key);
-    } catch {
-      return false;
-    }
-
-    const method = procedure.slice(procedure.lastIndexOf(".") + 1);
-    return (
-      typeof text === "string" &&
-      text.indexOf(method) !== -1 &&
-      (!stepId || text.indexOf(JSON.stringify(stepId)) !== -1)
-    );
-  }
-
-  // Walks page-owned React internals; a throw there must never fail the fetch,
-  // so it degrades to the same fallback as a missing fiber.
-  function inspectFeedbackDraftCommit(stepId) {
-    try {
-      return inspectFeedbackDraftHookState(stepId);
-    } catch (error) {
-      return {
-        status: "no-fiber",
-        detail: String(error && error.message ? error.message : error),
-      };
-    }
-  }
-
-  function inspectFeedbackDraftHookState(stepId) {
-    const fiber = findNativeReviewFiber();
-    if (!fiber) {
-      return { status: "no-fiber" };
-    }
-
-    let hook = fiber.memoizedState;
-    const seenHooks = new Set();
-    let draftMutation = false;
-    let definitions = null;
-    let labels = null;
-    while (hook && typeof hook === "object" && !seenHooks.has(hook)) {
-      seenHooks.add(hook);
-      const state = hook.memoizedState;
-      if (state && typeof state === "object") {
-        const options = state.options;
-        if (options && typeof options === "object") {
-          if (
-            !draftMutation &&
-            feedbackQueryKeyMatches(options.mutationKey, FEEDBACK_DRAFT_PROCEDURE, null)
-          ) {
-            draftMutation = true;
-          } else if (
-            !definitions &&
-            typeof state.getCurrentResult === "function" &&
-            feedbackQueryKeyMatches(options.queryKey, FEEDBACK_DEFINITIONS_PROCEDURE, stepId)
-          ) {
-            const result = state.getCurrentResult();
-            if (result && Array.isArray(result.data)) {
-              definitions = result.data;
-            }
-          }
-        } else if (!labels && isFeedbackInputLabelArray(state.current)) {
-          labels = state.current;
-        }
-      }
-      hook = hook.next;
-    }
-
-    if (!draftMutation) {
-      return { status: "no-draft-hook" };
-    }
-    if (!definitions) {
-      return { status: "pending", detail: "definitions-query-empty" };
-    }
-    const committed =
-      labels &&
-      labels.length === definitions.length &&
-      labels.every(
-        (entry, index) =>
-          definitions[index] && entry.id === definitions[index].id,
-      );
-    return committed
-      ? { status: "committed" }
-      : { status: "pending", detail: labels ? "labels-stale" : "labels-unset" };
-  }
-
-  function findFeedbackDefinitionsRequest(stepId) {
-    let latest = null;
-    for (const entry of feedbackDefinitionsRequests.values()) {
-      if (
-        (!stepId || !entry.stepId || entry.stepId === stepId) &&
-        (!latest || entry.startedAt >= latest.startedAt)
-      ) {
-        latest = entry;
-      }
-    }
-
-    return latest;
-  }
-
-  function trackFeedbackDefinitionsRequest(stepId, responsePromise) {
-    const entry = {
-      stepId,
-      status: "pending",
-      startedAt: Date.now(),
-      settledAt: 0,
-    };
-    feedbackDefinitionsRequests.set(stepId || "", entry);
-    const settle = (status) => {
-      entry.status = status;
-      entry.settledAt = Date.now();
-      debugState.feedbackDraftRestore.definitions = {
-        stepId,
-        status,
-        elapsedMs: entry.settledAt - entry.startedAt,
-      };
-      pumpFeedbackDraftHolds();
-    };
-    responsePromise.then(
-      (response) =>
-        settle(response && response.ok === false ? "failed" : "delivered"),
-      () => settle("failed"),
-    );
-  }
-
-  // Returns the release reason, or null while the hold must stay in place.
-  function evaluateFeedbackDraftHold(hold) {
-    if (!feedbackDraftRestoreEnabled) {
-      return "disabled";
-    }
-
-    const commit = inspectFeedbackDraftCommit(hold.stepId);
-    hold.commit = commit;
-    if (commit.status === "committed") {
-      return "committed";
-    }
-
-    const now = Date.now();
-    const definitions = findFeedbackDefinitionsRequest(hold.stepId);
-    if (!definitions) {
-      // Nothing in flight: without a confirmed hook there is no race to wait out.
-      if (commit.status !== "pending") {
-        return "no-definitions-request";
-      }
-    } else if (definitions.status === "failed") {
-      return "definitions-failed";
-    } else if (definitions.status === "delivered") {
-      return now - definitions.settledAt >= FEEDBACK_DRAFT_COMMIT_GRACE_MS
-        ? "commit-grace-elapsed"
-        : null;
-    }
-
-    return now - hold.startedAt >= FEEDBACK_DRAFT_HOLD_TIMEOUT_MS ? "timeout" : null;
-  }
-
-  function recordFeedbackDraftRelease(hold, reason) {
-    debugState.feedbackDraftRestore.pendingHolds = feedbackDraftHolds.size;
-    debugState.feedbackDraftRestore.last = {
-      stepId: hold.stepId,
-      reason,
-      heldMs: Date.now() - hold.startedAt,
-      commit: hold.commit,
-      releasedAt: Date.now(),
-    };
-  }
-
-  function releaseFeedbackDraftHold(hold, reason) {
-    feedbackDraftHolds.delete(hold);
-    recordFeedbackDraftRelease(hold, reason);
-    hold.resolve(hold.response);
-  }
-
-  function releaseAllFeedbackDraftHolds(reason) {
-    for (const hold of feedbackDraftHolds) {
-      releaseFeedbackDraftHold(hold, reason);
-    }
-    if (feedbackDraftPollTimer) {
-      window.clearTimeout(feedbackDraftPollTimer);
-      feedbackDraftPollTimer = 0;
-    }
-  }
-
-  function scheduleFeedbackDraftPoll() {
-    if (feedbackDraftPollTimer || !feedbackDraftHolds.size) {
-      return;
-    }
-
-    feedbackDraftPollTimer = window.setTimeout(() => {
-      feedbackDraftPollTimer = 0;
-      pumpFeedbackDraftHolds();
-    }, FEEDBACK_DRAFT_POLL_MS);
-  }
-
-  function recordFeedbackDraftRestoreError(error, stage) {
-    debugState.feedbackDraftRestore.lastError = {
-      stage,
-      error: String(error && error.message ? error.message : error),
-      at: Date.now(),
-    };
-  }
-
-  function pumpFeedbackDraftHolds() {
-    for (const hold of feedbackDraftHolds) {
-      let reason = null;
-      try {
-        reason = evaluateFeedbackDraftHold(hold);
-      } catch (error) {
-        // A hold that cannot be evaluated is released, never left pending.
-        recordFeedbackDraftRestoreError(error, "evaluate");
-        reason = "error";
-      }
-      if (reason) {
-        releaseFeedbackDraftHold(hold, reason);
-      }
-    }
-    scheduleFeedbackDraftPoll();
-  }
-
-  function holdFeedbackDraftResponse(response, stepId) {
-    const hold = {
-      stepId,
-      response,
-      startedAt: Date.now(),
-      commit: null,
-      resolve: null,
-    };
-    const reason = evaluateFeedbackDraftHold(hold);
-    if (reason) {
-      recordFeedbackDraftRelease(hold, reason);
-      return response;
-    }
-
-    // Chrome 114 (the build target) has no Promise.withResolvers.
-    const promise = new Promise((resolve) => {
-      hold.resolve = resolve;
-    });
-    feedbackDraftHolds.add(hold);
-    debugState.feedbackDraftRestore.pendingHolds = feedbackDraftHolds.size;
-    scheduleFeedbackDraftPoll();
-    return promise;
-  }
-
-  // The restore is an optional layer over Babel's own request: the upstream
-  // fetch is issued exactly once, and anything the helper does around it
-  // (body parsing, hold bookkeeping, fiber inspection) that throws degrades
-  // to the plain pipeline result instead of rejecting the native fetch.
-  async function runFeedbackDraftRestoreFetch(request, input, init) {
-    if (request.kind === "definitions") {
-      const responsePromise = runLinterFetchPipeline(input, init);
-      try {
-        const payload = readTrpcProcedureInput(
-          readQueryInputPayload(getRequestUrl(input)),
-          request.index,
-        );
-        trackFeedbackDefinitionsRequest(
-          readStringProp(payload, ["stepId"]),
-          responsePromise,
-        );
-      } catch (error) {
-        recordFeedbackDraftRestoreError(error, "definitions");
-      }
-      return responsePromise;
-    }
-
-    let stepId = "";
-    try {
-      const payload = readTrpcProcedureInput(
-        safeJsonParse(await readRequestBodyText(input, init)),
-        request.index,
-      );
-      stepId = readStringProp(payload, ["formStepId"]);
-    } catch (error) {
-      recordFeedbackDraftRestoreError(error, "draft-request");
-    }
-    const response = await runLinterFetchPipeline(input, init);
-    try {
-      return holdFeedbackDraftResponse(response, stepId);
-    } catch (error) {
-      recordFeedbackDraftRestoreError(error, "hold");
-      return response;
-    }
-  }
-
-  function setFeedbackDraftRestoreEnabled(nextEnabled) {
-    feedbackDraftRestoreEnabled = Boolean(nextEnabled);
-    debugState.feedbackDraftRestore.enabled = feedbackDraftRestoreEnabled;
-    if (!feedbackDraftRestoreEnabled) {
-      releaseAllFeedbackDraftHolds("disabled");
-    }
-  }
 
   async function babelHelperLinterPatchedFetch(input, init) {
     if (forwardingFetch > 0) {
       return fallbackFetch(input, init);
     }
 
-    if (feedbackDraftRestoreEnabled) {
-      let feedbackRequest = null;
-      try {
-        feedbackRequest = classifyFeedbackDraftRequest(input);
-      } catch (error) {
-        recordFeedbackDraftRestoreError(error, "classify");
-      }
-      if (feedbackRequest) {
-        return runFeedbackDraftRestoreFetch(feedbackRequest, input, init);
-      }
-    }
 
     return runLinterFetchPipeline(input, init);
   }
@@ -5483,6 +4692,15 @@ export function initLinterBridge() {
   }
 
   installFetchPatch();
+  const feedbackDraftGate = acquireFeedbackDraftGate('babel-helper', true);
+
+  function clearNativeHelperIssues() {
+    const hooks = getNativeReviewHooks(findNativeReviewFiber());
+    if (!hooks) return;
+    const issues = hooks.lintHook.hook.memoizedState;
+    const remaining = issues.filter(issue => !isHelperInjectedIssue(issue));
+    if (remaining.length !== issues.length) hooks.lintHook.hook.queue.dispatch(remaining);
+  }
 
   function setBuiltInEnabled(nextEnabled) {
     enabled = Boolean(nextEnabled);
@@ -5491,12 +4709,12 @@ export function initLinterBridge() {
       autoLintTimer = 0;
     }
     if (!enabled) {
+      clearNativeHelperIssues();
       stopTextareaVisibilityObservers();
       stopNativeLintStateObserver();
       stopHighlightObserver();
     }
     if (enabled) {
-      installNativeLinterWebpackPatch();
       startNativeLintStateObserver();
       startTextareaVisibilityObserver("toggle-enable-textarea-visible");
       scheduleInitialNativeLintTrigger("toggle-enable");
@@ -5526,7 +4744,7 @@ export function initLinterBridge() {
 
   function handleConfig(event) {
     const detail = event && event.detail ? event.detail : {};
-    setFeedbackDraftRestoreEnabled(detail.feedbackDraftRestoreEnabled !== false);
+    feedbackDraftGate.setEnabled(detail.feedbackDraftRestoreEnabled !== false);
     invokePageLinter("configure", [detail], configureBuiltInLinter);
   }
 
@@ -5536,7 +4754,12 @@ export function initLinterBridge() {
 
   function dispose() {
     enabled = false;
-    setFeedbackDraftRestoreEnabled(false);
+    clearNativeHelperIssues();
+    for (const [queue, patch] of nativeLintDispatchPatches) {
+      if (queue.dispatch === patch.patchedDispatch) queue.dispatch = patch.originalDispatch;
+    }
+    nativeLintDispatchPatches.clear();
+    feedbackDraftGate.dispose();
     if (autoLintTimer) {
       window.clearTimeout(autoLintTimer);
       autoLintTimer = 0;
@@ -5546,20 +4769,6 @@ export function initLinterBridge() {
     stopHighlightObserver();
     restoreHistoryMethod("pushState");
     restoreHistoryMethod("replaceState");
-    const chunk = window.webpackChunk_N_E;
-    if (
-      Array.isArray(chunk) &&
-      nativeLinterWebpackOriginalPush &&
-      chunk.push?.__babelHelperNativeLinterOriginalPush ===
-        nativeLinterWebpackOriginalPush
-    ) {
-      chunk.push = nativeLinterWebpackOriginalPush;
-      try {
-        delete chunk[NATIVE_LINT_PATCH_MARK];
-      } catch (_error) {
-        chunk[NATIVE_LINT_PATCH_MARK] = false;
-      }
-    }
     // Only unwrap when we are on top. A foreign wrapper above us holds our
     // wrapper as its original, so we must stay in the chain; disabled state
     // already passes requests straight through to upstreamFetch.
@@ -5581,9 +4790,6 @@ export function initLinterBridge() {
     window.removeEventListener("click", handleHighlightClick, true);
     window.removeEventListener("popstate", handlePopState, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
-    if (window[NATIVE_LINT_AUGMENT_GLOBAL] === augmentNativeLintIssues) {
-      delete window[NATIVE_LINT_AUGMENT_GLOBAL];
-    }
     const serviceDisposer = pageLinterServiceDisposer;
     pageLinterServiceDisposer = null;
     pageLinterService = null;
@@ -5608,7 +4814,6 @@ export function initLinterBridge() {
   window.addEventListener("popstate", handlePopState, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
-  installNativeLinterWebpackPatch();
   startNativeLintStateObserver();
   startTextareaVisibilityObserver("boot-textarea-visible");
   scheduleInitialNativeLintTrigger("boot");
@@ -6082,172 +5287,55 @@ export function initLinterBridge() {
     );
   }
 
-  function getRowSpeakerKey(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return "";
-    }
-
-    const speakerCell = row.children[1];
-    return speakerCell instanceof HTMLElement
-      ? speakerCell.innerText.trim()
-      : "";
-  }
-
   function getRowTextValue(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return "";
-    }
-
-    const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-    return textarea instanceof HTMLTextAreaElement ? textarea.value || "" : "";
+    return row instanceof Element ? readNativeTurn(row.getAttribute('data-annotation-id'))?.text || '' : '';
   }
 
   function getPreviousSameSpeakerText(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return "";
-    }
-
-    const speakerKey = getRowSpeakerKey(row);
-    if (!speakerKey) {
-      return "";
-    }
-
-    let current = row.previousElementSibling;
-    while (current) {
-      if (
-        current instanceof HTMLTableRowElement &&
-        getRowSpeakerKey(current) === speakerKey
-      ) {
-        return getRowTextValue(current);
-      }
-
-      current = current.previousElementSibling;
-    }
-
-    return "";
-  }
-
-  function setTextareaValue(textarea, value) {
-    const valueSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      "value",
-    )?.set;
-    if (typeof valueSetter === "function") {
-      valueSetter.call(textarea, value);
-    } else {
-      textarea.value = value;
-    }
-
-    try {
-      textarea.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          inputType: "insertText",
-          data: null,
-        }),
-      );
-    } catch (_error) {
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-
-    textarea.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  function autoFixTextarea(textarea, options = {}) {
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      return { fixed: false, reason: "not-textarea" };
-    }
-
-    const original = textarea.value || "";
-    const previousSameSpeakerText =
-      options && typeof options.previousSameSpeakerText === "string"
-        ? options.previousSameSpeakerText
-        : "";
-    let fixed = applyAllFixes(original, { previousSameSpeakerText });
-    fixed = fixPolitePronounCase(fixed);
-    fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
-    if (fixed === original) {
-      return { fixed: false, reason: "no-changes" };
-    }
-
-    // Preserve selection relative to text changes
-    const selStart = textarea.selectionStart;
-    const selEnd = textarea.selectionEnd;
-
-    setTextareaValue(textarea, fixed);
-
-    // Restore caret at a reasonable position (clamp to new length)
-    const clampedStart = Math.min(selStart, fixed.length);
-    const clampedEnd = Math.min(selEnd, fixed.length);
-    try {
-      textarea.setSelectionRange(clampedStart, clampedEnd);
-    } catch (_error) {
-      // Ignore selection errors
-    }
-
-    return { fixed: true, reason: "applied", original, result: fixed };
+    const binding = readBabelTranscriptBindings();
+    const annotation = binding?.annotations.find(turn => turn.id === row?.getAttribute('data-annotation-id'));
+    if (!annotation) return '';
+    const previous = binding.annotations.filter(turn => turn.type === 'transcription' &&
+      turn.processedRecordingId === annotation.processedRecordingId &&
+      turn.startTimeInSeconds < annotation.startTimeInSeconds)
+      .sort((a, b) => b.startTimeInSeconds - a.startTimeInSeconds)[0];
+    return previous ? readNativeTurn(previous.id, binding)?.text || '' : '';
   }
 
   function autoFixRow(row) {
-    if (!(row instanceof HTMLElement)) {
-      return { fixed: false, reason: "not-element" };
-    }
-
-    const textarea = row.querySelector(ROW_TEXTAREA_SELECTOR);
-    return autoFixTextarea(textarea, {
-      previousSameSpeakerText: getPreviousSameSpeakerText(row),
-    });
+    const annotationId = row?.getAttribute('data-annotation-id');
+    const state = readNativeTurn(annotationId);
+    if (!state) return { fixed: false, reason: 'row-not-found' };
+    if (state.readOnly) return { fixed: false, reason: 'read-only' };
+    const original = state.text;
+    const previousSameSpeakerText = getPreviousSameSpeakerText(row);
+    let fixed = applyAllFixes(original, { previousSameSpeakerText });
+    fixed = fixPolitePronounCase(fixed);
+    fixed = fixSegmentStartCapitalization(fixed, previousSameSpeakerText);
+    if (fixed === original) return { fixed: false, reason: 'no-changes' };
+    if (!replaceNativeTurn(annotationId, fixed, {
+      start: Math.min(state.start, fixed.length), end: Math.min(state.end, fixed.length), direction: state.direction
+    })) return { fixed: false, reason: 'native-edit-rejected' };
+    return { fixed: true, reason: 'applied', original, result: fixed };
   }
 
   function autoFixAllBuiltIn() {
-    const textareas = document.querySelectorAll(ROW_TEXTAREA_SELECTOR);
-    let fixedCount = 0;
-    let totalCount = 0;
-
-    for (const textarea of textareas) {
+    if (!isPageLinterEnabled()) return { fixedCount: 0, totalCount: 0, reason: 'disabled' };
+    let fixedCount = 0, totalCount = 0;
+    for (const row of document.querySelectorAll(TRANSCRIPT_ROW_SELECTOR)) {
       totalCount += 1;
-      const row =
-        textarea instanceof HTMLTextAreaElement ? textarea.closest("tr") : null;
-      const result = autoFixTextarea(textarea, {
-        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
-      });
-      if (result.fixed) {
-        fixedCount += 1;
-      }
+      if (autoFixRow(row).fixed) fixedCount += 1;
     }
-
     return { fixedCount, totalCount };
   }
 
   function autoFixCurrentBuiltIn() {
-    // Fix the textarea that is currently focused, or the first one in the
-    // active row (detected by Babel's active-row styling).
-    const active = document.activeElement;
-    if (
-      active instanceof HTMLTextAreaElement &&
-      active.matches(ROW_TEXTAREA_SELECTOR)
-    ) {
-      const row = active.closest("tr");
-      return autoFixTextarea(active, {
-        previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
-      });
-    }
-
-    // Fall back to the row with Babel's active highlight
-    const activeRow = document.querySelector(
-      "tbody tr.bg-neutral-100.ring-1.ring-neutral-300",
-    );
-    if (activeRow) {
-      return autoFixRow(activeRow);
-    }
-
-    // Last resort: first textarea
-    const first = document.querySelector(ROW_TEXTAREA_SELECTOR);
-    const row =
-      first instanceof HTMLTextAreaElement ? first.closest("tr") : null;
-    return autoFixTextarea(first, {
-      previousSameSpeakerText: row ? getPreviousSameSpeakerText(row) : "",
-    });
+    if (!isPageLinterEnabled()) return { fixed: false, reason: 'disabled' };
+    const active = document.activeElement?.closest(TRANSCRIPT_ROW_SELECTOR);
+    const binding = readBabelTranscriptBindings();
+    const rows = Array.from(document.querySelectorAll(TRANSCRIPT_ROW_SELECTOR));
+    const row = active || rows.find(row => binding?.transcript?.activeIds?.has(row.getAttribute('data-annotation-id'))) || rows[0];
+    return autoFixRow(row);
   }
 
   function autoFixAll() {

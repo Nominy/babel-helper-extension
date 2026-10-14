@@ -44,9 +44,9 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
 
   helper.toggleEditorFocus = function toggleEditorFocus() {
-    const active = document.activeElement;
-    if (active instanceof HTMLTextAreaElement && active.matches(helper.config.rowTextareaSelector)) {
-      const row = active.closest('tr');
+    const active = helper.getActiveRowEditor();
+    if (active) {
+      const row = active.row;
       if (row) {
         helper.setCurrentRow(row);
       }
@@ -145,8 +145,8 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
         ) {
           const timeRange = api.time.getRowTimeRange(rememberedRow);
           if (timeRange) {
-            const textarea = helper.getRowTextarea(rememberedRow);
-            const text = textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
+            const textarea = helper.getRowEditor(rememberedRow);
+            const text = textarea?.value || '';
             if (text.length > 0) {
               const baseline = typeof helper.state.cursorBaseline === 'number'
                 ? helper.state.cursorBaseline
@@ -279,9 +279,8 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
 
   function queueEscapePlaybackTask(task) {
-    const scheduled = escapePlaybackQueue.catch(() => { }).then(task);
-    escapePlaybackQueue = scheduled.catch(() => { });
-    return scheduled;
+    escapePlaybackQueue = escapePlaybackQueue.then(task, task);
+    return escapePlaybackQueue;
   }
 
 
@@ -320,7 +319,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       api.cursor.stopGhostCursor();
     }
 
-    if (!(helper.getActiveRowTextarea() instanceof HTMLTextAreaElement) && preferredRow) {
+    if (!helper.getActiveRowEditor() && preferredRow) {
       helper.setCurrentRow(preferredRow);
     }
 
@@ -374,8 +373,8 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       const timeRow = api.time.findRowByPlaybackTime(restoreTime);
       if (timeRow instanceof HTMLElement) {
         const timeRange = api.time.getRowTimeRange(timeRow);
-        const textarea = helper.getRowTextarea(timeRow);
-        if (timeRange && textarea instanceof HTMLTextAreaElement) {
+        const textarea = helper.getRowEditor(timeRow);
+        if (timeRange && textarea) {
           const text = textarea.value || '';
           if (text.length > 0 && helper.config.features.proportionalCursorRestore) {
             const blurTime = helper.state.blurPlaybackTime;
@@ -468,7 +467,15 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
 
   helper.handleEscapeWorkflow = function handleEscapeWorkflow() {
-    const focused = helper.getActiveRowTextarea() instanceof HTMLTextAreaElement;
+    const focused = Boolean(helper.getActiveRowEditor());
+    const href = window.location.href;
+    const revision = helper.state.sessionLifecycleRevision;
+    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const isCurrentSession = () =>
+      helper.runtime.isSessionInteractive() &&
+      helper.isFeatureEnabled?.('focusToggle') !== false &&
+      window.location.href === href && helper.state.sessionLifecycleRevision === revision &&
+      (!reviewActionId || document.documentElement?.getAttribute('data-babel-review-action-id') === reviewActionId);
 
     if (helper.analytics) {
       helper.analytics.record('hotkey:escape', {
@@ -480,7 +487,11 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
     }
 
     void queueEscapePlaybackTask(async () => {
+      if (!isCurrentSession()) return;
+      const isCurrentPlayback = api.cursor.capturePlaybackGuard();
       const playback = await helper.getPlaybackState();
+      if (!isCurrentSession() || !isCurrentPlayback()) return;
+      const focused = Boolean(helper.getActiveRowEditor());
       const isPlaying = Boolean(playback && playback.ok && playback.paused === false);
       const currentTime = playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
 
@@ -501,6 +512,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
           });
         }
         await helper.setPlaybackPaused(true);
+        if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:pause', { via: 'esc-state1', playbackTime: currentTime });
         }
@@ -536,6 +548,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
         focusCurrentEditorForEscape();
         await helper.setPlaybackPaused(true);
+        if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:pause', { via: 'esc-state2', playbackTime: currentTime });
         }
@@ -544,10 +557,10 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
       if (focused && !isPlaying) {
         // State 3: focused + not playing -> blur + play
-        const activeTextarea = helper.getActiveRowTextarea();
+        const activeTextarea = helper.getActiveRowEditor();
         const cursorPos = activeTextarea ? activeTextarea.selectionStart : null;
         const textLen = activeTextarea ? (activeTextarea.value || '').length : null;
-        const row = activeTextarea ? activeTextarea.closest('tr') : null;
+        const row = activeTextarea?.row || null;
         const rowId = row ? (helper.getRowIdentity(row)?.annotationId ?? null) : null;
 
         helper.toggleEditorFocus();
@@ -571,6 +584,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
         }
 
         await helper.setPlaybackPaused(false);
+        if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:resume', { via: 'esc-state3', playbackTime: currentTime });
         }
@@ -627,6 +641,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       }
 
       await helper.setPlaybackPaused(false);
+      if (!isCurrentSession()) return;
       if (helper.analytics) {
         helper.analytics.record('playback:resume', { via: 'esc-state4', playbackTime: currentTime });
       }

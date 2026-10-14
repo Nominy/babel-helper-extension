@@ -234,41 +234,24 @@ test('canonical task identity uses stable helper lanes and rejects stale updates
   dispose();
 });
 
-test('React review action identity separates same-route tasks and rejects stale timing', () => {
+test('native review action identity separates same-route tasks and rejects stale timing', () => {
   const location = { pathname: '/label', search: '?jobId=same-route-job' };
 
-  function createHelper(reviewActionId, fiberPlacement) {
-    const textarea = {};
-    const row = {
-      lane: 'shared-lane',
-      querySelector: (selector) => (selector === 'textarea' ? textarea : null)
-    };
-    const reviewActionFiber = {
-      memoizedProps: {
-        reviewActionId,
-        projectId: 'shared-project',
-        queueId: 'shared-queue'
-      },
-      return: null
-    };
-    const hostFiber = {
-      memoizedProps: {},
-      return: { memoizedProps: {}, return: reviewActionFiber }
-    };
-    const fiberHost = fiberPlacement === 'row' ? row : textarea;
-    fiberHost.__reactFiber$timingTest = hostFiber;
+  function createHelper(reviewActionId) {
+    const row = { lane: 'shared-lane' };
 
     return {
       getTranscriptRows: () => [row],
       getRowIdentity: () => ({
+        reviewActionId,
         processedRecordingId: 'shared-lane',
         speakerKey: 'Speaker 1'
       })
     };
   }
 
-  const firstHelper = createHelper('review-action-first', 'row');
-  const secondHelper = createHelper('review-action-second', 'textarea');
+  const firstHelper = createHelper('review-action-first');
+  const secondHelper = createHelper('review-action-second');
   const firstTaskId = identity.buildCurrentL0TimingTaskId(firstHelper, location);
   const secondTaskId = identity.buildCurrentL0TimingTaskId(secondHelper, location);
 
@@ -290,6 +273,7 @@ test('React review action identity separates same-route tasks and rejects stale 
   );
   assert.notEqual(firstTaskId, secondTaskId);
   secondHelper.getRowIdentity = () => ({
+    reviewActionId: 'review-action-second',
     processedRecordingId: 'lane-hidden-by-switch',
     speakerKey: 'Speaker 2'
   });

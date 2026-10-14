@@ -18,7 +18,7 @@
 //
 // Ownership split with website-appearance.css: the bridge owns the canvas colours
 // (waveColor/progressColor), the cursor and the region fill/border of a stamped lane; the
-// stylesheet owns the lane frame and the speaker-table text, keyed off the
+// stylesheet owns the lane frame and native turn speaker controls, keyed off the
 // `data-babel-helper-lane-slot` / `data-babel-helper-lane-index` /
 // `data-babel-helper-speaker-label` attributes this bridge stamps on the wavesurfer host and
 // on the lane root.
@@ -34,8 +34,6 @@
   const MAX_LANE_ROOT_HOPS = 6;
   const MAX_TRACK_LIST = 64;
   const MAX_PLUGINS = 16;
-  const MAX_REGIONS = 400;
-  const MAX_SPEAKER_CELLS = 600;
   const LANE_SLOT_COUNT = 3;
   // The app renders its own region fill as `rgba(r, g, b, 0.25)`; a lane slot carries an
   // opaque hex, so the bridge reproduces that translucency instead of asking for a second dial.
@@ -161,7 +159,7 @@
     }
 
     // A slot with nothing usable in it is dropped, which leaves that lane native: the frame
-    // and the speaker-table text are stylesheet-owned off the stamps, so they never ride here.
+    // and the native speaker controls are stylesheet-owned off the stamps, so they never ride here.
     return populated ? slot : null;
   }
 
@@ -643,49 +641,39 @@
     stamps.length = 0;
   }
 
-  // The transcript's speaker column is a plain `<td style="color: …">` with no lane
-  // identity of its own, and slots 1 and 3 ship the same blue by default, so a colour-value
-  // match cannot tell them apart. Matching the cell text against a resolved lane label is
-  // the only slot-correct hook, and the stylesheet colours the cell from the stamp.
-  function stampSpeakerCells(laneBySpeakerLabel) {
-    const labels = Object.keys(laneBySpeakerLabel);
+  // Native speaker selects carry recording IDs. Labels and colours are not unique.
+  function stampSpeakerCells(laneByTrackId) {
+    const labels = Object.keys(laneByTrackId);
     if (!labels.length) {
       restoreStamps(speakerCellStamps);
       return;
     }
 
-    // Only inline-coloured cells can be ours; the attribute filter keeps the query off the
-    // rest of the table and off every other `td` on the page.
-    const cells = safe(() => Array.from(document.querySelectorAll('td[style*="color"]')), []);
+    const cells = safe(() => Array.from(document.querySelectorAll('section[data-annotation-id] select[id^="speaker-"]')), []);
     const stamped = new Set();
-    let visited = 0;
 
     for (const cell of cells) {
-      if (visited >= MAX_SPEAKER_CELLS) {
-        break;
-      }
-      visited += 1;
 
       if (!(cell instanceof HTMLElement)) {
         continue;
       }
 
-      const text = safe(() => cell.textContent, '');
-      const lane = laneBySpeakerLabel[typeof text === 'string' ? text.trim() : ''];
+      const lane = laneByTrackId[cell.value];
       if (!lane) {
         continue;
       }
 
+      const row = cell.closest('section[data-annotation-id]');
       stamped.add(cell);
-      stampElements(speakerCellStamps, [cell], {
+      if (row) stamped.add(row);
+      stampElements(speakerCellStamps, [cell, row], {
         [LANE_INDEX_ATTRIBUTE]: String(lane.laneIndex),
         [LANE_SLOT_ATTRIBUTE]: String(lane.slotIndex),
         [LANE_LABEL_ATTRIBUTE]: lane.label
       });
     }
 
-    // A cell that was re-rendered under a different speaker, or scrolled out of the
-    // virtualised table, must not keep a stamp we can no longer justify.
+    // Reassigned and unmounted turns must not retain obsolete lane identity.
     const stale = speakerCellStamps.filter((stamp) => !stamped.has(stamp.element));
     if (stale.length) {
       restoreStamps(stale);
@@ -723,7 +711,7 @@
       return [];
     }
 
-    return list.length > MAX_REGIONS ? list.slice(0, MAX_REGIONS) : list;
+    return list;
   }
 
   function getRegionStyle(region) {
@@ -1186,7 +1174,7 @@
     try {
       const live = new Set();
       const metaByInstance = new Map();
-      const laneBySpeakerLabel = {};
+      const laneByTrackId = {};
       let documentOrderIndex = 0;
 
       for (const host of getVisibleWaveHosts()) {
@@ -1195,8 +1183,8 @@
         const hostMeta = collectHostInstances(host, hostInstances);
         const laneMeta = resolveLaneMeta(host, hostMeta, documentOrderIndex);
 
-        if (laneMeta.label && !laneBySpeakerLabel[laneMeta.label]) {
-          laneBySpeakerLabel[laneMeta.label] = {
+        if (laneMeta.trackId && !laneByTrackId[laneMeta.trackId]) {
+          laneByTrackId[laneMeta.trackId] = {
             laneIndex: laneMeta.laneIndex,
             slotIndex: ((laneMeta.laneIndex - 1) % LANE_SLOT_COUNT) + 1,
             label: laneMeta.label
@@ -1225,7 +1213,7 @@
       }
 
       if (!disposed && config.enabled && generation === scanGeneration) {
-        stampSpeakerCells(laneBySpeakerLabel);
+        stampSpeakerCells(laneByTrackId);
       }
     } finally {
       busy = false;
@@ -1291,13 +1279,20 @@
     }
 
     observer = new MutationObserver((mutations) => {
-      // Newly mounted lanes only ever arrive as added elements; attribute and text
-      // churn on the dashboard must not cost us a rescan.
-      if (hasAddedElement(mutations)) {
+      // Select options and turn identity can update without mounting a new lane.
+      if (hasAddedElement(mutations) || mutations.some((mutation) =>
+        mutation.type === 'attributes' &&
+        ['value', 'selected', 'data-annotation-id'].includes(mutation.attributeName))) {
         scheduleRescan();
       }
     });
-    safe(() => observer.observe(root, { childList: true, subtree: true }), null);
+    safe(() => observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['value', 'selected', 'data-annotation-id'] }), null);
+  }
+
+  function handleSpeakerChange(event) {
+    if (event.target instanceof Element && event.target.matches('section[data-annotation-id] select[id^="speaker-"]')) {
+      scheduleRescan();
+    }
   }
 
   function stopObserver() {
@@ -1323,7 +1318,7 @@
     // A colour drag re-dispatches this payload on every pointer move, and most of those
     // dispatches carry exactly what the page already wears: the dial that moved feeds a
     // token no lane slot reads, or the same slot arrived twice inside one frame. Everything
-    // below is host discovery, a bounded React-tree walk per host, a `td[style*="color"]`
+    // below is host discovery, a bounded React-tree walk per host, a native speaker-select
     // query and a setOptions on every lane, so an unchanged payload stops here. It stops
     // before the rescan is cancelled too: a reconciliation already in flight is still owed
     // to this very config, so dropping it would strand a lane that mounted mid-debounce.
@@ -1369,11 +1364,13 @@
     config.lanes = null;
     window.removeEventListener(CONFIG_EVENT, handleConfigEvent, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    document.removeEventListener('change', handleSpeakerChange, true);
     delete window[GLOBAL_KEY];
   }
 
   window.addEventListener(CONFIG_EVENT, handleConfigEvent, true);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
+  document.addEventListener('change', handleSpeakerChange, true);
 
   window[GLOBAL_KEY] = {
     applyConfig,

@@ -4,6 +4,10 @@ import {
 } from '@nominy/babel-extension-e2e/native-helpers';
 import { ready } from './helper-editing-utils.mjs';
 
+// These controls isolate Helper's opt-out. Review owns an independent hydration
+// gate, exercised separately by the coinstalled Review/Grader journeys.
+test.use({ extensions: ['helper'] });
+
 // Canonical src/features/registry.ts setting keys -> executable browser scenario titles.
 export const featureScenarios = {
   feedbackDraftRestore: [

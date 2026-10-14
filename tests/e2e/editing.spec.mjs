@@ -1,5 +1,7 @@
+import { saved } from '@nominy/babel-extension-e2e/native-helpers';
 import { test, expect } from '@nominy/babel-extension-e2e/test';
-import { editors, row, ready, selectText, caret, lane, enableOnlyLinterRules } from './helper-editing-utils.mjs';
+import { editors, row, rowMenu, ready, fillText, readText, selectText, caret, lane, enableOnlyLinterRules } from './helper-editing-utils.mjs';
+import { selectedAudioReady } from './native-audio-utils.mjs';
 
 // Canonical src/features/registry.ts setting keys -> executable browser scenario titles.
 export const featureScenarios = {
@@ -19,42 +21,42 @@ test.describe('Helper native editing', () => {
 
   test(featureScenarios.selectedNumberToSkaz[0], async ({ page, babel }) => {
     const editor = editors(page).first();
-    await editor.fill('У меня пять книг.');
+    await fillText(editor, 'У меня пять книг.');
     await selectText(editor, 7, 11);
     await page.keyboard.press('5');
-    await expect(editor).toHaveValue('У меня 5 {СКАЗ: пять} книг.');
-    await editor.fill('Число 42 сегодня.');
+    await expect.poll(() => readText(editor)).toBe('У меня 5 {СКАЗ: пять} книг.');
+    await fillText(editor, 'Число 42 сегодня.');
     await selectText(editor, 6, 8);
     await page.keyboard.press('Alt+KeyA');
-    await expect(editor).toHaveValue('Число 42 {СКАЗ: сорок два} сегодня.');
+    await expect.poll(() => readText(editor)).toBe('Число 42 {СКАЗ: сорок два} сегодня.');
     await editors(page).nth(1).click();
-    await expect(editor).toHaveValue('Число 42 {СКАЗ: сорок два} сегодня.');
-    await page.getByRole('button', { name: 'Save progress', exact: true }).click();
+    await expect.poll(() => readText(editor)).toBe('Число 42 {СКАЗ: сорок два} сегодня.');
+    await saved(page, babel);
     await expect.poll(async () => (await babel.state()).action.annotations.find((annotation) => annotation.id === 'row-1')?.content).toBe('Число 42 {СКАЗ: сорок два} сегодня.');
     await page.reload();
     await ready(page);
-    await expect(editors(page).first()).toHaveValue('Число 42 {СКАЗ: сорок два} сегодня.');
+    await expect.poll(() => readText(editors(page).first())).toBe('Число 42 {СКАЗ: сорок два} сегодня.');
   });
 
   test(featureScenarios.textMove[0], async ({ page, babel }) => {
     const first = editors(page).nth(0), second = editors(page).nth(1);
-    const otherSpeaker = await editors(page).nth(2).inputValue();
-    await first.fill('Начало.');
-    await second.fill('Перенос Остаток.');
+    const otherSpeaker = await readText(editors(page).nth(2));
+    await fillText(first, 'Начало.');
+    await fillText(second, 'Перенос Остаток.');
     await selectText(second, 7);
     await page.keyboard.press('Alt+BracketLeft');
-    await expect(first).toHaveValue('Начало. Перенос');
-    await expect(second).toHaveValue('Остаток.');
+    await expect.poll(() => readText(first)).toBe('Начало. Перенос');
+    await expect.poll(() => readText(second)).toBe('Остаток.');
     await caret(second, 0);
     await selectText(first, 7);
     await page.keyboard.press('Alt+BracketRight');
-    await expect(first).toHaveValue('Начало.');
-    await expect(second).toHaveValue('Перенос Остаток.');
+    await expect.poll(() => readText(first)).toBe('Начало.');
+    await expect.poll(() => readText(second)).toBe('Перенос Остаток.');
     await caret(first, 7);
-    await expect(editors(page).nth(2)).toHaveValue(otherSpeaker);
+    await expect.poll(() => readText(editors(page).nth(2))).toBe(otherSpeaker);
     await second.click();
-    await expect(first).toHaveValue('Начало.');
-    await page.getByRole('button', { name: 'Save progress', exact: true }).click();
+    await expect.poll(() => readText(first)).toBe('Начало.');
+    await saved(page, babel);
     await expect.poll(async () => (await babel.state()).action.annotations.slice(0, 3).map((annotation) => annotation.content)).toEqual(['Начало.', 'Перенос Остаток.', otherSpeaker]);
   });
 
@@ -62,24 +64,24 @@ test.describe('Helper native editing', () => {
     for (const direction of ['ArrowDown', 'ArrowUp']) {
       await babel.reset();
       await ready(page);
-      await editors(page).nth(0).fill('Первая.');
-      await editors(page).nth(1).fill('Вторая.');
+      await fillText(editors(page).nth(0), 'Первая.');
+      await fillText(editors(page).nth(1), 'Вторая.');
       await editors(page).nth(direction === 'ArrowDown' ? 0 : 1).focus();
       await page.keyboard.press(`Alt+Shift+${direction}`);
       await expect(editors(page)).toHaveCount(3);
-      await expect(editors(page).first()).toHaveValue('Первая. Вторая.');
-      await expect(editors(page).nth(1)).toHaveValue('Да, я слышу тебя хорошо.');
+      await expect.poll(() => readText(editors(page).first())).toBe('Первая. Вторая.');
+      await expect.poll(() => readText(editors(page).nth(1))).toBe('Да, я слышу тебя хорошо.');
     }
     const editor = editors(page).first();
-    await selectText(editor, (await editor.inputValue()).length);
+    await selectText(editor, (await readText(editor)).length);
     await page.keyboard.press('d');
-    await expect(editor).toHaveValue('Первая. Вторая.d');
+    await expect.poll(() => readText(editor)).toBe('Первая. Вторая.d');
     await expect(editors(page)).toHaveCount(3);
     await page.keyboard.press('Escape');
     await expect(editor).not.toBeFocused();
     await page.keyboard.press('KeyD');
     await expect(editors(page)).toHaveCount(2);
-    await expect(editors(page).first()).toHaveValue('Да, я слышу тебя хорошо.');
+    await expect.poll(() => readText(editors(page).first())).toBe('Да, я слышу тебя хорошо.');
   });
 
   test(featureScenarios.rowActions[1], async ({ page }) => {
@@ -121,7 +123,7 @@ test.describe('Helper native editing', () => {
     await expect(editor).toBeFocused();
     await caret(editor, 5);
     await page.keyboard.insertText('ТОЧНО');
-    await expect(editor).toHaveValue('ПривеТОЧНОт, это тестовая запись.');
+    await expect.poll(() => readText(editor)).toBe('ПривеТОЧНОт, это тестовая запись.');
   });
 
   test(featureScenarios.proportionalCursorRestore[0], async ({ page, babel }) => {
@@ -130,8 +132,9 @@ test.describe('Helper native editing', () => {
     await babel.reset('baseline', { action: { annotations: action.annotations.map((annotation) =>
       annotation.id === 'row-3' ? { ...annotation, startTimeInSeconds: 0.5, endTimeInSeconds: 2.5 } : annotation) } });
     await ready(page);
+    await selectedAudioReady(page);
     const target = editors(page).nth(1);
-    await expect(target).toHaveValue('Да, я слышу тебя хорошо.');
+    await expect.poll(() => readText(target)).toBe('Да, я слышу тебя хорошо.');
     const zoom = page.locator('[role="slider"][aria-valuemin="10"][aria-valuemax="2000"]');
     await zoom.focus();
     await page.keyboard.press('Home');
@@ -158,7 +161,7 @@ test.describe('Helper native editing', () => {
 
   test(featureScenarios.quickRegionAutocomplete[0], async ({ page, babel }) => {
     const editor = editors(page).first();
-    await editor.fill('Тихая речь.');
+    await fillText(editor, 'Тихая речь.');
     await selectText(editor, 0, 5);
     await page.keyboard.press('Shift+Comma');
     const suggestions = page.locator('[data-babel-helper-quick-region-listbox]');
@@ -166,17 +169,16 @@ test.describe('Helper native editing', () => {
     const suggestion = suggestions.getByRole('option').first();
     const tag = (await suggestion.innerText()).trim();
     await page.keyboard.press('Enter');
-    await expect(editor).toHaveValue(`<${tag}> Тихая </${tag}> речь.`);
+    await expect.poll(() => readText(editor)).toBe(`<${tag}> Тихая </${tag}> речь.`);
     await expect(suggestions).toBeHidden();
-    await editor.fill('');
+    await fillText(editor, '');
     await page.keyboard.press('Shift+Comma');
-    const nativeOption = page.getByRole('option').first();
+    const nativeOption = row(page, 0).getByRole('list').getByRole('button').first();
     await expect(nativeOption).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(editor).toHaveValue('<');
+    await expect.poll(() => readText(editor)).toBe('<');
 
-    await row(page, 0).locator('td').last().getByRole('button').click();
-    await page.getByRole('menuitem', { name: 'Add Segment Below', exact: true }).click();
+    await rowMenu(page, 0, 'Add Segment Below');
     const dialog = page.getByRole('dialog', { name: 'Add New Region' });
     await expect(dialog).toBeVisible();
     await dialog.getByLabel('Start Time (mm:ss.xx)', { exact: true }).fill('00:02.60');
@@ -198,22 +200,22 @@ test.describe('Helper native editing', () => {
     await dialog.getByRole('button', { name: 'Create', exact: true }).click();
     await expect(dialog).toBeHidden();
     await expect(editors(page)).toHaveCount(5);
-    await expect(editors(page).nth(1)).toHaveValue(createdText);
-    await page.getByRole('button', { name: 'Save progress', exact: true }).click();
+    await expect.poll(() => readText(editors(page).nth(1))).toBe(createdText);
+    await saved(page, babel);
     await expect.poll(async () => (await babel.state()).action.annotations.some((annotation) =>
       annotation.content === createdText && annotation.startTimeInSeconds === 2.6 && annotation.endTimeInSeconds === 2.9)).toBe(true);
   });
 
   test(featureScenarios.quickRegionAutocomplete[1], async ({ page }) => {
     const editor = editors(page).first();
-    await editor.fill('<шепот> Тихо </шепот>');
+    await fillText(editor, '<шепот> Тихо </шепот>');
     await selectText(editor, 7);
     await page.keyboard.press('Backspace');
-    await expect(editor).toHaveValue(' Тихо </шепот>');
-    await editor.fill('<иностранная-речь> hello </иностранная-речь>');
+    await expect.poll(() => readText(editor)).toBe(' Тихо </шепот>');
+    await fillText(editor, '<иностранная-речь> hello </иностранная-речь>');
     await selectText(editor, '<иностранная-речь>'.length);
     await page.keyboard.press('Backspace');
-    await expect(editor).toHaveValue('<иностранная-речь hello </иностранная-речь>');
+    await expect.poll(() => readText(editor)).toBe('<иностранная-речь hello </иностранная-речь>');
   });
 
   test(featureScenarios.speakerWorkflowHotkeys[0], async ({ page }) => {
@@ -230,7 +232,7 @@ test.describe('Helper native editing', () => {
       await expect(lane(page, number).getByRole('button', { name: 'Hide track', exact: true })).toBeVisible();
       await expect(lane(page, 3 - number).getByRole('button', { name: 'Show track', exact: true })).toBeVisible();
       await expect(lane(page, number).getByRole('button', { name: 'Solo track', exact: true })).toBeVisible();
-      await expect(page.getByRole('combobox').filter({ hasText: `Speaker ${number}` })).toBeVisible();
+      await expect(page.locator('button[role="combobox"]').filter({ hasText: `Speaker ${number}` })).toBeVisible();
       // Native controls update before the asynchronous workflow releases its
       // busy guard; order independent commands on actual workflow completion.
       await expect.poll(() => page.evaluate(() =>
@@ -246,7 +248,7 @@ test.describe('Helper native editing', () => {
       await expect(lane(page, number).getByRole('button', { name: 'Hide track', exact: true })).toBeVisible();
       await expect(lane(page, number).getByRole('button', { name: 'Solo track', exact: true })).toBeVisible();
     }
-    await expect(page.getByRole('combobox').filter({ hasText: 'All Tracks' })).toBeVisible();
+    await expect(page.locator('button[role="combobox"]').filter({ hasText: 'All Tracks' })).toBeVisible();
     await expect(editors(page)).toHaveCount(4);
     await expect.poll(() => page.evaluate(() =>
       window.__BABEL_E2E__.snapshot().audio.tracks.map(track => track.volume)
@@ -254,8 +256,7 @@ test.describe('Helper native editing', () => {
     // A filter with no matching annotations still has native track controls.
     while (await editors(page).count()) {
       const count = await editors(page).count();
-      await row(page, 0).locator('button[aria-haspopup="menu"]').click();
-      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+      await rowMenu(page, 0, 'Delete');
       await expect(editors(page)).toHaveCount(count - 1);
     }
     for (const number of [1, 2]) {
@@ -263,7 +264,7 @@ test.describe('Helper native editing', () => {
       await expect.poll(() => page.evaluate(() =>
         JSON.parse(document.documentElement.dataset.babelHelperSpeakerWorkflow || 'null')
       )).toMatchObject({ stage: 'switch-ok', targetLabel: `Speaker ${number}` });
-      await expect(page.getByRole('combobox').filter({ hasText: `Speaker ${number}` })).toBeVisible();
+      await expect(page.locator('button[role="combobox"]').filter({ hasText: `Speaker ${number}` })).toBeVisible();
       await expect(editors(page)).toHaveCount(0);
     }
     await page.keyboard.press('Alt+Backquote');
@@ -273,29 +274,32 @@ test.describe('Helper native editing', () => {
   });
 
   test(featureScenarios.customLinter[0], async ({ page, babel }) => {
-    await enableOnlyLinterRules(babel, ['double-spaces', 'leading-trailing-spaces']);
-    await editors(page).nth(0).fill('  Первый  ряд. ');
-    await editors(page).nth(1).fill('Второй  ряд.');
+    // Native blur already normalizes whitespace; use a rule it does not fix
+    // itself so this scenario continues to prove current-versus-all scope.
+    await enableOnlyLinterRules(babel, ['unicode-dashes']);
+    await fillText(editors(page).nth(0), 'Первый — ряд.');
+    await fillText(editors(page).nth(1), 'Второй — ряд.');
     await editors(page).first().focus();
     await page.keyboard.press('Alt+KeyF');
-    await expect(editors(page).first()).toHaveValue('Первый ряд.');
-    await expect(editors(page).nth(1)).toHaveValue('Второй  ряд.');
+    await expect.poll(() => readText(editors(page).first())).toBe('Первый - ряд.');
+    await expect.poll(() => readText(editors(page).nth(1))).toBe('Второй — ряд.');
     await page.keyboard.press('Alt+Shift+KeyF');
-    await expect(editors(page).nth(1)).toHaveValue('Второй ряд.');
+    await expect.poll(() => readText(editors(page).nth(1))).toBe('Второй - ряд.');
   });
 
   test(featureScenarios.customLinter[1], async ({ page, babel }) => {
     await enableOnlyLinterRules(babel, ['highlighted-words']);
     await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
-    await editors(page).first().fill('Это контроль.');
+    await fillText(editors(page).first(), 'Это контроль.');
     await editors(page).nth(1).focus();
-    const status = row(page, 0).getByRole('button', { name: /1 linter warning, 0 acknowledged/ });
+    const status = row(page, 0).getByRole('button', { name: 'My transcription is correct', exact: true });
     await expect(status).toBeVisible();
     await status.hover();
-    await expect(page.locator('mark[data-babel-helper-linter-highlight]').filter({ hasText: 'контроль' })).toBeVisible();
+    await expect(row(page, 0).locator('mark[data-babel-helper-linter-highlight]').first()).toBeVisible();
+    await expect(row(page, 0).locator('.border-amber-200')).toContainText('контроль');
     await status.click();
-    await expect(row(page, 0).getByRole('button', { name: /1 linter warning, 1 acknowledged/ })).toBeVisible();
-    await editors(page).first().fill('Это новый контроль.');
+    await expect(row(page, 0).getByRole('button', { name: 'Show 1 confirmed warning', exact: true })).toBeVisible();
+    await fillText(editors(page).first(), 'Это новый контроль.');
     await editors(page).nth(1).focus();
     await expect(status).toBeVisible();
   });
@@ -307,11 +311,11 @@ test.describe('Helper native editing', () => {
     await options.locator('[data-rule-id="unicode-dashes"]').uncheck();
     await expect(options.locator('[data-role="status"]')).toContainText('Saved.');
     await options.close();
-    await editors(page).first().fill('Да — нет.');
+    await fillText(editors(page).first(), 'Да — нет.');
     await page.keyboard.press('Alt+KeyF');
     await editors(page).nth(1).focus();
-    await expect(editors(page).first()).toHaveValue('Да — нет.');
-    await expect(row(page, 0).getByRole('button', { name: 'No linter issues' })).toBeVisible();
+    await expect.poll(() => readText(editors(page).first())).toBe('Да — нет.');
+    await expect(row(page, 0).locator('.border-red-200, .border-amber-200')).toHaveCount(0);
   });
 });
 
@@ -349,17 +353,17 @@ for (const [rule, text, fixed] of linterRuleScenarios) {
     await ready(page);
     await enableOnlyLinterRules(babel, [rule]);
     const editor = editors(page).first();
-    await editor.fill(text);
-    await editors(page).nth(1).focus();
-    const status = row(page, 0).getByRole('button', { name: /\d+ linter errors?/ });
-    await expect(status).toBeVisible();
-    await status.hover();
-    await expect(page.getByRole('tooltip')).toBeVisible();
+    await fillText(editor, text);
+    // Keep the editor active: native blur trims and collapses spaces before
+    // the whitespace-rule diagnostic can be exercised.
+    const status = row(page, 0).locator('.border-red-200');
+    await expect(status.first()).toBeVisible();
+    await expect(status.first()).not.toHaveText('');
     await editor.focus();
     await page.keyboard.press('Alt+KeyF');
-    await expect(editor).toHaveValue(fixed ?? text);
+    await expect.poll(() => readText(editor)).toBe(fixed ?? text);
     await editors(page).nth(1).focus();
-    if (fixed === null) await expect(status).toBeVisible();
-    else await expect(row(page, 0).getByRole('button', { name: 'No linter issues' })).toBeVisible();
+    if (fixed === null) await expect(status.first()).toBeVisible();
+    else await expect(status).toHaveCount(0);
   });
 }

@@ -1,5 +1,5 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
-import { editors, ready, selectText, openAppearance } from './helper-editing-utils.mjs';
+import { editors, transcriptSelector, ready, fillText, selectText, openAppearance } from './helper-editing-utils.mjs';
 
 export const appearanceScenarios = {
   websiteAppearance: ['appearance: panel changes editor fonts and reload preserves the chosen sizes', 'appearance: theme and speaker colors repaint real waveform regions and canvas', 'appearance: custom CSS font and gradient apply, unsafe CSS is rejected, disable restores native styling', 'appearance: share import restores a theme and rejects malformed data'],
@@ -51,7 +51,7 @@ test(appearanceScenarios.websiteAppearance[1], async ({ page, babel }) => {
     for (let i = 0; i < pixels.length; i += 4) if (pixels[i] === 18 && pixels[i + 1] === 52 && pixels[i + 2] === 86 && pixels[i + 3] > 0) return true;
     return false;
   }))).toBe(true);
-  await editors(page).first().fill('Изменение вызывает перерисовку.');
+  await fillText(editors(page).first(), 'Изменение вызывает перерисовку.');
   await expect(regions.first()).toHaveCSS('background-color', 'rgba(204, 34, 0, 0.25)');
   await babel.setExtensionSettings('helper', { websiteAppearance: { themeEnabled: false } });
   await expect(regions.first()).toHaveCSS('background-color', originalFill);
@@ -70,7 +70,7 @@ test(appearanceScenarios.websiteAppearance[2], async ({ page }) => {
     return [style.backgroundImage, before.backgroundImage].join(' ');
   })).toContain('gradient');
   await panel.getByLabel('Apply expert CSS', { exact: true }).check();
-  await panel.getByLabel('Custom CSS', { exact: true }).fill('tbody textarea { font-family: monospace !important; border-left: 7px solid rgb(17, 34, 51) !important; }');
+  await panel.getByLabel('Custom CSS', { exact: true }).fill(`${transcriptSelector} { font-family: monospace !important; border-left: 7px solid rgb(17, 34, 51) !important; }`);
   await expect(editor).toHaveCSS('font-family', 'monospace');
   await expect(editor).toHaveCSS('border-left-width', '7px');
   await panel.getByLabel('Custom CSS', { exact: true }).fill('@import url("https://invalid.example/remote.css");');
@@ -78,7 +78,7 @@ test(appearanceScenarios.websiteAppearance[2], async ({ page }) => {
   await expect(panel.locator('#custom-css-status')).not.toHaveText('');
   await expect(panel.getByLabel('Custom CSS', { exact: true })).toHaveAttribute('aria-invalid', 'true');
   await expect(editor).toHaveCSS('font-family', nativeFont);
-  await panel.getByLabel('Custom CSS', { exact: true }).fill('tbody textarea { font-family: monospace !important; border-left: 7px solid rgb(17, 34, 51) !important; }');
+  await panel.getByLabel('Custom CSS', { exact: true }).fill(`${transcriptSelector} { font-family: monospace !important; border-left: 7px solid rgb(17, 34, 51) !important; }`);
   await expect(editor).toHaveCSS('font-family', 'monospace');
   await panel.getByLabel('Enable custom appearance', { exact: true }).uncheck();
   await expect(editor).toHaveCSS('font-family', nativeFont);

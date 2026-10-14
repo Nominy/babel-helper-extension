@@ -1,21 +1,11 @@
-export const BABEL_EDITOR_CONTRACT_VERSION = 'recovered-81835-2026-06-21';
+export const BABEL_EDITOR_CONTRACT_VERSION = 'native-36978-2026-10-13';
 
-export const BABEL_ROW_TEXTAREA_SELECTOR = 'textarea[placeholder="What was said…"]';
-
-export const BABEL_TABLE_COLUMN_INDEX = {
-  id: 0,
-  speaker: 1,
-  start: 2,
-  end: 3,
-  text: 4,
-  linter: 5,
-  actions: 6
-} as const;
+export const BABEL_TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id]';
+export const BABEL_ROW_EDITOR_SELECTOR = '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"]';
 
 export const BABEL_ACTIVE_ROW_CLASS_TOKENS = [
-  'bg-neutral-100',
-  'ring-1',
-  'ring-neutral-300'
+  'border-orange-300',
+  'bg-white'
 ] as const;
 
 export const BABEL_ROW_ACTION_LABELS = {
@@ -62,6 +52,8 @@ export type BabelEditorSnapshot = {
   routeKey: string;
   activeRowId: string | null;
   rows: BabelEditorRowSnapshot[];
+  reviewActionId?: string;
+  readOnly?: boolean;
   tracks: BabelEditorTrackSnapshot[];
   playback: BabelEditorPlaybackSnapshot;
 };

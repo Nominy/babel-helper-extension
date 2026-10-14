@@ -19,19 +19,6 @@ export function createTimelineSiteApi(helper: any) {
 
   let bridgeRequestId = 0;
 
-  const getTranscriptRowsFromHelper =
-    typeof helper.getTranscriptRows === 'function' ? helper.getTranscriptRows.bind(helper) : null;
-
-
-  helper.getTranscriptRows = () => {
-    const rows = getTranscriptRowsFromHelper ? getTranscriptRowsFromHelper() : [];
-    if (Array.isArray(rows) && rows.length) {
-      return rows;
-    }
-
-    return getFallbackTranscriptRows();
-  };
-
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -50,25 +37,6 @@ export function createTimelineSiteApi(helper: any) {
   function parseSecondsLabel(value) {
     const parsed = parseTimeValue(value);
     return Number.isFinite(parsed) ? parsed : null;
-  }
-
-
-  function getFallbackTranscriptRows() {
-    return Array.from(document.querySelectorAll('tbody tr')).filter((row) => {
-      if (!(row instanceof HTMLTableRowElement) || row.children.length < 5) {
-        return false;
-      }
-
-      if (!row.querySelector('textarea')) {
-        return false;
-      }
-
-      const startText = helper.normalizeText(row.children[2]);
-      const endText = helper.normalizeText(row.children[3]);
-      const startSeconds = parseTimeValue(startText);
-      const endSeconds = parseTimeValue(endText);
-      return Number.isFinite(startSeconds) && Number.isFinite(endSeconds) && endSeconds > startSeconds;
-    });
   }
 
 
@@ -199,33 +167,18 @@ export function createTimelineSiteApi(helper: any) {
 
 
   function getRowTimeLabels(row) {
-    if (!(row instanceof HTMLTableRowElement) || row.children.length < 4) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
-
-    return {
-      startText: helper.normalizeText(row.children[2]),
-      endText: helper.normalizeText(row.children[3])
-    };
+    const identity = helper.getRowIdentity(row);
+    return identity?.startText && identity?.endText
+      ? { startText: identity.startText, endText: identity.endText }
+      : null;
   }
 
 
   function getRowTimeRange(row) {
-    const labels = getRowTimeLabels(row);
-    if (!labels) {
-      return null;
-    }
-
-    const startSeconds = parseTimeValue(labels.startText);
-    const endSeconds = parseTimeValue(labels.endText);
-    if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
-      return null;
-    }
-
-    return {
-      startSeconds,
-      endSeconds
-    };
+    return helper.getRowTimeRange(row);
   }
 
 
@@ -305,7 +258,7 @@ export function createTimelineSiteApi(helper: any) {
 
   async function deleteRegionByTimeLabels(startText, endText, options) {
     const row = findRowByTimeLabels(startText, endText, options);
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return false;
     }
 
@@ -1025,7 +978,7 @@ export function createTimelineSiteApi(helper: any) {
 
 
   function findRegionEntryForRow(row, container) {
-    if (!(row instanceof HTMLTableRowElement) || !(container instanceof HTMLElement)) {
+    if (!(row instanceof HTMLElement) || !(container instanceof HTMLElement)) {
       return null;
     }
 
@@ -1080,7 +1033,7 @@ export function createTimelineSiteApi(helper: any) {
 
 
   function rememberTimelineSegmentTarget(row, container, entry, speakerKey) {
-    if (!(row instanceof HTMLTableRowElement) || !entry) {
+    if (!(row instanceof HTMLElement) || !entry) {
       return null;
     }
 
@@ -1106,7 +1059,7 @@ export function createTimelineSiteApi(helper: any) {
     }
 
     if (
-      target.row instanceof HTMLTableRowElement &&
+      target.row instanceof HTMLElement &&
       target.row.isConnected &&
       (!target.rowIdentity ||
         typeof helper.rowMatchesIdentity !== 'function' ||
@@ -1117,7 +1070,7 @@ export function createTimelineSiteApi(helper: any) {
 
     if (target.rowIdentity && typeof helper.findRowByIdentity === 'function') {
       const byIdentity = helper.findRowByIdentity(target.rowIdentity);
-      if (byIdentity instanceof HTMLTableRowElement) {
+      if (byIdentity instanceof HTMLElement) {
         target.row = byIdentity;
         return byIdentity;
       }
@@ -1127,7 +1080,7 @@ export function createTimelineSiteApi(helper: any) {
       const byLabels = findRowByTimeLabels(target.startText, target.endText, {
         speakerKey: target.speakerKey || ''
       });
-      if (byLabels instanceof HTMLTableRowElement) {
+      if (byLabels instanceof HTMLElement) {
         target.row = byLabels;
         target.rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(byLabels) : null;
         return byLabels;
@@ -1185,7 +1138,7 @@ export function createTimelineSiteApi(helper: any) {
 
     const speakerKey = getSpeakerKeyForContainer(container);
     const row = findRowByTimeLabels(entry.startText, entry.endText, { speakerKey });
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -1203,7 +1156,7 @@ export function createTimelineSiteApi(helper: any) {
       (typeof helper.getCurrentActionRow === 'function'
         ? helper.getCurrentActionRow({ allowFallback: false })
         : helper.getCurrentRow({ allowFallback: false }));
-    if (!(row instanceof HTMLTableRowElement)) {
+    if (!(row instanceof HTMLElement)) {
       return null;
     }
 
@@ -1269,7 +1222,7 @@ export function createTimelineSiteApi(helper: any) {
     const targets = [];
     const containers = discoverWaveformContainers();
     for (const row of helper.getTranscriptRows()) {
-      if (!(row instanceof HTMLTableRowElement)) {
+      if (!(row instanceof HTMLElement)) {
         continue;
       }
 
@@ -1350,5 +1303,5 @@ export function createTimelineSiteApi(helper: any) {
     };
   }
 
-  return { isFeatureEnabled, getWaveformHostFromContainer, clamp, isRegionHandle, isRegionBody, getRegionHandleElement, getOwningRegionBody, getZoomSliderElement, getReactFiber, callSelectionBridge, getWaveformEntryForContainer, getWaveformPixelsPerSecond, getSelectionAudioElement, getLaneZoomSignature, rememberCutContainer, getRegionElements, discoverWaveformContainers, getRowTimeLabels, getRowTimeRange, getSpeakerKeyForContainer, getFallbackTranscriptRows, isAutoInsertLaneSemanticallyVisible, findRowByTimeLabels, findRowByTimeRange, rememberTimelineSegmentTarget, findRegionEntryForRow, isVisibleWaveformContainer, getLaneTimeScale, collectRegionSnapshot, findCurrentSegmentTarget, collectAllSegmentTargets, deleteRegionByTimeLabels, captureTimelineSegmentTarget };
+  return { isFeatureEnabled, getWaveformHostFromContainer, clamp, isRegionHandle, isRegionBody, getRegionHandleElement, getOwningRegionBody, getZoomSliderElement, getReactFiber, callSelectionBridge, getWaveformEntryForContainer, getWaveformPixelsPerSecond, getSelectionAudioElement, getLaneZoomSignature, rememberCutContainer, getRegionElements, discoverWaveformContainers, getRowTimeLabels, getRowTimeRange, getSpeakerKeyForContainer, isAutoInsertLaneSemanticallyVisible, findRowByTimeLabels, findRowByTimeRange, rememberTimelineSegmentTarget, findRegionEntryForRow, isVisibleWaveformContainer, getLaneTimeScale, collectRegionSnapshot, findCurrentSegmentTarget, collectAllSegmentTargets, deleteRegionByTimeLabels, captureTimelineSegmentTarget };
 }

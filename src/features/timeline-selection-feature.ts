@@ -5,6 +5,7 @@ import type { TimelineModules } from '../services/timeline-selection-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
 import { formatShortcut, matchesShortcut } from '../core/shortcuts';
+import { captureL0TaskGuard } from '../services/l0-timing-identity';
 
 export function registerTimelineSelection(helper: any, api: Pick<TimelineModules, 'site' | 'edge' | 'loop' | 'split'>) {
 
@@ -987,12 +988,14 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   }
 
 
+  // A preview belongs to its mounted task, even while native callbacks settle.
   helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
     if (!preview || helper.state.cutCommitPending) {
       return false;
     }
 
+    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
     helper.stopSelectionLoop();
 
     const settings = options || {};
@@ -1003,6 +1006,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     }
 
     const timeRange = await ensurePreviewTimeRange(preview);
+    if (!isCurrentTask() || helper.state.cutPreview !== preview) return false;
     const duration =
       timeRange &&
         Number.isFinite(timeRange.startSeconds) &&
@@ -1069,6 +1073,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     }
 
     helper.state.cutCommitPending = true;
+    let smartSplitAppliedNatively = false;
 
     try {
       const liveContainerRect = commitPlan.container.getBoundingClientRect();
@@ -1081,11 +1086,29 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
           return false;
         }
 
-        api.split.dispatchSplitClick(splitTarget, splitClientX, splitClientY);
+        const textParts = smartSplitPlan ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
+        if (textParts?.wordCount) {
+          const rowIdentity = helper.getRowIdentity(smartSplitPlan.sourceRow);
+          const split = await helper.splitSegmentAtTime({
+            annotationId: rowIdentity?.annotationId,
+            rowIdentity,
+            speakerKey,
+            startSeconds: smartSplitPlan.sourceRange.startSeconds,
+            endSeconds: smartSplitPlan.sourceRange.endSeconds,
+            splitSeconds: timeRange.startSeconds,
+            sourceText: smartSplitPlan.sourceText,
+            texts: [textParts.firstText, textParts.secondText]
+          });
+          if (!isCurrentTask() || !split?.ok) return false;
+          smartSplitAppliedNatively = true;
+        } else {
+          api.split.dispatchSplitClick(splitTarget, splitClientX, splitClientY);
+        }
       }
 
       const deleteTargets = initialOverlapPlan.toDelete.slice();
       for (const entry of deleteTargets) {
+        if (!isCurrentTask()) return false;
         const deleted = await api.site.deleteRegionByTimeLabels(entry.startText, entry.endText, {
           speakerKey: api.site.getSpeakerKeyForContainer(commitPlan.container)
         });
@@ -1174,6 +1197,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       }
 
       if (shouldTrimPrevious) {
+        if (!isCurrentTask()) return false;
         if (typeof helper.setSegmentBoundaryTime !== 'function') {
           return false;
         }
@@ -1195,6 +1219,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       }
 
       if (shouldTrimNext) {
+        if (!isCurrentTask()) return false;
         if (typeof helper.setSegmentBoundaryTime !== 'function') {
           return false;
         }
@@ -1213,14 +1238,17 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
         }
       }
 
-      if (smartSplitPlan) {
+      if (smartSplitPlan && !smartSplitAppliedNatively) {
         await helper.sleep(64);
+        if (!isCurrentTask()) return false;
         void api.split.applySmartSplit(smartSplitPlan);
-      } else if (smartSplitFallbackContext) {
+      } else if (smartSplitFallbackContext && !smartSplitAppliedNatively) {
         await helper.sleep(64);
+        if (!isCurrentTask()) return false;
         void api.split.applySmartSplitFromDuplicateRows(smartSplitFallbackContext);
       }
 
+      if (!isCurrentTask()) return false;
       helper.clearCutPreview();
       return true;
     } finally {

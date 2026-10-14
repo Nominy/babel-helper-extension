@@ -1,3 +1,7 @@
+import { type EditorControl, isEditorControl, getEditorControlFromTarget } from '../site/editor-control';
+
+type TextSelectionControl = HTMLInputElement | HTMLTextAreaElement | EditorControl;
+
 const INTEGER_PATTERN = /^-?\d+$/;
 const DECIMAL_COMMA_PATTERN = /^-?\d+,\d+$/;
 const SLASH_FRACTION_PATTERN = /^-?\d+\s*\/\s*[1-9]\d*$/;
@@ -453,10 +457,11 @@ export function buildAutoConvertedNumberText(selectedText: string) {
 }
 
 export function replaceSelectionInTextControl(
-  control: HTMLInputElement | HTMLTextAreaElement,
+  control: TextSelectionControl,
   replacement: string,
   cursorOffset?: number
 ) {
+  if (control.readOnly || (!(isEditorControl(control)) && control.disabled)) return false;
   const start = typeof control.selectionStart === 'number' ? control.selectionStart : null;
   const end = typeof control.selectionEnd === 'number' ? control.selectionEnd : null;
   if (start === null || end === null || start === end) {
@@ -464,37 +469,23 @@ export function replaceSelectionInTextControl(
   }
 
   const nextValue = `${control.value.slice(0, start)}${replacement}${control.value.slice(end)}`;
-  setTextControlValue(control, nextValue);
-  control.focus({ preventScroll: true });
   const cursor = start + (cursorOffset ?? replacement.length);
+  if (isEditorControl(control)) {
+    return control.replaceValue(nextValue, { start: cursor, end: cursor, focus: true });
+  }
+  setTextControlValue(control, nextValue);
+  dispatchInputEvent(control);
+  control.focus({ preventScroll: true });
   try {
     control.setSelectionRange(cursor, cursor);
   } catch (_error) {
     // Ignore selection restoration failures on unusual input types.
   }
-  dispatchInputEvent(control);
   return true;
 }
 
-function replaceDocumentSelection(replacement: string) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount < 1 || selection.isCollapsed) {
-    return false;
-  }
 
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-
-  const node = document.createTextNode(replacement);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(range);
-  return true;
-}
-
-export function getSelectedTextFromTextControl(control: HTMLInputElement | HTMLTextAreaElement) {
+export function getSelectedTextFromTextControl(control: TextSelectionControl) {
   const start = typeof control.selectionStart === 'number' ? control.selectionStart : null;
   const end = typeof control.selectionEnd === 'number' ? control.selectionEnd : null;
   if (start === null || end === null || start === end) {
@@ -506,7 +497,7 @@ export function getSelectedTextFromTextControl(control: HTMLInputElement | HTMLT
 
 export function autoConvertSelectedNumberText(target?: EventTarget | null) {
   const targetNode = target ?? null;
-  let activeTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
+  let activeTarget: TextSelectionControl | null = getEditorControlFromTarget(targetNode) || getEditorControlFromTarget(document.activeElement);
 
   if (isTextControl(targetNode)) {
     activeTarget = targetNode;
@@ -524,26 +515,20 @@ export function autoConvertSelectedNumberText(target?: EventTarget | null) {
     return replaceSelectionInTextControl(activeTarget, replacement);
   }
 
-  const selection = window.getSelection();
-  const selectedText = selection?.toString() ?? '';
-  const replacement = buildAutoConvertedNumberText(selectedText);
-  if (!replacement) {
-    return false;
-  }
-
-  return replaceDocumentSelection(replacement);
+  return false;
 }
 
 export function convertSelectionWithDigit(target: EventTarget | null, digit: string) {
-  if (!isTextControl(target)) {
+  const control = getEditorControlFromTarget(target) || (isTextControl(target) ? target : null);
+  if (!control || !/^\d$/.test(digit)) {
     return false;
   }
 
-  const selectedText = getSelectedTextFromTextControl(target);
+  const selectedText = getSelectedTextFromTextControl(control);
   if (!selectedText || selectedText.trim().length === 0) {
     return false;
   }
 
   const replacement = `${digit} {СКАЗ: ${selectedText}}`;
-  return replaceSelectionInTextControl(target, replacement, digit.length);
+  return replaceSelectionInTextControl(control, replacement, digit.length);
 }

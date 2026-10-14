@@ -5,6 +5,7 @@ const STYLE_ID = 'babel-helper-wavesurfer-tooltip-ellipsis';
 const WAVESURFER_TOOLTIP_ELLIPSIS_CSS = `
   .wavesurfer-region-label-tooltip > span {
     width: 200px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -12,9 +13,7 @@ const WAVESURFER_TOOLTIP_ELLIPSIS_CSS = `
 `.trim();
 
 export function createWavesurferTooltipEllipsisFeature(): FeatureModule {
-  return {
-    id: 'wavesurfer-tooltip-ellipsis',
-    start() {
+  const install = () => {
       if (!(document.head instanceof HTMLHeadElement)) {
         return;
       }
@@ -27,6 +26,13 @@ export function createWavesurferTooltipEllipsisFeature(): FeatureModule {
       }
 
       style.textContent = WAVESURFER_TOOLTIP_ELLIPSIS_CSS;
+  };
+  return {
+    id: 'wavesurfer-tooltip-ellipsis',
+    start: install,
+    activate: install,
+    deactivate() {
+      document.getElementById(STYLE_ID)?.remove();
     },
     stop() {
       document.getElementById(STYLE_ID)?.remove();

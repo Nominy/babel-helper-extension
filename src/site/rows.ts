@@ -1,54 +1,29 @@
 // @ts-nocheck
-import { isBabelActiveRowClassList } from '../core/babel-editor-contract';
+import { BABEL_TRANSCRIPT_ROW_SELECTOR, isBabelActiveRowClassList } from '../core/babel-editor-contract';
+import { getEditorControl, getEditorControlFromTarget, readTurnState, readTurnIdentity } from './editor-control';
 import type { RowModules } from '../services/row-service';
 
 export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
   helper.getTranscriptRows = function getTranscriptRows() {
     helper.perf?.count?.('row.scan');
-    return Array.from(document.querySelectorAll('tbody tr')).filter((row) =>
-      row.querySelector(helper.config.rowTextareaSelector)
-    );
+    return Array.from(document.querySelectorAll(BABEL_TRANSCRIPT_ROW_SELECTOR));
   };
 
 
-  helper.getRowTextarea = function getRowTextarea(row) {
-    return row ? row.querySelector(helper.config.rowTextareaSelector) : null;
-  };
+  helper.getRowEditor = getEditorControl;
 
 
   helper.getRowTextValue = function getRowTextValue(row) {
-    const textarea = helper.getRowTextarea(row);
-    return textarea instanceof HTMLTextAreaElement ? textarea.value || '' : '';
+    return row instanceof HTMLElement ? readTurnState(row)?.text ?? '' : '';
   };
 
 
-  helper.getActiveRowTextarea = function getActiveRowTextarea() {
-    const active = document.activeElement;
-    return active instanceof HTMLTextAreaElement && active.matches(helper.config.rowTextareaSelector)
-      ? active
-      : null;
+  helper.getActiveRowEditor = function getActiveRowEditor() {
+    return getEditorControlFromTarget(document.activeElement);
   };
 
 
-  function getReactInternalValue(element, prefix) {
-    if (!(element instanceof HTMLElement)) {
-      return null;
-    }
-
-    for (const name of Object.getOwnPropertyNames(element)) {
-      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
-        return element[name];
-      }
-    }
-
-    return null;
-  }
-
-
-  function getReactFiber(element) {
-    return getReactInternalValue(element, '__reactFiber$');
-  }
 
 
   helper.getRowIdentity = function getRowIdentity(row) {
@@ -56,66 +31,27 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
       return null;
     }
 
-    const identity = {
-      annotationId: null,
-      processedRecordingId: null,
-      trackLabel: '',
-      speakerKey: '',
-      isActive: false,
-      startText: '',
-      endText: ''
+    const annotationId = row.dataset.annotationId;
+    if (!annotationId) return null;
+    const snapshot = readTurnIdentity(row);
+    if (!snapshot) return null;
+    const speaker = row.querySelector('select[id^="speaker-"]');
+    const processedRecordingId = snapshot?.processedRecordingId || speaker?.value || null;
+    const formatTime = (seconds) => Number.isFinite(seconds)
+      ? `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}`
+      : '';
+    return {
+      annotationId,
+      reviewActionId: snapshot?.reviewActionId || '',
+      processedRecordingId,
+      trackLabel: snapshot?.trackLabel || snapshot?.speakerLabel || speaker?.selectedOptions?.[0]?.textContent?.trim() || '',
+      speakerKey: processedRecordingId || snapshot?.speakerKey || '',
+      isActive: snapshot.isActive ?? isBabelActiveRowClassList(row.classList),
+      startSeconds: snapshot?.startSeconds ?? null,
+      endSeconds: snapshot?.endSeconds ?? null,
+      startText: snapshot?.startText || formatTime(snapshot?.startSeconds),
+      endText: snapshot?.endText || formatTime(snapshot?.endSeconds)
     };
-
-    const startCell = row.children[2];
-    const endCell = row.children[3];
-    identity.startText = startCell instanceof HTMLElement ? helper.normalizeText(startCell) : '';
-    identity.endText = endCell instanceof HTMLElement ? helper.normalizeText(endCell) : '';
-
-    let fiber = getReactFiber(row);
-    if (!fiber) {
-      const textarea = helper.getRowTextarea(row);
-      fiber = getReactFiber(textarea);
-    }
-
-    let current = fiber;
-    let depth = 0;
-    while (current && typeof current === 'object' && depth < 12) {
-      const props = current.memoizedProps;
-      if (props && typeof props === 'object' && typeof props.isActive === 'boolean') {
-        identity.isActive = props.isActive;
-      }
-
-      const annotation =
-        props && typeof props === 'object' && props.annotation && typeof props.annotation === 'object'
-          ? props.annotation
-          : null;
-      if (annotation && typeof annotation.id === 'string' && annotation.id) {
-        identity.annotationId = annotation.id;
-        identity.processedRecordingId =
-          annotation.processedRecordingId != null ? String(annotation.processedRecordingId) : null;
-        identity.trackLabel =
-          typeof annotation.trackLabel === 'string' ? annotation.trackLabel.trim() : '';
-        identity.speakerKey =
-          identity.processedRecordingId ||
-          identity.trackLabel ||
-          (row.children[1] instanceof HTMLElement ? helper.normalizeText(row.children[1]) : '');
-        break;
-      }
-
-      current = current.return;
-      depth += 1;
-    }
-
-    if (!identity.speakerKey) {
-      identity.speakerKey =
-        (row.children[1] instanceof HTMLElement ? helper.normalizeText(row.children[1]) : '') || '';
-    }
-
-    if (!identity.annotationId && !identity.startText && !identity.endText && !identity.speakerKey) {
-      return null;
-    }
-
-    return identity;
   };
 
 
@@ -155,7 +91,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
       index += direction
     ) {
       const candidate = rows[index];
-      if (!(candidate instanceof HTMLTableRowElement)) {
+      if (!(candidate instanceof HTMLElement)) {
         continue;
       }
 
@@ -232,7 +168,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
     }
 
     const rowIdentity = helper.getRowIdentity(row);
-    if (!rowIdentity) {
+    if (!rowIdentity || (identity.reviewActionId && identity.reviewActionId !== rowIdentity.reviewActionId)) {
       return false;
     }
 
@@ -273,7 +209,8 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
     if (identity.annotationId) {
       const byAnnotation = rows.find((row) => {
         const rowIdentity = helper.getRowIdentity(row);
-        return rowIdentity && rowIdentity.annotationId === identity.annotationId;
+        return rowIdentity && rowIdentity.annotationId === identity.annotationId &&
+          (!identity.reviewActionId || identity.reviewActionId === rowIdentity.reviewActionId);
       });
       if (byAnnotation) {
         return byAnnotation;
@@ -286,6 +223,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
           const rowIdentity = helper.getRowIdentity(row);
           return (
             rowIdentity &&
+            (!identity.reviewActionId || identity.reviewActionId === rowIdentity.reviewActionId) &&
             (
               !identity.speakerKey ||
               !rowIdentity.speakerKey ||
@@ -308,8 +246,8 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
     const active = document.activeElement;
     if (active instanceof HTMLElement) {
-      const activeRow = active.closest('tr');
-      if (activeRow && activeRow.querySelector(helper.config.rowTextareaSelector)) {
+      const activeRow = active.closest(BABEL_TRANSCRIPT_ROW_SELECTOR);
+      if (activeRow) {
         helper.setCurrentRow(activeRow);
         return activeRow;
       }
@@ -372,8 +310,8 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
     const settings = options || {};
     const active = document.activeElement;
     if (active instanceof HTMLElement) {
-      const activeRow = active.closest('tr');
-      if (activeRow && activeRow.querySelector(helper.config.rowTextareaSelector)) {
+      const activeRow = active.closest(BABEL_TRANSCRIPT_ROW_SELECTOR);
+      if (activeRow) {
         helper.setCurrentRow(activeRow);
         return activeRow;
       }
@@ -440,8 +378,8 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
       return false;
     }
 
-    const textarea = helper.getRowTextarea(row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const editor = helper.getRowEditor(row);
+    if (!editor || editor.readOnly) {
       return false;
     }
 
@@ -452,40 +390,11 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
         behavior: 'smooth'
       });
     }
-    // A native row click can reset the playhead; focus restoration must pass activateRow: false.
-    if (!options || options.activateRow !== false) {
-      row.dispatchEvent(
-        new MouseEvent('click', {
-          bubbles: true,
-          cancelable: true,
-          view: window
-        })
-      );
-    }
-    textarea.focus({
-      preventScroll: true
-    });
-
-    try {
-      if (options && typeof options.selectionStart === 'number') {
-        const end =
-          typeof options.selectionEnd === 'number' ? options.selectionEnd : options.selectionStart;
-        textarea.setSelectionRange(
-          options.selectionStart,
-          end,
-          typeof options.direction === 'string' ? options.direction : 'none'
-        );
-      } else if (options && options.cursor === 'start') {
-        textarea.setSelectionRange(0, 0);
-      } else {
-        const end = textarea.value.length;
-        textarea.setSelectionRange(end, end);
-      }
-    } catch (_error) {
-      // Ignore selection errors from browsers that reject the call mid-render.
-    }
-
-    return true;
+    if (!editor.focus({ preventScroll: true, activateRow: options?.activateRow !== false })) return false;
+    const start = typeof options?.selectionStart === 'number'
+      ? options.selectionStart
+      : options?.cursor === 'start' ? 0 : editor.value.length;
+    return editor.setSelectionRange(start, typeof options?.selectionEnd === 'number' ? options.selectionEnd : start, options?.direction || 'none');
   };
 
 

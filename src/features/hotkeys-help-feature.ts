@@ -9,6 +9,15 @@ export function registerHotkeysHelpService(helper: any) {
   }
 
   helper.__hotkeysRegistered = true;
+  const resizedHosts = new Map();
+  helper.clearHotkeysHelp = function clearHotkeysHelp() {
+    document.querySelectorAll('[' + helper.config.hotkeysHelpMarker + ']').forEach((node) => node.remove());
+    for (const [host, previous] of resizedHosts) {
+      if (host.style.overflowY === 'auto') host.style.overflowY = previous.overflowY;
+      if (host.style.maxHeight === 'min(80vh, calc(100vh - 96px))') host.style.maxHeight = previous.maxHeight;
+    }
+    resizedHosts.clear();
+  };
 
   helper.findHotkeysHosts = function findHotkeysHosts() {
     const candidates = Array.from(
@@ -95,6 +104,13 @@ export function registerHotkeysHelpService(helper: any) {
   };
 
   helper.enhanceHotkeysDialog = function enhanceHotkeysDialog() {
+    if (helper.settings?.features?.hotkeysHelp === false) {
+      helper.clearHotkeysHelp();
+      return;
+    }
+    for (const host of resizedHosts.keys()) {
+      if (!host.isConnected) resizedHosts.delete(host);
+    }
     for (const host of helper.findHotkeysHosts()) {
       if (!(host instanceof HTMLElement)) continue;
       const existing = host.querySelector('[' + helper.config.hotkeysHelpMarker + ']');
@@ -108,6 +124,12 @@ export function registerHotkeysHelpService(helper: any) {
         host.querySelector('[class*="max-h"]') ||
         host;
       if (contentTarget instanceof HTMLElement) {
+        if (!resizedHosts.has(contentTarget)) {
+          resizedHosts.set(contentTarget, {
+            overflowY: contentTarget.style.overflowY,
+            maxHeight: contentTarget.style.maxHeight
+          });
+        }
         contentTarget.style.overflowY = 'auto';
         contentTarget.style.maxHeight = 'min(80vh, calc(100vh - 96px))';
       }
@@ -123,6 +145,15 @@ export function createHotkeysHelpFeature(): FeatureModule {
       if (!Array.isArray(ctx.config.hotkeysHelpRows)) {
         ctx.config.hotkeysHelpRows = [];
       }
+    },
+    activate(ctx) {
+      ctx.helper.enhanceHotkeysDialog();
+    },
+    deactivate(ctx) {
+      ctx.helper.clearHotkeysHelp();
+    },
+    stop(ctx) {
+      ctx.helper.clearHotkeysHelp();
     }
   };
 }

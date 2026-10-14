@@ -1,6 +1,8 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
+import { rows as nativeRows } from '@nominy/babel-extension-e2e/native-helpers';
 
-const TEXT = 'textarea[placeholder="What was said…"]';
+import { transcriptSelector as TEXT, readRows as rows, fillText } from './helper-editing-utils.mjs';
+import { selectedAudioReady, fitNativeTimeline as fit } from './native-audio-utils.mjs';
 const HOST = '[data-babel-helper-minimap-host]';
 const PREVIEW = '[data-babel-helper-cut-preview]';
 const ZOOM = '[role="slider"][data-orientation="horizontal"][aria-valuemin="10"][aria-valuemax="2000"]';
@@ -8,16 +10,6 @@ const TOLERANCE = 0.12; // Native timestamp quantization and pointer placement.
 
 test.use({ extensions: ['helper', 'gold'] });
 
-async function rows(page) {
-  return page.locator('tbody tr').evaluateAll((elements) => elements.filter((row) => row.querySelector('textarea[placeholder="What was said…"]')).map((row) => {
-    const seconds = (cell) => {
-      const match = cell?.textContent?.match(/\d+(?::\d+)+(?:\.\d+)?/);
-      if (!match) throw new Error(`Missing native timestamp: ${cell?.textContent}`);
-      return match[0].split(':').reduce((sum, part) => sum * 60 + Number(part), 0);
-    };
-    return { speaker: row.children[1].textContent.trim(), start: seconds(row.children[2]), end: seconds(row.children[3]), text: row.querySelector('textarea').value };
-  }));
-}
 
 async function ready(page, count = 4) {
   await expect(page.locator(TEXT)).toHaveCount(count);
@@ -29,29 +21,12 @@ async function ready(page, count = 4) {
     await expect(canvas).toHaveAttribute('width', /^[1-9]\d*$/);
   }
   await expect(page.locator(ZOOM)).toBeVisible();
+  await selectedAudioReady(page);
 }
 
-async function fit(page) {
-  const scroll = page.locator('[part="scroll"]').first();
-  const duration = (await media(page))[0].duration;
-  const visibleWidth = await scroll.evaluate((element) => element.clientWidth);
-  await page.locator(ZOOM).focus();
-  await page.keyboard.press('Home');
-  await expect(page.locator(ZOOM)).toHaveAttribute('aria-valuenow', '10');
-  // Native minimum zoom is 10px/s, not "fit": short tracks otherwise have
-  // overlapping handle hit areas and sub-threshold cut-selection distances.
-  const value = Math.max(10, visibleWidth * 0.8 / duration);
-  if (value > 10) {
-    const track = page.locator('[data-orientation="horizontal"]').filter({ has: page.locator(ZOOM) }).first();
-    const box = await track.boundingBox();
-    await track.click({ position: { x: box.width * (value - 10) / 1990, y: box.height / 2 } });
-  }
-  await expect.poll(() => scroll.locator('[part="wrapper"]').evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(visibleWidth * 0.5);
-  await expect.poll(() => scroll.locator('[part="wrapper"]').evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(visibleWidth);
-}
 
 async function pointAt(page, seconds, lane = 0, duration = 12) {
-  const wrapper = page.locator('[part="scroll"]').nth(lane).locator('[part="wrapper"]');
+  const wrapper = page.locator('[part="scroll"]').nth(lane).locator(':scope > [part="wrapper"]');
   const box = await wrapper.boundingBox();
   expect(box, 'Decoded WaveSurfer wrapper must have actual browser geometry').not.toBeNull();
   const point = { x: box.x + box.width * seconds / duration, y: box.y + box.height * 0.55 };
@@ -106,24 +81,56 @@ test('edge drag shows a decoded 3x magnifier and commits the native timestamp', 
   await ready(page);
   await fit(page);
   const before = await rows(page);
-  const edge = page.locator(HOST).first().locator('[part~="region-handle-right"]').first();
-  const edgeBox = await edge.boundingBox();
-  const target = await pointAt(page, 2.2);
-  await page.mouse.move(edgeBox.x + edgeBox.width / 2, edgeBox.y + edgeBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(target.x, target.y, { steps: 12 });
+  const sourceRegion = page.locator(HOST).first().locator('[part~="region"]').first();
+  const regionId = await sourceRegion.evaluate(element =>
+    element.getAttribute('part').split(/\s+/).find(token => token !== 'region'));
   const magnifier = page.locator('[data-babel-helper-magnifier]');
-  await expect(magnifier).toBeVisible();
-  await expect(magnifier).toContainText(/3x @/);
-  await expect(magnifier.locator('canvas').first()).toBeVisible();
-  await test.info().attach('native-edge-magnifier', { body: await page.screenshot(), contentType: 'image/png' });
-  await page.mouse.up();
-  await expect(magnifier).toHaveCount(0);
-  await expect.poll(async () => Math.abs((await rows(page))[0].end - 2.2)).toBeLessThan(TOLERANCE);
-  const after = await rows(page);
-  expect(after[0].start).toBe(before[0].start);
-  expect(after[0].text).toBe(before[0].text);
-  expect(after.slice(1)).toEqual(before.slice(1));
+
+  for (const { side, field, times } of [
+    { side: 'right', field: 'end', times: [2, 2.2] },
+    { side: 'left', field: 'start', times: [0.7, 0.9] }
+  ]) {
+    const edge = sourceRegion.locator(`[part~="region-handle-${side}"]`);
+    const edgeBox = await edge.boundingBox();
+    await page.mouse.move(edgeBox.x + edgeBox.width / 2, edgeBox.y + edgeBox.height / 2);
+    await page.mouse.down();
+    for (const seconds of times) {
+      const target = await pointAt(page, seconds);
+      await page.mouse.move(target.x, target.y, { steps: 12 });
+      await expect(magnifier).toBeVisible();
+      await expect(magnifier).toContainText(/3x @/);
+      await expect(magnifier.locator('canvas').first()).toBeVisible();
+      // Both live updates happen before pointerup. Annotation times and native
+      // tooltip labels still describe the committed region during this drag.
+      await expect.poll(async () => {
+        const time = Number((await magnifier.textContent()).match(/@\s+([\d.]+)s/)?.[1]);
+        return Math.abs(time - seconds);
+      }).toBeLessThan(TOLERANCE);
+      const rendered = magnifier.locator(`[data-babel-helper-magnifier-region="${regionId}"]`);
+      await expect(rendered).toHaveCount(1);
+      await expect.poll(() => rendered.evaluate((element, side) => {
+        const region = element.getBoundingClientRect();
+        const viewport = element.parentElement.getBoundingClientRect();
+        const boundary = side === 'left' ? region.left : region.right;
+        return Math.abs(boundary - (viewport.left + viewport.width / 2));
+      }, side)).toBeLessThan(2);
+      expect(await rows(page)).toEqual(before);
+    }
+    await test.info().attach(`native-${side}-edge-magnifier`, {
+      body: await page.screenshot(), contentType: 'image/png'
+    });
+    await page.mouse.up();
+    await expect(magnifier).toHaveCount(0);
+    await expect.poll(async () => Math.abs((await rows(page))[0][field] - times.at(-1))).toBeLessThan(TOLERANCE);
+    const after = await rows(page);
+    expect(after[0][field === 'start' ? 'end' : 'start']).toBe(before[0][field === 'start' ? 'end' : 'start']);
+    expect(after[0].text).toBe(before[0].text);
+    expect(after.slice(1)).toEqual(before.slice(1));
+    // A single native undo must restore the full drag, not one pointer step.
+    await page.locator(ZOOM).focus();
+    await page.keyboard.press('Control+KeyZ');
+    await expect.poll(() => rows(page)).toEqual(before);
+  }
 });
 
 test('Alt-click adjusts only the nearest boundary without making a cut preview', async ({ page }) => {
@@ -183,6 +190,10 @@ test('S cuts a real region, preserves text once, and native merge restores one r
   await expect(page.locator(TEXT)).toHaveCount(4);
   await expect(page.locator(PREVIEW)).toHaveCount(0);
   await expect.poll(async () => (await rows(page)).slice(0, 2).map((row) => row.text).join(' ').replace(/\s+/g, ' ').trim()).toBe(before[0].text);
+  await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().annotations
+    .filter(annotation => annotation.processedRecordingId === 'speaker-1')
+    .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds)
+    .map(annotation => annotation.content).join(' ').replace(/\s+/g, ' ').trim())).toBe(before[0].text);
   const split = await rows(page);
   expect(Math.abs(split[0].end - 2)).toBeLessThan(TOLERANCE);
   expect(Math.abs(split[1].start - 3.3)).toBeLessThan(TOLERANCE);
@@ -190,8 +201,15 @@ test('S cuts a real region, preserves text once, and native merge restores one r
   await page.locator(TEXT).first().click();
   await page.keyboard.press('Alt+Shift+ArrowDown');
   await expect(page.locator(TEXT)).toHaveCount(3);
-  // Row removal and the surviving controlled textarea can commit separately.
+  // Row removal and the surviving native editor can commit separately.
   await expect.poll(async () => (await rows(page))[0]).toEqual(before[0]);
+  await page.locator(ZOOM).focus();
+  await page.keyboard.press('Control+KeyZ');
+  await expect(page.locator(TEXT)).toHaveCount(4);
+  await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().annotations
+    .filter(annotation => annotation.processedRecordingId === 'speaker-1')
+    .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds)
+    .map(annotation => annotation.content))).toEqual(split.slice(0, 2).map(row => row.text));
 });
 
 test('Shift+S keeps native duplicated text while cutting, and a fully covered region is deleted', async ({ page, babel }) => {
@@ -228,7 +246,7 @@ test('waveform scale exceeds 20x, persists, and remains patched after native edi
   await input.fill('33');
   await input.press('Enter');
   await expect(scale).toHaveAttribute('aria-valuenow', '33');
-  await page.locator(TEXT).first().fill('Проверка масштаба после изменения текста.');
+  await fillText(page.locator(TEXT).first(), 'Проверка масштаба после изменения текста.');
   await expect(scale).toHaveAttribute('aria-valuemax', '1000');
   await expect(scale).toHaveAttribute('aria-valuenow', '33');
   const options = await babel.options('helper');
@@ -302,7 +320,7 @@ test('long-track minimap navigates both ends without losing region tooltips or t
 
 test('read-only timeline rejects every mutating Helper gesture', async ({ page, babel }) => {
   await babel.reset('readonly');
-  await expect(page.locator(TEXT)).toHaveCount(4);
+  await expect(nativeRows(page)).toHaveCount(4);
   await expect(page.locator('[part="scroll"]')).toHaveCount(2);
   await expect.poll(async () => (await media(page)).filter((track) => track.duration === 12).length).toBe(2);
   await fit(page);

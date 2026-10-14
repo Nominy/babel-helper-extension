@@ -28,12 +28,13 @@ function getBridgeBundle() {
 }
 
 // Boots the page-world bridge against a bare window whose fetch is a counting fake.
-// Timeouts are recorded, never fired; intervals are recorded so a test can tick them, since
-// any periodic re-patching of window.fetch is exactly what a stacked wrapper must survive.
-async function bootLinterBridgeOverNativeFetch() {
+// Timers are recorded so tests can explicitly tick publication or exercise the
+// fetch wrapper without starting periodic work.
+async function bootLinterBridgeOverNativeFetch(options = {}) {
   let linter;
   const calls = { native: 0 };
-  const timeouts = [];
+  const timeouts = new Map();
+  let timeoutId = 0;
   const intervals = [];
   const nativeResponse = { native: true };
   const window = new EventTarget();
@@ -47,16 +48,17 @@ async function bootLinterBridgeOverNativeFetch() {
     },
     location: { origin: 'https://babel.test', pathname: '/transcription/RU-tx-gold', search: '' },
     history: {},
-    setTimeout(callback) {
-      return timeouts.push(callback);
+    setTimeout(callback, delay) {
+      timeouts.set(++timeoutId, { callback, delay });
+      return timeoutId;
     },
-    clearTimeout() {},
+    clearTimeout(id) { timeouts.delete(id); },
     setInterval(callback) {
       return intervals.push(callback);
     },
     clearInterval() {}
   });
-  const document = {
+  const document = options.document || {
     body: null,
     getElementById: () => null,
     querySelector: () => null,
@@ -66,11 +68,13 @@ async function bootLinterBridgeOverNativeFetch() {
     'window',
     'document',
     'HTMLElement',
+    'Element',
     'MutationObserver',
     'IntersectionObserver',
     await getBridgeBundle()
   );
-  runBridge(window, document, class HTMLElement {}, undefined, undefined);
+  const ElementClass = options.Element || class HTMLElement {};
+  runBridge(window, document, ElementClass, ElementClass, options.MutationObserver, undefined);
   assert.ok(window.__babelHelperLinterBridge, 'bridge did not boot');
 
   return {
@@ -78,6 +82,18 @@ async function bootLinterBridgeOverNativeFetch() {
     linter,
     calls,
     nativeResponse,
+    tickTimeouts(delay) {
+      for (const [id, timer] of [...timeouts]) {
+        if (timer.delay !== delay || !timeouts.has(id)) continue;
+        timeouts.delete(id);
+        timer.callback();
+      }
+    },
+    tickLatestTimeout() {
+      const [id, timer] = [...timeouts].at(-1);
+      timeouts.delete(id);
+      timer.callback();
+    },
     tickIntervals() {
       for (const callback of intervals) {
         callback();
@@ -85,6 +101,121 @@ async function bootLinterBridgeOverNativeFetch() {
     }
   };
 }
+
+function nativeLintFixture() {
+  const rowSelector = 'section[data-annotation-id]';
+  const observers = [];
+  class Element {
+    constructor(row = null) { this.row = row; }
+    matches(selector) { return this === row && selector === rowSelector; }
+    closest(selector) { return selector === rowSelector ? this.row : null; }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+  }
+  const row = new Element();
+  row.row = row;
+  const cardList = new Element(row);
+  const annotationsRef = { current: [] };
+  const annotationHook = { memoizedState: [], queue: { dispatch() { throw new Error('Lint must not edit annotations'); } } };
+  const dirtyHook = { memoizedState: false, queue: { dispatch() { throw new Error('Lint must not mark text dirty'); } } };
+  const lintHook = { memoizedState: [], queue: { lastRenderedState: [] } };
+  const versionHook = { memoizedState: 0, queue: { dispatch() {} } };
+  const refHook = { memoizedState: annotationsRef };
+  annotationHook.next = dirtyHook;
+  dirtyHook.next = lintHook;
+  lintHook.next = versionHook;
+  versionHook.next = refHook;
+  const transcript = { memoizedProps: { turns: [], handlers: { onChangeText() {} }, readOnly: false } };
+  const panel = { memoizedProps: {
+    annotations: [], tracks: [], saveState: {}, renderTranscript() {}, onSave() {}, readOnly: false,
+  }, child: transcript };
+  const props = { reviewActionId: 'task', transcriptionChunkProcessedRecordings: [] };
+  const owner = { memoizedProps: props, memoizedState: annotationHook, child: panel };
+  const root = { child: owner };
+  root.stateNode = { current: root };
+  owner.return = root;
+  panel.return = owner;
+  transcript.return = panel;
+  const seed = { __reactFiber$native: owner };
+  const document = {
+    body: new Element(),
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: selector => selector === 'main, [data-transcript-scroll]' ? [seed] : [],
+  };
+  class MutationObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe(target, options) { this.options = options; }
+    disconnect() { this.options = null; }
+    takeRecords() { return []; }
+  }
+  function renderIssues(action) {
+    lintHook.memoizedState = typeof action === 'function' ? action(lintHook.memoizedState) : action;
+    lintHook.queue.lastRenderedState = lintHook.memoizedState;
+    versionHook.memoizedState += 1;
+    for (const observer of observers) {
+      if (observer.options?.characterData) observer.callback([{
+        type: 'childList', target: cardList, addedNodes: [new Element(row)], removedNodes: [],
+      }]);
+    }
+  }
+  lintHook.queue.dispatch = renderIssues;
+  function setText(text) {
+    const annotations = [{ id: 'turn', reviewActionId: props.reviewActionId, type: 'transcription', content: text }];
+    annotationHook.memoizedState = annotations;
+    annotationsRef.current = annotations;
+    panel.memoizedProps.annotations = annotations;
+    transcript.memoizedProps.turns = annotations;
+  }
+  setText('Да — нет.');
+  return {
+    document, Element, MutationObserver, props, panel, transcript, lintHook, renderIssues, setText,
+    get issues() { return lintHook.memoizedState; },
+    get annotations() { return annotationHook.memoizedState; },
+  };
+}
+
+test('native lint publishes without controller memo state and repairs retained native setter renders', async () => {
+  const fixture = nativeLintFixture();
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  const rule = bridge.linter.getRules().find(rule => rule.id === 'unicode-dashes');
+  bridge.linter.configure({ disabledCustomLinterRuleIds: bridge.linter.getRules().filter(item => item.id !== rule.id).map(item => item.id) });
+  bridge.linter.setEnabled(true);
+  bridge.tickTimeouts(1750);
+  assert.equal(fixture.issues.length, 1);
+  assert.equal(fixture.issues[0].reason, rule.reason);
+  assert.equal(fixture.issues[0].babelHelper.sourceText, 'Да — нет.');
+  const originalAnnotations = fixture.annotations;
+  const nativeIssue = { annotationId: 'turn', reason: 'Native diagnostic', severity: 'error' };
+  fixture.renderIssues([nativeIssue]);
+  bridge.tickLatestTimeout();
+  assert.deepEqual(fixture.issues.map(issue => issue.reason), [nativeIssue.reason, rule.reason]);
+  assert.equal(fixture.issues[0], nativeIssue);
+  assert.equal(fixture.annotations, originalAnnotations, 'publication must not change native text or undo state');
+
+  fixture.setText('Да - нет.');
+  fixture.renderIssues([nativeIssue]);
+  bridge.tickLatestTimeout();
+  assert.deepEqual(fixture.issues, [nativeIssue], 'current clean text invalidates Helper issues');
+
+  fixture.setText('Да — нет.');
+  fixture.panel.memoizedProps.readOnly = true;
+  fixture.renderIssues([]);
+  bridge.tickLatestTimeout();
+  assert.equal(fixture.issues[0].reason, rule.reason, 'readonly transcripts still display diagnostics without edits');
+  assert.equal(bridge.window.__babelHelperLinterBridge.applyAllFixes('Да — нет.'), 'Да - нет.');
+  const previousTaskDispatch = fixture.lintHook.queue.dispatch;
+  fixture.props.reviewActionId = 'next-task';
+  fixture.setText('Да — нет.');
+  previousTaskDispatch([]);
+  assert.deepEqual(fixture.issues, [], 'a retained previous-task dispatch must not inject current-task issues');
+  bridge.tickLatestTimeout();
+  assert.equal(fixture.issues[0].reviewActionId, 'next-task');
+  bridge.linter.configure({ disabledCustomLinterRuleIds: bridge.linter.getRules().map(item => item.id) });
+  bridge.tickTimeouts(1750);
+  assert.deepEqual(fixture.issues, [], 'disabled rules stay disabled');
+  assert.equal(bridge.window.__babelHelperLinterBridge.applyAllFixes('Да — нет.'), 'Да — нет.');
+});
 
 test('shipped lint rules detect invalid text and accept valid text through the page service', async () => {
   const { linter } = await bootLinterBridgeOverNativeFetch();
@@ -129,6 +260,9 @@ test('lint issues keep annotation identity and exact highlighted word ranges', a
   assert.deepEqual(highlighted[0].babelHelper.matches, [
     { start: 0, end: 3, text: 'Всё' }, { start: 5, end: 8, text: 'угу' }
   ]);
+  assert.deepEqual(highlighted[0].highlights, [
+    { start: 0, end: 3 }, { start: 5, end: 8 }
+  ], 'native turn decorations receive raw-text offsets, not only Helper tooltip metadata');
 });
 
 test('highlighted vocabulary matches comma-containing phrases as single entries', async () => {
@@ -312,7 +446,7 @@ async function bootLinterBridgeForFeedbackDraft({ fiberMounted = true } = {}) {
     return: rootFiber,
     child: null,
     sibling: null,
-    memoizedProps: { reviewActionId: 'review-1', annotations: [], linterErrors: [] },
+    memoizedProps: { reviewActionId: 'review-1', transcriptionChunkProcessedRecordings: [], annotations: [], linterErrors: [] },
     memoizedState: hooks[0]
   };
   const seedFiber = { return: reviewFiber, child: null, sibling: null, memoizedProps: {}, memoizedState: null };
@@ -324,7 +458,7 @@ async function bootLinterBridgeForFeedbackDraft({ fiberMounted = true } = {}) {
     body: null,
     getElementById: () => null,
     querySelector: () => (fiberMounted ? seed : null),
-    querySelectorAll: () => []
+    querySelectorAll: selector => (fiberMounted && selector.split(',').some(part => part.trim() === 'main') ? [seed] : [])
   };
 
   const runBridge = new Function(
@@ -341,6 +475,8 @@ async function bootLinterBridgeForFeedbackDraft({ fiberMounted = true } = {}) {
 
   return {
     window,
+    document,
+    get upstreamCalls() { return upstream.length; },
     clock,
     get debug() {
       return window.__babelHelperLinterBridge.debug.feedbackDraftRestore;
@@ -473,6 +609,46 @@ test('feedback draft restore passes through when disabled, releasing holds alrea
   assert.equal(await settledState(reenabled.response), 'pending');
 });
 
+test('Helper releases only its feedback gate owner while another bundled extension still awaits native definitions', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  // A separately bundled runtime mirrors two installed extension MAIN worlds:
+  // sharing the singleton must not depend on ESM module identity.
+  const bundle = await build({
+    stdin: {
+      contents: "export { acquireFeedbackDraftGate } from '@nominy/babel-babel-runtime';",
+      resolveDir: path.resolve('.'),
+      sourcefile: 'other-feedback-owner.mjs'
+    },
+    bundle: true, write: false, format: 'iife', globalName: 'FeedbackGateTestExports',
+    platform: 'browser', target: 'chrome114', logLevel: 'silent'
+  });
+  const acquire = new Function('window', 'document', 'Date',
+    `${bundle.outputFiles[0].text}\nreturn FeedbackGateTestExports.acquireFeedbackDraftGate;`)(
+      bridge.window, bridge.document, { now: () => bridge.clock.now });
+  const review = acquire('review-test', true);
+  const definitions = await bridge.requestDefinitions();
+  const draft = await bridge.requestDraft();
+  const response = { ok: true, draft: 'shared-owner' };
+  draft.upstream.resolve(response);
+  assert.equal(await settledState(draft.response), 'pending');
+  bridge.window.dispatchEvent(new CustomEvent(LINTER_CONFIG_EVENT, { detail: { feedbackDraftRestoreEnabled: false } }));
+  assert.equal(bridge.debug.enabled, false);
+  assert.equal(await settledState(draft.response), 'pending', 'Review must retain its independent active gate');
+  bridge.window.__babelHelperLinterBridge.dispose();
+  definitions.upstream.resolve({ ok: true });
+  bridge.commitDefinitions();
+  await bridge.tick();
+  assert.equal(await released(draft.response), response);
+  assert.equal(review.getDiagnostics().last.reason, 'committed');
+  assert.equal(bridge.upstreamCalls, 2, 'wrappers must issue each native request exactly once');
+  review.dispose();
+  const passthrough = await bridge.requestDraft();
+  const afterDispose = { ok: true, draft: 'after-last-owner' };
+  passthrough.upstream.resolve(afterDispose);
+  assert.equal(await released(passthrough.response), afterDispose);
+  assert.equal(bridge.upstreamCalls, 3);
+});
+
 test('feedback draft restore never holds once the definitions are already committed', async () => {
   const bridge = await bootLinterBridgeForFeedbackDraft();
   const definitions = await bridge.requestDefinitions();
@@ -487,6 +663,20 @@ test('feedback draft restore never holds once the definitions are already commit
   assert.equal(bridge.debug.pendingHolds, 0);
   assert.equal(bridge.debug.last.reason, 'committed');
   assert.equal(bridge.debug.last.heldMs, 0);
+});
+
+test('feedback draft response is released untouched when navigation replaces its task', async () => {
+  const bridge = await bootLinterBridgeForFeedbackDraft();
+  await bridge.requestDefinitions();
+  const draft = await bridge.requestDraft();
+  const response = { ok: true, draft: 'old-task' };
+  draft.upstream.resolve(response);
+  assert.equal(await settledState(draft.response), 'pending');
+  bridge.window.location.pathname = '/transcription/another-task';
+  await bridge.tick();
+  assert.equal(await released(draft.response), response);
+  assert.equal(bridge.debug.last.reason, 'stale-task');
+  assert.equal(bridge.debug.pendingHolds, 0);
 });
 
 test('fixes native Babel-style leading and trailing spaces', async () => {

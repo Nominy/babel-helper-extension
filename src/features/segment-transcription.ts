@@ -13,9 +13,9 @@ export function registerSegmentTranscription(helper: any, api: Pick<TimelineModu
       return { ok: false, reason: 'missing-current-segment' };
     }
 
-    const textarea = helper.getRowTextarea(target.row);
-    if (!(textarea instanceof HTMLTextAreaElement)) {
-      return { ok: false, reason: 'missing-current-textarea' };
+    const editor = helper.getRowEditor(target.row);
+    if (!editor || editor.readOnly) {
+      return { ok: false, reason: editor?.readOnly ? 'read-only' : 'missing-current-editor' };
     }
     if (api.segmentation.normalizeAutoSegmentRedistributionText(helper.getRowTextValue(target.row))) {
       return { ok: false, reason: 'segment-not-empty' };
@@ -74,7 +74,7 @@ export function registerSegmentTranscription(helper: any, api: Pick<TimelineModu
           const currentRow = typeof helper.getCurrentActionRow === 'function'
             ? helper.getCurrentActionRow({ allowFallback: false })
             : api.site.findCurrentSegmentTarget()?.row;
-          if (!(currentRow instanceof HTMLTableRowElement)) return null;
+          if (!(currentRow instanceof HTMLElement)) return null;
           if (
             typeof helper.rowMatchesIdentity === 'function' &&
             !helper.rowMatchesIdentity(currentRow, identity)
@@ -85,11 +85,11 @@ export function registerSegmentTranscription(helper: any, api: Pick<TimelineModu
         },
         isRowEmpty: (row) =>
           !api.segmentation.normalizeAutoSegmentRedistributionText(helper.getRowTextValue(row)) &&
-          !api.segmentation.normalizeAutoSegmentRedistributionText(helper.getRowTextarea(row)?.value || ''),
+          !api.segmentation.normalizeAutoSegmentRedistributionText(helper.getRowEditor(row)?.value || ''),
         writeRowText: (row, text) => {
-          const currentTextarea = helper.getRowTextarea(row);
-          return currentTextarea instanceof HTMLTextAreaElement
-            ? helper.setEditableValue(currentTextarea, text)
+          const currentEditor = helper.getRowEditor(row);
+          return currentEditor && !currentEditor.readOnly
+            ? helper.setEditableValue(currentEditor, text)
             : false;
         }
       });

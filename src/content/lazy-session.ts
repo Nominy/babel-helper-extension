@@ -1,5 +1,5 @@
 import type { FeatureContext, FeatureModule } from '../core/types';
-import { getRegisteredFeatureModules } from '../features/registry';
+import { FEATURE_REGISTRATIONS, getRegisteredFeatureModules, type FeatureRegistration } from '../features/registry';
 import type { Scope } from '../mod-platform/scope';
 import { registerRecoveredEditorSnapshotService } from '../services/recovered-editor-snapshot-service';
 import {
@@ -18,6 +18,7 @@ type SessionRuntime = {
   features: FeatureModule[];
   servicesRegistered: boolean;
   serviceScopes: SessionServiceScopes;
+  registeredServices: Set<string>;
   started: boolean;
   sessionActive: boolean;
   activeFeatures: Set<string>;
@@ -40,6 +41,7 @@ function getRuntime(ctx: FeatureContext): SessionRuntime {
       features: [],
       servicesRegistered: false,
       serviceScopes: [],
+      registeredServices: new Set(),
       started: false,
       sessionActive: false,
       activeFeatures: new Set(),
@@ -73,13 +75,13 @@ function reportRuntimeError(ctx: FeatureContext, stage: string, id: string, erro
 
 async function registerSessionServices(ctx: FeatureContext): Promise<boolean> {
   const runtime = getRuntime(ctx);
-  if (runtime.servicesRegistered) {
-    return true;
-  }
 
   const { helper } = ctx;
   let failures = 0;
+  const firstNewScope = runtime.serviceScopes.length;
+  const addedServices: string[] = [];
   const register = (id: string, fn: () => Scope | SessionServiceScopes | void) => {
+    if (runtime.registeredServices.has(id)) return;
     try {
       const owned = fn();
       if (Array.isArray(owned)) {
@@ -87,6 +89,8 @@ async function registerSessionServices(ctx: FeatureContext): Promise<boolean> {
       } else if (owned) {
         runtime.serviceScopes.push(owned as Scope);
       }
+      runtime.registeredServices.add(id);
+      addedServices.push(id);
     } catch (error: unknown) {
       failures += 1;
       reportRuntimeError(ctx, 'service.register', id, error);
@@ -116,10 +120,11 @@ async function registerSessionServices(ctx: FeatureContext): Promise<boolean> {
   runtime.servicesRegistered = failures === 0;
   if (failures > 0) {
     try {
-      await disposeSessionServiceScopes(runtime.serviceScopes, 'service-registration-failed');
+      await disposeSessionServiceScopes(runtime.serviceScopes.splice(firstNewScope), 'service-registration-failed');
     } catch (error: unknown) {
       reportRuntimeError(ctx, 'service.dispose', 'registration-failed', error);
     }
+    for (const id of addedServices) runtime.registeredServices.delete(id);
   }
   helper.perf?.count?.('session.services.registered', { failures });
   return runtime.servicesRegistered;
@@ -178,7 +183,7 @@ export async function ensureSessionRuntime(ctx: FeatureContext, reason = 'sessio
   if (runtime.stopping || runtime.stopped) {
     return false;
   }
-  await registerSessionServices(ctx);
+  if (!await registerSessionServices(ctx)) return false;
 
   if (!runtime.features.length && !runtime.started) {
     runtime.features = getRegisteredFeatureModules(ctx.helper.settings.features);
@@ -212,31 +217,46 @@ function enqueueTransition<T>(runtime: SessionRuntime, operation: () => Promise<
   return result;
 }
 
-async function reconcileAudioEnhancement(ctx: FeatureContext, runtime: SessionRuntime, reason: string) {
-  const permitted = Boolean(ctx.helper.settings.features.audioEnhancement);
-  const existing = runtime.features.find(feature => feature.id === 'audio-enhancement');
-  if (!permitted && existing) {
-    runtime.features = runtime.features.filter(feature => feature !== existing);
-    runtime.activeFeatures.delete(existing.id);
+async function reconcileConfiguredFeatures(
+  ctx: FeatureContext,
+  runtime: SessionRuntime,
+  reason: string,
+  applyActiveSettings: boolean
+) {
+  const desired = (FEATURE_REGISTRATIONS as readonly FeatureRegistration[])
+    .filter(entry => entry.createModule && Boolean(ctx.helper.settings.features[entry.setting.key]) &&
+      isFeatureEnabled(ctx, entry.setting.key))
+    .sort((left, right) => (left.moduleOrder || 0) - (right.moduleOrder || 0));
+  const desiredIds = new Set(desired.map(entry => entry.id));
+  for (const feature of runtime.features.filter(feature => !desiredIds.has(feature.id))) {
+    runtime.features = runtime.features.filter(candidate => candidate !== feature);
+    runtime.activeFeatures.delete(feature.id);
     for (const hook of ['deactivate', 'stop'] as const) {
-      try { await invokeFeatureHook(ctx, existing, hook, reason); }
-      catch (error) { reportRuntimeError(ctx, `feature.${hook}`, existing.id, error); }
+      try { await invokeFeatureHook(ctx, feature, hook, reason); }
+      catch (error) { reportRuntimeError(ctx, `feature.${hook}`, feature.id, error); }
     }
-  } else if (permitted && !existing && runtime.started) {
-    const [feature] = getRegisteredFeatureModules({ audioEnhancement: true });
-    if (!feature) return;
-    runtime.features.unshift(feature);
-    for (const hook of ['load', 'register', 'start'] as const) {
-      await invokeFeatureHook(ctx, feature, hook, reason);
+  }
+
+  for (const [index, registration] of desired.entries()) {
+    if (runtime.stopping || runtime.stopped) return;
+    let feature = runtime.features.find(candidate => candidate.id === registration.id);
+    const added = !feature;
+    if (!feature) {
+      feature = registration.createModule!();
+      runtime.features.splice(index, 0, feature);
+      for (const hook of ['load', 'register', 'start'] as const) {
+        await invokeFeatureHook(ctx, feature, hook, reason);
+      }
     }
-    if (runtime.sessionActive) {
+    if (applyActiveSettings && runtime.sessionActive && !runtime.stopping &&
+        Boolean(ctx.helper.settings.features[registration.setting.key]) &&
+        isFeatureEnabled(ctx, registration.setting.key)) {
+      if (added) await invokeFeatureHook(ctx, feature, 'onLoaded', reason);
+      // Retain the instance and reapply current settings through its existing,
+      // idempotent activation hook rather than reconstructing live features.
       await invokeFeatureHook(ctx, feature, 'activate', reason);
       runtime.activeFeatures.add(feature.id);
     }
-  } else if (permitted && existing && runtime.sessionActive) {
-    // Reapplying enabled settings keeps the existing feature instance.
-    await invokeFeatureHook(ctx, existing, 'activate', reason);
-    runtime.activeFeatures.add(existing.id);
   }
 }
 
@@ -244,7 +264,11 @@ export function reconcileSessionFeatureAccess(ctx: FeatureContext, reason = 'fea
   const runtime = getRuntime(ctx);
   return enqueueTransition(runtime, async () => {
     if (runtime.stopping || runtime.stopped) return;
-    await reconcileAudioEnhancement(ctx, runtime, reason);
+    if (runtime.startPromise) await runtime.startPromise;
+    if (!runtime.started || runtime.stopping || runtime.stopped) return;
+    if (!await registerSessionServices(ctx)) return;
+    await reconcileConfiguredFeatures(ctx, runtime, reason, true);
+    ctx.helper.runtime?.reconcileSessionSettings?.();
   });
 }
 
@@ -296,7 +320,7 @@ export function activateSessionFeatures(ctx: FeatureContext, reason = 'session-r
     }
 
     runtime.sessionActive = true;
-    await reconcileAudioEnhancement(ctx, runtime, reason);
+    await reconcileConfiguredFeatures(ctx, runtime, reason, false);
     await runFeatures(ctx, 'onLoaded', reason);
     for (const feature of runtime.features) {
       if (
@@ -369,6 +393,7 @@ export function stopSessionRuntime(ctx: FeatureContext, reason = 'kernel-stop') 
     }
     runtime.started = false;
     runtime.servicesRegistered = false;
+    runtime.registeredServices.clear();
     runtime.features = [];
     runtime.activeFeatures.clear();
     runtime.stopped = true;

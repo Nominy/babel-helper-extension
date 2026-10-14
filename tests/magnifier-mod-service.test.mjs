@@ -102,7 +102,7 @@ const operationMethods = new Map([
   ['zoom-set', 'setZoomValue'],
   ['waveform-scale-unlock-enable', 'enableWaveformScaleUnlock'],
   ['waveform-scale-unlock-disable', 'disableWaveformScaleUnlock'],
-  ['waveform-scale-set', 'setWaveformScaleByIndex'],
+  ['waveform-scale-set', 'setWaveformScaleByTrackId'],
   ['loop-stop', 'stopLoop'],
   ['seek-source', 'seekSource'],
   ['navigate-source', 'navigateSource'],
@@ -189,15 +189,21 @@ test('page.magnifier keeps every legacy operation late-bound, preserves progress
 
   let requestSequence = 0;
   for (const [operation, method] of operationMethods) {
+    const payload = operation === 'update'
+      ? { instanceId: 'lens-a', regionId: 'region-a', side: 'right', width: 180, height: 80, scale: 3 }
+      : {};
     const id = `request-${requestSequence++}`;
     pageWindow.dispatchEvent(
       new TestCustomEvent('babel-helper-magnifier-request', {
-        detail: { id, operation, payload: {} }
+        detail: { id, operation, payload }
       })
     );
     await new Promise((resolve) => setImmediate(resolve));
     const finalResponse = responses.find((entry) => entry.id === id && 'result' in entry);
     assert.equal(finalResponse?.result?.method, method, `${operation} did not invoke ${method}`);
+    if (operation === 'update') {
+      assert.deepEqual(finalResponse.result.args, ['lens-a', 'region-a', 'right', 180, 80, 3]);
+    }
   }
 
   const transcriptionResponses = responses.filter((entry) => entry.id === 'request-11');
@@ -467,7 +473,14 @@ test('zoom ready waits for the visible wave only and settles without Promise.wit
   const pageDocument = new EventTarget();
   const slider = new TestHTMLElement();
   const registry = {};
-  slider.__reactFiber$test = { ref: { current: registry } };
+  const root = { stateNode: { current: null } };
+  const editor = {
+    return: root,
+    memoizedProps: { reviewActionId: 'task-one', transcriptionChunkProcessedRecordings: [] },
+    memoizedState: { memoizedState: { current: registry } }
+  };
+  root.stateNode.current = editor;
+  slider.__reactFiber$test = editor;
   pageWindow.BabelMods = { unsafe: { services } };
   pageWindow.setTimeout = setTimeout;
   pageWindow.clearTimeout = clearTimeout;
@@ -477,6 +490,7 @@ test('zoom ready waits for the visible wave only and settles without Promise.wit
   });
   pageDocument.documentElement = new TestHTMLElement();
   pageDocument.querySelector = (selector) => (selector.includes('[role="slider"]') ? slider : null);
+  pageDocument.querySelectorAll = () => [slider];
   globalThis.window = pageWindow;
   globalThis.document = pageDocument;
   globalThis.CustomEvent = TestCustomEvent;
@@ -501,6 +515,7 @@ test('zoom ready waits for the visible wave only and settles without Promise.wit
       decoded,
       listeners,
       getDuration: () => 1,
+      getCurrentTime: () => 0,
       getDecodedData() {
         return this.decoded ? { duration: 1 } : null;
       },
@@ -559,4 +574,110 @@ test('zoom ready waits for the visible wave only and settles without Promise.wit
   visible.listeners.get('ready')();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(responses.find((entry) => entry.id === 'gated')?.result, { ok: true });
+});
+
+test('native minimap includes every committed turn and scale targets recording identity after lane reorder', async t => {
+  class NativeElement extends EventTarget {
+    constructor(attrs = {}) {
+      super();
+      this.attrs = new Map(Object.entries(attrs));
+      this.style = {};
+      this.isConnected = true;
+      this.parentElement = null;
+      this.children = [];
+    }
+    getAttribute(name) { return this.attrs.get(name) ?? null; }
+    setAttribute(name, value) { this.attrs.set(name, value); }
+    removeAttribute(name) { this.attrs.delete(name); }
+    getRootNode() { return document; }
+    getBoundingClientRect() { return { left: 0, top: 0, width: 320, height: 80 }; }
+    querySelector() { return null; }
+    closest(selector) { return selector.includes('[role="slider"]') ? this : null; }
+    contains(element) { return element === this; }
+  }
+  const services = new TestServiceRegistry();
+  const pageWindow = new EventTarget();
+  Object.assign(pageWindow, {
+    BabelMods: { unsafe: { services } },
+    setTimeout, clearTimeout,
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+  });
+  const pageDocument = new EventTarget();
+  const root = { stateNode: { current: null } };
+  const editor = {
+    return: root,
+    memoizedProps: {
+      reviewActionId: 'native-task',
+      transcriptionChunkProcessedRecordings: [{ processedRecordingId: 'first' }, { processedRecordingId: 'second' }]
+    }
+  };
+  root.stateNode.current = editor;
+  const seed = new NativeElement();
+  seed.__reactFiber$native = editor;
+  const calls = [];
+  const lanes = ['first', 'second'].map(id => {
+    const slider = new NativeElement({ role: 'slider', 'data-orientation': 'vertical', 'aria-valuemin': '0.3', 'aria-valuemax': '20', 'aria-valuenow': '20' });
+    const host = new NativeElement();
+    const fiber = {
+      return: editor,
+      memoizedProps: {
+        track: { id, processedRecordingId: id, label: id, colors: { region: 'blue' } },
+        collapsed: false, isSolo: false, verticalZoom: 20,
+        onToggleCollapse() {}, onToggleSolo() {},
+        onAdjustVerticalZoom(value) {
+          calls.push([id, value]);
+          fiber.memoizedProps.verticalZoom = value;
+          slider.setAttribute('aria-valuenow', String(value));
+        }
+      }
+    };
+    host.__reactFiber$native = fiber;
+    slider.__reactFiber$native = { return: fiber, memoizedProps: { min: 0.3, max: 20, step: 0.001 } };
+    const wave = {
+      container: host, options: { minPxPerSec: 10 }, plugins: {},
+      getDuration: () => 1000, getCurrentTime: () => 0,
+      setOptions() {}, exportPeaks: () => [[0.1, 0.4, 0.2]]
+    };
+    return { fiber, slider, host, wave };
+  });
+  const annotations = Array.from({ length: 650 }, (_, index) => ({
+    id: `turn-${index}`, type: 'transcription', content: 'text',
+    processedRecordingId: 'first', startTimeInSeconds: index, endTimeInSeconds: index + 0.5
+  }));
+  const panel = {
+    return: editor,
+    memoizedProps: {
+      annotations, tracks: [], saveState: {}, renderTranscript() {}, onSave() {},
+      onPlayPause() {}, onSeekToAnnotation() {}
+    }
+  };
+  const transcript = { return: panel, memoizedProps: { turns: annotations.slice(0, 2), handlers: { onChangeText() {} } } };
+  panel.child = transcript;
+  editor.child = lanes[1].fiber;
+  lanes[1].fiber.sibling = lanes[0].fiber;
+  lanes[0].fiber.sibling = panel;
+  editor.memoizedState = { memoizedState: { current: Object.fromEntries(lanes.map(lane => [lane.fiber.memoizedProps.track.id, { wavesurfer: lane.wave }])) } };
+  pageDocument.documentElement = seed;
+  pageDocument.querySelectorAll = selector => selector.includes('main,') ? [seed] : selector.includes('[role="slider"]') ? [lanes[1].slider, lanes[0].slider] : [];
+  pageDocument.querySelector = selector => selector.includes('="first-host"') ? lanes[0].host : null;
+  for (const [name, value] of Object.entries({ window: pageWindow, document: pageDocument, HTMLElement: NativeElement, ShadowRoot: class {}, CustomEvent: TestCustomEvent })) {
+    const old = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => old ? Object.defineProperty(globalThis, name, old) : delete globalThis[name]);
+  }
+  await loadBridge();
+  t.after(() => pageWindow.__babelHelperMagnifierBridge?.dispose());
+  const native = services.providedService;
+  const minimap = native.getMinimapData('first-host', { peakBins: 64 });
+  assert.equal(minimap.ok, true);
+  assert.equal(minimap.regions.length, 650, 'filtered/virtualized DOM does not truncate the full transcript');
+  assert.equal(minimap.regions.at(-1).start, 649);
+  const scale = await native.setWaveformScaleByTrackId('first', 120, 1000, 'native-task');
+  assert.equal(scale.ok, true);
+  assert.equal(scale.current, 120);
+  assert.deepEqual(calls, [['first', 120]], 'one native callback on the requested track, not visible index zero');
+  editor.memoizedProps.reviewActionId = 'new-task';
+  const stale = await native.setWaveformScaleByTrackId('first', 90, 1000, 'native-task');
+  assert.equal(stale.reason, 'stale-task');
+  assert.deepEqual(calls, [['first', 120]]);
 });

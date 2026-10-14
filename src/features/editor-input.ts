@@ -1,5 +1,6 @@
 import { createEditorHooks } from '../core/editor-hooks';
 import { isTextControl } from '../hooks/selected-number-to-skaz';
+import { getEditorControlFromTarget } from '../site/editor-control';
 import { registerTimelineInput } from './timeline-selection-feature';
 import { registerPlaybackSpeedInput } from './playback-speed-hotkeys';
 import { registerGhostCursorInput } from './ghost-cursor';
@@ -12,6 +13,11 @@ import { registerTextMoveInput } from './text-move-feature';
 import { registerLinterInput } from './custom-linter/feature';
 import { registerNativeArrowInput } from './native-arrow-navigation';
 
+const SELECTION_NAVIGATION_KEYS: Readonly<Record<string, true>> = {
+  ArrowLeft: true, ArrowRight: true, ArrowUp: true, ArrowDown: true,
+  Home: true, End: true, PageUp: true, PageDown: true
+};
+
 export interface EditorInputState {
   isFeatureEnabled(key: string): boolean;
   isTypingInTextControl(event: KeyboardEvent): boolean;
@@ -20,6 +26,7 @@ export interface EditorInputState {
 // Only ordering and shared event eligibility belong here; shortcuts are owned
 // by their feature modules and subscribe to the same hook surface.
 export function createEditorInput(helper: any) {
+  let composing = false;
   function isFeatureEnabled(featureKey: string) {
     if (typeof helper.isFeatureEnabled === 'function') {
       return helper.isFeatureEnabled(featureKey);
@@ -29,6 +36,7 @@ export function createEditorInput(helper: any) {
   }
   function isEditableTextTarget(element: EventTarget | null) {
     return Boolean(
+      getEditorControlFromTarget(element) ||
       isTextControl(element) ||
       (typeof helper.isEditable === 'function' && helper.isEditable(element))
     );
@@ -51,15 +59,23 @@ export function createEditorInput(helper: any) {
       helper.state.rightShiftPressed = false;
     }
   }
-  function isDialogKeyboardEvent(event: KeyboardEvent) {
-    // Nonmodal dialogs (for example an onboarding notice) do not own the
-    // editor's keys. Only yield when this keyboard event originated in a dialog.
+  function isDialogEvent(event: Event) {
+    // Nonmodal notices do not own transcript input; only yield for an event
+    // originating inside an actual dialog.
     return event.composedPath().some((node) =>
       node instanceof HTMLElement && node.matches('[role="dialog"], [role="alertdialog"], dialog[open]'));
   }
-  function isAudioStrengthEvent(event: KeyboardEvent) {
+  function isAudioStrengthEvent(event: Event) {
     return event.composedPath?.().some(node =>
       node instanceof HTMLElement && node.matches('[data-babel-helper-audio-enhancement]')) === true;
+  }
+  function hasIndependentArrowControl(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
+    const control = event.composedPath().find((node): node is HTMLElement =>
+      node instanceof HTMLElement && node.matches(
+        'input, textarea, select, [contenteditable="true"], [role="slider"], [role="spinbutton"], [role="combobox"], [role="listbox"], [role="menu"], [role="tablist"], [role="tree"], [role="grid"]'
+      ));
+    return Boolean(control && !control.matches(helper.config.rowEditorSelector));
   }
   const hooks = createEditorHooks();
   const input = { isFeatureEnabled, isTypingInTextControl };
@@ -78,36 +94,80 @@ export function createEditorInput(helper: any) {
   return {
     hooks,
     handleKeydown(event: KeyboardEvent) {
-      if (!helper.runtime.isSessionInteractive() || isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
+      if (!helper.runtime.isSessionInteractive() || isDialogEvent(event) || isAudioStrengthEvent(event)) {
         return;
+      }
+      if (!event.defaultPrevented && !composing && !event.isComposing && event.keyCode !== 229) {
+        const editor = getEditorControlFromTarget(event.target);
+        if (event.code === 'KeyA' && (event.ctrlKey !== event.metaKey) &&
+            !event.altKey && !event.shiftKey && editor && editor.element === document.activeElement &&
+            editor.element?.matches('[data-slate-editor="true"]')) {
+          // Select-all is an explicit native command, not a delayed DOM range
+          // notification. Commit its known range before native render effects.
+          if (editor.selectAll()) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+        // Slate can defer selectionchange past a modifier-triggered render.
+        // Commit the actual browser selection before native shortcuts render it.
+        if (SELECTION_NAVIGATION_KEYS[event.key] !== true) editor?.synchronizeSelection();
       }
       hooks.dispatch('keydown', event);
     },
-    handleNativeArrowSuppress(event: KeyboardEvent) {
+    handleNativeTextInput(event: InputEvent | ClipboardEvent) {
+      if (event.defaultPrevented || composing || ('isComposing' in event && event.isComposing) ||
+          !helper.runtime.isSessionInteractive() || isDialogEvent(event) || isAudioStrengthEvent(event)) return;
+      // Paste and browser text replacement can select DOM containers without
+      // a preceding keydown. Slate must see that range before its own handler.
+      getEditorControlFromTarget(event.target)?.synchronizeSelection();
+    },
+    handleNativeSelectionChange() {
+      if (composing || !helper.runtime.isSessionInteractive()) return;
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !active.isConnected ||
+          !active.matches('[data-slate-editor="true"]')) return;
+      const selection = document.getSelection();
+      if (!selection || !active.contains(selection.anchorNode) || !active.contains(selection.focusNode)) return;
+      // Native Slate throttles selectionchange. Its next render must not
+      // overwrite a newer browser selection before keydown/beforeinput arrives.
+      getEditorControlFromTarget(active)?.synchronizeSelection('selectionchange');
+    },
+    handleNativePointerDown(event: PointerEvent) {
+      if (event.defaultPrevented || composing || !helper.runtime.isSessionInteractive() ||
+          isDialogEvent(event) || isAudioStrengthEvent(event)) return;
+      // A new pointer gesture supersedes an explicit focus/selection command;
+      // it has not produced its final DOM range yet, so release ownership only.
+      getEditorControlFromTarget(event.target)?.synchronizeSelection('intent');
+    },
+    handleComposition(event: CompositionEvent) {
+      composing = event.type === 'compositionstart';
+    },
+    handleKeyCapture(event: KeyboardEvent) {
       updateRightShiftState(event);
-      if (isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
+      if (isDialogEvent(event) || isAudioStrengthEvent(event)) {
         return;
       }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        const control = event.composedPath().find((node): node is HTMLElement =>
-          node instanceof HTMLElement && node.matches(
-            'input, textarea, select, [contenteditable="true"], [role="slider"], [role="spinbutton"], [role="combobox"], [role="listbox"], [role="menu"], [role="tablist"], [role="tree"], [role="grid"]'
-          ));
-        // Suppress Babel's global seek, not a focused control's own navigation.
-        // Transcript editors retain Helper's caret/segment-navigation behavior.
-        if (control && !control.matches(helper.config.rowTextareaSelector)) {
-          return;
-        }
+      if (!event.defaultPrevented && !composing && !event.isComposing && event.keyCode !== 229 &&
+          helper.runtime.isSessionInteractive() && SELECTION_NAVIGATION_KEYS[event.key] === true) {
+        getEditorControlFromTarget(event.target)?.synchronizeSelection('intent');
       }
+      if (hasIndependentArrowControl(event)) return;
       hooks.dispatch('capture', event);
+    },
+    handleKeyBubble(event: KeyboardEvent) {
+      if (!helper.runtime.isSessionInteractive() || isDialogEvent(event) || isAudioStrengthEvent(event) ||
+          hasIndependentArrowControl(event)) return;
+      hooks.dispatch('bubble', event);
     },
     handleGlobalKeyup(event: KeyboardEvent) {
       updateRightShiftState(event);
-      if (isDialogKeyboardEvent(event) || isAudioStrengthEvent(event)) {
+      if (isDialogEvent(event) || isAudioStrengthEvent(event)) {
         return;
       }
       hooks.dispatch('keyup', event);
     },
-    handleWindowBlur() { helper.state.rightShiftPressed = false; }
+    handleWindowBlur() { helper.state.rightShiftPressed = false; composing = false; }
   };
 }

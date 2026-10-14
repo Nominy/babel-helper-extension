@@ -1,9 +1,7 @@
 // @ts-nocheck
 import {
   BABEL_EDITOR_CONTRACT_VERSION,
-  BABEL_TABLE_COLUMN_INDEX,
-  parseBabelDisplayedTime,
-  normalizeBabelContractText
+  BABEL_TRANSCRIPT_ROW_SELECTOR
 } from '../core/babel-editor-contract';
 
 export function registerRecoveredEditorSnapshotService(helper: any) {
@@ -126,71 +124,25 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
     });
   }
 
+  function isCurrentSnapshot(snapshot) {
+    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    return snapshot?.contractVersion === BABEL_EDITOR_CONTRACT_VERSION &&
+      snapshot.routeKey === `${window.location.pathname || ''}${window.location.search || ''}` &&
+      (!reviewActionId || !snapshot.reviewActionId || snapshot.reviewActionId === reviewActionId);
+  }
+
   function isFreshSnapshot(snapshot) {
     return Boolean(
-      snapshot &&
-        snapshot.contractVersion === BABEL_EDITOR_CONTRACT_VERSION &&
+      isCurrentSnapshot(snapshot) &&
         Number.isFinite(Number(snapshot.capturedAt)) &&
         Date.now() - Number(snapshot.capturedAt) <= SNAPSHOT_MAX_AGE_MS
     );
   }
 
-  function getDomRowTimeLabels(row) {
-    if (!(row instanceof HTMLTableRowElement)) {
-      return null;
-    }
-
-    const startCell = row.children[BABEL_TABLE_COLUMN_INDEX.start];
-    const endCell = row.children[BABEL_TABLE_COLUMN_INDEX.end];
-    return {
-      startText: startCell instanceof HTMLElement ? normalizeBabelContractText(startCell.innerText || startCell.textContent || '') : '',
-      endText: endCell instanceof HTMLElement ? normalizeBabelContractText(endCell.innerText || endCell.textContent || '') : ''
-    };
-  }
 
   function rowMatchesSnapshot(row, snapshotRow) {
-    if (!(row instanceof HTMLTableRowElement) || !snapshotRow) {
-      return false;
-    }
-
-    if (typeof helper.getRowIdentity === 'function') {
-      const identity = helper.getRowIdentity(row);
-      if (
-        identity &&
-        identity.annotationId &&
-        snapshotRow.annotationId &&
-        identity.annotationId === snapshotRow.annotationId
-      ) {
-        return true;
-      }
-    }
-
-    const labels = getDomRowTimeLabels(row);
-    if (!labels) {
-      return false;
-    }
-
-    const speakerCell = row.children[BABEL_TABLE_COLUMN_INDEX.speaker];
-    const speakerLabel = speakerCell instanceof HTMLElement
-      ? normalizeBabelContractText(speakerCell.innerText || speakerCell.textContent || '')
-      : '';
-    const startSeconds = parseBabelDisplayedTime(labels.startText);
-    const endSeconds = parseBabelDisplayedTime(labels.endText);
-    return Boolean(
-      (!snapshotRow.speakerLabel || !speakerLabel || snapshotRow.speakerLabel === speakerLabel) &&
-        labels.startText === snapshotRow.startText &&
-        labels.endText === snapshotRow.endText &&
-        (
-          snapshotRow.startSeconds == null ||
-          startSeconds == null ||
-          Math.abs(Number(snapshotRow.startSeconds) - startSeconds) <= 0.035
-        ) &&
-        (
-          snapshotRow.endSeconds == null ||
-          endSeconds == null ||
-          Math.abs(Number(snapshotRow.endSeconds) - endSeconds) <= 0.035
-        )
-    );
+    return row instanceof HTMLElement && Boolean(snapshotRow?.annotationId) &&
+      row.dataset.annotationId === snapshotRow.annotationId;
   }
 
   helper.refreshEditorSnapshot = async function refreshEditorSnapshot(reason) {
@@ -198,10 +150,11 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
       return snapshotInFlight;
     }
 
+    const revision = helper.state.sessionLifecycleRevision;
     snapshotInFlight = (async () => {
       const result = await callRecoveredEditorBridge('snapshot', { reason: reason || 'refresh' });
       const snapshot = result && result.ok && result.snapshot ? result.snapshot : null;
-      if (snapshot && snapshot.contractVersion === BABEL_EDITOR_CONTRACT_VERSION) {
+      if (isCurrentSnapshot(snapshot) && revision === helper.state.sessionLifecycleRevision) {
         helper.state.editorSnapshot = snapshot;
         helper.state.editorSnapshotCapturedAt = Date.now();
         helper.perf?.count?.('editor-snapshot.refresh', {
@@ -227,7 +180,7 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
     }
 
     void helper.refreshEditorSnapshot('stale-read');
-    return snapshot && snapshot.contractVersion === BABEL_EDITOR_CONTRACT_VERSION ? snapshot : null;
+    return isCurrentSnapshot(snapshot) ? snapshot : null;
   };
 
   helper.applyRecoveredEditorDiffState = async function applyRecoveredEditorDiffState(payload) {
@@ -262,7 +215,7 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
     const rows =
       typeof helper.getTranscriptRows === 'function'
         ? helper.getTranscriptRows()
-        : Array.from(document.querySelectorAll('tbody tr'));
+        : Array.from(document.querySelectorAll(BABEL_TRANSCRIPT_ROW_SELECTOR));
     return rows.find((row) => rowMatchesSnapshot(row, snapshotRow)) || null;
   };
 }

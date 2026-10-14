@@ -3,7 +3,14 @@ import {
   getAngleTagPartBackspaceEdit,
   shouldHandleAngleTagPartBackspaceEvent
 } from '../../content/tag-part-backspace';
-import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
+import { type EditorControl, isEditorControl, getEditorControlFromTarget } from '../../site/editor-control';
+import { readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
+
+type TextControl = HTMLTextAreaElement | EditorControl;
+const controlElement = (control: TextControl): HTMLElement =>
+  control instanceof HTMLTextAreaElement ? control : control.element || control.row;
+const sameControl = (left: TextControl, right: TextControl): boolean =>
+  left === right || (isEditorControl(left) && isEditorControl(right) && left.row === right.row);
 
 (function quickRegionAutocompleteBridge() {
   if ((window as any).__babelHelperQuickRegionAutocompleteBridge) {
@@ -14,7 +21,6 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const SERVICE_ID = 'page.quickRegionAutocomplete';
   const QUICK_TEXTAREA_SELECTOR = 'textarea[placeholder^="Enter text for this region"]';
-  const ROW_TEXTAREA_SELECTOR = BABEL_ROW_TEXTAREA_SELECTOR;
   const LISTBOX_ATTR = 'data-babel-helper-quick-region-listbox';
   const DISMISS_DELAY_MS = 150;
   const MAX_SUGGESTIONS = 100;
@@ -38,13 +44,15 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
   const contextState = {
     current: null as null | {
+      owner: TextControl;
+      route: string;
       context: { type: string; open: string; close: string };
       partial: string;
       triggerIndex: number;
       cursorPosition: number;
       fullText: string;
       wrapSelection: null | {
-        textarea: HTMLTextAreaElement;
+        textarea: TextControl;
         fullText: string;
         selectionStart: number;
         selectionEnd: number;
@@ -55,7 +63,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
   const pendingWrapSelection = {
     current: null as null | {
-      textarea: HTMLTextAreaElement;
+      textarea: TextControl;
       fullText: string;
       selectionStart: number;
       selectionEnd: number;
@@ -67,162 +75,66 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     cancel: null as null | (() => void)
   };
 
-  const pendingNativeRowAutocomplete = {
-    current: null as null | {
-      textarea: HTMLTextAreaElement;
-      beforeValue: string;
-      triggerIndex: number;
-      cursorPosition: number;
-      context: { type: string; open: string; close: string };
-      suggestions: Array<{ label: string; insertText: string; type: string }>;
-    }
-  };
 
   type TextareaSelectionDirection = 'forward' | 'backward' | 'none';
 
   let listboxRoot: HTMLUListElement | null = null;
 
-  function getReactFiber(element: unknown) {
-    if (!(element instanceof HTMLElement)) {
-      return null;
-    }
-
-    for (const key of Object.getOwnPropertyNames(element)) {
-      if (key.startsWith('__reactFiber$')) {
-        return (element as unknown as Record<string, unknown>)[key] ?? null;
-      }
-    }
-
-    return null;
-  }
-
-  function getAutocompleteConfigFromMemoizedState(memoizedState: unknown) {
-    if (!Array.isArray(memoizedState) || !memoizedState.length) {
-      return null;
-    }
-
-    const candidate = memoizedState[0];
-    if (!candidate || typeof candidate !== 'object') {
-      return null;
-    }
-
-    const config = candidate as {
-      bracketTags?: unknown;
-      styleTags?: unknown;
-      bracketTypes?: unknown;
-    };
-
-    if (
-      !Array.isArray(config.bracketTags) &&
-      !Array.isArray(config.styleTags) &&
-      !Array.isArray(config.bracketTypes)
-    ) {
-      return null;
-    }
-
-    return config;
-  }
-
-  function findAutocompleteConfig(textarea: HTMLTextAreaElement) {
-    let fiber: any = getReactFiber(textarea);
-    let depth = 0;
-
-    while (fiber && depth < 24) {
-      let hook: any = fiber.memoizedState ?? null;
-      let hookIndex = 0;
-
-      while (hook && hookIndex < 32) {
-        const config = getAutocompleteConfigFromMemoizedState(hook.memoizedState);
-        if (config) {
-          return config;
-        }
-
-        hook = hook.next ?? null;
-        hookIndex += 1;
-      }
-
-      fiber = fiber.return ?? null;
-      depth += 1;
-    }
-
-    return null;
-  }
-
   function getBridgeData() {
-    const sourceTextarea = document.querySelector(ROW_TEXTAREA_SELECTOR);
-    if (!(sourceTextarea instanceof HTMLTextAreaElement)) {
-      return null;
-    }
-
-    const config = findAutocompleteConfig(sourceTextarea);
-    if (!config) {
-      return null;
-    }
-
-    const bracketTypes = Array.isArray(config.bracketTypes) ? config.bracketTypes : [];
-    const bracketTags = Array.isArray(config.bracketTags) ? [...config.bracketTags].sort((a, b) => a.localeCompare(b)) : [];
-    const styleTags = Array.isArray(config.styleTags) ? [...config.styleTags].sort((a, b) => a.localeCompare(b)) : [];
-    const curlyTags = ['MIS: ', 'PRO: '];
-
+    const bindings = readBabelTranscriptBindings(document);
+    if (!bindings || bindings.readOnly) return null;
+    const config = bindings.transcript as {
+      vocabulary?: { bracketTypes: Array<{ open: string; close: string }> };
+      tagOptions?: { bracket: Array<{ name: string }>; style: Array<{ name: string }>; curly: Array<{ name: string }> };
+    };
+    if (!config?.vocabulary || !config?.tagOptions) return null;
+    const { vocabulary, tagOptions } = config;
+    const names = (options: Array<{ name: string }> = []) =>
+      [...new Set(options.map((option) => option.name))].sort((a, b) => a.localeCompare(b));
+    const bracketTags = names(tagOptions.bracket);
+    const styleTags = names(tagOptions.style);
+    const curlyTags = names(tagOptions.curly).map((name) => `${name.replace(/:\s*$/, '')}: `);
     const openMap = new Map<string, { type: string; open: string; close: string }>();
-    for (const bracketType of bracketTypes) {
-      if (bracketType && typeof bracketType.open === 'string' && typeof bracketType.close === 'string') {
-        openMap.set(bracketType.open, {
-          type: 'bracket',
-          open: bracketType.open,
-          close: bracketType.close
-        });
-      }
+    const stopSet = new Set<string>();
+    for (const { open, close } of vocabulary.bracketTypes) {
+      openMap.set(open, { type: 'bracket', open, close });
+      stopSet.add(close);
     }
-
     openMap.set('<', { type: 'style', open: '<', close: '>' });
     openMap.set('{', { type: 'curly', open: '{', close: '}' });
-
-    const stopSet = new Set<string>();
-    for (const bracketType of bracketTypes) {
-      if (bracketType && typeof bracketType.close === 'string') {
-        stopSet.add(bracketType.close);
-      }
-    }
     stopSet.add('>');
     stopSet.add('}');
-
-    return {
-      bracketTags,
-      styleTags,
-      curlyTags,
-      openMap,
-      stopSet
-    };
+    return { bracketTags, styleTags, curlyTags, openMap, stopSet };
   }
 
   function isQuickTextarea(target: EventTarget | null): target is HTMLTextAreaElement {
     return target instanceof HTMLTextAreaElement && target.matches(QUICK_TEXTAREA_SELECTOR);
   }
 
-  function isRowTextarea(target: EventTarget | null): target is HTMLTextAreaElement {
-    return target instanceof HTMLTextAreaElement && target.matches(ROW_TEXTAREA_SELECTOR);
-  }
-
-  function isSupportedTextarea(target: EventTarget | null): target is HTMLTextAreaElement {
-    return isQuickTextarea(target) || isRowTextarea(target);
+  function getSupportedControl(target: EventTarget | null): TextControl | null {
+    if (isQuickTextarea(target)) return target.disabled || target.readOnly ? null : target;
+    const control = getEditorControlFromTarget(target);
+    return control && !control.readOnly ? control : null;
   }
 
   function getActiveSupportedTextarea() {
-    const active = document.activeElement;
-    return isSupportedTextarea(active) ? active : null;
+    return getSupportedControl(document.activeElement);
   }
 
-  function setNativeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  function setNativeTextareaValue(textarea: TextControl, value: string, start: number, end: number): boolean {
+    if (!textarea.isConnected || textarea.readOnly) return false;
+    if (isEditorControl(textarea)) return textarea.replaceValue(value, { start, end, focus: true });
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     if (typeof setter === 'function') {
       setter.call(textarea, value);
     } else {
       textarea.value = value;
     }
+    return true;
   }
 
-  function dispatchInputEvent(textarea: HTMLTextAreaElement, inputType = 'insertText') {
+  function dispatchInputEvent(textarea: TextControl, inputType = 'insertText') {
+    if (isEditorControl(textarea)) return;
     textarea.dispatchEvent(
       typeof InputEvent === 'function'
         ? new InputEvent('input', {
@@ -240,7 +152,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
   function copyTextWithTemporaryTextarea(
     text: string,
-    restoreTarget: HTMLTextAreaElement,
+    restoreTarget: TextControl,
     selectionStart: number,
     selectionEnd: number
   ) {
@@ -274,7 +186,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
   function writeRemovedTagPartToClipboard(
     text: string,
-    textarea: HTMLTextAreaElement,
+    textarea: TextControl,
     selectionStart: number,
     selectionEnd: number
   ) {
@@ -282,17 +194,23 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     if (clipboard && typeof clipboard.writeText === 'function') {
       void clipboard
         .writeText(text)
-        .catch(() => copyTextWithTemporaryTextarea(text, textarea, selectionStart, selectionEnd));
+        .catch(() => {
+          if (textarea.isConnected && !textarea.readOnly &&
+              document.activeElement === controlElement(textarea) &&
+              textarea.selectionStart === selectionStart && textarea.selectionEnd === selectionEnd) {
+            copyTextWithTemporaryTextarea(text, textarea, selectionStart, selectionEnd);
+          }
+        });
       return;
     }
 
     copyTextWithTemporaryTextarea(text, textarea, selectionStart, selectionEnd);
   }
 
-  function removeAngleTagPartOnBackspace(textarea: HTMLTextAreaElement, event: KeyboardEvent) {
+  function removeAngleTagPartOnBackspace(textarea: TextControl, event: KeyboardEvent) {
     if (
       !shouldHandleAngleTagPartBackspaceEvent(event) ||
-      textarea.disabled ||
+      (textarea instanceof HTMLTextAreaElement && textarea.disabled) ||
       textarea.readOnly
     ) {
       return false;
@@ -311,18 +229,20 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
     event.preventDefault();
     event.stopPropagation();
-    setNativeTextareaValue(textarea, edit.nextValue);
-    textarea.focus({ preventScroll: true });
-    setTextareaSelection(textarea, edit.selectionStart, edit.selectionEnd);
-    dispatchInputEvent(textarea, 'deleteContentBackward');
-    restoreSelectionStably(textarea, edit.selectionStart, edit.selectionEnd, edit.nextValue);
+    if (!setNativeTextareaValue(textarea, edit.nextValue, edit.selectionStart, edit.selectionEnd)) return false;
+    if (textarea instanceof HTMLTextAreaElement) {
+      textarea.focus({ preventScroll: true });
+      setTextareaSelection(textarea, edit.selectionStart, edit.selectionEnd);
+      dispatchInputEvent(textarea, 'deleteContentBackward');
+      restoreSelectionStably(textarea, edit.selectionStart, edit.selectionEnd, edit.nextValue);
+    }
     writeRemovedTagPartToClipboard(edit.removedText, textarea, edit.selectionStart, edit.selectionEnd);
     dismiss();
     return true;
   }
 
   function setTextareaSelection(
-    textarea: HTMLTextAreaElement,
+    textarea: TextControl,
     start: number,
     end: number,
     direction: TextareaSelectionDirection = 'none'
@@ -343,7 +263,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     attempts = 6
   ) {
     selectionRestoreState.cancel?.();
-    if (!textarea.isConnected || document.activeElement !== textarea) {
+    if (!textarea.isConnected || document.activeElement !== controlElement(textarea)) {
       return;
     }
 
@@ -372,7 +292,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
       }
     };
     const canRestore = () => {
-      if (!textarea.isConnected || document.activeElement !== textarea) {
+      if (!textarea.isConnected || document.activeElement !== controlElement(textarea)) {
         return false;
       }
       if (textarea.value !== value) {
@@ -424,134 +344,6 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     frame = window.requestAnimationFrame(apply);
   }
 
-  function getInsertedSuggestionCursorPosition(
-    context: { type: string; open: string; close: string },
-    triggerIndex: number,
-    suggestion: { label: string; insertText: string; type: string }
-  ) {
-    if (context.type === 'style') {
-      return triggerIndex + 1 + suggestion.label.length + 2;
-    }
-
-    if (context.type === 'curly') {
-      return triggerIndex + suggestion.insertText.length - 1;
-    }
-
-    return triggerIndex + suggestion.insertText.length;
-  }
-
-  function matchNativeRowAutocompleteInsertion(
-    pending: NonNullable<typeof pendingNativeRowAutocomplete.current>,
-    nextValue: string
-  ) {
-    const before = pending.beforeValue.substring(0, pending.triggerIndex);
-    const after = pending.beforeValue.substring(pending.cursorPosition);
-
-    for (const suggestion of pending.suggestions) {
-      const expectedValue = `${before}${suggestion.insertText}${after}`;
-      if (expectedValue !== nextValue) {
-        continue;
-      }
-
-      return {
-        suggestion,
-        caret: getInsertedSuggestionCursorPosition(pending.context, pending.triggerIndex, suggestion)
-      };
-    }
-
-    return null;
-  }
-
-  function scheduleNativeRowAutocompleteCaretRestore(
-    pending: NonNullable<typeof pendingNativeRowAutocomplete.current>
-  ) {
-    let attempts = 6;
-
-    const apply = () => {
-      if (pendingNativeRowAutocomplete.current !== pending) {
-        return;
-      }
-
-      const textarea = pending.textarea;
-      if (!(textarea instanceof HTMLTextAreaElement) || !textarea.isConnected) {
-        pendingNativeRowAutocomplete.current = null;
-        return;
-      }
-
-      const match = matchNativeRowAutocompleteInsertion(pending, textarea.value);
-      if (match) {
-        const currentStart =
-          typeof textarea.selectionStart === 'number' ? textarea.selectionStart : -1;
-        const currentEnd =
-          typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : -1;
-        if (currentStart !== match.caret || currentEnd !== match.caret) {
-          textarea.focus({ preventScroll: true });
-          setTextareaSelection(textarea, match.caret, match.caret);
-        }
-      }
-
-      attempts -= 1;
-      if (attempts <= 0) {
-        if (pendingNativeRowAutocomplete.current === pending) {
-          pendingNativeRowAutocomplete.current = null;
-        }
-        return;
-      }
-
-      window.requestAnimationFrame(apply);
-    };
-
-    window.requestAnimationFrame(apply);
-  }
-
-  function maybeTrackNativeRowAutocompleteEnter(textarea: HTMLTextAreaElement, event: KeyboardEvent) {
-    if (
-      !isRowTextarea(textarea) ||
-      event.key !== 'Enter' ||
-      event.ctrlKey ||
-      event.metaKey ||
-      event.altKey ||
-      event.shiftKey ||
-      state.isOpen
-    ) {
-      return;
-    }
-
-    const selectionStart =
-      typeof textarea.selectionStart === 'number' ? textarea.selectionStart : textarea.value.length;
-    const selectionEnd =
-      typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : selectionStart;
-    if (selectionStart !== selectionEnd) {
-      return;
-    }
-
-    const data = getBridgeData();
-    if (!data) {
-      return;
-    }
-
-    const textBeforeCursor = textarea.value.substring(0, selectionStart);
-    const trigger = findTriggerContext(textBeforeCursor, data.openMap, data.stopSet);
-    if (!trigger) {
-      return;
-    }
-
-    const suggestions = getSuggestions(trigger.context, trigger.partial, data);
-    if (!suggestions.length) {
-      return;
-    }
-
-    const triggerIndex = textBeforeCursor.length - trigger.partial.length - 1;
-    pendingNativeRowAutocomplete.current = {
-      textarea,
-      beforeValue: textarea.value,
-      triggerIndex,
-      cursorPosition: selectionStart,
-      context: trigger.context,
-      suggestions
-    };
-    scheduleNativeRowAutocompleteCaretRestore(pendingNativeRowAutocomplete.current);
-  }
 
   function clearDismissTimer() {
     if (dismissTimer) {
@@ -594,7 +386,15 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     }, DISMISS_DELAY_MS);
   }
 
-  function getCaretPosition(textarea: HTMLTextAreaElement, index: number, isRtl: boolean, suggestionCount: number) {
+  function getCaretPosition(textarea: TextControl, index: number, isRtl: boolean, suggestionCount: number) {
+    if (isEditorControl(textarea)) {
+      const rect = textarea.getCaretRect(index) || controlElement(textarea).getBoundingClientRect();
+      const height = 28 * Math.min(suggestionCount, 5) + 8;
+      return {
+        top: Math.max(10, rect.bottom + height > window.innerHeight ? rect.top - height : rect.bottom),
+        left: Math.max(10, Math.min(rect.left, window.innerWidth - 190))
+      };
+    }
     const mirror = document.createElement('div');
 
     try {
@@ -788,8 +588,8 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     root.replaceChildren(fragment);
   }
 
-  function ensureListboxRoot(textarea: HTMLTextAreaElement | null = null) {
-    const host = textarea?.closest<HTMLElement>('[role="dialog"], dialog') ?? document.body;
+  function ensureListboxRoot(textarea: TextControl | null = null) {
+    const host = textarea ? controlElement(textarea).closest<HTMLElement>('[role="dialog"], dialog') ?? document.body : document.body;
     if (listboxRoot?.parentElement === host && listboxRoot.isConnected) {
       return listboxRoot;
     }
@@ -814,20 +614,20 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     return root;
   }
 
-  function openWrapSuggestions(textarea: HTMLTextAreaElement, wrapSelection: NonNullable<typeof pendingWrapSelection.current>) {
+  function openWrapSuggestions(textarea: TextControl, wrapSelection: NonNullable<typeof pendingWrapSelection.current>) {
     const data = getBridgeData();
     if (!data) {
       dismiss();
-      return;
+      return false;
     }
 
     const suggestions = getSuggestions({ type: 'style', open: '<', close: '>' }, '', data);
     if (!suggestions.length) {
       dismiss();
-      return;
+      return false;
     }
 
-    const isRtl = (textarea.dir || document.documentElement.dir || '').toLowerCase() === 'rtl';
+    const isRtl = (controlElement(textarea).dir || document.documentElement.dir || '').toLowerCase() === 'rtl';
     const position = getCaretPosition(textarea, wrapSelection.selectionStart, isRtl, suggestions.length);
 
     clearDismissTimer();
@@ -836,6 +636,8 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     state.highlightedIndex = 0;
     state.position = position;
     contextState.current = {
+      owner: textarea,
+      route: window.location.pathname + window.location.search,
       context: { type: 'style', open: '<', close: '>' },
       partial: '',
       triggerIndex: wrapSelection.selectionStart,
@@ -844,9 +646,27 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
       wrapSelection
     };
     renderListbox(textarea);
+    return true;
   }
 
-  function openForTextarea(textarea: HTMLTextAreaElement) {
+  function beginStyleWrap(textarea: TextControl): boolean {
+    const nativeState = isEditorControl(textarea) ? textarea.state : null;
+    const selectionStart = nativeState?.start ?? textarea.selectionStart;
+    const selectionEnd = nativeState?.end ?? textarea.selectionEnd;
+    if (selectionStart === selectionEnd) return false;
+    const fullText = nativeState?.text ?? textarea.value;
+    const wrapSelection = {
+      textarea, fullText, selectionStart, selectionEnd,
+      selectedText: fullText.slice(selectionStart, selectionEnd)
+    };
+    if (!openWrapSuggestions(textarea, wrapSelection)) return false;
+    pendingWrapSelection.current = wrapSelection;
+    textarea.setSelectionRange(selectionStart, selectionStart);
+    return true;
+  }
+
+  function openForTextarea(textarea: TextControl) {
+    if (textarea.readOnly || !textarea.isConnected) { dismiss(); return; }
     const data = getBridgeData();
     if (!data) {
       dismiss();
@@ -869,7 +689,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     }
 
     const triggerIndex = textBeforeCursor.length - trigger.partial.length - 1;
-    const isRtl = (textarea.dir || document.documentElement.dir || '').toLowerCase() === 'rtl';
+    const isRtl = (controlElement(textarea).dir || document.documentElement.dir || '').toLowerCase() === 'rtl';
     const position = getCaretPosition(textarea, cursorPosition, isRtl, suggestions.length);
 
     clearDismissTimer();
@@ -878,6 +698,8 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     state.highlightedIndex = 0;
     state.position = position;
     contextState.current = {
+      owner: textarea,
+      route: window.location.pathname + window.location.search,
       context: trigger.context,
       partial: trigger.partial,
       triggerIndex,
@@ -886,7 +708,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
       wrapSelection:
         trigger.context.type === 'style' &&
         pendingWrapSelection.current &&
-        pendingWrapSelection.current.textarea === textarea &&
+        sameControl(pendingWrapSelection.current.textarea, textarea) &&
         pendingWrapSelection.current.selectionStart === triggerIndex
           ? pendingWrapSelection.current
           : null
@@ -898,10 +720,12 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     renderListbox(textarea);
   }
 
-  function insertSuggestion(textarea: HTMLTextAreaElement, suggestionIndex: number) {
+  function insertSuggestion(textarea: TextControl, suggestionIndex: number) {
     const suggestion = state.suggestions[suggestionIndex];
     const context = contextState.current;
-    if (!suggestion || !context) {
+    if (!suggestion || !context || !sameControl(context.owner, textarea) ||
+        context.route !== window.location.pathname + window.location.search ||
+        textarea.readOnly || !textarea.isConnected || textarea.value !== context.fullText) {
       return false;
     }
 
@@ -927,45 +751,33 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     }
 
     const nextValue = `${before}${insertText}${after}`;
-    setNativeTextareaValue(textarea, nextValue);
-    textarea.focus({ preventScroll: true });
-    setTextareaSelection(textarea, nextCursorPosition, nextCursorPosition);
-    dispatchInputEvent(textarea);
-    restoreSelectionStably(textarea, nextCursorPosition, nextCursorPosition, nextValue);
+    if (!setNativeTextareaValue(textarea, nextValue, nextCursorPosition, nextCursorPosition)) { dismiss(); return false; }
+    if (textarea instanceof HTMLTextAreaElement) {
+      textarea.focus({ preventScroll: true });
+      setTextareaSelection(textarea, nextCursorPosition, nextCursorPosition);
+      dispatchInputEvent(textarea);
+      restoreSelectionStably(textarea, nextCursorPosition, nextCursorPosition, nextValue);
+    }
     pendingWrapSelection.current = null;
     dismiss();
     return true;
   }
 
   function onBeforeInput(event: InputEvent) {
-    const textarea = isSupportedTextarea(event.target) ? event.target : null;
+    const textarea = getSupportedControl(event.target);
     if (!textarea) {
       return;
     }
 
-    if (
-      event.inputType === 'insertText' &&
-      event.data === '<' &&
-      typeof textarea.selectionStart === 'number' &&
-      typeof textarea.selectionEnd === 'number' &&
-      textarea.selectionStart !== textarea.selectionEnd
-    ) {
+    if (event.inputType === 'insertText' && event.data === '<' && beginStyleWrap(textarea)) {
       event.preventDefault();
-      pendingWrapSelection.current = {
-        textarea,
-        fullText: textarea.value,
-        selectionStart: textarea.selectionStart,
-        selectionEnd: textarea.selectionEnd,
-        selectedText: textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
-      };
-      textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
-      openWrapSuggestions(textarea, pendingWrapSelection.current);
+      event.stopPropagation();
       return;
     }
 
     if (
       pendingWrapSelection.current &&
-      pendingWrapSelection.current.textarea === textarea &&
+      sameControl(pendingWrapSelection.current.textarea, textarea) &&
       event.inputType !== 'insertText' &&
       event.inputType !== 'insertCompositionText'
     ) {
@@ -974,18 +786,18 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
   }
 
   function onInput(event: Event) {
-    if (!isQuickTextarea(event.target)) {
-      return;
+    // Ordinary turn completion belongs to Slate's native tag picker. Only the
+    // separate quick-region dialog lacks that picker; do not render two menus.
+    if (isQuickTextarea(event.target) && !event.target.readOnly && !event.target.disabled) {
+      openForTextarea(event.target);
     }
-
-    openForTextarea(event.target);
   }
 
   function onClick(event: MouseEvent) {
     const target = event.target as Element | null;
     const activeSupportedTextarea = getActiveSupportedTextarea();
 
-    if (isQuickTextarea(target)) {
+    if (isQuickTextarea(target) && !target.readOnly && !target.disabled) {
       openForTextarea(target);
       return;
     }
@@ -1034,7 +846,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
   }
 
   function onKeyDown(event: KeyboardEvent) {
-    const textarea = isSupportedTextarea(event.target) ? event.target : null;
+    const textarea = getSupportedControl(event.target);
     if (!textarea || event.isComposing) {
       return;
     }
@@ -1043,7 +855,14 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
       return;
     }
 
-    maybeTrackNativeRowAutocompleteEnter(textarea, event);
+    // Slate consumes selected "<" on keydown and prevents beforeinput entirely.
+    // Capture only selection wrapping; collapsed typing stays with its native picker.
+    if (isEditorControl(textarea) && event.key === '<' &&
+        !event.ctrlKey && !event.metaKey && !event.altKey && beginStyleWrap(textarea)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
 
     if (!state.isOpen || !state.suggestions.length) {
       return;
@@ -1081,7 +900,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
 
   function onFocusOut(event: FocusEvent) {
     const target = event.target;
-    if (!isSupportedTextarea(target)) {
+    if (!getSupportedControl(target)) {
       return;
     }
 
@@ -1153,8 +972,7 @@ import { BABEL_ROW_TEXTAREA_SELECTOR } from '../../core/babel-editor-contract';
     onFocusOut,
     state,
     contextState,
-    pendingWrapSelection,
-    pendingNativeRowAutocomplete
+    pendingWrapSelection
   };
   const implementation = {
     setEnabled,

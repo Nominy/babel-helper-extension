@@ -3,8 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { defaultSnapshotDir } from '@nominy/babel-extension-e2e/recreation-snapshot';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -38,8 +39,6 @@ class FakeElement {}
 class FakeHTMLElement extends FakeElement {}
 class FakeHTMLDivElement extends FakeHTMLElement {}
 class FakeHTMLMediaElement extends FakeHTMLElement {}
-class FakeHTMLTableRowElement extends FakeHTMLElement {}
-class FakeHTMLTextAreaElement extends FakeHTMLElement {}
 class FakeShadowRoot {}
 
 function installPageGlobals(services) {
@@ -55,6 +54,7 @@ function installPageGlobals(services) {
 
   Object.assign(pageWindow, {
     BabelMods: { unsafe: { services } },
+    location: { pathname: '/transcription/test/review-action-live', search: '', href: 'https://babel.test/transcription/test/review-action-live' },
     document: pageDocument,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     setTimeout,
@@ -71,11 +71,10 @@ function installPageGlobals(services) {
     HTMLElement: FakeHTMLElement,
     HTMLDivElement: FakeHTMLDivElement,
     HTMLMediaElement: FakeHTMLMediaElement,
-    HTMLTableRowElement: FakeHTMLTableRowElement,
-    HTMLTextAreaElement: FakeHTMLTextAreaElement,
     ShadowRoot: FakeShadowRoot,
     document: pageDocument,
-    window: pageWindow
+    window: pageWindow,
+    location: pageWindow.location
   });
 
   return pageWindow;
@@ -238,133 +237,103 @@ test('timestamp and playback facades stay late-bound across mod layers and teard
   survivingDecorator.dispose();
 });
 
-test('MAIN snapshot retains create binding for rollback after all rows are deleted', async () => {
-  const { createServiceRegistry } = await importBundledTs(
-    'src/mod-platform/service-registry.ts',
-    'snapshot-service-registry'
-  );
-  const services = createServiceRegistry();
-  const pageWindow = installPageGlobals(services);
-  let transcriptRows = [];
-  const createdAnnotations = [];
-  const makeLiveRow = (annotation, text) => {
-    const textarea = new FakeHTMLElement();
-    textarea.value = text;
-    const cells = ['', annotation.trackLabel, '00:00:00.840', '00:00:29.826'].map(
-      (textContent) => {
-        const cell = new FakeHTMLElement();
-        cell.textContent = textContent;
-        return cell;
-      }
-    );
-    const row = new FakeHTMLTableRowElement();
-    row.children = cells;
-    row.querySelector = () => textarea;
-    row.__reactFiber$live = {
-      return: {
-        memoizedProps: {
-          annotation,
-          onTimeChange() {},
-          onCreateAnnotation(createdAnnotation) {
-            createdAnnotations.push(createdAnnotation);
-            transcriptRows = [makeLiveRow(createdAnnotation, createdAnnotation.content)];
-          }
-        },
-        return: null
-      }
-    };
-    return row;
+function installNativeTranscriptModel(pageWindow, initial = []) {
+  const state = { annotations: initial, readOnly: false, rows: [], mutations: [] };
+  const tracks = [{ id: 'recording-a', label: 'Speaker 1' }, { id: 'recording-b', label: 'Speaker 2' }];
+  const history = { undoStack: [], redoStack: [],
+    executeAndPush(command) { command.do(); this.undoStack.push(command); this.redoStack = []; },
+    undo() { const command = this.undoStack.pop(); command.undo(); this.redoStack.push(command); commit(); },
+    redo() { const command = this.redoStack.pop(); command.do(); this.undoStack.push(command); commit(); }
   };
-  const originalAnnotation = {
-    id: 'f4ecee57-live',
-    processedRecordingId: '01a03c7b-live',
-    trackLabel: 'Speaker 2',
-    startTimeInSeconds: 0.84,
-    endTimeInSeconds: 29.826
+  const change = (name, next) => {
+    const previous = state.annotations;
+    state.mutations.push(name);
+    history.executeAndPush({ do() { state.annotations = next; commit(); }, undo() { state.annotations = previous; commit(); } });
   };
-  transcriptRows = [makeLiveRow(originalAnnotation, 'Live transcript text')];
-  const workbench = { memoizedProps: {
-    reviewActionId: 'review-action-live',
-    transcriptionChunkProcessedRecordings: [{ processedRecordingId: 'empty-recording', speaker: 1, processedRecordingUrl: '' }]
-  } };
+  const panel = { memoizedProps: { annotations: initial, tracks, saveState: {}, renderTranscript() {}, onSave() {},
+    onCreateAnnotation(annotation) { change('create', [...state.annotations, annotation]); },
+    onDeleteAnnotation(id) { change('delete', state.annotations.filter(turn => turn.id !== id)); },
+    onChangeAnnotationTime(id, range) {
+      change('time', state.annotations.map(turn => turn.id === id
+        ? { ...turn, startTimeInSeconds: range.start, endTimeInSeconds: range.end } : turn));
+    },
+    onMergeAnnotations(id, direction) {
+      const lane = state.annotations.filter(turn => turn.processedRecordingId === state.annotations.find(turn => turn.id === id).processedRecordingId);
+      const index = lane.findIndex(turn => turn.id === id), adjacent = lane[index + (direction === 'below' ? 1 : -1)];
+      change('merge', state.annotations.filter(turn => turn.id !== adjacent.id).map(turn => turn.id === id
+        ? { ...turn, content: direction === 'below' ? `${turn.content} ${adjacent.content}` : `${adjacent.content} ${turn.content}` } : turn));
+    }
+  }, memoizedState: { memoizedState: history, queue: { getSnapshot: () => history } } };
+  const controller = { annotationsRef: { current: initial }, selectTurn() {}, updateText() {},
+    split(id, time, texts) {
+      const original = state.annotations.find(turn => turn.id === id);
+      const left = { ...original, id: `${id}-left`, content: texts ? texts[0] : original.content, endTimeInSeconds: time - 0.05 };
+      const right = { ...original, id: `${id}-right`, content: texts ? texts[1] : original.content, startTimeInSeconds: time + 0.05 };
+      change('split', [...state.annotations.filter(turn => turn.id !== id), left, right]);
+      return [left.id, right.id];
+    },
+    remove() {}, toggleWarningAssertion() {} };
+  const transcript = { memoizedProps: { turns: initial, handlers: { onChangeText() {} }, activeIds: new Set() } };
+  const workbench = { memoizedProps: { reviewActionId: 'review-action-live',
+    transcriptionChunkProcessedRecordings: tracks.map((track, index) => ({
+      processedRecordingId: track.id, speaker: index + 1, processedRecordingUrl: ''
+    })) }, memoizedState: { memoizedState: [controller, []] }, child: panel };
   const root = { child: workbench };
   root.stateNode = { current: root };
-  workbench.return = root;
+  workbench.return = root; panel.return = workbench; panel.child = transcript; transcript.return = panel;
   const main = new FakeHTMLElement();
-  main.__reactFiber$live = workbench;
-  pageWindow.document.querySelectorAll = (selector) => {
-    if (selector === 'tbody tr') return transcriptRows;
-    if (selector === 'tbody, table, main' || selector === 'main, table') return [main];
-    return [];
-  };
+  main.__reactFiber$native = workbench;
+  pageWindow.document.querySelectorAll = selector => selector === 'section[data-annotation-id]' ? state.rows : [main];
+  function commit() {
+    panel.memoizedProps.annotations = state.annotations;
+    panel.memoizedProps.readOnly = state.readOnly;
+    transcript.memoizedProps.turns = state.annotations;
+    controller.annotationsRef.current = state.annotations;
+  }
+  return { state, tracks, panel, transcript, workbench, root, main, history, commit };
+}
 
-  await importBundledTs('src/content/timestamp-bridge.ts', 'snapshot-timestamp-bridge');
-  const direct = pageWindow.__babelHelperTimestampBridge.snapshotTranscript();
-  assert.deepEqual(direct, {
-    ok: true,
-    backend: 'page-react-transcript-snapshot',
-    lanes: [{ processedRecordingId: 'empty-recording', speakerKey: 'empty-recording', trackLabel: 'Speaker 1', lane: 'Speaker 1' }],
-    rows: [
-      {
-        index: 0,
-        annotationId: 'f4ecee57-live',
-        processedRecordingId: '01a03c7b-live',
-        trackLabel: 'Speaker 2',
-        speakerKey: '01a03c7b-live',
-        lane: 'Speaker 2',
-        startText: '00:00:00.840',
-        endText: '00:00:29.826',
-        startSeconds: 0.84,
-        endSeconds: 29.826,
-        text: 'Live transcript text'
-      }
-    ]
-  });
+test('MAIN snapshots retain empty lanes and native create works without mounted turn rows', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'empty-transcript-bridge');
+  const original = { id: 'original', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 0.84, endTimeInSeconds: 29.826, content: 'Live transcript text', metadata: { keep: true } };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const snapshot = bridge.snapshotTranscript();
+  assert.equal(snapshot.reviewActionId, 'review-action-live');
+  assert.equal(snapshot.historyRevision, 0);
+  assert.equal(typeof snapshot.historyToken, 'string');
+  assert.equal(snapshot.rows[0].text, original.content);
+  assert.equal(snapshot.rows[0].startSeconds, 0.84);
+  assert.deepEqual(snapshot.lanes.map(lane => lane.processedRecordingId), ['recording-a', 'recording-b']);
 
-  const { registerTimestampEditService } = await importBundledTs(
-    'src/features/timestamp-edit-feature.ts',
-    'snapshot-timestamp-client'
-  );
-  const isolatedHelper = {};
-  registerTimestampEditService(isolatedHelper);
-  assert.deepEqual(await isolatedHelper.snapshotTranscriptWithNativeBridge(), direct);
-
-  transcriptRows = [];
-  const recreated = await isolatedHelper.createSegmentWithNativeAction({
-    annotationId: originalAnnotation.id,
-    processedRecordingId: originalAnnotation.processedRecordingId,
-    speakerKey: originalAnnotation.processedRecordingId,
-    startSeconds: originalAnnotation.startTimeInSeconds,
-    endSeconds: originalAnnotation.endTimeInSeconds,
-    text: 'Live transcript text'
-  });
-  assert.equal(recreated.ok, true);
-  assert.equal(recreated.verification.annotationId, originalAnnotation.id);
-  assert.equal(transcriptRows.length, 1);
-  assert.equal(createdAnnotations.length, 1);
-  assert.equal(createdAnnotations[0].content, 'Live transcript text');
-  assert.equal(transcriptRows[0].querySelector().value, 'Live transcript text');
-
-  transcriptRows = [];
-  const empty = await isolatedHelper.createSegmentWithNativeAction({
-    annotationId: 'empty-transcript',
-    processedRecordingId: originalAnnotation.processedRecordingId,
-    startSeconds: 1,
-    endSeconds: 2
-  });
-  assert.equal(empty.ok, true);
-  assert.equal(transcriptRows[0].querySelector().value, '');
-  assert.equal(createdAnnotations[1].type, 'transcription');
-  assert.equal(createdAnnotations[1].startTimeInSeconds, 1);
-  assert.equal(createdAnnotations[1].endTimeInSeconds, 2);
-
-  pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
+  const removed = await bridge.deleteSegment({ annotationId: original.id, expectedHistoryRevision: 0, expectedHistoryToken: snapshot.historyToken });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.previousHistoryRevision, 0);
+  assert.equal(removed.historyRevision, 1);
+  assert.equal(removed.previousHistoryToken, snapshot.historyToken);
+  assert.notEqual(removed.historyToken, snapshot.historyToken);
+  assert.deepEqual(bridge.snapshotTranscript().rows, []);
+  assert.equal(bridge.snapshotTranscript().lanes.length, 2);
+  const created = await bridge.createSegment({ annotationId: 'empty-lane', processedRecordingId: 'recording-b',
+    startSeconds: 1, endSeconds: 2, text: '', expectedHistoryRevision: 1, expectedHistoryToken: removed.historyToken });
+  assert.equal(created.ok, true);
+  assert.equal(created.historyRevision, 2);
+  assert.equal(model.state.annotations[0].content, '');
+  assert.equal(model.state.annotations[0].processedRecordingId, 'recording-b');
+  const undoCreate = await bridge.undoTranscript({ expectedHistoryRevision: 2, expectedHistoryToken: created.historyToken });
+  assert.equal(undoCreate.ok, true);
+  assert.equal(undoCreate.historyToken, removed.historyToken);
+  const undoDelete = await bridge.undoTranscript({ expectedHistoryRevision: 1, expectedHistoryToken: undoCreate.historyToken });
+  assert.equal(undoDelete.ok, true);
+  assert.equal(undoDelete.historyToken, snapshot.historyToken);
+  assert.equal(model.state.annotations[0], original, 'undo restores original annotation object and metadata');
 });
 
 function installTimestampMutationHarness(t, respond) {
   const keys = [
     'CustomEvent', 'Element', 'HTMLElement', 'HTMLDivElement', 'HTMLMediaElement',
-    'HTMLTableRowElement', 'HTMLTextAreaElement', 'ShadowRoot', 'document', 'window'
+    'ShadowRoot', 'document', 'window', 'location'
   ];
   const previous = keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
   t.after(() => {
@@ -392,9 +361,9 @@ function installTimestampMutationHarness(t, respond) {
 }
 
 function mutationRow(annotationId, speakerKey, startText, endText) {
-  const row = new FakeHTMLTableRowElement();
-  row.children = ['', speakerKey, startText, endText].map((textContent) => ({ textContent }));
-  row.__reactFiber$test = { memoizedProps: { annotation: { id: annotationId } } };
+  const row = new FakeHTMLElement();
+  row.annotationId = annotationId;
+  row.startText = startText; row.endText = endText;
   row.speakerKey = speakerKey;
   row.text = 'current';
   return row;
@@ -405,13 +374,13 @@ function rowHelper(getRows) {
     normalizeText: (element) => element.textContent.trim(),
     getTranscriptRows: getRows,
     getRowSpeakerKey: (row) => row.speakerKey,
-    getRowIdentity: (row) => ({
-      annotationId: row.__reactFiber$test.memoizedProps.annotation.id
-    }),
+    getRowIdentity: row => ({ annotationId: row.annotationId, startText: row.startText, endText: row.endText }),
+    getRowTimeRange(row) {
+      const parse = text => text.split(':').reduce((total, part) => total * 60 + Number(part), 0);
+      return { startSeconds: parse(row.startText), endSeconds: parse(row.endText) };
+    },
     findRowByIdentity(identity) {
-      return getRows().find(
-        (row) => row.__reactFiber$test.memoizedProps.annotation.id === identity.annotationId
-      );
+      return getRows().find(row => row.annotationId === identity.annotationId);
     },
     sleep: async () => {}
   };
@@ -470,7 +439,7 @@ test('timestamp retries mutate the replacement React row, never a stale identity
           return { ok: false, reason: 'react-row-replaced' };
         }
         const target = rows.find(
-          (row) => row.__reactFiber$test.memoizedProps.annotation.id === payload.annotationId
+          (row) => row.annotationId === payload.annotationId
         );
         if (target !== replacement) return { ok: false, reason: 'stale-row' };
         scenario.apply(target);
@@ -670,7 +639,7 @@ test('boundary edits without usable labels choose the nearby boundary in the req
   const rows = [otherSpeaker, distant, nearest];
   installTimestampMutationHarness(t, ({ payload }) => {
     const row = rows.find(
-      (candidate) => candidate.__reactFiber$test.memoizedProps.annotation.id === payload.annotationId
+      (candidate) => candidate.annotationId === payload.annotationId
     );
     if (!row) return { ok: false };
     row.endSeconds = payload.targetSeconds;
@@ -691,14 +660,6 @@ test('boundary edits without usable labels choose the nearby boundary in the req
   assert.equal(otherSpeaker.endSeconds, undefined);
 });
 
-function liveRow(annotation, textarea) {
-  const row = new FakeHTMLTableRowElement();
-  row.children = ['', annotation.trackLabel, '00:00:01.000', '00:00:02.000'].map((textContent) => ({
-    textContent
-  }));
-  row.querySelector = () => textarea;
-  return row;
-}
 
 async function loadTimestampBridge(t, label) {
   const { createServiceRegistry } = await importBundledTs(
@@ -711,104 +672,363 @@ async function loadTimestampBridge(t, label) {
   return pageWindow;
 }
 
-test('row action binding prefers the committed fiber path and falls back to the return walk on a miss', async (t) => {
-  const pageWindow = await loadTimestampBridge(t, 'binding-fallback-bridge');
-  const deleted = [];
-  const annotation = { id: 'ann-live', trackLabel: 'Speaker 1', startTimeInSeconds: 1, endTimeInSeconds: 2 };
-  const row = liveRow(annotation, new FakeHTMLElement());
-  let rows = [row];
-  // The host node keeps its original fiber whose `.return` reaches the stale
-  // alternate; the committed tree holds the fresh alternate with new callbacks.
-  const hostFiber = { memoizedProps: {} };
-  const staleRowFiber = {
-    memoizedProps: { annotation, onTimeChange() {}, onDelete: (id) => { deleted.push('stale:' + id); rows = []; } }
-  };
-  const committedRowFiber = {
-    memoizedProps: { annotation, onTimeChange() {}, onDelete: (id) => { deleted.push('committed:' + id); rows = []; } },
-    alternate: staleRowFiber,
-    child: hostFiber
-  };
-  staleRowFiber.alternate = committedRowFiber;
-  const root = { child: committedRowFiber };
-  root.stateNode = { current: root };
-  hostFiber.return = staleRowFiber;
-  staleRowFiber.return = root;
-  committedRowFiber.return = root;
-  row.__reactFiber$live = hostFiber;
-  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? rows : []);
+test('mutations use the committed task and reject stale roots, readonly, IDs and history revisions', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'committed-native-bridge');
+  const original = { id: 'ann-live', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 2, content: 'Native turn' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const staleWorkbench = { memoizedProps: { ...model.workbench.memoizedProps }, return: model.root };
+  model.main.__reactFiber$native = staleWorkbench;
   const bridge = pageWindow.__babelHelperTimestampBridge;
-
-  const viaCommitted = await bridge.deleteSegment({ annotationId: annotation.id });
-  assert.equal(viaCommitted.ok, true, JSON.stringify(viaCommitted));
-  assert.deepEqual(deleted, ['committed:ann-live']);
-
-  // A committed tree that no longer contains the row's fiber pair (portal,
-  // remount, deep Next.js root) must not strip the binding: use `.return`.
-  rows = [row];
-  root.child = { memoizedProps: {}, sibling: null };
-  const viaReturn = await bridge.deleteSegment({ annotationId: annotation.id });
-  assert.equal(viaReturn.ok, true, JSON.stringify(viaReturn));
-  assert.deepEqual(deleted, ['committed:ann-live', 'stale:ann-live']);
-
-  // No fiber root reachable at all (the ancestry never ends in a HostRoot).
-  rows = [row];
-  staleRowFiber.return = { memoizedProps: {} };
-  const viaOrphan = await bridge.deleteSegment({ annotationId: annotation.id });
-  assert.equal(viaOrphan.ok, true, JSON.stringify(viaOrphan));
-  assert.equal(deleted.length, 3);
+  const staleTask = await bridge.deleteSegment({ annotationId: original.id, expectedReviewActionId: 'old-task' });
+  assert.equal(staleTask.reason, 'stale-task');
+  const staleHistory = await bridge.deleteSegment({ annotationId: original.id, expectedHistoryRevision: 99,
+    expectedHistoryToken: bridge.snapshotTranscript().historyToken });
+  assert.equal(staleHistory.reason, 'history-conflict');
+  assert.equal(staleHistory.previousHistoryRevision, 0);
+  assert.equal(staleHistory.historyRevision, 0);
+  assert.equal((await bridge.deleteSegment({ annotationId: 'removed', startSeconds: 1, endSeconds: 2 })).reason, 'row-not-found');
+  model.state.readOnly = true; model.commit();
+  for (const [method, payload] of [
+    ['createSegment', { processedRecordingId: 'recording-a', startSeconds: 2, endSeconds: 3 }],
+    ['deleteSegment', { annotationId: original.id }],
+    ['mergeSegment', { annotationId: original.id }],
+    ['setBoundaryTime', { annotationId: original.id, targetSeconds: 3 }],
+    ['splitSegmentAtTime', { annotationId: original.id, splitSeconds: 1.5 }],
+    ['undoTranscript', { expectedHistoryRevision: 0 }]
+  ]) assert.equal((await bridge[method](payload)).reason, 'read-only', method);
+  assert.deepEqual(model.state.mutations, []);
+  model.state.readOnly = false; model.commit();
+  assert.equal((await bridge.deleteSegment({ annotationId: original.id })).ok, true);
+  assert.deepEqual(model.state.mutations, ['delete']);
+  model.root.stateNode.current = { child: null };
+  assert.equal((await bridge.createSegment({ processedRecordingId: 'recording-a', startSeconds: 2, endSeconds: 3 })).reason,
+    'binding-not-found', 'an orphaned old return path must never remain a mutation target');
 });
 
-test('merge supports non-textarea rows but preserves edits when a commit times out', async (t) => {
-  const pageWindow = await loadTimestampBridge(t, 'merge-fail-open-bridge');
-  const merged = [];
-  let rows = [];
-  const makeRow = (id, textarea, content) => {
-    const annotation = { id, trackLabel: 'Speaker 1', startTimeInSeconds: 1, endTimeInSeconds: 2, content };
-    const row = liveRow(annotation, textarea);
-    row.__reactFiber$live = {
-      memoizedProps: {
-        annotation,
-        onTimeChange() {},
-        canMergeBelow: true,
-        canMergeAbove: true,
-        onMergeBelow: (mergedId) => { merged.push(mergedId); rows = rows.slice(0, 1); },
-        onMergeAbove() {}
-      },
-      return: null
-    };
-    return { row, annotation };
-  };
-  pageWindow.document.querySelectorAll = (selector) => (selector === 'tbody tr' ? rows : []);
+test('native merge flushes Slate text and refuses an uncommitted edit instead of discarding it', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'native-pending-merge');
+  const above = { id: 'above', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 2, content: 'Saved above' };
+  const below = { ...above, id: 'below', startTimeInSeconds: 3, endTimeInSeconds: 4, content: 'Saved below' };
+  const model = installNativeTranscriptModel(pageWindow, [above, below]);
+  const editor = { children: [{ children: [{ text: 'Edited below' }] }], apply() {}, insertData() {} };
+  const row = new FakeHTMLElement();
+  row.getAttribute = name => name === 'data-annotation-id' ? below.id : null;
+  row.querySelector = () => ({ blur() { assert.fail('Awaiting debounce must preserve native focus and selection'); } });
+  model.state.rows = [row];
+  model.transcript.child = { memoizedProps: { turn: below, handlers: {} },
+    child: { memoizedProps: { editor } } };
   const bridge = pageWindow.__babelHelperTimestampBridge;
+  setTimeout(() => {
+    model.state.annotations = model.state.annotations.map(turn =>
+      turn.id === below.id ? { ...turn, content: 'Edited below' } : turn);
+    model.commit();
+  }, 20);
+  assert.equal((await bridge.mergeSegment({ annotationId: above.id, direction: 'below' })).ok, true);
+  assert.equal(model.state.annotations[0].content, 'Saved above Edited below');
+  model.state.annotations = [above, below]; model.commit();
+  const result = await bridge.mergeSegment({ annotationId: above.id, direction: 'below' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'verify-timeout');
+  assert.deepEqual(model.state.annotations, [above, below]);
+  assert.equal(editor.children[0].children[0].text, 'Edited below');
+  assert.deepEqual(model.state.mutations, ['merge']);
+});
 
-  // Low-confidence / TTS rows render an editor that is not a plain textarea.
-  const ttsEditor = new FakeHTMLElement();
-  ttsEditor.value = 'not a textarea';
-  const committing = new FakeHTMLTextAreaElement();
-  committing.value = 'edited below';
-  const below = makeRow('below-commits', committing, 'saved below');
-  committing.focus = () => {};
-  committing.blur = () => { below.annotation.content = committing.value; };
-  rows = [makeRow('tts-top', ttsEditor, 'saved top').row, below.row];
-  const clean = await bridge.mergeSegment({ annotationId: 'tts-top', direction: 'below' });
-  assert.equal(clean.ok, true, JSON.stringify(clean));
-  assert.equal('warning' in clean, false);
-  assert.deepEqual(merged, ['tts-top']);
+test('pending transcript snapshot rejects further typing and navigation without issuing native mutations', async (t) => {
+  const pageWindow = await loadTimestampBridge(t, 'pending-native-task');
+  const original = { id: 'pending', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 3, content: 'Original' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const editor = { children: [{ children: [{ text: 'First pending edit' }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} },
+    child: { memoizedProps: { editor } } };
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  assert.equal(bridge.snapshotTranscript().rows[0].text, 'First pending edit');
+  const changed = bridge.flushTranscript();
+  editor.children[0].children[0].text = 'Further user typing';
+  assert.equal((await changed).reason, 'stale-transcript');
+  const navigated = bridge.deleteSegment({ annotationId: original.id });
+  model.workbench.memoizedProps.reviewActionId = 'new-task';
+  assert.equal((await navigated).reason, 'stale-task');
+  assert.deepEqual(model.state.mutations, []);
+  assert.equal(model.state.annotations[0], original);
+  assert.equal(editor.children[0].children[0].text, 'Further user typing');
+});
 
-  // A textarea whose debounced label update never lands within the budget
-  // must block the merge so the pending text remains available for retry.
-  const stuck = new FakeHTMLTextAreaElement();
-  stuck.value = 'edited but never committed';
-  let blurred = 0;
-  stuck.focus = () => {};
-  stuck.blur = () => { blurred += 1; };
-  rows = [makeRow('tts-top', ttsEditor, 'saved top').row, makeRow('below-stuck', stuck, 'saved below').row];
-  const warned = await bridge.mergeSegment({ annotationId: 'tts-top', direction: 'below' });
-  assert.equal(warned.ok, false, JSON.stringify(warned));
-  assert.equal(warned.reason, 'pending-edit-commit-timeout');
-  assert.equal(warned.warning, 'pending-edit-commit-timeout:below-stuck');
-  assert.equal(blurred, 1);
-  assert.deepEqual(merged, ['tts-top']);
-  assert.equal(rows.length, 2);
-  assert.equal(stuck.value, 'edited but never committed');
+test('native undo rejects depth-only, same-depth forks, and local-only Slate edits', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-history-identity');
+  const original = { id: 'guarded', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 3, content: 'Original', metadata: { preserve: true } };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const receipt = await bridge.setBoundaryTime({ annotationId: original.id, targetSeconds: 4 });
+  assert.equal(receipt.ok, true);
+  assert.equal((await bridge.undoTranscript({ expectedHistoryRevision: receipt.historyRevision })).reason, 'history-conflict');
+  const editor = { children: [{ children: [{ text: 'Pending manual text' }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} }, child: { memoizedProps: { editor } } };
+  assert.equal((await bridge.undoTranscript({ expectedHistoryRevision: receipt.historyRevision,
+    expectedHistoryToken: receipt.historyToken })).reason, 'history-conflict');
+  assert.equal(model.history.undoStack.length, receipt.historyRevision);
+  assert.equal(editor.children[0].children[0].text, 'Pending manual text');
+  model.transcript.child = null;
+  model.history.undo();
+  const manual = { ...original, content: 'Manual replacement command' };
+  model.history.executeAndPush({ do() { model.state.annotations = [manual]; model.commit(); },
+    undo() { model.state.annotations = [original]; model.commit(); } });
+  const fork = bridge.snapshotTranscript();
+  assert.equal(fork.historyRevision, receipt.historyRevision);
+  assert.notEqual(fork.historyToken, receipt.historyToken);
+  const rejected = await bridge.undoTranscript({ expectedHistoryRevision: receipt.historyRevision,
+    expectedHistoryToken: receipt.historyToken });
+  assert.equal(rejected.reason, 'history-conflict');
+  assert.equal(model.state.annotations[0], manual);
+});
+
+test('a commit-wait history fork cannot replace the native command identity in its receipt', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-history-receipt');
+  const original = { id: 'delayed', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 3, content: 'Original' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  let pendingAnnotations = model.state.annotations;
+  const applied = Promise.withResolvers();
+  model.panel.memoizedProps.onChangeAnnotationTime = (id, range) => {
+    const previous = pendingAnnotations;
+    const next = previous.map(turn => turn.id === id ? { ...turn, endTimeInSeconds: range.end } : turn);
+    model.history.executeAndPush({ do() { pendingAnnotations = next; }, undo() { pendingAnnotations = previous; } });
+    applied.resolve();
+  };
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const mutation = bridge.setBoundaryTime({ annotationId: original.id, targetSeconds: 4 });
+  await applied.promise;
+  const owned = bridge.snapshotTranscript();
+  model.history.undo();
+  const manual = [{ ...original, content: 'Keep the newer user edit' }];
+  model.history.executeAndPush({ do() { pendingAnnotations = manual; }, undo() { pendingAnnotations = [original]; } });
+  model.state.annotations = pendingAnnotations;
+  model.commit();
+  const fork = bridge.snapshotTranscript();
+  assert.equal(fork.historyRevision, owned.historyRevision);
+  assert.notEqual(fork.historyToken, owned.historyToken);
+  const result = await mutation;
+  assert.equal(result.reason, 'history-conflict');
+  assert.equal(result.historyToken, owned.historyToken, 'receipt identifies the invoked command, never the newest unrelated head');
+  assert.equal(model.state.annotations[0].content, 'Keep the newer user edit');
+});
+
+test('isolated timestamp commands forward opaque guards and never retry a same-depth identity conflict', async t => {
+  const { registerTimestampEditService } = await importBundledTs(
+    'src/features/timestamp-edit-feature.ts', 'timestamp-opaque-guards');
+  const seen = [];
+  installTimestampMutationHarness(t, ({ operation, payload }) => {
+    seen.push(operation);
+    assert.equal(payload.expectedReviewActionId, 'task-one', operation);
+    assert.equal(payload.expectedHistoryRevision, 1, operation);
+    assert.equal(payload.expectedHistoryToken, 'owned-command', operation);
+    return { ok: false, reason: 'history-conflict', previousHistoryRevision: 1, historyRevision: 1,
+      previousHistoryToken: 'different-native-command', historyToken: 'different-native-command' };
+  });
+  const helper = rowHelper(() => []);
+  registerTimestampEditService(helper);
+  for (const [method, values] of [
+    ['createSegmentWithNativeAction', { processedRecordingId: 'recording', startSeconds: 1, endSeconds: 2 }],
+    ['deleteSegmentWithNativeAction', {}],
+    ['mergeSegmentWithNativeAction', { direction: 'below' }],
+    ['setSegmentBoundaryTime', { targetSeconds: 3 }],
+    ['splitSegmentAtTime', { splitSeconds: 1.5 }],
+    ['undoTranscriptWithNativeBridge', {}]
+  ]) {
+    const count = seen.length;
+    const result = await helper[method]({ annotationId: 'annotation', attempts: 4,
+      expectedReviewActionId: 'task-one', expectedHistoryRevision: 1, expectedHistoryToken: 'owned-command', ...values });
+    assert.equal(result.reason, 'history-conflict', method);
+    assert.equal(seen.length, count + 1, 'a history identity conflict is not a retryable row remount');
+    assert.equal((result.verification || result).historyToken, 'different-native-command');
+  }
+});
+
+test('native split applies exact text parts atomically after the pending raw source commits', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-split-texts');
+  const original = { id: 'split', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Saved text', metadata: { preserve: true } };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const sourceText = '<soft>Pending raw text</soft>';
+  const editor = { children: [{ children: [{ raw: '<soft>' }, { text: 'Pending raw text' }, { raw: '</soft>' }] }],
+    apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} }, child: { memoizedProps: { editor } } };
+  const split = bridge.splitSegmentAtTime({ annotationId: original.id, splitSeconds: 3,
+    texts: ['', sourceText], sourceText });
+  assert.deepEqual(model.state.mutations, [], 'the pending raw text must commit before native split');
+  const committed = { ...original, content: sourceText };
+  model.state.annotations = [committed];
+  model.commit();
+  const receipt = await split;
+  assert.equal(receipt.ok, true);
+  assert.deepEqual(model.state.mutations, ['split']);
+  assert.equal(receipt.historyRevision, 1, 'both text parts belong to one native split command');
+  assert.deepEqual(model.state.annotations.map(turn => turn.content), ['', sourceText]);
+  assert.deepEqual(model.state.annotations.map(turn => [turn.startTimeInSeconds, turn.endTimeInSeconds]), [[1, 2.95], [3.05, 5]]);
+  model.transcript.child = null;
+  const undone = await bridge.undoTranscript({ expectedHistoryRevision: receipt.historyRevision,
+    expectedHistoryToken: receipt.historyToken });
+  assert.equal(undone.ok, true);
+  assert.equal(model.state.annotations[0], committed, 'exact native undo retains the committed source and metadata');
+});
+
+test('native split refuses malformed text parts and stale raw plans before native mutation', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-split-text-guards');
+  const original = { id: 'split-guarded', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Source text' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  for (const texts of [null, [], ['left'], ['left', 'right', 'extra'], ['left', null], Array(2)]) {
+    assert.equal((await bridge.splitSegmentAtTime({ annotationId: original.id, splitSeconds: 3,
+      texts, sourceText: original.content })).reason, 'invalid-split');
+  }
+  assert.equal((await bridge.splitSegmentAtTime({ annotationId: original.id, splitSeconds: 3,
+    texts: ['left', 'right'] })).reason, 'invalid-split');
+  assert.equal((await bridge.splitSegmentAtTime({ annotationId: original.id, splitSeconds: 3,
+    texts: ['left', 'right'], sourceText: 'Obsolete source' })).reason, 'stale-transcript');
+  const editor = { children: [{ children: [{ text: 'Planned pending text' }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} }, child: { memoizedProps: { editor } } };
+  const split = bridge.splitSegmentAtTime({ annotationId: original.id, splitSeconds: 3,
+    texts: ['Planned', ' pending text'], sourceText: 'Planned pending text' });
+  editor.children[0].children[0].text = 'Newer user text';
+  model.state.annotations = [{ ...original, content: 'Newer user text' }];
+  model.commit();
+  assert.equal((await split).reason, 'stale-transcript');
+  assert.deepEqual(model.state.mutations, []);
+  assert.equal(model.history.undoStack.length, 0);
+  assert.equal(model.state.annotations[0].content, 'Newer user text');
+});
+
+test('native split rechecks the raw source after a successful flush before issuing its command', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-split-after-flush');
+  const original = { id: 'split-race', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Source text' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const editor = { children: [{ children: [{ text: original.content }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} }, child: { memoizedProps: { editor } } };
+  const split = pageWindow.__babelHelperTimestampBridge.splitSegmentAtTime({
+    annotationId: original.id, splitSeconds: 3, texts: ['Source', ' text'], sourceText: original.content,
+  });
+  // The already-committed flush resolves first; this edit lands before the
+  // awaiting split continuation, without relying on a debounce duration.
+  queueMicrotask(() => { editor.children[0].children[0].text = 'New local edit'; });
+  assert.equal((await split).reason, 'stale-transcript');
+  assert.deepEqual(model.state.mutations, []);
+  assert.equal(model.history.undoStack.length, 0);
+  assert.equal(model.state.annotations[0], original);
+  assert.equal(editor.children[0].children[0].text, 'New local edit');
+});
+
+test('native seek preserves the exact partially-playing lane subset while synchronizing both clocks', async t => {
+  const { createServiceRegistry } = await importBundledTs('src/mod-platform/service-registry.ts', 'partial-play-seek-registry');
+  const pageWindow = installPageGlobals(createServiceRegistry());
+  const model = installNativeTranscriptModel(pageWindow);
+  const sourceModule = await importBundledTs(path.relative(repoRoot,
+    path.join(defaultSnapshotDir, 'app/src/recovered/generated/moduleSources.ts')), 'native-seek-source');
+  const nativeSource = (await transform(`(${sourceModule.recoveredModuleSources[sourceModule.recoveredEditorModuleId]})`,
+    { loader: 'js', minify: false })).code;
+  function callback(name, scope) {
+    const marker = `${name} = (0, a.useCallback)(`;
+    const start = nativeSource.indexOf(marker);
+    const end = nativeSource.indexOf('}, [', start + marker.length);
+    assert.notEqual(start, -1, `Captured native ${name} callback must be present`);
+    assert.notEqual(end, -1);
+    return new Function(...Object.keys(scope), `return (${nativeSource.slice(start + marker.length, end + 1)});`)(...Object.values(scope));
+  }
+  const seekCalls = [];
+  const waves = [false, true].map((paused, index) => ({
+    paused, time: 3.25,
+    getCurrentTime() { return this.time; }, getDuration() { return 12; },
+    getPlaybackRate() { return 1; }, isPlaying() { return !this.paused; },
+    seekTo(fraction) { this.time = fraction * 12; seekCalls.push([index, this.time, this.paused]); },
+    play() { assert.fail('Seeking must not start a paused lane'); },
+    pause() { assert.fail('Seeking must not pause an active lane'); }
+  }));
+  const registry = { 'recording-a': { wavesurfer: waves[0] }, 'recording-b': { wavesurfer: waves[1] } };
+  const seekSyncRef = { current: false };
+  const nativeSeek = callback('k3', { g3: seekSyncRef, f2: registry });
+  model.panel.memoizedProps.onSeekToAnnotation = callback('ro2', {
+    t_2: { seekAllTracksToTime: nativeSeek },
+    eA2() { assert.fail('Pure clock seek must preserve the active annotation'); }
+  });
+  model.panel.memoizedProps.onPlayPause = () => assert.fail('Pure seek must not toggle the transport');
+  model.workbench.memoizedState.next = { memoizedState: { current: registry } };
+  await importBundledTs('src/content/playback-bridge.ts', 'partial-play-seek-bridge');
+  t.after(() => pageWindow.__babelHelperPlaybackBridge?.dispose());
+  const result = pageWindow.__babelHelperPlaybackBridge.seekPlaybackBySeconds(-1);
+  assert.equal(result.ok, true);
+  assert.deepEqual(seekCalls, [[0, 2.25, false], [1, 2.25, true]]);
+  assert.deepEqual(waves.map(wave => wave.paused), [false, true]);
+  assert.equal(result.paused, false);
+  assert.equal(seekSyncRef.current, false);
+  assert.equal(pageWindow.__babelHelperPlaybackBridge.seekPlaybackBySeconds(-100).ok, true);
+  assert.deepEqual(waves.map(wave => [wave.time, wave.paused]), [[0, false], [0, true]]);
+});
+
+test('isolated atomic split forwards exact raw source and empty text parts without altering ordinary splits', async t => {
+  const { registerTimestampEditService } = await importBundledTs(
+    'src/features/timestamp-edit-feature.ts', 'atomic-split-client');
+  const payloads = [];
+  installTimestampMutationHarness(t, ({ operation, payload }) => {
+    assert.equal(operation, 'split-segment-at-time');
+    payloads.push(payload);
+    return { ok: true, leftAnnotationId: 'left', rightAnnotationId: 'right' };
+  });
+  const helper = rowHelper(() => []);
+  registerTimestampEditService(helper);
+  const sourceText = '  Pending raw text. ';
+  const texts = ['', sourceText];
+  assert.equal((await helper.splitSegmentAtTime({ annotationId: 'turn', splitSeconds: 1.5,
+    sourceText, texts })).ok, true);
+  assert.equal(payloads[0].sourceText, sourceText);
+  assert.deepEqual(payloads[0].texts, texts);
+  assert.equal((await helper.splitSegmentAtTime({ annotationId: 'turn', splitSeconds: 1.5 })).ok, true);
+  assert.equal(Object.hasOwn(payloads[1], 'texts'), false);
+  assert.equal(Object.hasOwn(payloads[1], 'sourceText'), false);
+});
+
+test('native asynchronous play reads current clocks and cancels on task or source replacement without replay', async t => {
+  const { createServiceRegistry } = await importBundledTs('src/mod-platform/service-registry.ts', 'pending-play-registry');
+  const pageWindow = installPageGlobals(createServiceRegistry());
+  const model = installNativeTranscriptModel(pageWindow);
+  let toggles = 0;
+  const createWave = () => ({
+    time: 2, playing: false,
+    getCurrentTime() { return this.time; }, getDuration() { return 12; },
+    getPlaybackRate() { return 1; }, isPlaying() { return this.playing; }
+  });
+  const registry = { recording: { wavesurfer: createWave() } };
+  model.workbench.memoizedState.next = { memoizedState: { current: registry } };
+  model.panel.memoizedProps.onSeekToAnnotation = () => {};
+  model.panel.memoizedProps.onPlayPause = () => { toggles++; };
+  await importBundledTs('src/content/playback-bridge.ts', 'pending-play-bridge');
+  t.after(() => pageWindow.__babelHelperPlaybackBridge?.dispose());
+  let resume;
+  pageWindow.setTimeout = callback => { resume = callback; return 1; };
+  for (const transition of ['playing', 'source', 'task']) {
+    registry.recording.wavesurfer = createWave();
+    model.workbench.memoizedProps.reviewActionId = 'review-action-live';
+    toggles = 0;
+    const pending = pageWindow.__babelHelperPlaybackBridge.setPlaybackPaused(false);
+    assert.equal(toggles, 1);
+    if (transition === 'source') registry.recording.wavesurfer = createWave();
+    if (transition === 'task') model.workbench.memoizedProps.reviewActionId = 'new-task';
+    registry.recording.wavesurfer.playing = true;
+    registry.recording.wavesurfer.time = 4;
+    resume();
+    const result = await pending;
+    assert.equal(toggles, 1, 'a delayed play must never toggle a replacement source');
+    if (transition === 'playing') {
+      assert.equal(result.ok, true);
+      assert.equal(result.currentTime, 4);
+    } else {
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, transition === 'task' ? 'stale-task' : 'playback-unavailable');
+    }
+  }
 });

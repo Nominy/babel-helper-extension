@@ -6,6 +6,8 @@ import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
 import { createMagnifierFeature } from './magnifier-feature';
 import { createMinimapFeature } from './minimap-feature';
+import { createNativeSegmentClickSeekFeature } from './native-segment-click-seek-feature';
+import { createNativeTagDropdownKeyboardFeature } from './native-tag-dropdown-keyboard-feature';
 import { createQuickRegionAutocompleteFeature } from './quick-region-autocomplete-feature';
 import { createRowActionsFeature } from './row-actions-feature';
 import { createTextMoveFeature } from './text-move-feature';
@@ -157,6 +159,17 @@ export const FEATURE_REGISTRATIONS = [
     createModule: createQuickRegionAutocompleteFeature
   }),
   defineFeature({
+    id: 'native-tag-dropdown-keyboard',
+    setting: {
+      key: 'nativeTagDropdownKeyboard',
+      defaultEnabled: true,
+      label: 'Tag Dropdown Keyboard Navigation',
+      description: 'Use Up/Down and Enter in the native selected-text style-tag dropdown without losing the selected words.'
+    },
+    moduleOrder: 85,
+    createModule: createNativeTagDropdownKeyboardFeature
+  }),
+  defineFeature({
     id: 'disable-native-arrow-seek',
     setting: {
       key: 'disableNativeArrowSeek',
@@ -164,6 +177,17 @@ export const FEATURE_REGISTRATIONS = [
       label: 'Disable Native Arrow Seek',
       description: 'Block Babel’s bare Left/Right Arrow segment-jump hotkeys while keeping normal caret movement.'
     }
+  }),
+  defineFeature({
+    id: 'disable-native-segment-click-seek',
+    setting: {
+      key: 'disableNativeSegmentClickSeek',
+      defaultEnabled: true,
+      label: 'Disable Native Segment Click Seek',
+      description: 'Select and edit transcript turns without restarting playback at their beginning. Explicit play and word-seek actions remain available.'
+    },
+    moduleOrder: 9,
+    createModule: createNativeSegmentClickSeekFeature
   }),
   defineFeature({
     id: 'disable-native-timeline-double-click',
@@ -180,7 +204,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'focusToggle',
       defaultEnabled: true,
       label: 'Focus Toggle',
-      description: 'Enable a configurable shortcut to pause and blur the active transcript textarea, then resume and restore it.'
+      description: 'Enable a configurable shortcut to pause and blur the active transcript editor, then resume and restore it.'
     },
     moduleOrder: 40,
     createModule: createFocusToggleFeature,
@@ -313,7 +337,7 @@ export const FEATURE_REGISTRATIONS = [
       defaultEnabled: true,
       label: 'Extended Diff View',
       description:
-        'Extend read-only feedback diff tables in place with extra text, punctuation, tag, segmentation, and timestamp details from Babel diff payloads.'
+        'Extend read-only feedback turns in place with extra text, punctuation, tag, segmentation, and timestamp details from Babel diff payloads.'
     }
   }),
   defineFeature({

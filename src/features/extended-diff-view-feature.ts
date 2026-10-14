@@ -512,9 +512,9 @@ function isFeedbackRoute(): boolean {
   return /^\/transcription(?:\/|$)/.test(window.location.pathname || '') && hasFeedbackContext && displayFeedback !== 'false';
 }
 
-function isDiffViewEnabled(): boolean {
-  const switchElement = document.querySelector('[role="switch"]');
-  return switchElement?.getAttribute('aria-checked') === 'true' || Boolean(getBodyText().match(/\bCompare:\b/));
+export function isDiffViewEnabled(): boolean {
+  const switchElement = document.querySelector('#diff-mode[role="switch"], #show-answer[role="switch"]');
+  return switchElement?.getAttribute('aria-checked') === 'true';
 }
 
 function getVisibleCompareLevel(): number | null {
@@ -526,7 +526,7 @@ function getVisibleCompareLevel(): number | null {
 }
 
 function getRouteKey(): string {
-  return `${window.location.pathname}?${window.location.search}`;
+  return `${window.location.pathname}${window.location.search}`;
 }
 
 function diffUrlMentionsReviewAction(url: string, reviewActionId: string): boolean {
@@ -881,7 +881,7 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
   }
 
   injectStyles();
-  const switchElement = document.querySelector('[role="switch"]');
+  const switchElement = document.querySelector('#diff-mode[role="switch"], #show-answer[role="switch"]');
   const anchor = switchElement?.parentElement || switchElement;
   if (!(anchor instanceof HTMLElement)) return;
 
@@ -985,7 +985,7 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   const recoveredDiff = renderableDiffs.find((diff) => diff.selectedCompareActionId);
   if (recoveredDiff && typeof helper?.applyRecoveredEditorDiffState === 'function') {
     const actionId = recoveredDiff.selectedCompareActionId;
-    const textDiffSignature = `${actionId}:${state.overlayMode}`;
+    const textDiffSignature = `${getRouteKey()}:${actionId}:${state.overlayMode}`;
     if (
       state.appliedRecoveredDiffSignature !== textDiffSignature &&
       state.pendingRecoveredDiffSignature !== textDiffSignature
@@ -1001,7 +1001,7 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
         source: recoveredDiff.source,
         textMode: state.overlayMode
       }).then((result: any) => {
-        if (state.pendingRecoveredDiffSignature !== textDiffSignature) return;
+        if (state.disposed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
         state.pendingRecoveredDiffActionId = '';
         state.pendingRecoveredDiffSignature = '';
         if (result?.ok) {
@@ -1015,7 +1015,7 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
           helper.state.extendedDiffTextApplyResult = result || null;
         }
       }).catch((error: unknown) => {
-        if (state.pendingRecoveredDiffSignature !== textDiffSignature) return;
+        if (state.disposed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
         state.pendingRecoveredDiffActionId = '';
         state.pendingRecoveredDiffSignature = '';
         state.appliedRecoveredDiffActionId = '';

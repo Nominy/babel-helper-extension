@@ -427,9 +427,10 @@ export function createHelperKernel() {
   }
 
   function activateSessionRuntime(reason: string) {
-    return modController.activateSession(reason, async () => {
+    return modController.activateSession(reason, async (isCurrent) => {
       perf.setPhase('session-ready', { reason });
       const module = await loadSessionRuntimeModule();
+      if (!isCurrent()) return false;
       if (typeof module.activateSessionFeatures === 'function') {
         const activated = await module.activateSessionFeatures(featureContext, reason);
         if (!activated) {

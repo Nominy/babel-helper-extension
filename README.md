@@ -16,6 +16,59 @@ Load `babel-helper-extension/` unpacked in `chrome://extensions`. Run `npm run b
 
 `build` preserves the version. Use `npm run version:patch` explicitly when preparing a new release. The manifest includes the official public identity key so the unpacked Helper can connect to Gold's broker.
 
+## Current Babel editor
+
+Helper targets the turn/Slate editor captured on 2026-10-13, not the archived
+table editor. Transcript operations use native model callbacks and an explicit
+editor control for raw text, selections and geometry; they do not create hidden
+textareas or replace Slate DOM. Native Ctrl/Meta+A updates the model and browser
+selection together. Accepted focus/selection operations remain authoritative until
+the DOM catches up; passive selection events cannot replace them with an
+initialization caret.
+Arrow-key suppression runs after Slate handles caret movement, blocking only
+Babel's outer seek handler.
+Pointer and programmatic turn changes blur the connected native editor before
+activating another turn, so its native blur handler can commit pending text before
+the old Slate instance unmounts.
+
+**Disable Native Segment Click Seek** is enabled by default. Clicking a turn still
+selects it and opens its native editor, but does not restart either audio lane at
+the turn's beginning or interrupt running playback. Explicit playback buttons,
+timeline navigation and Alt-click word seeking remain available. Disable this
+feature in Helper settings to restore Babel's native click-to-start behavior;
+changes apply without reloading.
+
+**Tag Dropdown Keyboard Navigation** is enabled by default. In the native style
+tag dropdown opened by selecting words, Up/Down cycles options and Enter applies
+the highlighted tag through Babel's native editor. The selection and native undo
+are preserved; Escape, mouse selection and ordinary search input stay native.
+
+Playback admission and row-identity checks read current native metadata without
+serializing the transcript on every update. Concurrent playback-state requests
+share only the in-flight read; playback clocks are never time-cached. Cursor
+updates avoid repeated layout work and use a shorter default transition, while
+preserving the existing reaction-time compensation and word-boundary behavior.
+
+The magnifier follows live native region boundaries during a drag rather than
+waiting for committed annotation timestamps. Final timestamps and undo still use
+the native release/commit workflow.
+
+Custom-linter diagnostics bind to the committed annotation/lint-state owner,
+without depending on incidental controller memo storage. Issue cards reconcile
+after native lint updates; existing native issues and disabled rules are preserved.
+
+Readonly status comes from the current native task, not `displayFeedback` URL
+flags. Writable feedback routes and empty transcripts remain supported; actual
+readonly tasks reject editing operations. Task navigation, live feature toggles
+and speaker filtering retain their own lifecycle boundaries.
+Guarded transcript mutations and rollback bind the complete row snapshot, pending
+local text and exact native undo-command identity. An undo/redo fork at the same
+history depth cannot authorize an old replacement receipt.
+
+Feedback draft restoration shares one native hydration gate with Review Helper:
+disabling Helper's setting releases Helper's ownership, not an independently
+enabled Review Helper protection.
+
 ## Automatic ZipEnhancer audio
 
 **ZipEnhancer audio** requires matching Gold Drafting, not Review Grader. Once both native speaker tracks load, Gold enhances them according to Options → **ZipEnhancer processing**: **Automatic (prefer local GPU)** or **Remote inference (official first, then swarm)**. Remote works even on WebGPU-capable hardware; Automatic also uses remote processing when local capabilities are unavailable. Save in Gold and reload the task. On a remote cache miss, both Original WAVs leave the device for the configured coordinator and executing service/worker; only use services and workers you trust with the audio. Disable Automatic Audio Enhancement to prevent uploads. No CPU fallback, OpenRouter key or C-denoise/ASR bundle is required. A verified cache hit performs neither inference nor upload, independent of this preference.
@@ -25,6 +78,18 @@ Every new pair defaults to **90% Enhanced / 10% Original**; this is the committe
 The toolbar has one **Enhanced → Original** strength slider with **10-percentage-point detents**. Left is 100% Enhanced; right is byte-exact Original; intermediate positions linearly mix the retained recordings. Dragging only previews the snapped value; release commits one latest selection. Keyboard arrows move one detent, Home/End choose endpoints, and a 200ms release debounce prevents repeated reloads. Keyboard interaction cannot trigger Babel row navigation or seek. Cancelled gestures, task changes, disable, and teardown discard pending selections. The committed blend owns waveforms, playback, audio-boundary tools and Gold/Helper L0 capture. Transport, regions, transcript and selection survive paired reloads; choosing Original before enhancement finishes prevents a late result from overriding it.
 
 Changing strength never reruns the model. Endpoints reuse exact retained WAV bytes; intermediate output is mono PCM16 at the Original sample rate/frame count, with no gain normalization or extra gate. Original and Enhanced stay retained; only one committed mixed pair is kept in memory (plus temporary preparation/rollback resources), and mixed variants are not written to the persistent one-pair model cache. More Original brings back suppressed speech **and** noise/echo; the model changes phase, so linear blending can also cancel some components. Strength is a listening/recognition tradeoff, not a retuned neural model.
+
+Disabling waits for both native players to restore Original before releasing the
+bridge or allowing reactivation. Capture stays unavailable during that transition,
+even after the toolbar disappears. A failed restoration retains its error and
+Original resources for an explicit retry; elapsed time is not a successful
+disposal acknowledgement, and an old owner cannot clear its successor's state.
+Transport changes made during decoding remain authoritative: completing a switch
+does not replay old mute, seek, rate, scroll or selection values. New play/pause
+intent is preserved while playback is rebound to the committed decoded pair.
+
+ZipEnhancer sits in the transcript action toolbar alongside the theme button and
+Gold Drafting magic wand, not in the waveform zoom controls.
 
 The single-row control is **36px high**, matching the theme button, with a stable 360px footprint, fixed percentage/status slots and a thin in-place progress bar. Idle, model preparation, native switching, ready and long errors do not reflow the toolbar or editor. The **i / !** details button opens complete status, errors, inference counts and elapsed time in a scrollable native popover outside layout. Progress uses completed GPU windows, not elapsed-time estimates. A strength commits only after both native players finish loading; sequential lane decodes keep Babel's cross-lane zoom callbacks away from empty buffers.
 

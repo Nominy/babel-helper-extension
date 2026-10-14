@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { readAudioEnhancementState } from '@nominy/babel-babel-runtime';
+import { readAudioEnhancementState, readBabelPlaybackBindings, readBabelTrackBindings, readBabelTranscriptBindings, sleep } from '@nominy/babel-babel-runtime';
 
 export function initMagnifierBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -472,52 +472,14 @@ export function initMagnifierBridge() {
   }
 
   function collectRegistryCandidates(host) {
-    if (!(host instanceof HTMLElement)) {
-      return [];
-    }
-
-    const matches = [];
-    const seenMaps = new Set();
-
-    for (const seed of getSearchSeeds(host)) {
-      const value = seed && seed.value;
-      if (!value || typeof value !== 'object' || seenMaps.has(value)) {
-        continue;
-      }
-
-      seenMaps.add(value);
-      const keys = safe(() => Object.keys(value), []);
-      if (!keys.length || keys.length > 64) {
-        continue;
-      }
-
-      for (const key of keys) {
-        const entry = safe(() => value[key], null);
-        if (!entry || typeof entry !== 'object') {
-          continue;
-        }
-
-        const wave = safe(() => entry.wavesurfer, null);
-        if (!wave || (typeof wave !== 'object' && typeof wave !== 'function')) {
-          continue;
-        }
-
-        const entryKeys = getPreviewKeys(entry);
-        if (!entryKeys.includes('wavesurfer')) {
-          continue;
-        }
-
-        matches.push({
-          value: wave,
-          path: seed.path + '.' + key + '.wavesurfer',
-          depth: 2,
-          score: scoreCandidate(wave) + 10
-        });
-      }
-    }
-
-    matches.sort((left, right) => right.score - left.score);
-    return matches;
+    if (!(host instanceof HTMLElement)) return [];
+    const bindings = readBabelPlaybackBindings();
+    return (bindings?.waves || []).map((wave, index) => ({
+      value: wave,
+      path: 'native.tracks[' + index + '].wavesurfer',
+      depth: 0,
+      score: scoreCandidate(wave) + 10
+    }));
   }
 
   function getCandidateContainer(value) {
@@ -632,100 +594,11 @@ export function initMagnifierBridge() {
   }
 
   function findWaveCandidate(host) {
-    if (!(host instanceof HTMLElement)) {
-      return {
-        candidate: null,
-        fallback: null
-      };
-    }
-
-    const registryMatches = collectRegistryCandidates(host);
-    const registryValid = registryMatches.find((record) => isUsableWaveCandidate(record.value, host)) || null;
-    if (registryValid) {
-      return {
-        candidate: registryValid,
-        fallback: registryMatches.find((record) => record !== registryValid) || null
-      };
-    }
-
-    const queue = getSearchSeeds(host).map((seed) => ({
-      value: seed.value,
-      path: seed.path,
-      depth: 0
-    }));
-    const seen = new Set();
-    let bestValid = null;
-    let bestValidScore = 0;
-    let bestAny = null;
-    let bestAnyScore = 0;
-
-    while (queue.length && seen.size < 320) {
-      const current = queue.shift();
-      const value = current && current.value;
-      if (!value || seen.has(value)) {
-        continue;
-      }
-
-      seen.add(value);
-      const score = scoreCandidate(value);
-      const record = {
-        value,
-        path: current.path,
-        depth: current.depth,
-        score
-      };
-
-      if (score > bestAnyScore) {
-        bestAny = record;
-        bestAnyScore = score;
-      }
-
-      if (score >= 6 && isUsableWaveCandidate(value, host) && score > bestValidScore) {
-        bestValid = record;
-        bestValidScore = score;
-      }
-
-      for (const name of safe(() => Object.getOwnPropertyNames(value), [])) {
-        if (!name || name === 'window' || name === 'self' || name === 'frames') {
-          continue;
-        }
-
-        const next = safe(() => value[name], null);
-        if (!next || seen.has(next)) {
-          continue;
-        }
-
-        const nestedScore = scoreCandidate(next);
-        if (nestedScore >= 2) {
-          queue.push({
-            value: next,
-            path: current.path + '.' + name,
-            depth: current.depth + 1
-          });
-        }
-      }
-
-      for (const symbol of safe(() => Object.getOwnPropertySymbols(value), [])) {
-        const next = safe(() => value[symbol], null);
-        if (!next || seen.has(next)) {
-          continue;
-        }
-
-        const nestedScore = scoreCandidate(next);
-        if (nestedScore >= 2) {
-          queue.push({
-            value: next,
-            path: current.path + '[' + String(symbol) + ']',
-            depth: current.depth + 1
-          });
-        }
-      }
-    }
-
-    return {
-      candidate: bestValid,
-      fallback: bestAny
-    };
+    const records = collectRegistryCandidates(host);
+    const candidate = records.find(record =>
+      getCandidateContainer(record.value) && isUsableWaveCandidate(record.value, host)
+    ) || null;
+    return { candidate, fallback: null };
   }
 
   function describeHost(host) {
@@ -3333,53 +3206,42 @@ export function initMagnifierBridge() {
     return bins === base.peaks.length ? Array.from(base.peaks) : resamplePeaksLinear(base.peaks, bins);
   }
 
-  function getSourceRegionEntries(sourceWave) {
-    if (!sourceWave || !sourceWave.plugins || typeof sourceWave.plugins !== 'object') {
-      return [];
-    }
-
-    const regionPlugin = Object.values(sourceWave.plugins).find(
-      (plugin) =>
-        plugin &&
-        (typeof plugin.getRegions === 'function' ||
-          (plugin.regions && typeof plugin.regions === 'object'))
+  function getSourceRegionEntries(sourceWave, liveBounds = false) {
+    const host = getCandidateContainer(sourceWave);
+    const trackProps = getTrackPropsForHost(host);
+    const trackId = getTrackIdFromTrack(trackProps?.track);
+    const bindings = readBabelTranscriptBindings();
+    if (!bindings || !trackId) return [];
+    const regionPlugin = Object.values(sourceWave.plugins || {}).find(
+      plugin => typeof plugin?.getRegions === 'function'
     );
-    if (!regionPlugin) {
-      return [];
+    const regionsById = new Map((regionPlugin?.getRegions() || []).map(region => [region.id, region]));
+    const entries = [];
+    for (const annotation of bindings.annotations) {
+      if (annotation.type !== 'transcription' || annotation.processedRecordingId !== trackId ||
+          !Number.isFinite(annotation.startTimeInSeconds) || !Number.isFinite(annotation.endTimeInSeconds) ||
+          annotation.endTimeInSeconds <= annotation.startTimeInSeconds) continue;
+      const region = regionsById.get(annotation.id);
+      // Native annotations commit on region-updated (release), not region-update.
+      // Only the lens reads transient bounds; annotation-based operations keep
+      // using committed timestamps.
+      const start = liveBounds ? region?.start : annotation.startTimeInSeconds;
+      const end = liveBounds ? region?.end : annotation.endTimeInSeconds;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      const element = region?.element;
+      const styles = element instanceof HTMLElement ? window.getComputedStyle(element) : null;
+      entries.push({
+        id: annotation.id,
+        start,
+        end,
+        backgroundColor: region?.color || trackProps.track.colors?.region || 'rgba(176, 131, 255, 0.25)',
+        borderLeft: styles?.borderLeft || '',
+        borderRight: styles?.borderRight || '',
+        borderRadius: styles?.borderRadius || '2px',
+        filter: styles?.filter || ''
+      });
     }
-
-    const sourceRegions = safe(
-      () =>
-        typeof regionPlugin.getRegions === 'function'
-          ? regionPlugin.getRegions()
-          : Object.values(regionPlugin.regions || {}),
-      []
-    );
-
-    return sourceRegions
-      .map((region) => {
-        const start = Number(region && region.start);
-        const end = Number(region && region.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-          return null;
-        }
-
-        const element = region && region.element instanceof HTMLElement ? region.element : null;
-        const styles = element ? window.getComputedStyle(element) : null;
-        return {
-          start,
-          end,
-          backgroundColor:
-            (region && typeof region.color === 'string' && region.color) ||
-            (styles && styles.backgroundColor) ||
-            'rgba(176, 131, 255, 0.25)',
-          borderLeft: (styles && styles.borderLeft) || '',
-          borderRight: (styles && styles.borderRight) || '',
-          borderRadius: (styles && styles.borderRadius) || '2px',
-          filter: (styles && styles.filter) || ''
-        };
-      })
-      .filter(Boolean);
+    return entries;
   }
 
   function collectDiagnostics(host, mount, extra) {
@@ -3557,44 +3419,7 @@ export function initMagnifierBridge() {
     };
   }
 
-  function applySourceTime(wave, targetTime, duration) {
-    if (!wave || typeof wave.setTime !== 'function') {
-      return false;
-    }
 
-    const applied = safe(() => {
-      wave.setTime(targetTime);
-      return true;
-    }, false);
-
-    const progress = duration > 0 ? clamp(targetTime / duration, 0, 1) : null;
-    if (progress != null) {
-      safe(() => {
-        const renderer = wave.renderer;
-        if (renderer && typeof renderer.renderProgress === 'function') {
-          renderer.renderProgress(progress);
-        }
-      }, null);
-    }
-
-    return Boolean(applied);
-  }
-
-  function applySourceTimeToWaves(waves, targetTime, duration) {
-    let applied = 0;
-    const seen = new Set();
-    for (const wave of Array.isArray(waves) ? waves : []) {
-      if (!wave || seen.has(wave)) {
-        continue;
-      }
-      seen.add(wave);
-      if (applySourceTime(wave, targetTime, duration)) {
-        applied += 1;
-      }
-    }
-
-    return applied;
-  }
 
   function centerViewportOnTime(viewport, targetTime, pixelsPerSecond) {
     if (
@@ -3746,11 +3571,17 @@ export function initMagnifierBridge() {
     };
   }
 
-  function updateLens(id, time, width, height, scale) {
+  function updateLens(id, regionId, side, width, height, scale) {
     const record = instances.get(id);
     if (!record) {
       return { ok: false, reason: 'missing-instance' };
     }
+    const regions = getSourceRegionEntries(record.sourceWave, true);
+    const region = regions.find(entry => entry.id === regionId);
+    if (!region || (side !== 'left' && side !== 'right')) {
+      return { ok: false, reason: 'missing-region-boundary' };
+    }
+    const time = side === 'left' ? region.start : region.end;
 
     const targetPixelsPerSecond = Math.max(1, (getSourcePixelsPerSecond(record.sourceWave) || 1) * scale);
 
@@ -3802,11 +3633,12 @@ export function initMagnifierBridge() {
 
     return {
       ok: true,
+      time,
       windowStart: scrollLeft / targetPixelsPerSecond,
       windowEnd: (scrollLeft + width) / targetPixelsPerSecond,
       duration,
       sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
-      regions: getSourceRegionEntries(record.sourceWave)
+      regions
     };
   }
 
@@ -3818,7 +3650,9 @@ export function initMagnifierBridge() {
       return { ok: false };
     }
 
-    wave.setTime(time);
+    const playback = readBabelPlaybackBindings();
+    if (!playback?.seekToTime || !Number.isFinite(Number(time))) return { ok: false, reason: 'playback-unavailable' };
+    playback.seekToTime(Number(time));
     return { ok: true };
   }
 
@@ -3837,25 +3671,20 @@ export function initMagnifierBridge() {
     const targetTime = clamp(Number(time) || 0, 0, duration > 0 ? duration : Number(time) || 0);
     const viewport = getViewportMetrics(host, wave);
     const pixelsPerSecond = getSourcePixelsPerSecond(wave);
-    const waves = getNavigationWaveSet(host, wave);
-    const applied = applySourceTimeToWaves(waves, targetTime, duration);
-    if (!applied) {
-      return {
-        ok: false,
-        reason: 'wave-set-failed'
-      };
-    }
+    const playback = readBabelPlaybackBindings();
+    if (!playback?.seekToTime) return { ok: false, reason: 'playback-unavailable' };
+    playback.seekToTime(targetTime);
     const scrollLeft = centerViewportOnTime(viewport, targetTime, pixelsPerSecond);
 
     const nextToken = (minimapNavigationTokens.get(wave) || 0) + 1;
     minimapNavigationTokens.set(wave, nextToken);
     safe(() => {
       window.requestAnimationFrame(() => {
-        if (minimapNavigationTokens.get(wave) !== nextToken) {
+        if (minimapNavigationTokens.get(wave) !== nextToken || !host.isConnected ||
+            readBabelPlaybackBindings()?.reviewActionId !== playback.reviewActionId) {
           return;
         }
         const nextViewport = getViewportMetrics(host, wave);
-        applySourceTimeToWaves(waves, targetTime, duration);
         centerViewportOnTime(nextViewport, targetTime, pixelsPerSecond);
       });
     }, null);
@@ -3863,7 +3692,7 @@ export function initMagnifierBridge() {
     return {
       ok: true,
       time: targetTime,
-      waveCount: applied,
+      waveCount: playback.waves.length,
       totalWidth: viewport.totalWidth,
       visibleWidth: viewport.visibleWidth,
       scrollLeft
@@ -3938,32 +3767,6 @@ export function initMagnifierBridge() {
     return Array.from(document.querySelectorAll('div')).filter((element) => isVisibleWaveHost(element));
   }
 
-  function getNavigationWaveSet(host, primaryWave) {
-    const seen = new Set();
-    const orderedHosts = [
-      host,
-      ...getVisibleWaveHosts().filter((candidate) => candidate !== host)
-    ];
-    const waves = [];
-
-    if (primaryWave && typeof primaryWave === 'object') {
-      seen.add(primaryWave);
-      waves.push(primaryWave);
-    }
-
-    for (const candidateHost of orderedHosts) {
-      const record = findExactWaveCandidate(candidateHost);
-      const wave = record ? record.value : null;
-      if (!wave || typeof wave !== 'object' || seen.has(wave)) {
-        continue;
-      }
-
-      seen.add(wave);
-      waves.push(wave);
-    }
-
-    return waves;
-  }
 
   function getLoopWaveSet(hostMarker) {
     const host = findLoopHostElement(hostMarker);
@@ -4028,25 +3831,24 @@ export function initMagnifierBridge() {
     return slider instanceof HTMLElement ? slider : null;
   }
 
-  function getZoomValueCallbacks(slider) {
+  function getZoomValueCallback(slider) {
     if (!(slider instanceof HTMLElement)) {
-      return [];
+      return null;
     }
 
-    const callbacks = [];
     let node = getReactFiber(slider);
     let depth = 0;
     while (node && typeof node === 'object' && depth < 40) {
       const props = safe(() => node.memoizedProps, null);
       if (props && typeof props === 'object' && typeof props.onValueChange === 'function') {
-        callbacks.push(props.onValueChange);
+        return props.onValueChange;
       }
 
       node = safe(() => node.return, null);
       depth += 1;
     }
 
-    return callbacks;
+    return null;
   }
 
   function getSliderNumericProp(slider, propName, fallbackValue) {
@@ -4070,41 +3872,6 @@ export function initMagnifierBridge() {
     return fallbackValue;
   }
 
-  function patchSliderNumericProps(slider, propName, nextValue) {
-    if (!(slider instanceof HTMLElement)) {
-      return 0;
-    }
-
-    let patched = 0;
-    let node = getReactFiber(slider);
-    let depth = 0;
-    while (node && typeof node === 'object' && depth < 40) {
-      const memoizedProps = safe(() => node.memoizedProps, null);
-      if (
-        memoizedProps &&
-        typeof memoizedProps === 'object' &&
-        Number.isFinite(Number(memoizedProps[propName]))
-      ) {
-        memoizedProps[propName] = nextValue;
-        patched += 1;
-      }
-
-      const pendingProps = safe(() => node.pendingProps, null);
-      if (
-        pendingProps &&
-        typeof pendingProps === 'object' &&
-        Number.isFinite(Number(pendingProps[propName]))
-      ) {
-        pendingProps[propName] = nextValue;
-        patched += 1;
-      }
-
-      node = safe(() => node.return, null);
-      depth += 1;
-    }
-
-    return patched;
-  }
 
   function isWaveformScaleSlider(slider) {
     if (!(slider instanceof HTMLElement)) {
@@ -4214,11 +3981,7 @@ export function initMagnifierBridge() {
     }
 
     const nextMax = Math.max(WAVEFORM_SCALE_DEFAULT_MAX, Number(waveformScaleState.max) || 1000);
-    const patchedMax = patchSliderNumericProps(slider, 'max', nextMax);
     const currentMin = getSliderNumericProp(slider, 'min', WAVEFORM_SCALE_DEFAULT_MIN);
-    if (Number.isFinite(currentMin)) {
-      patchSliderNumericProps(slider, 'min', currentMin);
-    }
 
     if (slider.getAttribute('aria-valuemax') !== String(nextMax)) {
       slider.setAttribute('aria-valuemax', String(nextMax));
@@ -4237,7 +4000,7 @@ export function initMagnifierBridge() {
       );
     }
 
-    return patchedMax > 0;
+    return true;
   }
 
   function patchWaveformScaleSliders() {
@@ -4250,13 +4013,11 @@ export function initMagnifierBridge() {
     return patched;
   }
 
-  function getWaveformScaleSliderByIndex(index) {
-    const numericIndex = Math.max(0, Math.floor(Number(index) || 0));
-    const sliders = Array.from(document.querySelectorAll(WAVEFORM_SCALE_SELECTOR)).filter((slider) =>
-      isWaveformScaleSlider(slider)
-    );
-    const target = sliders[numericIndex];
-    return target instanceof HTMLElement ? target : null;
+  function getWaveformScaleSliderByTrackId(trackId) {
+    return Array.from(document.querySelectorAll(WAVEFORM_SCALE_SELECTOR)).find(slider =>
+      isWaveformScaleSlider(slider) &&
+      getTrackIdFromTrack(getTrackPropsForHost(slider)?.track) === trackId
+    ) || null;
   }
 
   function getWaveformScaleControl(target) {
@@ -4271,15 +4032,16 @@ export function initMagnifierBridge() {
     patchWaveformScaleSlider(slider);
 
     const track = getWaveformScaleTrack(slider);
-    const callbacks = getZoomValueCallbacks(slider);
-    if (!callbacks.length) {
-      return null;
-    }
+    const trackId = getTrackIdFromTrack(getTrackPropsForHost(slider)?.track);
+    const bindings = readBabelTrackBindings();
+    const lane = bindings?.tracks.find(candidate => candidate.id === trackId);
+    if (!lane || typeof lane.adjustVerticalZoom !== 'function') return null;
 
     return {
       slider,
       track,
-      callbacks,
+      trackId,
+      reviewActionId: bindings.reviewActionId,
       min: getSliderNumericProp(slider, 'min', Number(slider.getAttribute('aria-valuemin')) || WAVEFORM_SCALE_DEFAULT_MIN),
       max: Math.max(
         Number(waveformScaleState.max) || 1000,
@@ -4291,7 +4053,7 @@ export function initMagnifierBridge() {
   }
 
   function setWaveformScaleValue(control, value) {
-    if (!control || !Array.isArray(control.callbacks) || !control.callbacks.length) {
+    if (!control || !control.slider.isConnected) {
       return { ok: false, reason: 'missing-control' };
     }
 
@@ -4306,21 +4068,21 @@ export function initMagnifierBridge() {
       return { ok: false, reason: 'invalid-value' };
     }
 
-    for (const callback of control.callbacks) {
-      try {
-        callback([target]);
-      } catch (_error) {
-        // Ignore duplicate callback wrappers; another callback may succeed.
-      }
+    const bindings = readBabelTrackBindings();
+    if (!bindings || bindings.reviewActionId !== control.reviewActionId) {
+      return { ok: false, reason: 'stale-task' };
     }
-
-    control.slider.setAttribute('aria-valuenow', String(target));
+    const lane = bindings.tracks.find(candidate => candidate.id === control.trackId);
+    if (!lane || typeof lane.adjustVerticalZoom !== 'function') {
+      return { ok: false, reason: 'missing-control' };
+    }
+    lane.adjustVerticalZoom(target);
     applyWaveformScaleVisuals(control.slider, target, control.min, control.max);
 
     return {
       ok: true,
       target,
-      current: Number(control.slider.getAttribute('aria-valuenow')) || null
+      trackId: control.trackId
     };
   }
 
@@ -4538,7 +4300,11 @@ export function initMagnifierBridge() {
     };
   }
 
-  function setWaveformScaleByIndex(index, value, max) {
+  async function setWaveformScaleByTrackId(trackId, value, max, reviewActionId) {
+    const bindings = readBabelTrackBindings();
+    if (!bindings || !reviewActionId || bindings.reviewActionId !== reviewActionId) {
+      return { ok: false, reason: 'stale-task' };
+    }
     const numericMax = Number(max);
     if (Number.isFinite(numericMax) && numericMax > WAVEFORM_SCALE_DEFAULT_MAX) {
       waveformScaleState.max = numericMax;
@@ -4546,7 +4312,7 @@ export function initMagnifierBridge() {
 
     bindWaveformScaleUnlock();
 
-    const slider = getWaveformScaleSliderByIndex(index);
+    const slider = getWaveformScaleSliderByTrackId(trackId);
     if (!(slider instanceof HTMLElement)) {
       return { ok: false, reason: 'missing-slider' };
     }
@@ -4557,13 +4323,22 @@ export function initMagnifierBridge() {
     }
 
     const result = setWaveformScaleValue(control, value);
-    return {
-      ...result,
-      index: Number(index) || 0
-    };
+    if (!result.ok) return result;
+    const deadline = Date.now() + 400;
+    do {
+      const current = readBabelTrackBindings();
+      if (current?.reviewActionId !== reviewActionId) return { ok: false, reason: 'stale-task' };
+      const lane = current.tracks.find(track => track.id === trackId);
+      if (lane && Math.abs(lane.verticalZoom - result.target) < 0.001) {
+        return { ...result, current: lane.verticalZoom };
+      }
+      await sleep(16);
+    } while (Date.now() < deadline);
+    return { ok: false, reason: 'scale-unsettled', trackId };
   }
 
   function waitForZoomReady(timeoutMs) {
+    const reviewActionId = readBabelPlaybackBindings()?.reviewActionId;
     const slider = getZoomSliderElement();
     if (!(slider instanceof HTMLElement)) {
       return Promise.resolve({ ok: false, reason: 'missing-slider' });
@@ -4592,6 +4367,10 @@ export function initMagnifierBridge() {
 
     function checkReady() {
       if (settled) return;
+      if (!reviewActionId || readBabelPlaybackBindings()?.reviewActionId !== reviewActionId) {
+        finish({ ok: false, reason: 'stale-task' });
+        return;
+      }
       if (!slider.isConnected) {
         finish({ ok: false, reason: 'missing-slider' });
         return;
@@ -4652,17 +4431,15 @@ export function initMagnifierBridge() {
     }
 
     const target = clamp(numeric, min, max);
-    const callbacks = getZoomValueCallbacks(slider);
-    if (!callbacks.length) {
+    const callback = getZoomValueCallback(slider);
+    if (!callback) {
       return { ok: false, reason: 'missing-onValueChange' };
     }
 
-    for (const callback of callbacks) {
-      try {
-        callback([target]);
-      } catch (_error) {
-        // Ignore callback errors and continue; multiple callbacks can exist.
-      }
+    try {
+      callback([target]);
+    } catch (error) {
+      return { ok: false, reason: 'zoom-callback-failed', message: String(error) };
     }
 
     return {
@@ -4673,6 +4450,9 @@ export function initMagnifierBridge() {
   }
 
   function startLoop(hostMarker, start, end) {
+    const reviewActionId = readBabelPlaybackBindings()?.reviewActionId;
+    if (!reviewActionId) return { ok: false, reason: 'missing-task' };
+    const audioVariantKey = readAudioEnhancementState()?.variantKey || '';
     const startSeconds = Number(start);
     const endSeconds = Number(end);
     if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
@@ -4703,7 +4483,15 @@ export function initMagnifierBridge() {
     loop.lastTime = loop.startSeconds;
 
     loop.timer = setInterval(() => {
+      if (readBabelPlaybackBindings()?.reviewActionId !== reviewActionId) {
+        stopLoop(hostMarker);
+        return;
+      }
       if (loops.get(hostMarker) !== loop) {
+        return;
+      }
+      if ((readAudioEnhancementState()?.variantKey || '') !== audioVariantKey) {
+        stopLoop(hostMarker);
         return;
       }
 
@@ -4767,7 +4555,7 @@ export function initMagnifierBridge() {
     setZoomValue,
     enableWaveformScaleUnlock,
     disableWaveformScaleUnlock: unbindWaveformScaleUnlock,
-    setWaveformScaleByIndex,
+    setWaveformScaleByTrackId,
     stopLoop,
     seekSource,
     navigateSource,
@@ -4828,7 +4616,8 @@ export function initMagnifierBridge() {
         invokeMagnifierService(
           'updateLens',
           payload.instanceId,
-          payload.time,
+          payload.regionId,
+          payload.side,
           payload.width,
           payload.height,
           payload.scale
@@ -5046,14 +4835,14 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'waveform-scale-set') {
-      respond(
-        id,
-        invokeMagnifierService(
-          'setWaveformScaleByIndex',
-          payload.index,
-          payload.value,
-          payload.max
-        )
+      Promise.resolve(invokeMagnifierService(
+        'setWaveformScaleByTrackId',
+        payload.trackId,
+        payload.value,
+        payload.max,
+        payload.reviewActionId
+      )).then(result => respond(id, result)).catch(error =>
+        respond(id, { ok: false, reason: 'scale-callback-failed', message: String(error) })
       );
       return;
     }
