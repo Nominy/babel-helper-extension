@@ -31,6 +31,7 @@ export function registerLifecycle(helper: any) {
   let disposed = false;
   let sessionAccessInFlight = false;
   let lastPolledNativeSession = '';
+  let hotkeysObservedBody: HTMLElement | null = null;
 
   function isFeatureEnabled(featureKey) {
     if (typeof helper.isFeatureEnabled === 'function') {
@@ -115,6 +116,7 @@ export function registerLifecycle(helper: any) {
     }
 
     helper.state.hotkeysObserver = null;
+    hotkeysObservedBody = null;
   }
 
   function stopRouteRecoveryObserver() {
@@ -146,6 +148,7 @@ export function registerLifecycle(helper: any) {
       return;
     }
 
+    if (helper.state.hotkeysObserver && hotkeysObservedBody === document.body) return;
     stopHotkeysObserver();
 
     if (!(document.body instanceof HTMLElement) || typeof MutationObserver !== 'function') {
@@ -174,6 +177,7 @@ export function registerLifecycle(helper: any) {
 
     helper.perf?.count?.('observer.start', { name: 'hotkeys' });
     helper.state.hotkeysObserver = observer;
+    hotkeysObservedBody = document.body;
   }
 
   function startRouteRecoveryObserver() {
@@ -191,6 +195,13 @@ export function registerLifecycle(helper: any) {
       }
 
       if (!hasTranscriptSurface()) {
+        return;
+      }
+      const status = readNativeSessionState();
+      // Unrelated rendering must not restart the bounded bootstrap window or
+      // repeatedly rebind a known read-only session. The URL fallback still
+      // detects native metadata transitions without a corresponding DOM event.
+      if (!status || (status.readOnly && `${status.reviewActionId}:${status.readOnly}` === lastPolledNativeSession)) {
         return;
       }
 
@@ -661,6 +672,7 @@ export function registerLifecycle(helper: any) {
   }
 
   helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason, delayMs) {
+    if (disposed) return;
     helper.runtime.clearRuntimeTimer();
     const delay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : ROUTE_REFRESH_DELAY_MS;
     helper.state.routeRefreshTimer = window.setTimeout(() => {

@@ -1,6 +1,6 @@
 import { saved } from '@nominy/babel-extension-e2e/native-helpers';
 import { test, expect } from '@nominy/babel-extension-e2e/test';
-import { editors, row, rowMenu, ready, fillText, readText, selectText, caret, lane, enableOnlyLinterRules } from './helper-editing-utils.mjs';
+import { editors, row, rowMenu, ready, fillText, readText, selectText, textSelection, caret, lane, enableOnlyLinterRules } from './helper-editing-utils.mjs';
 import { selectedAudioReady } from './native-audio-utils.mjs';
 
 // Canonical src/features/registry.ts setting keys -> executable browser scenario titles.
@@ -124,6 +124,89 @@ test.describe('Helper native editing', () => {
     await caret(editor, 5);
     await page.keyboard.insertText('ТОЧНО');
     await expect.poll(() => readText(editor)).toBe('ПривеТОЧНОт, это тестовая запись.');
+  });
+
+  test('focused paging and Escape keep the toolbar fixed while only the transcript scrolls', async ({ page, babel }) => {
+    await babel.setExtensionSettings('helper', { features: { proportionalCursorRestore: false } });
+    const editor = editors(page).first();
+    const text = 'Длинная реплика сохраняет текст и доступ к панели инструментов. '.repeat(180);
+    await fillText(editor, text);
+    await page.keyboard.press('ControlOrMeta+Home');
+    await expect.poll(() => textSelection(editor)).toEqual([0, 0]);
+    const viewport = page.locator('[data-transcript-scroll]');
+    const outerScroll = () => viewport.evaluate(element => {
+      const offsets = [];
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        offsets.push([parent.scrollLeft, parent.scrollTop]);
+      }
+      return { offsets, window: [window.scrollX, window.scrollY] };
+    });
+    const toolbar = page.getByRole('button', { name: 'Jump back 5 seconds', exact: true });
+    const beforeOuter = await outerScroll();
+    const beforeToolbar = await toolbar.boundingBox();
+    const beforePage = await viewport.evaluate(element => element.scrollTop);
+    await page.keyboard.press('PageDown');
+    await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeGreaterThan(beforePage);
+    await expect.poll(async () => (await textSelection(editor))[0]).toBeGreaterThan(0);
+    await page.keyboard.press('PageDown');
+    const down = await viewport.evaluate(element => element.scrollTop);
+    expect(await outerScroll()).toEqual(beforeOuter);
+    await expect(editor).toBeFocused();
+    await page.keyboard.press('PageUp');
+    await expect.poll(() => viewport.evaluate(element => element.scrollTop)).toBeLessThan(down);
+    expect(await outerScroll()).toEqual(beforeOuter);
+    await page.keyboard.press('Shift+PageDown');
+    await expect.poll(async () => {
+      const [start, end] = await textSelection(editor);
+      return end - start;
+    }).toBeGreaterThan(0);
+    expect(await outerScroll()).toEqual(beforeOuter);
+    const selection = await textSelection(editor);
+
+    await page.keyboard.press('Escape');
+    await expect(editor).not.toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(editor).toBeFocused();
+    await expect.poll(() => textSelection(editor)).toEqual(selection);
+    expect(await outerScroll()).toEqual(beforeOuter);
+    expect(await toolbar.boundingBox()).toEqual(beforeToolbar);
+    await expect(toolbar).toBeInViewport();
+    expect(await readText(editor)).toBe(text.trim());
+    await page.keyboard.insertText('ТОЧНО');
+    await expect.poll(() => readText(editor)).toBe(
+      text.trim().slice(0, selection[0]) + 'ТОЧНО' + text.trim().slice(selection[1]));
+  });
+
+  test('focused paging clamps tagged row boundaries and preserves backward Shift selection', async ({ page }) => {
+    const editor = editors(page).first();
+    const text = '<шепот> Тихая речь </шепот> после.';
+    await fillText(editor, text);
+    await selectText(editor, 0);
+    const outerScroll = () => page.locator('[data-transcript-scroll]').evaluate(element => {
+      const offsets = [];
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        offsets.push([parent.scrollLeft, parent.scrollTop]);
+      }
+      return { offsets, window: [window.scrollX, window.scrollY] };
+    });
+    const before = await outerScroll();
+    await page.keyboard.press('PageUp');
+    await caret(editor, 0);
+    await page.keyboard.press('PageDown');
+    await caret(editor, text.length);
+    await page.keyboard.press('PageDown');
+    await caret(editor, text.length);
+    await page.keyboard.press('Shift+PageUp');
+    await expect.poll(() => textSelection(editor)).toEqual([0, text.length]);
+    // Extending back to the original anchor collapses rather than reversing
+    // an incorrectly normalized (forward) selection.
+    await page.keyboard.press('Shift+PageDown');
+    await caret(editor, text.length);
+    await page.keyboard.press('Shift+PageUp');
+    await expect.poll(() => textSelection(editor)).toEqual([0, text.length]);
+    expect(await outerScroll()).toEqual(before);
+    await page.keyboard.insertText('ТОЧНО');
+    await expect.poll(() => readText(editor)).toBe('ТОЧНО');
   });
 
   test(featureScenarios.proportionalCursorRestore[0], async ({ page, babel }) => {

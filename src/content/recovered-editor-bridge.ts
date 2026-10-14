@@ -696,6 +696,86 @@ export function initRecoveredEditorBridge() {
     return null;
   }
 
+  function slatePointRange(element, point) {
+    const leaf = element.querySelectorAll('[data-slate-node="text"]')[point.path[1]];
+    if (!leaf) return null;
+    const walker = document.createTreeWalker(leaf, NodeFilter.SHOW_TEXT);
+    let offset = point.offset, node;
+    while ((node = walker.nextNode())) {
+      if (offset <= node.length) {
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.collapse(true);
+        return range;
+      }
+      offset -= node.length;
+    }
+    return null;
+  }
+
+  function pageNativeSelection(row, state, request) {
+    const element = row.querySelector('[data-slate-editor="true"]');
+    const viewport = element?.closest('[data-transcript-scroll]');
+    const selection = window.getSelection();
+    if (!state.editor || !element?.isContentEditable || document.activeElement !== element ||
+        !viewport?.clientHeight || !element.contains(selection?.anchorNode) ||
+        !element.contains(selection?.focusNode) ||
+        (request.direction !== 'up' && request.direction !== 'down')) return null;
+    const anchor = state.direction === 'backward' ? state.end : state.start;
+    const focus = state.direction === 'backward' ? state.start : state.end;
+    const caret = caretRect(row, state, focus);
+    const first = caretRect(row, state, 0), last = caretRect(row, state, state.text.length);
+    if (!caret?.height || !first?.height || !last?.height) return null;
+    const bounds = viewport.getBoundingClientRect();
+    const top = bounds.top + viewport.clientTop;
+    const bottom = top + viewport.clientHeight;
+    const distance = Math.max(caret.height, viewport.clientHeight - caret.height);
+    const targetY = caret.top + caret.height / 2 + (request.direction === 'down' ? distance : -distance);
+    let offset = targetY < first.top ? 0 : targetY >= last.bottom ? state.text.length : null;
+    const previousTop = viewport.scrollTop;
+    // Keep the new focus at the old caret's viewport position where possible.
+    // Only the transcript scrolls; neither DOM selection nor focus reveals ancestors.
+    const y = offset === 0 ? first.top + first.height / 2
+      : offset === state.text.length ? last.top + last.height / 2 : targetY;
+    const visibleY = Math.max(top + caret.height / 2,
+      Math.min(bottom - caret.height / 2, caret.top + caret.height / 2));
+    viewport.scrollTop += y - visibleY;
+    if (offset === null) {
+      const box = element.getBoundingClientRect();
+      const x = Math.max(Math.max(bounds.left + viewport.clientLeft, box.left) + 1,
+        Math.min(Math.min(bounds.left + viewport.clientLeft + viewport.clientWidth, box.right) - 1, caret.left));
+      const hitY = Math.max(top + 1, Math.min(bottom - 1, y - (viewport.scrollTop - previousTop)));
+      const point = document.caretPositionFromPoint?.(x, hitY);
+      const range = point ? null : document.caretRangeFromPoint?.(x, hitY);
+      offset = nativeDomPointOffset(row, point?.offsetNode || range?.startContainer,
+        point ? point.offset : range?.startOffset, state.editor);
+    }
+    if (offset === null) {
+      viewport.scrollTop = previousTop;
+      return null;
+    }
+    const start = request.extend ? Math.min(anchor, offset) : offset;
+    const end = request.extend ? Math.max(anchor, offset) : offset;
+    const direction = request.extend && anchor !== offset ? (anchor > offset ? 'backward' : 'forward') : 'none';
+    if (!selectNativeSlate(state.editor, start, end, direction)) {
+      viewport.scrollTop = previousTop;
+      return null;
+    }
+    const native = state.editor.selection;
+    const anchorRange = slatePointRange(element, native.anchor);
+    const focusRange = slatePointRange(element, native.focus);
+    if (!anchorRange || !focusRange) {
+      selectNativeSlate(state.editor, state.start, state.end, state.direction);
+      viewport.scrollTop = previousTop;
+      return null;
+    }
+    // Project the exact native points before Slate's render effect. An already
+    // matching DOM selection does not trigger Slate's ancestor scrollIntoView.
+    selection.setBaseAndExtent(anchorRange.startContainer, anchorRange.startOffset,
+      focusRange.startContainer, focusRange.startOffset);
+    return readNativeSlateSelection(state.editor);
+  }
+
   function getStartNativeEdit(annotationId) {
     return findNativeDescendant(findNativeTurnFiber(annotationId),
       fiber => typeof fiber.memoizedProps?.onStartEdit === 'function')?.memoizedProps.onStartEdit;
@@ -788,6 +868,11 @@ export function initRecoveredEditorBridge() {
           if (!ok) reason = 'selection-unavailable';
         }
       }
+      else if (operation === 'pageSelection') {
+        acceptedSelection = pageNativeSelection(row, state, request);
+        ok = Boolean(acceptedSelection);
+        if (!ok) reason = 'paging-unavailable';
+      }
       else if (operation === 'focus' || operation === 'select') {
         if (request.activateRow) binding.transcript?.handlers?.onActivate(annotationId);
         if (state.editor) {
@@ -856,7 +941,7 @@ export function initRecoveredEditorBridge() {
       } else if (operation !== 'read' && operation !== 'caretRect') { ok = false; reason = 'unknown-operation'; }
     }
     const latest = state && readNativeTurn(annotationId);
-    if (ok && acceptedSelection && (operation === 'focus' || operation === 'select' ||
+    if (ok && acceptedSelection && (operation === 'focus' || operation === 'select' || operation === 'pageSelection' ||
         (operation === 'replace' && (state.editor || request.focus)))) {
       pendingNativeSelections.set(row, { taskId, editor: state.editor,
         text: operation === 'replace' && !state.editor ? request.text : latest?.text ?? state.text });

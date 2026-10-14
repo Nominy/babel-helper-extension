@@ -18,6 +18,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   let activeTaskGuard: (() => boolean) | null = null;
   let activeReviewActionId = '';
   let releasePendingTick: (() => void) | null = null;
+  let updateTickSchedule: ((immediate?: boolean) => void) | null = null;
   let renderedRow: HTMLElement | null = null;
   let renderedTop: number | null = null;
 
@@ -69,12 +70,13 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     };
   }
 
-  function onSourceChange() {
+  function onSourceChange(event) {
     if (activeTaskGuard && !activeTaskGuard()) {
       stopGhostCursor(true);
       return;
     }
     refreshPlaybackContext();
+    updateTickSchedule?.(event?.type === 'visibilitychange');
   }
 
 
@@ -119,26 +121,16 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
 
-  function getCaretScrollParent(editor) {
-    let parent = editor.element?.parentElement;
-    while (parent) {
-      const overflow = getComputedStyle(parent).overflowY;
-      if ((overflow === 'auto' || overflow === 'scroll') &&
-          parent.scrollHeight > parent.clientHeight) return parent;
-      parent = parent.parentElement;
-    }
-    return null;
-  }
-
   function scrollToCaret(row, offset) {
     const textarea = helper.getRowEditor(row);
     if (!textarea) return;
-    const scrollParent = getCaretScrollParent(textarea);
+    const scrollParent = textarea.element?.closest('[data-transcript-scroll]');
     if (!scrollParent) return;
     const caret = textarea.getCaretRect(offset);
     if (!caret) return;
     const viewport = scrollParent.getBoundingClientRect();
-    scrollParent.scrollTop += caret.top + caret.height / 2 - (viewport.top + viewport.bottom) / 2;
+    scrollParent.scrollTop += caret.top + caret.height / 2 -
+      (viewport.top + scrollParent.clientTop + scrollParent.clientHeight / 2);
   }
 
 
@@ -315,12 +307,14 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     renderedRow = null;
     renderedTop = null;
     window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
+    document.removeEventListener('visibilitychange', onSourceChange);
+    updateTickSchedule = null;
     releasePendingTick = null;
     if (discardPlayback) {
       activeTaskGuard = null;
       activeReviewActionId = '';
     }
-    const wasActive = helper.state.ghostCursorIntervalId != null;
+    const wasActive = Boolean(helper.state.ghostCursorElement);
     if (helper.state.ghostCursorIntervalId != null) {
       clearInterval(helper.state.ghostCursorIntervalId);
       helper.state.ghostCursorIntervalId = null;
@@ -705,9 +699,30 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey) {
-    for (const speakerKey of getGhostCursorToggleSpeakerKeys()) {
-      if (speakerKey === activeSpeakerKey) continue;
-      const entry = findGhostCursorProjectionEntryByPlaybackTime(currentTime, speakerKey);
+    const tracks = helper.getEditorSnapshot?.()?.tracks;
+    const allowedSpeakers = Array.isArray(tracks) && tracks.length
+      ? new Set(tracks.map((track) => track.id).filter(Boolean))
+      : null;
+    if (allowedSpeakers && (allowedSpeakers.size === 0 ||
+        (allowedSpeakers.size === 1 && allowedSpeakers.has(activeSpeakerKey)))) return;
+    const previousRow = api.time.getLastPlaybackRow();
+    const entriesBySpeaker = new Map();
+    // One fresh collection per frame, not one full signature scan per lane
+    // followed by two more scans whenever that lane is between turns.
+    for (const entry of api.time.getRowTimeEntries()) {
+      if (entry.startSeconds > currentTime) break;
+      if (!(entry.row instanceof HTMLElement) || !entry.row.isConnected) continue;
+      const speakerKey = entry.identity?.speakerKey || api.time.getRowSpeakerKeySafe(entry.row);
+      if (!speakerKey || speakerKey === activeSpeakerKey || (allowedSpeakers && !allowedSpeakers.has(speakerKey))) continue;
+      const chosen = entriesBySpeaker.get(speakerKey);
+      const active = currentTime < entry.endSeconds;
+      const chosenActive = chosen && currentTime < chosen.endSeconds;
+      if ((active && (!chosenActive || entry.row === previousRow)) ||
+          (!active && !chosenActive && (!chosen || entry.endSeconds >= chosen.endSeconds))) {
+        entriesBySpeaker.set(speakerKey, entry);
+      }
+    }
+    for (const entry of entriesBySpeaker.values()) {
       computeGhostCursorProjectionForEntry(entry, currentTime, blurTime);
     }
   }
@@ -734,17 +749,18 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function renderGhostCursorProjection(projection) {
+  function renderGhostCursorProjection(projection, sampledEditor = null, sampledTextLength = null) {
     if (!projection || !(projection.row instanceof HTMLElement) || !projection.row.isConnected) {
       return false;
     }
 
-    const textarea = helper.getRowEditor(projection.row);
+    const textarea = sampledEditor?.row === projection.row ? sampledEditor : helper.getRowEditor(projection.row);
     if (!textarea) {
       return false;
     }
 
-    const textLength = (textarea.value || '').length;
+    const textLength = textarea === sampledEditor && sampledTextLength != null
+      ? sampledTextLength : (textarea.value || '').length;
     const offset = Math.max(0, Math.min(textLength, Math.round(Number(projection.offset) || 0)));
     // Read transcript geometry before touching the overlay's styles. Style
     // invalidation here otherwise forces a synchronous layout in getCaretRect.
@@ -753,7 +769,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       if (helper.state.ghostCursorElement) helper.state.ghostCursorElement.style.display = 'none';
       return false;
     }
-    const scrollParent = getCaretScrollParent(textarea);
+    const scrollParent = textarea.element?.closest('[data-transcript-scroll]');
     const viewport = scrollParent?.getBoundingClientRect();
     const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
     const snapToDevicePixel = (value) => Math.round(value * pixelRatio) / pixelRatio;
@@ -883,6 +899,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       return taskGuard() && (!startingTaskId || !currentSourceTask || currentSourceTask === startingTaskId);
     };
     window.addEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
+    document.addEventListener('visibilitychange', onSourceChange);
 
     // Mutable tracking state for dynamic row switching
     let trackedRow = row;
@@ -899,7 +916,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
         stopGhostCursor(true);
         return;
       }
-      if (pendingTick) {
+      if (document.hidden || pendingTick) {
         return;
       }
 
@@ -926,7 +943,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
             ? await helper.getPlaybackState()
             : api.playback.unavailablePlaybackState();
         if (!helper.config.features.proportionalCursorRestore) stopGhostCursor(true);
-        if (!isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
+        if (document.hidden || !isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
         const previousTime = helper.state.ghostCursorPlaybackTime;
         const rewound = Number.isFinite(previousTime) && Number.isFinite(playback?.currentTime) &&
           playback.currentTime < previousTime;
@@ -1054,7 +1071,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           clamped: result.clamped
         });
         const renderedProjection = getRenderedGhostCursorProjection() || activeProjection;
-        if (!renderGhostCursorProjection(renderedProjection)) {
+        if (!renderGhostCursorProjection(renderedProjection, ta, text.length)) {
           helper.state.ghostCursorOffset = null;
           el.style.display = 'none';
         }
@@ -1069,11 +1086,22 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       }
     }
 
-    // Run first tick immediately, then schedule the interval
-    void tick();
-    helper.state.ghostCursorIntervalId = setInterval(() => {
-      void tick();
-    }, GHOST_CURSOR_INTERVAL_MS);
+    updateTickSchedule = (immediate = false) => {
+      if (document.hidden || isSourceSwitching()) {
+        if (helper.state.ghostCursorIntervalId != null) {
+          clearInterval(helper.state.ghostCursorIntervalId);
+          helper.state.ghostCursorIntervalId = null;
+          // An already requested sample cannot redraw after visibility resumes.
+          cursorGeneration += 1;
+        }
+        el.style.display = 'none';
+        return;
+      }
+      if (helper.state.ghostCursorIntervalId != null) return;
+      helper.state.ghostCursorIntervalId = setInterval(() => { void tick(); }, GHOST_CURSOR_INTERVAL_MS);
+      if (immediate) void tick();
+    };
+    updateTickSchedule(true);
 
     if (helper.analytics) {
       const rowId = helper.getRowIdentity(row)?.annotationId ?? null;

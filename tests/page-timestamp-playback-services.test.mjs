@@ -264,7 +264,7 @@ function installNativeTranscriptModel(pageWindow, initial = []) {
         ? { ...turn, content: direction === 'below' ? `${turn.content} ${adjacent.content}` : `${adjacent.content} ${turn.content}` } : turn));
     }
   }, memoizedState: { memoizedState: history, queue: { getSnapshot: () => history } } };
-  const controller = { annotationsRef: { current: initial }, selectTurn() {}, updateText() {},
+  const controller = { selectTurn() {}, updateText() {}, updateTime() {},
     split(id, time, texts) {
       const original = state.annotations.find(turn => turn.id === id);
       const left = { ...original, id: `${id}-left`, content: texts ? texts[0] : original.content, endTimeInSeconds: time - 0.05 };
@@ -288,7 +288,6 @@ function installNativeTranscriptModel(pageWindow, initial = []) {
     panel.memoizedProps.annotations = state.annotations;
     panel.memoizedProps.readOnly = state.readOnly;
     transcript.memoizedProps.turns = state.annotations;
-    controller.annotationsRef.current = state.annotations;
   }
   return { state, tracks, panel, transcript, workbench, root, main, history, commit };
 }
@@ -848,7 +847,7 @@ test('isolated timestamp commands forward opaque guards and never retry a same-d
   }
 });
 
-test('native split applies exact text parts atomically after the pending raw source commits', async t => {
+test('native controller without private refs splits exact pending text atomically and undoes once', async t => {
   const pageWindow = await loadTimestampBridge(t, 'native-split-texts');
   const original = { id: 'split', type: 'transcription', processedRecordingId: 'recording-a',
     startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Saved text', metadata: { preserve: true } };
@@ -924,6 +923,29 @@ test('native split rechecks the raw source after a successful flush before issui
   assert.equal(editor.children[0].children[0].text, 'New local edit');
 });
 
+test('native split rejects moved or relaned source identities before and after pending text flush', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'native-split-identity-guards');
+  const original = { id: 'identity-split', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Source text' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const payload = { annotationId: original.id, splitSeconds: 3, startSeconds: 1, endSeconds: 5,
+    rowIdentity: { processedRecordingId: 'recording-a' }, sourceText: original.content };
+  for (const invalid of [{ startSeconds: 0 }, { endSeconds: 6 },
+    { rowIdentity: { processedRecordingId: 'recording-b' } }, { sourceText: 'old text' }]) {
+    assert.equal((await bridge.splitSegmentAtTime({ ...payload, ...invalid })).reason, 'stale-transcript');
+  }
+  for (const changed of [{ startTimeInSeconds: 2 }, { endTimeInSeconds: 4 }, { processedRecordingId: 'recording-b' }]) {
+    model.state.annotations = [original];
+    model.commit();
+    const pending = bridge.splitSegmentAtTime(payload);
+    queueMicrotask(() => { model.state.annotations = [{ ...original, ...changed }]; model.commit(); });
+    assert.equal((await pending).reason, 'stale-transcript');
+  }
+  assert.deepEqual(model.state.mutations, []);
+  assert.equal(model.history.undoStack.length, 0);
+});
+
 test('native seek preserves the exact partially-playing lane subset while synchronizing both clocks', async t => {
   const { createServiceRegistry } = await importBundledTs('src/mod-platform/service-registry.ts', 'partial-play-seek-registry');
   const pageWindow = installPageGlobals(createServiceRegistry());
@@ -990,6 +1012,9 @@ test('isolated atomic split forwards exact raw source and empty text parts witho
   assert.equal((await helper.splitSegmentAtTime({ annotationId: 'turn', splitSeconds: 1.5 })).ok, true);
   assert.equal(Object.hasOwn(payloads[1], 'texts'), false);
   assert.equal(Object.hasOwn(payloads[1], 'sourceText'), false);
+  assert.equal((await helper.splitSegmentAtTime({ annotationId: 'turn', splitSeconds: 1.5, sourceText })).ok, true);
+  assert.equal(Object.hasOwn(payloads[2], 'texts'), false, 'Shift+S retains native duplicate-text semantics');
+  assert.equal(payloads[2].sourceText, sourceText, 'native-text split still binds the source snapshot');
 });
 
 test('native asynchronous play reads current clocks and cancels on task or source replacement without replay', async t => {

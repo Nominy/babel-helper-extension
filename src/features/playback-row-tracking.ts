@@ -5,6 +5,7 @@ import { getEditorControlFromTarget } from '../site/editor-control';
 export function registerPlaybackRowTracking(helper: any) {
   const isFeatureEnabled = (key) => helper.isFeatureEnabled?.(key) ?? true;
   let trackingGeneration = 0;
+  let playbackSyncRequested = false;
   function handleRowFocusIn(event) {
     if (!helper.runtime.isSessionInteractive()) {
       return;
@@ -177,8 +178,14 @@ export function registerPlaybackRowTracking(helper: any) {
     }
   }
 
+  function handlePlaybackVisibilityChange() {
+    clearPlaybackRowSyncTimer();
+    playbackSyncRequested = !document.hidden && helper.state.playbackRowSyncInFlight;
+    if (!document.hidden) schedulePlaybackRowSync();
+  }
+
   function getPlaybackSyncDelay(result) {
-    if (!helper.runtime.isSessionInteractive() || document.hidden) {
+    if (!helper.runtime.isSessionInteractive()) {
       return 2000;
     }
     if (result && result.playback && result.playback.paused === false) {
@@ -190,6 +197,7 @@ export function registerPlaybackRowTracking(helper: any) {
   function schedulePlaybackRowSync(delay = 0) {
     if (
       !helper.state.rowTrackingBound ||
+      document.hidden ||
       helper.state.playbackRowSyncInFlight ||
       typeof helper.syncCurrentRowToPlayback !== 'function'
     ) {
@@ -200,7 +208,7 @@ export function registerPlaybackRowTracking(helper: any) {
     const generation = trackingGeneration;
     helper.state.playbackRowSyncTimer = window.setTimeout(() => {
       helper.state.playbackRowSyncTimer = null;
-      if (generation !== trackingGeneration || !helper.state.rowTrackingBound) return;
+      if (generation !== trackingGeneration || !helper.state.rowTrackingBound || document.hidden) return;
       if (
         helper.state.playbackRowSyncInFlight ||
         typeof helper.syncCurrentRowToPlayback !== 'function'
@@ -219,7 +227,8 @@ export function registerPlaybackRowTracking(helper: any) {
         .finally(() => {
           if (generation !== trackingGeneration) return;
           helper.state.playbackRowSyncInFlight = false;
-          schedulePlaybackRowSync(nextDelay);
+          schedulePlaybackRowSync(playbackSyncRequested ? 0 : nextDelay);
+          playbackSyncRequested = false;
         });
     }, delay);
   }
@@ -237,6 +246,7 @@ export function registerPlaybackRowTracking(helper: any) {
     document.addEventListener('mousedown', handleTimestampWordSeekClick, true);
     document.addEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.addEventListener('click', handleTimestampWordSeekClick, true);
+    document.addEventListener('visibilitychange', handlePlaybackVisibilityChange);
     helper.state.rowTrackingBound = true;
     trackingGeneration += 1;
     schedulePlaybackRowSync();
@@ -245,6 +255,7 @@ export function registerPlaybackRowTracking(helper: any) {
 
   helper.unbindRowTracking = function unbindRowTracking() {
     trackingGeneration += 1;
+    playbackSyncRequested = false;
     helper.stopGhostCursor?.();
     helper.state.ghostCursorLaneLock = null;
     helper.cancelSpeakerWorkflow?.();
@@ -266,6 +277,7 @@ export function registerPlaybackRowTracking(helper: any) {
     document.removeEventListener('mousedown', handleTimestampWordSeekClick, true);
     document.removeEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.removeEventListener('click', handleTimestampWordSeekClick, true);
+    document.removeEventListener('visibilitychange', handlePlaybackVisibilityChange);
     clearPlaybackRowSyncTimer();
     helper.state.playbackRowSyncInFlight = false;
     helper.state.lastPlaybackRow = null;

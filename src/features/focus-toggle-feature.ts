@@ -285,6 +285,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
 
 
   helper.syncCurrentRowToPlayback = async function syncCurrentRowToPlayback() {
+    if (document.hidden) return null;
     if (
       helper.runtime &&
       typeof helper.runtime.isSessionInteractive === 'function' &&
@@ -300,7 +301,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       typeof helper.getPlaybackState === 'function'
         ? await helper.getPlaybackState()
         : api.playback.unavailablePlaybackState();
-    if (!isCurrentPlayback()) return null;
+    if (document.hidden || !isCurrentPlayback()) return null;
     if (!playback || !playback.ok) {
       return api.time.getLastPlaybackRow();
     }

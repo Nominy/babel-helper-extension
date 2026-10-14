@@ -1,6 +1,6 @@
 /*
- * Website Appearance is strictly opt in. Each rule is gated by the master
- * attribute and the group that owns its variables. Structural selectors stay
+ * Website Appearance rules below are strictly opt in, gated by the master
+ * attribute and the group that owns their variables. Structural selectors stay
  * inside :where() so the attributes provide the useful specificity.
  *
  * The runtime writes the dashboard's own design tokens for generic surfaces

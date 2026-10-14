@@ -151,11 +151,12 @@ export function buildCurrentL0TimingTaskId(
 ): string {
   const currentLocation =
     suppliedLocation ?? (typeof location === 'undefined' ? { pathname: '', search: '' } : location);
+  const publishedTaskId = getPublishedReviewActionId();
+  // Published task identity already owns the audio variant and makes lane/row
+  // discovery unnecessary. This path is sampled once for each cursor lane.
+  if (publishedTaskId) return serializeL0TimingTaskId(publishedTaskId, []);
   const rows = getCurrentL0TimingRows(helper);
-  const scopedTaskId =
-    getPublishedReviewActionId()
-    || (helper && getReviewActionIdFromRows(helper, rows))
-    || '';
+  const scopedTaskId = (helper && getReviewActionIdFromRows(helper, rows)) || '';
   const baseTaskId = scopedTaskId || buildL0TimingBaseTaskId(currentLocation);
   const rowIdentities = scopedTaskId || !helper ? [] : getL0TimingRowIdentities(helper, rows);
   return serializeL0TimingTaskId(baseTaskId, rowIdentities);

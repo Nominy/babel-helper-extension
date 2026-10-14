@@ -345,8 +345,6 @@ test(`real native split and paired selection remain correct with ${scenario.name
   const stream = await loadEntry('src/services/audio-enhancement-stream.ts');
   const bridge = await loadEntry('src/content/audio-enhancement-bridge.ts');
   bridge.initAudioEnhancementBridge();
-  const { registerSmartSplit } = await loadEntry('src/features/smart-split.ts');
-  const splitConsumer = registerSmartSplit({ state: {} }, {});
   facade = window.__babelHelperAudioEnhancementBridge;
   try {
     if (scenario.nativeAdmission) {
@@ -471,7 +469,10 @@ test(`real native split and paired selection remain correct with ${scenario.name
       const before = structuredClone(editor.annotations.current);
       const writes = editor.writes;
       const midpoint = (target.start + target.end) / 2;
-      splitConsumer.dispatchSplitClick(target.element, midpoint * 100, 50);
+      target.element.dispatchEvent(new NativeMouseEventFixture('click', {
+        bubbles: true, cancelable: true, composed: true, clientX: midpoint * 100, clientY: 50,
+        button: 0, buttons: 0, detail: 1, shiftKey: false, ctrlKey: true, metaKey: false
+      }));
       await Promise.resolve(); // Let the native rebuild release its annotation-sync guard.
       assert.equal(editor.writes, writes + 1, 'One consumer gesture executes exactly one native annotation command');
       assert.equal(editor.annotations.current.length, before.length + 1);

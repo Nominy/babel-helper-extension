@@ -196,6 +196,10 @@ function createHarness(t) {
     helper, api, rows, body, root, window, sourceListeners, documentListeners, intervals, timers,
     playbackCalls: () => playbackCalls,
     deferPlayback() { const request = Promise.withResolvers(); pendingPlayback.push(request); return request; },
+    visibility(hidden) {
+      document.hidden = hidden;
+      for (const listener of [...documentListeners.get('visibilitychange') || []]) listener({ type: 'visibilitychange' });
+    },
     publish(update) {
       source = { ...source, ...update, revision: source.revision + 1 };
       root.setAttribute('data-babel-audio-enhancement', JSON.stringify(source));
@@ -227,14 +231,37 @@ function createHarness(t) {
 
 const words = (starts) => ['alpha', 'beta', 'gamma', 'delta'].map((text, index) => ({ id: text, text, startSeconds: starts[index], endSeconds: starts[index] + 1 }));
 
+test('ghost restore scrolls only the native viewport and has no outer fallback', t => {
+  const h = createHarness(t);
+  const viewport = new ElementFixture();
+  viewport.matches = selector => selector === '[data-transcript-scroll]';
+  viewport.clientTop = 1;
+  viewport.clientHeight = 200;
+  viewport.scrollHeight = 500;
+  viewport.scrollTop = 150;
+  viewport.getBoundingClientRect = () => ({ top: 10, bottom: 212, height: 202 });
+  h.body.appendChild(viewport);
+  h.rows[0].remove();
+  viewport.appendChild(h.rows[0]);
+  h.body.scrollTop = 31;
+  h.api.cursor.scrollToCaret(h.rows[0], 6);
+  assert.equal(viewport.scrollTop, 61);
+  assert.equal(h.body.scrollTop, 31);
+  h.rows[0].remove();
+  h.body.appendChild(h.rows[0]);
+  h.api.cursor.scrollToCaret(h.rows[0], 6);
+  assert.equal(h.body.scrollTop, 31, 'missing transcript viewport must not select an outer scrolling element');
+});
+
 test('paired source switching freezes one cursor, preserves baseline/lane, and uses only current-variant timing', async (t) => {
   const h = createHarness(t);
   h.installTiming([{ lane: 'stable-1', tokens: words([0, 6, 12, 18]) }, { lane: 'stable-2', tokens: words([0, 2, 4, 6]) }]);
   await h.start();
   const element = h.helper.state.ghostCursorElement;
-  const interval = h.helper.state.ghostCursorIntervalId;
+  assert.equal(h.intervals.size, 1);
   assert.equal(h.helper.state.ghostCursorOffset, 6);
   h.publish({ status: 'switching', desiredStrength: 100 });
+  assert.equal(h.intervals.size, 0, 'source publication suspends all cursor wakeups until ready');
   h.playback = { ok: true, paused: true, currentTime: 0 };
   h.root.removeAttribute('data-babel-review-action-id');
   const calls = h.playbackCalls();
@@ -272,7 +299,7 @@ test('paired source switching freezes one cursor, preserves baseline/lane, and u
   assert.equal(h.helper.state.ghostCursorOffset, 22);
   assert.equal(h.helper.state.cursorBaseline, 6);
   assert.equal(h.helper.state.ghostCursorElement, element);
-  assert.equal(h.helper.state.ghostCursorIntervalId, interval);
+  assert.equal(h.intervals.size, 1, 'ready owns exactly one resumed cursor timer');
   h.playback.paused = true;
   await h.tick();
   assert.equal(h.helper.state.ghostCursorElement, null, 'a real pause after paired ready disposes normally');
@@ -819,4 +846,140 @@ test('retired row-sync completion cannot clear the replacement session flight', 
   await flush();
   assert.equal(h.helper.state.playbackRowSyncInFlight, false);
   assert.equal(h.timers.size, 1);
+});
+
+test('hidden playback owns no row or cursor timers and resumes from the current native clock', async t => {
+  const h = createHarness(t);
+  await h.start();
+  h.helper.bindRowTracking();
+  const element = h.helper.state.ghostCursorElement;
+  assert.equal(h.intervals.size, 1);
+  assert.equal(h.timers.size, 1);
+  h.visibility(true);
+  const calls = h.playbackCalls();
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0);
+  for (let index = 0; index < 30; index++) await h.tick();
+  assert.equal(await h.helper.syncCurrentRowToPlayback(), null);
+  assert.equal(h.playbackCalls(), calls, 'hidden time performs no native clock discovery');
+  assert.equal(element.style.display, 'none');
+  h.playback.currentTime = 8;
+  h.visibility(false);
+  await flush();
+  assert.equal(h.playbackCalls(), calls + 1, 'visibility resumes with a fresh clock, not a timed cache');
+  assert.equal(h.helper.state.ghostCursorPlaybackTime, 8);
+  assert.equal(h.helper.state.ghostCursorElement, element);
+  assert.equal(h.intervals.size, 1);
+  assert.equal(h.timers.size, 1);
+  h.helper.unbindRowTracking();
+  h.visibility(true);
+  h.visibility(false);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.documentListeners.get('visibilitychange').size, 0);
+});
+
+test('a delayed cursor read cannot render across a hidden-visible boundary', async t => {
+  const h = createHarness(t);
+  const pending = h.deferPlayback();
+  await h.start();
+  const element = h.helper.state.ghostCursorElement;
+  h.visibility(true);
+  h.visibility(false);
+  pending.resolve({ ok: true, paused: false, currentTime: 19 });
+  await flush();
+  assert.equal(element.style.display, 'none');
+  assert.equal(h.helper.state.ghostCursorPlaybackTime, null);
+  h.playback.currentTime = 8;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorPlaybackTime, 8);
+  assert.notEqual(element.style.display, 'none');
+});
+
+test('a row read settling while hidden cannot restart either playback loop', async t => {
+  const h = createHarness(t);
+  const pending = h.deferPlayback();
+  h.helper.bindRowTracking();
+  const [id, callback] = h.timers.entries().next().value;
+  h.timers.delete(id);
+  callback();
+  assert.equal(h.helper.state.playbackRowSyncInFlight, true);
+  h.visibility(true);
+  pending.resolve({ ok: true, paused: false, currentTime: 8 });
+  await flush();
+  assert.equal(h.helper.state.ghostCursorElement, null);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timers.size, 0);
+  h.visibility(false);
+  assert.equal(h.timers.size, 1);
+  h.helper.unbindRowTracking();
+  assert.equal(h.timers.size, 0);
+});
+
+test('one foreground frame discovers all off-lane gaps once and reads active text once', async t => {
+  const h = createHarness(t);
+  h.rows[1].identity.endSeconds = 2;
+  const third = new RowFixture('annotation-three', 3);
+  third.identity.endSeconds = 3;
+  h.rows.push(third);
+  h.body.appendChild(third);
+  h.playback.currentTime = 10;
+  await h.start();
+  const activeEditor = h.rows[0].editor;
+  const text = activeEditor.value;
+  let textReads = 0;
+  Object.defineProperty(activeEditor, 'value', { configurable: true, get() { textReads++; return text; } });
+  let collections = 0;
+  const getRows = h.helper.getTranscriptRows;
+  h.helper.getTranscriptRows = () => { collections++; return getRows(); };
+  await h.tick();
+  assert.equal(collections, 1, 'lane gaps share one fresh row/time signature pass');
+  assert.equal(textReads, 1, 'the renderer reuses text sampled earlier in this same frame');
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, h.rows[1]);
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-3'].row, third);
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].offset, h.rows[1].editor.value.length);
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-3'].offset, third.editor.value.length);
+});
+
+test('one-pass lane projection preserves overlapping playback preference and fresh remounts', async t => {
+  const h = createHarness(t);
+  const overlapping = new RowFixture('overlapping-two', 2);
+  overlapping.identity.startSeconds = 1;
+  overlapping.identity.endSeconds = 6;
+  h.rows.push(overlapping);
+  h.body.appendChild(overlapping);
+  h.helper.state.lastPlaybackRow = overlapping;
+  h.helper.state.lastPlaybackRowIdentity = overlapping.identity;
+  h.playback.currentTime = 4;
+  await h.start();
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, overlapping,
+    'the previously selected overlapping turn wins while active');
+  h.playback.currentTime = 8;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, h.rows[1],
+    'a still-active turn wins over the remembered ended turn');
+  h.rows[1].identity.endSeconds = 5;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, overlapping,
+    'gaps project the latest ending turn');
+  const replacement = h.replaceRow(overlapping);
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, replacement,
+    'every frame sees replacements without a timed row cache');
+});
+
+test('published timing identity skips row discovery but still reads every task and source change', t => {
+  const h = createHarness(t);
+  let collections = 0;
+  const getRows = h.helper.getTranscriptRows;
+  h.helper.getTranscriptRows = () => { collections++; return getRows(); };
+  assert.equal(JSON.parse(buildCurrentL0TimingTaskId(h.helper)).baseTaskId, 'task-one');
+  h.root.setAttribute('data-babel-review-action-id', 'task-two');
+  assert.equal(JSON.parse(buildCurrentL0TimingTaskId(h.helper)).baseTaskId, 'task-two');
+  h.publish({ taskId: 'task-two', strength: 100, variantKey: 'enhanced-two' });
+  assert.equal(JSON.parse(buildCurrentL0TimingTaskId(h.helper)).audioVariantKey, 'enhanced-two');
+  assert.equal(collections, 0, 'published ownership needs no transcript discovery');
+  h.root.removeAttribute('data-babel-review-action-id');
+  assert.deepEqual(JSON.parse(buildCurrentL0TimingTaskId(h.helper)).stableLaneIds, ['stable-1', 'stable-2']);
+  assert.equal(collections, 1, 'unpublished tasks retain the live row-identity fallback');
 });

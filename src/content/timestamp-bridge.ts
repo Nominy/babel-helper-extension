@@ -269,8 +269,9 @@ export function initTimestampBridge() {
     const backend = 'page-react-split-annotation';
     const time = Number(payload?.splitSeconds);
     const texts = payload?.texts;
-    if (texts !== undefined && (!Array.isArray(texts) || texts.length !== 2 ||
-        typeof texts[0] !== 'string' || typeof texts[1] !== 'string' || typeof payload?.sourceText !== 'string')) {
+    if ((payload?.sourceText !== undefined && typeof payload.sourceText !== 'string') ||
+        (texts !== undefined && (!Array.isArray(texts) || texts.length !== 2 ||
+          typeof texts[0] !== 'string' || typeof texts[1] !== 'string' || typeof payload?.sourceText !== 'string'))) {
       return failure(backend, 'invalid-split');
     }
     if (!Number.isFinite(time)) return failure(backend, 'invalid-split');
@@ -278,20 +279,32 @@ export function initTimestampBridge() {
     if (context.error) return context.error;
     const turn = resolveTurn(context.binding, payload);
     if (!turn) return failure(backend, 'row-not-found');
+    const expectedTrack = payload?.processedRecordingId || payload?.rowIdentity?.processedRecordingId;
+    const expectedStart = payload?.startSeconds ?? payload?.rowIdentity?.startSeconds;
+    const expectedEnd = payload?.endSeconds ?? payload?.rowIdentity?.endSeconds;
+    if ((expectedTrack && turn.processedRecordingId !== expectedTrack) ||
+        (expectedStart !== undefined && turn.startTimeInSeconds !== expectedStart) ||
+        (expectedEnd !== undefined && turn.endTimeInSeconds !== expectedEnd)) {
+      return failure(backend, 'stale-transcript');
+    }
     if (context.binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
-    if (time <= turn.startTimeInSeconds + 0.1 || time >= turn.endTimeInSeconds - 0.1) {
+    if (!Number.isFinite(turn.startTimeInSeconds) || !Number.isFinite(turn.endTimeInSeconds) ||
+        time <= turn.startTimeInSeconds + 0.1 || time >= turn.endTimeInSeconds - 0.1) {
       return failure(backend, 'split-out-of-range');
     }
-    if (texts !== undefined && (context.binding.pendingTextById?.[turn.id] ?? turn.content ?? '') !== payload.sourceText) {
+    if (payload.sourceText !== undefined && (context.binding.pendingTextById?.[turn.id] ?? turn.content ?? '') !== payload.sourceText) {
       return failure(backend, 'stale-transcript');
     }
     const flushed = await flushEdits(context, [turn]);
     if (flushed) return flushed;
     const binding = current(context);
     if (!binding) return failure(backend, 'stale-task');
+    if (binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
     const currentTurn = binding.annotations.find(item => item.id === turn.id);
-    if (texts !== undefined && (!currentTurn ||
-        (binding.pendingTextById?.[turn.id] ?? currentTurn.content ?? '') !== payload.sourceText)) {
+    if (!currentTurn || currentTurn.processedRecordingId !== turn.processedRecordingId ||
+        currentTurn.startTimeInSeconds !== turn.startTimeInSeconds || currentTurn.endTimeInSeconds !== turn.endTimeInSeconds ||
+        (payload.sourceText !== undefined &&
+          (binding.pendingTextById?.[turn.id] ?? currentTurn.content ?? '') !== payload.sourceText)) {
       return failure(backend, 'stale-transcript');
     }
     if (typeof binding.controller?.split !== 'function') return failure(backend, 'binding-not-found');

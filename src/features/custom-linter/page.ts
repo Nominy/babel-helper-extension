@@ -2725,13 +2725,14 @@ export function initLinterBridge() {
   // touched once the click observer has proven it can see clearances on this
   // task; otherwise native metadata stays exactly as Babel left it.
   function reconcileNativeHighlightedWordAcknowledgements(hooks, annotations) {
-    const binding = readBabelTranscriptBindings();
-    if (!binding || binding.readOnly || binding.reviewActionId !== hooks.reviewActionId ||
-        typeof binding.controller?.toggleWarningAssertion !== 'function') return;
+    let binding;
     for (const annotation of annotations) {
       if (!annotation.metadata?.assertedWarnings?.includes(HIGHLIGHTED_WORD_RULE_REASON)) continue;
       const entry = getAnnotationEntryFromObject(annotation);
       if (entry && hasObservedHighlightedWordClearanceClick(entry) && !isHighlightedWordCleared(entry)) {
+        binding ??= readBabelTranscriptBindings();
+        if (!binding || binding.readOnly || binding.reviewActionId !== hooks.reviewActionId ||
+            typeof binding.controller?.toggleWarningAssertion !== 'function') return;
         binding.controller.toggleWarningAssertion(annotation.id, HIGHLIGHTED_WORD_RULE_REASON);
       }
     }
@@ -2769,7 +2770,12 @@ export function initLinterBridge() {
     setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason);
 
     if (!areLintIssueArraysEqual(nativeIssues, mergedIssues)) {
-      hooks.lintHook.hook.queue.dispatch(mergedIssues);
+      const queue = hooks.lintHook.hook.queue;
+      const patch = nativeLintDispatchPatches.get(queue);
+      // This pass already evaluated and merged every rule. Only bypass our own
+      // augmentation wrapper; preserve another owner's current dispatch.
+      const dispatch = queue.dispatch === patch?.patchedDispatch ? patch.originalDispatch : queue.dispatch;
+      dispatch.call(queue, mergedIssues);
       debugState.nativeLint.dispatched = true;
       debugState.nativeLint.nativeIssueCount = Array.isArray(nativeIssues)
         ? nativeIssues.length
@@ -3766,7 +3772,7 @@ export function initLinterBridge() {
   }
 
   function startHighlightObserver() {
-    if (highlightObserver || !document.body) {
+    if (highlightObserver || !document.body || !(highlightedRow instanceof HTMLElement)) {
       return;
     }
 

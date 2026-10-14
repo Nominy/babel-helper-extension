@@ -298,15 +298,62 @@ test('long-track minimap navigates both ends without losing region tooltips or t
   await expect.poll(() => page.locator('[part="scroll"]').first().evaluate((element) => element.scrollWidth / element.clientWidth)).toBeGreaterThan(2);
   const before = await rows(page);
   const map = page.locator('[data-babel-helper-minimap]');
+  const scroll = page.locator(HOST).first().locator('[part="scroll"]');
+  const expectBoundedMinimap = async () => {
+    await expect.poll(() => map.evaluate(async (element) => {
+      const viewportWidth = document.documentElement.clientWidth;
+      const root = document.querySelector('.recovered-babel-root');
+      const sidebar = document.querySelector('[data-recovered-shell] > aside');
+      const rect = element.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const toolbarRect = element.parentElement.getBoundingClientRect();
+      const canvases = [...element.querySelectorAll('canvas')];
+      const imagesValid = await Promise.all(canvases.map(async (canvas) => {
+        const bounds = canvas.getBoundingClientRect();
+        if (canvas.width < 1 || canvas.height < 1 ||
+            canvas.width > Math.ceil(viewportWidth * devicePixelRatio) ||
+            Math.abs(canvas.width - bounds.width * devicePixelRatio) > 1 ||
+            Math.abs(canvas.height - bounds.height * devicePixelRatio) > 1) return false;
+        const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        if (!pixels.some((value, index) => index % 4 === 3 && value > 0)) return false;
+        const image = new Image();
+        image.src = canvas.toDataURL();
+        await image.decode();
+        return image.naturalWidth === canvas.width && image.naturalHeight === canvas.height;
+      }));
+      return {
+        shellFits: rootRect.left >= sidebar.getBoundingClientRect().right - 1 &&
+          rootRect.right <= viewportWidth + 1,
+        documentFits: document.documentElement.scrollWidth <= viewportWidth + 1 &&
+          document.body.scrollWidth <= viewportWidth + 1 && window.scrollX === 0,
+        toolbarFits: toolbarRect.left >= rootRect.left - 1 &&
+          toolbarRect.right <= rootRect.right + 1 && toolbarRect.height <= 64,
+        mapFits: rect.width >= 180 && rect.left >= toolbarRect.left - 1 &&
+          rect.right <= toolbarRect.right + 1 && rect.height >= 40 && rect.height <= 48,
+        imagesValid: canvases.length === 2 && imagesValid.every(Boolean)
+      };
+    })).toEqual({
+      shellFits: true, documentFits: true,
+      toolbarFits: true, mapFits: true, imagesValid: true
+    });
+  };
+  await expectBoundedMinimap();
   const box = await map.boundingBox();
   await expect.poll(async () => (await media(page)).length).toBeGreaterThanOrEqual(2);
   const duration = (await media(page))[0].duration;
   expect(duration).toBeGreaterThan(12);
   await map.click({ position: { x: box.width * 0.85, y: 20 } });
   await expect.poll(async () => Math.abs((await media(page))[0].time / duration - 0.85)).toBeLessThan(0.03);
-  await expect.poll(() => page.locator(HOST).first().locator('[part="scroll"]').evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-  await map.click({ position: { x: box.width * 0.01, y: 20 } });
+  await expect.poll(() => scroll.evaluate((element) => element.scrollLeft / (element.scrollWidth - element.clientWidth))).toBeGreaterThan(0.75);
+  // Drag the real minimap back to zero; playback time alone cannot prove that
+  // the native horizontal viewport returned from the far end.
+  await page.mouse.move(box.x + box.width * 0.85, box.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 1, box.y + 20, { steps: 8 });
+  await page.mouse.up();
   await expect.poll(async () => (await media(page))[0].time / duration).toBeLessThan(0.04);
+  await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeLessThanOrEqual(1);
+  await expectBoundedMinimap();
   expect(await rows(page)).toEqual(before);
   await fit(page);
   const region = page.locator(HOST).first().locator('[part~="region"]').first();

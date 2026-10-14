@@ -6,8 +6,6 @@ import { buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } fr
 import type { TimelineModules } from '../services/timeline-selection-service';
 
 export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site' | 'segmentation' | 'selection' | 'edge'>) {
-  const CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS = 180;
-
   const CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS = 1200;
 
   const CUT_PREVIEW_DUPLICATE_ROW_POLL_MS = 40;
@@ -28,30 +26,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
   }
 
 
-  function dispatchSplitClick(target, clientX, clientY, options) {
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
-    const settings = options || {};
-    const useMeta = /\bMac\b/i.test(navigator.platform || '');
-    target.dispatchEvent(
-      new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        view: window,
-        clientX,
-        clientY,
-        button: 0,
-        buttons: 0,
-        detail: 1,
-        shiftKey: Boolean(settings.shiftKey),
-        ctrlKey: !useMeta,
-        metaKey: useMeta
-      })
-    );
-  }
 
 
   function getSmartSplitCursorTextOffset(row) {
@@ -346,7 +320,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
   function getSmartSplitTextParts(plan) {
-    const fallback = helper.splitTextByWordRatio(plan.sourceText, plan.ratio);
     const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
     const timingTrack = resolveL0TimingTrack(
       timingIndex,
@@ -386,7 +359,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
         plan.ghostTextOffset
       );
     }
-    return { ...fallback, source: 'word-ratio' };
+    return { ...helper.splitTextByWordRatio(plan.sourceText, plan.ratio), source: 'word-ratio' };
   }
 
 
@@ -535,9 +508,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     const sourceSpeakerIndex = sameSpeakerRows.indexOf(sourceRow);
 
     const sourceText = helper.getRowTextValue(sourceRow);
-    if (!sourceText.trim()) {
-      return null;
-    }
 
     const width = entry.rightPx - entry.leftPx;
     const ratio =
@@ -729,5 +699,5 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     void applySmartSplit(draft);
   }
 
-  return { buildSmartSplitPlanForRow, getSmartSplitTextParts, applySmartSplit, captureRowSnapshot, buildSmartSplitPlanForRegion, dispatchSplitClick, waitForDuplicateSplitRows, CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS, applySmartSplitFromDuplicateRows, captureSmartSplitClickDraft, handleSmartSplitClick };
+  return { buildSmartSplitPlanForRow, getSmartSplitTextParts, applySmartSplit, captureRowSnapshot, buildSmartSplitPlanForRegion, captureSmartSplitClickDraft, handleSmartSplitClick };
 }

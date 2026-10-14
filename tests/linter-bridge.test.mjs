@@ -82,6 +82,7 @@ async function bootLinterBridgeOverNativeFetch(options = {}) {
     linter,
     calls,
     nativeResponse,
+    get scheduledTimeoutCount() { return timeoutId; },
     tickTimeouts(delay) {
       for (const [id, timer] of [...timeouts]) {
         if (timer.delay !== delay || !timeouts.has(id)) continue;
@@ -172,6 +173,13 @@ function nativeLintFixture() {
     document, Element, MutationObserver, props, panel, transcript, lintHook, renderIssues, setText,
     get issues() { return lintHook.memoizedState; },
     get annotations() { return annotationHook.memoizedState; },
+    renderUnrelatedPlaybackDOM() {
+      for (const observer of observers) {
+        if (observer.options) observer.callback([{
+          type: 'childList', target: document.body, addedNodes: [new Element()], removedNodes: [],
+        }]);
+      }
+    },
   };
 }
 
@@ -215,6 +223,18 @@ test('native lint publishes without controller memo state and repairs retained n
   bridge.tickTimeouts(1750);
   assert.deepEqual(fixture.issues, [], 'disabled rules stay disabled');
   assert.equal(bridge.window.__babelHelperLinterBridge.applyAllFixes('Да — нет.'), 'Да — нет.');
+});
+
+test('unrelated playback DOM does not repaint lint highlights when no transcript row is hovered', async () => {
+  const fixture = nativeLintFixture();
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  bridge.linter.setEnabled(true);
+  bridge.tickTimeouts(1750);
+  assert.ok(fixture.issues.some(issue => issue.babelHelper?.sourceText === 'Да — нет.'));
+  const scheduled = bridge.scheduledTimeoutCount;
+  fixture.renderUnrelatedPlaybackDOM();
+  assert.equal(bridge.scheduledTimeoutCount, scheduled,
+    'playback outside the transcript must not schedule document-wide highlight passes');
 });
 
 test('shipped lint rules detect invalid text and accept valid text through the page service', async () => {

@@ -449,6 +449,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
 
     const preview = document.createElement('div');
     preview.setAttribute(CUT_PREVIEW_ATTR, 'true');
+    preview.tabIndex = -1;
     preview.style.position = 'absolute';
     preview.style.top = '0';
     preview.style.height = '100%';
@@ -493,6 +494,9 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     preview.appendChild(label);
     draft.container.appendChild(preview);
     themeRoot(label, 'white');
+    // The pointer gesture owns the timeline now. Without an explicit focus
+    // transfer preventDefault leaves Slate focused and S must remain typing.
+    preview.focus({ preventScroll: true });
     api.site.rememberCutContainer(draft.container);
 
     const zoomSignature = api.site.getLaneZoomSignature(draft.container);
@@ -510,6 +514,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       element: preview,
       zoomSignature,
       hostMarker,
+      isCurrentTask: captureL0TaskGuard({ includeAudioVariant: true }),
       timeRange: null,
       timeRangeRequest: null,
       dragMode: 'create',
@@ -603,6 +608,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     if (!(previewElement instanceof HTMLElement) || !preview) {
       return false;
     }
+    previewElement.focus({ preventScroll: true });
 
     const previewRect = previewElement.getBoundingClientRect();
     const localX = event.clientX - previewRect.left;
@@ -991,11 +997,11 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   // A preview belongs to its mounted task, even while native callbacks settle.
   helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
-    if (!preview || helper.state.cutCommitPending) {
+    if (!preview || helper.state.cutCommitPending || !preview.isCurrentTask?.()) {
       return false;
     }
 
-    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    const isCurrentTask = preview.isCurrentTask;
     helper.stopSelectionLoop();
 
     const settings = options || {};
@@ -1005,7 +1011,13 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       return false;
     }
 
-    const timeRange = await ensurePreviewTimeRange(preview);
+    helper.state.cutCommitPending = true;
+    let timeRange;
+    try {
+      timeRange = await ensurePreviewTimeRange(preview);
+    } finally {
+      helper.state.cutCommitPending = false;
+    }
     if (!isCurrentTask() || helper.state.cutPreview !== preview) return false;
     const duration =
       timeRange &&
@@ -1031,7 +1043,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     };
 
     const containerRect = commitPlan.containerRect;
-    if (!(commitPlan.container instanceof HTMLElement) || containerRect.width <= 0) {
+    if (!(commitPlan.container instanceof HTMLElement) || !commitPlan.container.isConnected || containerRect.width <= 0) {
       return false;
     }
 
@@ -1040,12 +1052,10 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     if (!beforeSnapshot || !initialOverlapPlan || !initialOverlapPlan.overlapping.length) {
       return false;
     }
-    const splitRowSnapshot = initialOverlapPlan.splitRequired ? api.split.captureRowSnapshot() : null;
     const speakerKey = api.site.getSpeakerKeyForContainer(commitPlan.container);
 
     const smartSplitPlan =
-      useSmartSplit &&
-        initialOverlapPlan.splitRequired &&
+      initialOverlapPlan.splitRequired &&
         initialOverlapPlan.overlapping.length === 1 &&
         initialOverlapPlan.splitRegion
         ? api.split.buildSmartSplitPlanForRegion(
@@ -1054,16 +1064,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
           commitPlan.container
         )
         : null;
-    const smartSplitFallbackContext =
-      useSmartSplit &&
-        initialOverlapPlan.splitRequired &&
-        initialOverlapPlan.overlapping.length === 1
-        ? {
-          rowCount: helper.getTranscriptRows().length,
-          speakerKey: api.site.getSpeakerKeyForContainer(commitPlan.container),
-          rows: api.split.captureRowSnapshot()
-        }
-        : null;
+    if (initialOverlapPlan.splitRequired && !smartSplitPlan) return false;
 
     const previewElement = preview.element instanceof HTMLElement ? preview.element : null;
     const originalOpacity = previewElement ? previewElement.style.opacity : '';
@@ -1073,37 +1074,26 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     }
 
     helper.state.cutCommitPending = true;
-    let smartSplitAppliedNatively = false;
+    let nativeSplit = null;
 
     try {
-      const liveContainerRect = commitPlan.container.getBoundingClientRect();
-
       if (initialOverlapPlan.splitRequired) {
-        const splitClientX = liveContainerRect.left + commitPlan.leftPx;
-        const splitClientY = liveContainerRect.top + liveContainerRect.height / 2;
-        const splitTarget = initialOverlapPlan.splitRegion ? initialOverlapPlan.splitRegion.region : null;
-        if (!(splitTarget instanceof HTMLElement) || !splitTarget.isConnected) {
-          return false;
-        }
-
-        const textParts = smartSplitPlan ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
-        if (textParts?.wordCount) {
-          const rowIdentity = helper.getRowIdentity(smartSplitPlan.sourceRow);
-          const split = await helper.splitSegmentAtTime({
-            annotationId: rowIdentity?.annotationId,
-            rowIdentity,
-            speakerKey,
-            startSeconds: smartSplitPlan.sourceRange.startSeconds,
-            endSeconds: smartSplitPlan.sourceRange.endSeconds,
-            splitSeconds: timeRange.startSeconds,
-            sourceText: smartSplitPlan.sourceText,
-            texts: [textParts.firstText, textParts.secondText]
-          });
-          if (!isCurrentTask() || !split?.ok) return false;
-          smartSplitAppliedNatively = true;
-        } else {
-          api.split.dispatchSplitClick(splitTarget, splitClientX, splitClientY);
-        }
+        if (!smartSplitPlan.sourceRow.isConnected) return false;
+        const textParts = useSmartSplit ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
+        const rowIdentity = helper.getRowIdentity(smartSplitPlan.sourceRow);
+        if (!rowIdentity?.annotationId) return false;
+        nativeSplit = await helper.splitSegmentAtTime({
+          annotationId: rowIdentity.annotationId,
+          rowIdentity,
+          speakerKey,
+          startSeconds: smartSplitPlan.sourceRange.startSeconds,
+          endSeconds: smartSplitPlan.sourceRange.endSeconds,
+          splitSeconds: timeRange.startSeconds,
+          sourceText: smartSplitPlan.sourceText,
+          ...(textParts ? { texts: [textParts.firstText, textParts.secondText] } : {}),
+          attempts: 1
+        });
+        if (!isCurrentTask() || !nativeSplit?.ok) return false;
       }
 
       const deleteTargets = initialOverlapPlan.toDelete.slice();
@@ -1160,18 +1150,9 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
         }
       }
 
-      const duplicateSplitRows =
-        initialOverlapPlan.splitRequired && splitRowSnapshot
-          ? await api.split.waitForDuplicateSplitRows(
-            splitRowSnapshot,
-            speakerKey,
-            api.split.CUT_PREVIEW_FAST_DUPLICATE_ROW_WAIT_MS
-          )
-          : null;
-
       const previousTrimLabels =
-        shouldTrimPrevious && duplicateSplitRows && duplicateSplitRows.leftRow
-          ? api.site.getRowTimeLabels(duplicateSplitRows.leftRow)
+        nativeSplit
+          ? { startText: nativeSplit.leftStartText, endText: nativeSplit.leftEndText }
           : liveSnapshot.previous
             ? {
               startText: liveSnapshot.previous.startText,
@@ -1179,8 +1160,8 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
             }
             : null;
       const nextTrimLabels =
-        shouldTrimNext && duplicateSplitRows && duplicateSplitRows.rightRow
-          ? api.site.getRowTimeLabels(duplicateSplitRows.rightRow)
+        nativeSplit
+          ? { startText: nativeSplit.rightStartText, endText: nativeSplit.rightEndText }
           : liveSnapshot.next
             ? {
               startText: liveSnapshot.next.startText,
@@ -1204,6 +1185,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
 
         const movedPrevious = await helper.setSegmentBoundaryTime({
           side: 'right',
+          ...(nativeSplit ? { annotationId: nativeSplit.leftAnnotationId } : {}),
           startText: previousTrimLabels.startText,
           endText: previousTrimLabels.endText,
           speakerKey,
@@ -1226,6 +1208,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
 
         const movedNext = await helper.setSegmentBoundaryTime({
           side: 'left',
+          ...(nativeSplit ? { annotationId: nativeSplit.rightAnnotationId } : {}),
           startText: nextTrimLabels.startText,
           endText: nextTrimLabels.endText,
           speakerKey,
@@ -1236,16 +1219,6 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
         if (!movedNext || !movedNext.ok) {
           return false;
         }
-      }
-
-      if (smartSplitPlan && !smartSplitAppliedNatively) {
-        await helper.sleep(64);
-        if (!isCurrentTask()) return false;
-        void api.split.applySmartSplit(smartSplitPlan);
-      } else if (smartSplitFallbackContext && !smartSplitAppliedNatively) {
-        await helper.sleep(64);
-        if (!isCurrentTask()) return false;
-        void api.split.applySmartSplitFromDuplicateRows(smartSplitFallbackContext);
       }
 
       if (!isCurrentTask()) return false;
@@ -1657,9 +1630,16 @@ export function createTimelineSelectionFeature(): FeatureModule {
 }
 
 export function registerTimelineInput(helper: any, hooks: EditorHooks, input: EditorInputState) {
-  const { isFeatureEnabled } = input;
+  const { isFeatureEnabled, isTypingInTextControl } = input;
 
   hooks.on('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+        (isTypingInTextControl(event) && (
+          (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.commitLeft', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.commit', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.loop', event, helper.state.rightShiftPressed)
+        ))) return false;
     const timelineHotkeyResult =
       isFeatureEnabled('timelineSelection') &&
         typeof helper.handleCutPreviewKeydown === 'function'
@@ -1690,6 +1670,13 @@ export function registerTimelineInput(helper: any, hooks: EditorHooks, input: Ed
     }
   }, 10);
   hooks.on('capture', (event) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+        (isTypingInTextControl(event) && (
+          (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.commitLeft', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.commit', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.loop', event, helper.state.rightShiftPressed)
+        ))) return false;
     if (
       helper.runtime.isSessionInteractive() &&
       isFeatureEnabled('timelineSelection') &&
@@ -1699,7 +1686,12 @@ export function registerTimelineInput(helper: any, hooks: EditorHooks, input: Ed
         matchesShortcut(helper.config.shortcuts, 'timeline.trimCurrent', event, helper.state.rightShiftPressed) ||
         matchesShortcut(helper.config.shortcuts, 'timeline.trimAll', event, helper.state.rightShiftPressed) ||
         matchesShortcut(helper.config.shortcuts, 'timeline.autoSegment', event, helper.state.rightShiftPressed) ||
-        matchesShortcut(helper.config.shortcuts, 'timeline.transcribe', event, helper.state.rightShiftPressed)
+        matchesShortcut(helper.config.shortcuts, 'timeline.transcribe', event, helper.state.rightShiftPressed) ||
+        (helper.state.cutPreview && (
+          matchesShortcut(helper.config.shortcuts, 'preview.commitLeft', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.commit', event, helper.state.rightShiftPressed) ||
+          matchesShortcut(helper.config.shortcuts, 'preview.loop', event, helper.state.rightShiftPressed)
+        ))
       )
     ) {
       const timelineHotkeyResult = helper.handleCutPreviewKeydown(event);

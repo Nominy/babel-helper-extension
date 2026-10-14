@@ -384,17 +384,25 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
     }
 
     helper.setCurrentRow(row);
-    if (!options || options.scroll !== false) {
-      row.scrollIntoView({
-        block: 'center',
-        behavior: 'smooth'
-      });
-    }
     if (!editor.focus({ preventScroll: true, activateRow: options?.activateRow !== false })) return false;
     const start = typeof options?.selectionStart === 'number'
       ? options.selectionStart
       : options?.cursor === 'start' ? 0 : editor.value.length;
-    return editor.setSelectionRange(start, typeof options?.selectionEnd === 'number' ? options.selectionEnd : start, options?.direction || 'none');
+    const end = typeof options?.selectionEnd === 'number' ? options.selectionEnd : start;
+    const direction = options?.direction || 'none';
+    if (!editor.setSelectionRange(start, end, direction)) return false;
+    if (!options || options.scroll !== false) {
+      // scrollIntoView also moves overflow-hidden ancestors and the document.
+      // Center the actual caret (not an oversized row) in the native viewport.
+      const viewport = row.closest('[data-transcript-scroll]');
+      const caret = viewport && editor.getCaretRect(direction === 'backward' ? start : end);
+      if (caret) {
+        const bounds = viewport.getBoundingClientRect();
+        viewport.scrollTop += caret.top + caret.height / 2 -
+          (bounds.top + viewport.clientTop + viewport.clientHeight / 2);
+      }
+    }
+    return true;
   };
 
 

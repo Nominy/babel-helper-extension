@@ -31,6 +31,11 @@ Pointer and programmatic turn changes blur the connected native editor before
 activating another turn, so its native blur handler can commit pending text before
 the old Slate instance unmounts.
 
+Focused PageUp/PageDown move the caret by a transcript viewport; Shift extends
+the native selection. Paging and Escape restoration scroll only that viewport.
+The document, sidebar and waveforms retain their original sizing and horizontal
+scrolling; Helper does not clip or paint-contain the document or editor shells.
+
 **Disable Native Segment Click Seek** is enabled by default. Clicking a turn still
 selects it and opens its native editor, but does not restart either audio lane at
 the turn's beginning or interrupt running playback. Explicit playback buttons,
@@ -45,9 +50,13 @@ are preserved; Escape, mouse selection and ordinary search input stay native.
 
 Playback admission and row-identity checks read current native metadata without
 serializing the transcript on every update. Concurrent playback-state requests
-share only the in-flight read; playback clocks are never time-cached. Cursor
-updates avoid repeated layout work and use a shorter default transition, while
-preserving the existing reaction-time compensation and word-boundary behavior.
+share only the in-flight read; playback clocks are never time-cached. Each cursor
+frame shares one fresh row/time pass across off-lane projections and reuses its
+active text sample for rendering, including gaps and overlapping turns. Cursor
+updates retain fresh caret geometry, reaction-time compensation and word-boundary
+behavior. Hidden tabs suspend row/cursor timers and resample on return; owned audio
+source switches suspend the cursor timer until their published ready state. Visible
+paused playback and native task/history changes retain bounded fallback checks.
 
 The magnifier follows live native region boundaries during a drag rather than
 waiting for committed annotation timestamps. Final timestamps and undo still use
@@ -56,6 +65,9 @@ the native release/commit workflow.
 Custom-linter diagnostics bind to the committed annotation/lint-state owner,
 without depending on incidental controller memo storage. Issue cards reconcile
 after native lint updates; existing native issues and disabled rules are preserved.
+Highlight observation runs only while a transcript row is hovered. Publishing
+already-merged diagnostics does not run the same rules again; ordinary playback
+DOM updates outside a hovered row do not schedule document-wide highlight passes.
 
 Readonly status comes from the current native task, not `displayFeedback` URL
 flags. Writable feedback routes and empty transcripts remain supported; actual
@@ -117,6 +129,18 @@ Open the extension settings and select **Shortcuts** to open its dedicated subme
 Recording prompts and results appear inside the action's row; the active recording button becomes **Cancel recording**. The recorder supports right-Shift combinations. Escape and Tab can be assigned; cancel with that inline button or by tapping and releasing a modifier alone. Conflict warnings are informational because some defaults intentionally share keys in different contexts.
 
 These settings cover Helper keyboard actions, not native Babel/browser shortcuts, ordinary text editing, or mouse gestures. Browser/OS-reserved combinations may never reach the page. Auto-insert still defaults to `Alt+C`, now handled by the same configurable page input path rather than a separately reserved Chrome command.
+
+Timeline previews own **S** (smart text allocation) and **Shift+S** (native text
+duplication) only outside text editing. Creating or grabbing an Alt-drag preview
+focuses that preview without scrolling; clicking back into turn text keeps `s`
+and `S` as ordinary typing, even while a preview is visible.
+
+Light manual check: Alt-drag a valid interval inside a writable turn, press S,
+and confirm the resulting turn times and text. Undo the existing boundary-trim
+steps, then the split; text allocation belongs to that one native split command.
+Repeat with Shift+S to check native text duplication. With a preview visible, click
+into turn text and type `sS`; neither key should commit the preview. A stale
+preview after task/audio-source changes must not edit the new task.
 
 ## е/ё spelling linter
 

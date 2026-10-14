@@ -120,6 +120,9 @@ export class EditorControl {
   selectAll(): boolean {
     return Boolean(this.invoke('select', { selectAll: true }));
   }
+  pageSelection(direction: 'up' | 'down', extend: boolean): boolean {
+    return Boolean(this.invoke('pageSelection', { direction, extend }));
+  }
   synchronizeSelection(source: 'input' | 'selectionchange' | 'intent' = 'input'): boolean {
     return Boolean(this.invoke('syncSelection', { source }));
   }

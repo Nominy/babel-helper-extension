@@ -99,6 +99,17 @@ export function createEditorInput(helper: any) {
       }
       if (!event.defaultPrevented && !composing && !event.isComposing && event.keyCode !== 229) {
         const editor = getEditorControlFromTarget(event.target);
+        if ((event.key === 'PageDown' || event.key === 'PageUp') &&
+            !event.altKey && !event.ctrlKey && !event.metaKey &&
+            editor && editor.element === document.activeElement &&
+            editor.element?.matches('[data-slate-editor="true"]') &&
+            editor.pageSelection(event.key === 'PageDown' ? 'down' : 'up', event.shiftKey)) {
+          // Own only focused native paging: browser default reveals every
+          // scroll ancestor, while this command moves the caret and transcript.
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         if (event.code === 'KeyA' && (event.ctrlKey !== event.metaKey) &&
             !event.altKey && !event.shiftKey && editor && editor.element === document.activeElement &&
             editor.element?.matches('[data-slate-editor="true"]')) {

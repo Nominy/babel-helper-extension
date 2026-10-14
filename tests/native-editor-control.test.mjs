@@ -153,6 +153,39 @@ test('native row service includes readonly turns and reads exact committed times
   assert.equal(helper.findRowByIdentity(oldIdentity), null);
 });
 
+test('focus restoration centers only the native transcript viewport and retains a backward range', (t) => {
+  const h = harness(t), row = h.turn('remember this selection');
+  const viewport = new ElementFixture();
+  viewport.matches = selector => selector === '[data-transcript-scroll]';
+  viewport.scrollTop = 120;
+  viewport.clientTop = 2;
+  viewport.clientHeight = 100;
+  viewport.getBoundingClientRect = () => ({ top: 10 });
+  const outer = new ElementFixture();
+  outer.scrollTop = 17;
+  viewport.parentElement = outer;
+  row.parentElement = viewport;
+  row.scrollIntoView = () => { throw new Error('must not reveal outer scroll ancestors'); };
+  const helper = { state: {}, getEditorSnapshot: () => null };
+  api.createRowSiteApi(helper, { time: {} });
+
+  assert.equal(helper.focusRow(row, { activateRow: false, selectionStart: 3, selectionEnd: 12, direction: 'backward' }), true);
+  assert.deepEqual([row.state.start, row.state.end, row.state.direction], [3, 12, 'backward']);
+  assert.equal(row.state.text, 'remember this selection');
+  assert.equal(h.doc.activeElement, row.nativeElement);
+  assert.equal(viewport.scrollTop, 87);
+  assert.equal(outer.scrollTop, 17);
+  assert.equal(row.calls.find(call => call.operation === 'focus').preventScroll, true);
+  assert.equal(row.calls.find(call => call.operation === 'caretRect').start, 3);
+
+  viewport.scrollTop = 120;
+  assert.equal(helper.focusRow(row, { scroll: false, selectionStart: 8 }), true);
+  assert.equal(viewport.scrollTop, 120, 'explicit no-scroll focus leaves the viewport alone');
+  row.parentElement = outer;
+  assert.equal(helper.focusRow(row, { selectionStart: 8 }), true);
+  assert.equal(outer.scrollTop, 17, 'a missing transcript viewport never falls back to document scrolling');
+});
+
 test('digit conversion uses native raw selection while preserving generic input and readonly semantics', (t) => {
   const h = harness(t), row = h.turn('<тихо> пять </тихо> книг');
   Object.assign(row.state, { start: 7, end: 11 });
@@ -329,6 +362,49 @@ test('native keydown synchronizes live selection before hooks without touching g
   assert.equal(row.calls.some(({ operation }) => operation === 'syncSelection'), false);
 });
 
+test('paging owns only plain and Shift keys in the focused writable native editor', (t) => {
+  const h = harness(t), row = h.turn('native text');
+  h.doc.activeElement = row.nativeElement;
+  const input = api.createEditorInput({
+    state: {}, config: { rowEditorSelector: '[data-slate-editor="true"]' },
+    runtime: { isSessionInteractive: () => true }, isFeatureEnabled: () => false
+  });
+  const press = (extra = {}) => {
+    row.calls.length = 0;
+    const event = {
+      type: 'keydown', key: 'PageDown', code: 'PageDown', target: row.nativeElement,
+      shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+      defaultPrevented: false, stopped: false, composedPath() { return [this.target]; },
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this.stopped = true; }, ...extra
+    };
+    input.handleKeydown(event);
+    return { event, paging: row.calls.filter(call => call.operation === 'pageSelection') };
+  };
+  const down = press();
+  assert.equal(down.event.defaultPrevented, true);
+  assert.equal(down.event.stopped, true);
+  assert.equal(down.paging[0].direction, 'down');
+  assert.equal(down.paging[0].extend, false);
+  const up = press({ key: 'PageUp', shiftKey: true });
+  assert.equal(up.paging[0].direction, 'up');
+  assert.equal(up.paging[0].extend, true);
+  for (const extra of [{ altKey: true }, { ctrlKey: true }, { metaKey: true },
+    { isComposing: true }, { keyCode: 229 }, { target: new TextInputFixture('other control') }]) {
+    const result = press(extra);
+    assert.equal(result.paging.length, 0);
+    assert.equal(result.event.defaultPrevented, false);
+  }
+  input.handleComposition({ type: 'compositionstart' });
+  assert.equal(press().paging.length, 0);
+  input.handleComposition({ type: 'compositionend' });
+  h.doc.activeElement = null;
+  assert.equal(press().paging.length, 0);
+  h.doc.activeElement = row.nativeElement;
+  row.state.readOnly = true;
+  assert.equal(press().paging.length, 0);
+});
+
 test('native beforeinput and paste synchronize DOM selection without consuming the native edit', (t) => {
   const h = harness(t), row = h.turn('native original');
   const input = api.createEditorInput({
@@ -499,6 +575,7 @@ function nativeSessionHarness(t, { known = true } = {}) {
     return true;
   };
   const timers = new Map();
+  const intervals = new Map();
   const observers = [];
   let timerId = 0;
   const windowRef = {
@@ -506,8 +583,8 @@ function nativeSessionHarness(t, { known = true } = {}) {
     addEventListener() {}, removeEventListener() {},
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
-    setInterval(callback) { const id = ++timerId; timers.set(id, callback); return id; },
-    clearInterval(id) { timers.delete(id); },
+    setInterval(callback) { const id = ++timerId; timers.set(id, callback); intervals.set(id, callback); return id; },
+    clearInterval(id) { timers.delete(id); intervals.delete(id); },
     requestAnimationFrame(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     cancelAnimationFrame(id) { timers.delete(id); }
   };
@@ -534,7 +611,7 @@ function nativeSessionHarness(t, { known = true } = {}) {
   api.registerLifecycle(helper);
   h.cleanup.push(() => helper.runtime.disposeLifecycle('test-end'));
   return {
-    ...h, root, surface, helper, calls, timers, observers, writable,
+    ...h, root, surface, helper, calls, timers, intervals, observers, writable, windowRef,
     get status() { return status; },
     setStatus(next) { status = next; },
     deferEnsure() { const deferred = Promise.withResolvers(); ensureGate = deferred.promise; return deferred; },
@@ -619,4 +696,80 @@ test('disposing lifecycle prevents an in-flight native status probe from resurre
   assert.equal(h.helper.runtime.isSessionInteractive(), false);
   assert.deepEqual(h.calls.activationIds, []);
   assert.equal(h.timers.size, 0);
+});
+
+test('unchanged readonly DOM updates do not restart session recovery; writability still activates', async t => {
+  const h = nativeSessionHarness(t);
+  h.setStatus({ ...h.writable, readOnly: true });
+  h.helper.runtime.refreshRouteSession('readonly');
+  const observer = h.observers.at(-1);
+  for (let index = 0; index < 30; index++) observer.callback([]);
+  assert.equal(h.timers.size, 0, 'unrelated readonly rendering schedules no rebinds');
+  assert.equal(h.observers.length, 1);
+  assert.equal(h.calls.ensure, 0);
+  h.setStatus({ ...h.writable });
+  observer.callback([]);
+  assert.equal(h.timers.size, 1);
+  h.runNextTimer();
+  await settleNativeSession();
+  assert.equal(h.helper.state.sessionActive, true);
+  assert.deepEqual(h.calls.activationIds, ['task-one']);
+});
+
+test('unknown-session DOM updates do not extend the bounded bootstrap retry window', async t => {
+  const h = nativeSessionHarness(t, { known: false });
+  h.helper.runtime.refreshRouteSession('unknown');
+  await settleNativeSession();
+  const attempts = h.helper.state.routeRefreshAttempts;
+  const startedAt = h.helper.state.routeRefreshWindowStartedAt;
+  const scheduled = h.helper.state.routeRefreshTimer;
+  for (let index = 0; index < 30; index++) h.observers.at(-1).callback([]);
+  assert.equal(h.helper.state.routeRefreshAttempts, attempts);
+  assert.equal(h.helper.state.routeRefreshWindowStartedAt, startedAt);
+  assert.equal(h.helper.state.routeRefreshTimer, scheduled);
+  assert.equal(h.calls.refresh, 1);
+});
+
+test('settings reconciliation keeps one hotkeys observer until its feature is disabled', async t => {
+  const h = nativeSessionHarness(t);
+  h.helper.isFeatureEnabled = key => key === 'hotkeysHelp';
+  h.helper.enhanceHotkeysDialog = () => {};
+  h.helper.runtime.refreshRouteSession('interactive');
+  await settleNativeSession();
+  const observer = h.helper.state.hotkeysObserver;
+  assert.ok(observer);
+  for (let index = 0; index < 30; index++) h.helper.runtime.reconcileSessionSettings();
+  assert.equal(h.observers.length, 1);
+  assert.equal(h.helper.state.hotkeysObserver, observer);
+  assert.notEqual(observer.disconnected, true);
+  h.helper.isFeatureEnabled = () => false;
+  h.helper.runtime.reconcileSessionSettings();
+  assert.equal(observer.disconnected, true);
+  assert.equal(h.helper.state.hotkeysObserver, null);
+});
+
+test('URL fallback repairs external history replacements and still retires changed routes', async t => {
+  const h = nativeSessionHarness(t);
+  h.helper.init();
+  await settleNativeSession();
+  const revision = h.helper.state.sessionLifecycleRevision;
+  const external = function () { return 'external-result'; };
+  h.windowRef.history.replaceState = external;
+  h.doc.location.pathname = '/transcription/replaced';
+  h.setStatus({ ...h.writable, routeKey: `${h.doc.location.pathname}${h.doc.location.search}` });
+  [...h.intervals.values()][0]();
+  assert.notEqual(h.windowRef.history.replaceState, external);
+  assert.ok(h.helper.state.sessionLifecycleRevision > revision);
+  const timer = h.helper.state.routeRefreshTimer;
+  const callback = h.timers.get(timer);
+  h.timers.delete(timer);
+  callback();
+  await settleNativeSession();
+  assert.deepEqual(h.calls.activationIds, ['task-one', 'task-one']);
+  assert.equal(h.windowRef.history.replaceState(), 'external-result');
+  h.helper.runtime.disposeLifecycle('test-dispose');
+  h.helper.runtime.scheduleRouteRefresh('late-completion');
+  assert.equal(h.timers.size, 0, 'disposed continuations cannot leave a retry behind');
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.windowRef.history.replaceState, external);
 });

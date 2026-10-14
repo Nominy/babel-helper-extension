@@ -411,9 +411,9 @@ export function registerTimestampEditService(helper: any) {
     return retryTimestampMutation(settings, 'split-segment-at-time', 'page-react-split-annotation', () => {
       const payload = resolveRowMutationPayload(settings);
       payload.splitSeconds = splitSeconds;
+      if (settings.sourceText !== undefined) payload.sourceText = settings.sourceText;
       if (settings.texts !== undefined) {
         payload.texts = settings.texts;
-        payload.sourceText = settings.sourceText;
       }
       return payload;
     });
