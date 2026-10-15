@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { findBabelEditorFiber, readBabelTranscriptBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
 import { findNativeDescendant } from './native-transcript';
-import { readNativeMemoDependencies, resolveNativeAnnotationTransaction } from './native-annotation-transaction';
+import { resolveNativeAnnotationTransaction } from './native-annotation-transaction';
 
 const gapHints = {
   above: "This speaker's previous turn is more than 2s away",
@@ -228,10 +228,12 @@ function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMe
       if (!restrictionObserved && !capabilityValidated) continue;
       throw new Error('native-merge-keyboard-unsupported');
     }
-    const controller = readNativeMemoDependencies(editor, handlers)?.[0];
     const nativeOperation = direction === 'above' ? 'mergeUp' : 'mergeDown';
-    const dependencies = readNativeMemoDependencies(editor, controller);
-    if (controller?.[nativeOperation] !== callback || !dependencies?.includes(binding.panel.onMergeAnnotations)) {
+    const currentOperation = binding.controller?.[nativeOperation];
+    // The committed transcript owns this entrypoint, but may retain an older
+    // closure. Match its native role, then execute only the current controller.
+    if (typeof currentOperation !== 'function' ||
+        Function.prototype.toString.call(currentOperation) !== callbackSource) {
       throw new Error('native-merge-keyboard-unsupported');
     }
     if (!capabilityValidated) {
@@ -244,7 +246,14 @@ function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMe
       if (!pair.reason && pair.gap > 2) {
         requestMerge(annotationId, direction, binding.reviewActionId, editor, route);
       } else if ((!pair.reason || pair.reason === 'merge-disabled') &&
-          current?.reviewActionId === binding.reviewActionId) callback(annotationId);
+          current?.reviewActionId === binding.reviewActionId) {
+        const operation = current.controller?.[nativeOperation];
+        if (typeof operation !== 'function' || Function.prototype.toString.call(operation) !== callbackSource) {
+          onFailure(new Error('native-merge-keyboard-unsupported'));
+          return;
+        }
+        operation.call(current.controller, annotationId);
+      }
     });
   }
   return capabilityValidated;

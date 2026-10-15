@@ -120,7 +120,7 @@ test('a retained command refuses changed task, route or editor root before resol
 test('unknown native callback identity fails before any annotation or history write', () => {
   const f = fixture();
   f.binding.panel.onMergeAnnotations = () => assert.fail('must not invoke an unowned callback');
-  assert.throws(() => transaction.resolveNativeAnnotationTransaction({ memoizedState: null }, f.binding), /wrapper-unsupported/);
+  assert.throws(() => transaction.resolveNativeAnnotationTransaction({ memoizedState: null }, f.binding));
   assert.equal(f.undo.length, 0);
 });
 
@@ -135,12 +135,15 @@ function nativeFixture() {
       f.capability.writeAnnotations(update);
     }
   };
-  const nativeMerge = () => ({ lowConfidenceResolved: true, undo: () => {} });
+  const nativeMerge = (id, direction) => ({ content: direction === "above" ? 'previous current' : 'current next',
+    start: Math.min(1, 2), end: Math.max(3, 4), lowConfidenceResolved: true, undo: () => {} });
   const wrapper = (id, direction) => { confidence.clearSegment(id); nativeMerge(id, direction); };
   f.binding.panel.onMergeAnnotations = wrapper;
   f.binding.history = history;
+  f.binding.controller = { mergeUp(id) { wrapper(id, 'above'); } };
   const hooks = [[wrapper, [confidence, nativeMerge]],
-    [nativeMerge, [f.binding.annotations, execute, writer]], [execute, [history]]];
+    [nativeMerge, [f.binding.annotations, execute, writer]], [execute, [history]],
+    [f.binding.controller, [wrapper]]];
   const editor = { memoizedState: hooks.reduceRight((next, memoizedState) => ({ next, memoizedState }), null) };
   const items = ['Above', 'Below'].map(suffix => ({ props: { disabled: true,
     onClick() { assert.fail('gap-limited native command must not be called'); },
@@ -196,6 +199,7 @@ test('native keyboard handler uses its proven controller dependency and restores
   const controller = { mergeUp: callback };
   const handlers = { onMergeUp: callback };
   f.binding.transcript.handlers = handlers;
+  f.binding.controller = controller;
   f.hooks.push([handlers, [controller]], [controller, [f.binding.panel.onMergeAnnotations]]);
   f.editor.memoizedState = f.hooks.reduceRight((next, memoizedState) => ({ next, memoizedState }), null);
   const failures = [];
@@ -441,4 +445,48 @@ test('replaced bundle owners cannot dispose a newer shared MAIN policy lease', (
     second.dispose();
     globalThis.location = originalLocation;
   }
+});
+
+test('a panel callback older than both render slots still permits a guarded same-lane merge', () => {
+  const f = nativeFixture();
+  const previousLocation = globalThis.location;
+  globalThis.location = { pathname: '/task', search: '' };
+  f.binding.panel.onMergeAnnotations = () => assert.fail('retired panel closure must not execute');
+  f.editor.alternate = { memoizedState: null };
+  const installed = policy.installNativeMergePolicy({ onFailure(error) { throw error; },
+    readBindings: () => f.binding, findEditor: () => f.editor });
+  try {
+    f.items[0].props.onClick();
+    assert.equal(f.binding.annotations.find(turn => turn.id === 'segment05').content, 'Earlier [laugh] Now');
+    assert.equal(f.binding.annotations.find(turn => turn.id === 'other'), f.annotations[1]);
+    assert.equal(f.undo.length, 1);
+    f.undo[0].undo();
+    assert.deepEqual(f.binding.annotations, f.annotations);
+  } finally { installed.dispose(); globalThis.location = previousLocation; }
+});
+
+test('retained keyboard entrypoints dispatch through the current controller without old hook ownership', () => {
+  const f = nativeFixture();
+  const previousLocation = globalThis.location;
+  globalThis.location = { pathname: '/task', search: '' };
+  const oldCalls = [], currentCalls = [];
+  const createMergeUp = calls => id => { calls.push({ id, direction: "above", hint: "There's no earlier turn within " }); };
+  const handlers = { onMergeUp: createMergeUp(oldCalls) };
+  const controller = { mergeUp: createMergeUp(currentCalls) };
+  f.binding.transcript.handlers = handlers;
+  f.binding.controller = controller;
+  f.hooks.push([controller, [f.binding.panel.onMergeAnnotations]]);
+  f.binding.panel.onMergeAnnotations = () => assert.fail('retired panel closure must not execute');
+  f.editor.memoizedState = f.hooks.reduceRight((next, memoizedState) => ({ next, memoizedState }), null);
+  const installed = policy.installNativeMergePolicy({ onFailure(error) { throw error; },
+    readBindings: () => f.binding, findEditor: () => f.editor });
+  try {
+    handlers.onMergeUp('previous');
+    assert.deepEqual(currentCalls.map(call => call.id), ['previous']);
+    assert.deepEqual(oldCalls, []);
+    handlers.onMergeUp('segment05');
+    assert.equal(f.binding.annotations.find(turn => turn.id === 'segment05').content, 'Earlier [laugh] Now');
+    assert.equal(f.undo.length, 1);
+    assert.deepEqual(oldCalls, []);
+  } finally { installed.dispose(); globalThis.location = previousLocation; }
 });

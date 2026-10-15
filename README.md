@@ -148,9 +148,11 @@ commands. First/last boundaries, speaker identity, locked segments, readonly
 tasks, pending-text checks and stale-task protection remain enforced. A merge
 uses Babel's annotation writer and history, preserving other speakers and native
 Undo. Disabling the feature restores the original gap restriction.
-Native callback ownership is resolved by exact identity across React's current
-and alternate render pair: a memoized panel can retain the previous callback.
-Annotation-array identity, native history ownership and writer checks still apply.
+Transactions resolve the unique directional merge command from the current
+native controller's owned dependencies, never from a retained panel callback.
+Panel/keyboard closures can outlive both React render slots. Keyboard entrypoints
+retain their native role but dispatch through the current controller. Ambiguous
+commands, foreign history, stale annotation arrays and raw setters are rejected.
 
 Click Helper's **Chrome toolbar icon** to open **Advanced replacement**. Settings
 remain available through Chrome's extension options and the popup's **Settings**
