@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 test.use({ extensions: ['helper', 'gold'] });
 
 export const featureScenarios = {
-  audioEnhancement: ['native enhancement: automatic 90% mix, Original, full-strength consent and persistent cache without Grader'],
+  audioEnhancement: ['native enhancement: manual Generate, 90% mix, Original, full-strength consent and persistent cache without Grader'],
 };
 
 async function audioTracks(page) {
@@ -102,7 +102,16 @@ test(featureScenarios.audioEnhancement[0], async ({ page, babel }) => {
   const panel = page.locator('[data-babel-helper-audio-enhancement]');
   const slider = panel.getByRole('slider', { name: 'Original audio mix', exact: true });
   const selected = panel.locator('[data-selection]');
+  const generate = panel.locator('[data-details-button]');
   await expect(panel).toBeVisible();
+  await expect(slider).toHaveValue('100');
+  await expect(slider).toBeDisabled();
+  await expect(selected).toHaveText('0%');
+  await expect(panel).toHaveAttribute('aria-busy', 'false');
+  await expect(generate).toHaveText('Generate');
+  expect((await babel.state()).calls.filter((call) => call.path === '/v1/enhance')).toEqual([]);
+  await generate.focus();
+  await generate.press('Enter');
   await expect(slider).toHaveValue('10');
   await expect(selected).toHaveText('90%', { timeout: realModels ? 300_000 : 60_000 });
   await expect(panel).toHaveAttribute('aria-busy', 'false');
@@ -189,10 +198,13 @@ test(featureScenarios.audioEnhancement[0], async ({ page, babel }) => {
   expect(await readRows(page)).toEqual(before);
   expect((await babel.state()).calls.filter((call) => call.path === '/v1/enhance')).toHaveLength(enhanceCalls.length);
 
-  // A full page boot must read the verified pair from persistent extension cache.
+  // A full page boot stays Original until Generate requests the verified cached pair.
   await page.reload();
   await ready(page, scenario.action.annotations.length);
   await installPcmReader(page);
+  await expect(selected).toHaveText('0%');
+  await expect(generate).toHaveText('Generate');
+  await generate.click();
   await expect(selected).toHaveText('90%');
   await expect(panel).toHaveAttribute('aria-busy', 'false');
   const cached = await audioTracks(page);
@@ -206,6 +218,9 @@ test(featureScenarios.audioEnhancement[0], async ({ page, babel }) => {
   await expect.poll(async () => (await audioTracks(page)).map((track) => track.decodedRms)).toEqual(original.map((track) => track.decodedRms));
   expect(await capturePcm(page, 'disabled-original')).toEqual(originalPcm);
   await babel.setExtensionSettings('helper', { features: { audioEnhancement: true } });
+  await expect(selected).toHaveText('0%');
+  await expect(generate).toHaveText('Generate');
+  await generate.click();
   await expect(selected).toHaveText('90%');
   await expect(panel).toHaveAttribute('aria-busy', 'false');
   expect(await capturePcm(page, 'reenabled90')).toEqual(mixedPcm);

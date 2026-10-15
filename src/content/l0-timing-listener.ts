@@ -244,7 +244,17 @@ export function registerL0TimingListener(
 
     const expectedTaskId = currentTaskId();
     selectTimingIndex(state, expectedTaskId);
-    if (update.taskId !== expectedTaskId) return;
+    if (update.taskId !== expectedTaskId) {
+      const incoming = timingIdentity(update.taskId);
+      const selected = timingIdentity(expectedTaskId);
+      // Startup Original inference remains valid if Generate or a mix switch
+      // finishes first. Retain its real source identity, even during processing;
+      // only the playback lookup may share clocks after pair verification.
+      if (!incoming || incoming.variantKey || incoming.scopeId !== selected?.scopeId || !state.l0TimingCache) return;
+      state.l0TimingCache.original = update;
+      delete state.l0TimingCache.playback;
+      return;
+    }
 
     state.l0TimingIndex = update;
     const audio = readAudioEnhancementState();

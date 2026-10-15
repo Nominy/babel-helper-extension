@@ -253,6 +253,7 @@ class NativeWaveFixture {
 for (const scenario of [
   { name: 'ordinary result', cache: {} },
   { name: 'Original selected before model result', cache: {}, originalBefore: true },
+  { name: 'explicit generation retry after failure', cache: {}, generationRetry: true },
   { name: 'persistent cache hit', cache: { cacheStatus: 'hit' } },
   { name: 'stored pair', cache: { cacheStatus: 'stored' } },
   { name: 'unavailable cache', cache: { cacheStatus: 'unavailable', cacheMessage: 'Storage quota exhausted for the current pair.' } },
@@ -291,10 +292,11 @@ test(`real native split and paired selection remain correct with ${scenario.name
   let resolveCommitted;
   let onSources;
   let enhancementProviders = 0;
+  let sourceFetches = 0;
   const window = {
     location: { origin: 'https://babel.test', href: 'https://babel.test/transcription?reviewActionId=task-native' +
       (scenario.nativeAdmission ? '&displayFeedback=true' : '') },
-    fetch: async () => new Response(sourceWav(100), { headers: { 'Content-Type': 'audio/wav' } }),
+    fetch: async () => { sourceFetches += 1; return new Response(sourceWav(100), { headers: { 'Content-Type': 'audio/wav' } }); },
     setTimeout, clearTimeout,
     setInterval() { throw new Error('Native enhancement must not poll'); },
     clearInterval() {},
@@ -388,8 +390,34 @@ test(`real native split and paired selection remain correct with ${scenario.name
       panel.memoizedProps.readOnly = false;
     }
     await facade.setEnabled(true);
+    assert.equal(facade.getState().status, 'idle');
+    assert.equal(facade.getState().strength, 0);
+    assert.equal(facade.getState().desiredStrength, 0);
+    assert.equal(facade.getState().variantKey, '');
+    assert.equal(facade.getState().pairedVariantKey, undefined);
+    await facade.selectStrength(90);
+    assert.equal(facade.getState().desiredStrength, 0, 'Slider selection cannot request generation');
+    assert.equal(window.fetch, nativeFetch, 'Idle observation does not patch fetch');
+    assert.equal(sourceFetches, 0, 'Idle observation never downloads or encodes source WAVs');
+    assert.equal(AudioWorkerFixture.instances.length, 0, 'Idle observation never allocates a worker');
+    assert.equal(messages.some(message => message.type === 'sources-ready'), false);
+    await Promise.all([facade.generate(), facade.generate()]);
+    assert.equal(messages.filter(message => message.type === 'sources-ready').length, 1);
     const sources = await captured;
-    assert.equal(facade.getState().desiredStrength, 90, 'Every new task starts with the safe 90/10 mix');
+    assert.equal(facade.getState().desiredStrength, 90, 'Explicit Generate requests the safe 90/10 mix');
+    if (scenario.generationRetry) {
+      for (const listener of listeners.get('message')) listener({ source: window, origin: window.location.origin, data: {
+        source: stream.AUDIO_ENHANCEMENT_COMMAND_SOURCE, type: 'error', sessionId: sources.sessionId,
+        taskId: 'task-native', message: 'Remote inference failed'
+      } });
+      await facade.setEnabled(true);
+      await facade.selectStrength(100);
+      assert.equal(facade.getState().status, 'error');
+      assert.equal(messages.filter(message => message.type === 'sources-ready').length, 1);
+      await Promise.all([facade.generate(), facade.generate()]);
+      assert.equal(messages.filter(message => message.type === 'sources-ready').length, 2);
+      assert.equal(sourceFetches, 2, 'Retry reuses the correctly owned Original pair');
+    }
     if (scenario.originalBefore) await facade.selectStrength(0);
     const enhanced = sourceWav(200);
     // Change the current annotation state after the native ready closure was
@@ -776,17 +804,22 @@ test(`real native split and paired selection remain correct with ${scenario.name
       const nextRegionIds = waves.map(wave => wave.regions.getRegions().map(region => region.id));
       onSources = nextSources.resolve;
       await facade.setEnabled(true);
-      const next = await nextSources.promise;
       finishLoad.resolve();
       await staleSwitch;
       assert.equal(facade.getState().taskId, 'task-next');
       assert.equal(facade.getState().strength, 0);
-      assert.equal(facade.getState().desiredStrength, 90);
+      assert.equal(facade.getState().desiredStrength, 0);
+      assert.equal(facade.getState().status, 'idle');
+      assert.equal(facade.getState().pairedVariantKey, undefined);
+      assert.equal(window.fetch, nativeFetch);
+      assert.equal(messages.filter(message => message.type === 'sources-ready').length, 1, 'New task does not generate automatically');
       assert.equal(facade.getState().variantKey, '', 'Old-task mixed results cannot commit into the new task');
       assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [100, 100]);
       assert.deepEqual(editor.annotations.current, nextAnnotations, 'Abandoned native task callbacks cannot change the next task annotations');
       assert.deepEqual(waves.map(wave => wave.regions.getRegions().map(region => region.id)), nextRegionIds);
       assert.equal(facade.getActiveAudio('stale-task-capture', 'task-native').available, false);
+      await facade.generate();
+      const next = await nextSources.promise;
       assert.notEqual(next.sessionId, sources.sessionId);
       const nextRevision = facade.getState().revision;
       for (const listener of listeners.get('message')) listener({ source: window, origin: window.location.origin, data: {
@@ -835,8 +868,10 @@ test(`real native split and paired selection remain correct with ${scenario.name
       onSources = retrySources.resolve;
       waves[1].failAllOriginal = false;
       await facade.setEnabled(true);
-      await retrySources.promise;
       facade = window.__babelHelperAudioEnhancementBridge;
+      assert.equal(facade.getState().status, 'idle');
+      await facade.generate();
+      await retrySources.promise;
       assert.notEqual(facade, failedOwner);
       assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [100, 100]);
       const newState = attributes.get('data-babel-audio-enhancement');

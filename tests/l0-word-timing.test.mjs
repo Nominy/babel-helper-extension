@@ -420,7 +420,7 @@ function installSourceDocument(t, source) {
   t.after(() => previous ? Object.defineProperty(globalThis, 'document', previous) : delete globalThis.document);
 }
 
-test('word timing publications retain both selected sources and reject inactive-source updates', (t) => {
+test('word timing retains a late Original update without replacing selected-source inference', (t) => {
   const source = { version: 2, taskId: 'current-pair', status: 'ready', strength: 0, desiredStrength: 0, variantKey: '', revision: 1 };
   installSourceDocument(t, source);
   const helper = { getTranscriptRows: () => [] };
@@ -443,12 +443,50 @@ test('word timing publications retain both selected sources and reject inactive-
   for (let cycle = 0; cycle < 4; cycle++) {
     assert.equal(read().tracks[0].tokens[0].startSeconds, 10);
     Object.assign(source, { strength: 0, desiredStrength: 0, variantKey: '' });
-    assert.equal(read().tracks[0].tokens[0].startSeconds, 1);
+    assert.equal(read().tracks[0].tokens[0].startSeconds, 99);
     Object.assign(source, { strength: 100, desiredStrength: 100, variantKey: 'graph-a' });
   }
   dispose();
   assert.equal(read(), null, 'kernel teardown cannot restore disposed timing');
 });
+
+for (const status of ['processing', 'switching', 'ready']) {
+  test(`late Original timing during ${status} is shared for playback only after clock verification`, (t) => {
+    const source = { version: 2, taskId: 'current-pair', status: 'idle', strength: 0,
+      desiredStrength: 0, variantKey: '', revision: 1 };
+    installSourceDocument(t, source);
+    const helper = { getTranscriptRows: () => [] };
+    const location = { pathname: '/label', search: '' };
+    const state = { l0TimingIndex: null };
+    const protocolWindow = createProtocolWindow();
+    const dispose = listener.registerL0TimingListener(state, helper, protocolWindow, location);
+    t.after(dispose);
+    const originalId = identity.buildCurrentL0TimingTaskId(helper, location);
+    Object.assign(source, { status, strength: 90, desiredStrength: 90, variantKey: 'mix-90' });
+    const selectedId = identity.buildCurrentL0TimingTaskId(helper, location);
+    protocolWindow.emit(validUpdate(originalId));
+    assert.equal(listener.getCurrentL0TimingIndex(state, helper, location), null,
+      'Original inference must not be labeled as selected-source ASR');
+    assert.equal(state.l0TimingCache.original.taskId, originalId);
+    assert.equal(listener.getCurrentL0PlaybackTimingIndex(state, helper, location), null);
+    source.pairedVariantKey = 'a'.repeat(64);
+    if (status !== 'ready') {
+      assert.equal(listener.getCurrentL0PlaybackTimingIndex(state, helper, location), null,
+        'pair clocks are not usable until native audio is ready');
+    }
+    source.status = 'ready';
+    const playback = listener.getCurrentL0PlaybackTimingIndex(state, helper, location);
+    assert.equal(playback.taskId, selectedId);
+    assert.equal(playback.tracks, state.l0TimingCache.original.tracks);
+    assert.equal(listener.getCurrentL0TimingIndex(state, helper, location), null);
+    assert.equal(state.l0TimingCache.original.taskId, originalId);
+    assert.equal(state.l0TimingCache.enhanced, null);
+    Object.assign(source, { strength: 35, desiredStrength: 35, variantKey: 'mix-35' });
+    assert.equal(listener.getCurrentL0PlaybackTimingIndex(state, helper, location).tracks, playback.tracks);
+    source.taskId = 'another-task';
+    assert.equal(listener.getCurrentL0PlaybackTimingIndex(state, helper, location), null);
+  });
+}
 
 test('timing memory evicts replaced enhancement graphs and foreign recording tasks rather than keeping history', (t) => {
   const source = { version: 2, taskId: 'current-pair', status: 'ready', strength: 0, desiredStrength: 0, variantKey: '', revision: 1 };

@@ -74,6 +74,7 @@ interface NativeEditorFiber {
 interface AudioEnhancementFacade {
   getState(): AudioEnhancementState;
   getActiveAudio(requestId: string, taskId: string, selection?: string): ActiveAudioResponse;
+  generate(): Promise<void>;
   selectStrength(strength: number): Promise<void>;
   setEnabled(enabled: boolean): Promise<void>;
   dispose(): Promise<void>;
@@ -140,8 +141,9 @@ type SourcePair = {
 type Session = {
   id: string; key: string; taskId: string; tracks: RetainedTrack[]; capturing: boolean; captureAbort: AbortController;
   model: string; variantKey: string; sourceNotice: string; patches: Map<NativeWave, WavePatch>; switching: boolean;
+  requested: boolean;
   selected?: SourcePair;
-  worker: AudioEnhancementWorkerClient;
+  worker?: AudioEnhancementWorkerClient;
   queuedSwitch?: { nativeReplay: boolean; originalUrl: boolean; promise: Promise<void> };
   cache?: EnhancementCacheMetadata;
   regionAddPatches: Map<NativeRegionsPlugin, { add: NativeRegionsPlugin['addRegion']; wrapped: NativeRegionsPlugin['addRegion'] }>;
@@ -215,7 +217,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
   revision = Math.max(revision, readAudioEnhancementState()?.revision || 0);
   let state: AudioEnhancementState = {
     version: AUDIO_ENHANCEMENT_PROTOCOL_VERSION, taskId: '', status: 'idle',
-    strength: 0, desiredStrength: 90, revision, variantKey: ''
+    strength: 0, desiredStrength: 0, revision, variantKey: ''
   };
   const nativeFetch = window.fetch;
   let fetchInstalled = false;
@@ -272,7 +274,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
 
   function release(target: Session): void {
     target.captureAbort.abort();
-    target.worker.dispose();
+    target.worker?.dispose();
     target.queuedSwitch = undefined;
     for (const [plugin, patch] of target.regionAddPatches) {
       if (plugin.addRegion === patch.wrapped) plugin.addRegion = patch.add;
@@ -287,6 +289,10 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     target.patches.clear();
     target.selected = undefined;
     target.tracks.length = 0;
+  }
+
+  function worker(target: Session): AudioEnhancementWorkerClient {
+    return target.worker ??= new AudioEnhancementWorkerClient(workerUrl);
   }
 
   const selectedFetch: typeof fetch = async (input, init) => {
@@ -360,7 +366,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
           if (!track.enhanced || !track.enhancedBlob) throw new Error('Enhanced audio is unavailable.');
           return { bytes: track.enhanced, blob: track.enhancedBlob };
         })
-        : await target.worker.mix(target.tracks.map(track => {
+        : await worker(target).mix(target.tracks.map(track => {
           if (!track.enhancedBlob) throw new Error('Enhanced audio is unavailable.');
           return { original: track.originalBlob, enhanced: track.enhancedBlob };
         }), strength);
@@ -678,7 +684,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
   }
 
   async function capture(target: Session, snapshot: NativeSnapshot): Promise<void> {
-    if (target.capturing || target.tracks.length || !snapshot.tracks.every(track => (track.wave?.getDecodedData()?.length || 0) > 0)) return;
+    if (!target.requested || target.capturing || target.tracks.length || !snapshot.tracks.every(track => (track.wave?.getDecodedData()?.length || 0) > 0)) return;
     target.capturing = true;
     try {
       const tracks = await Promise.all(snapshot.tracks.map(async (native): Promise<RetainedTrack> => {
@@ -693,7 +699,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
           timing = sourceWavTiming(bytes);
         } catch (error) {
           if (target.captureAbort.signal.aborted || !current(target)) throw error;
-          bytes = await target.worker.encode(audio);
+          bytes = await worker(target).encode(audio);
           timing = { sampleRate: audio.sampleRate, frameCount: audio.length };
           target.sourceNotice = 'Original source WAV could not be read; preserving the native decoded audio as float32 WAV.';
         }
@@ -715,16 +721,20 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
         const patch = patchWave(target, track, wave);
         patch.strength = 0; patch.decoded = wave.getDecodedData();
       }
-      publish({ status: 'processing', message: `Preparing ZipEnhancer for both tracks… ${target.sourceNotice}`.trim() });
-      window.postMessage({ source: AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready',
-        sessionId: target.id, taskId: target.taskId,
-        tracks: tracks.map(({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount }) =>
-          ({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount })) }, window.location.origin);
+      dispatchSources(target);
     } catch (error) {
       if (enabled && current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     } finally {
       target.capturing = false;
     }
+  }
+
+  function dispatchSources(target: Session): void {
+    publish({ status: 'processing', message: `Preparing ZipEnhancer for both tracks… ${target.sourceNotice}`.trim() });
+    window.postMessage({ source: AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready',
+      sessionId: target.id, taskId: target.taskId,
+      tracks: target.tracks.map(({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount }) =>
+        ({ trackId, speakerKey, trackLabel, sourceSha256, sampleRate, frameCount })) }, window.location.origin);
   }
 
   function reconcileNativeAudio(snapshot: NativeSnapshot | null): void {
@@ -737,18 +747,22 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
         if (owned.readOnly === true) void setEnabled(false);
         return;
       }
-      if (session) { release(session); session = null; publish({ taskId: '', strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', message: '' }); }
+      if (session) { release(session); session = null; publish({ taskId: '', strength: 0, desiredStrength: 0, status: 'idle', variantKey: '', message: '' }); }
+      if (window.fetch === selectedFetch) window.fetch = nativeFetch;
+      fetchInstalled = false;
       return;
     }
     if (!session || session.key !== snapshot.key) {
       if (session) release(session);
       session = { id: crypto.randomUUID(), key: snapshot.key, taskId: snapshot.taskId,
         tracks: [], capturing: false, captureAbort: new AbortController(), model: '', variantKey: '', sourceNotice: '',
-        patches: new Map(), regionAddPatches: new Map(), switching: false,
-        worker: new AudioEnhancementWorkerClient(workerUrl) };
-      publish({ taskId: session.taskId, strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', model: '', message: 'Waiting for both source tracks…' });
+        patches: new Map(), regionAddPatches: new Map(), switching: false, requested: false };
+      if (window.fetch === selectedFetch) window.fetch = nativeFetch;
+      fetchInstalled = false;
+      publish({ taskId: session.taskId, strength: 0, desiredStrength: 0, status: 'idle', variantKey: '', model: '', message: 'Original audio selected. Generate to enhance both tracks; remote processing uploads Original audio.' });
     }
     const target = session;
+    if (!target.requested) return;
     if (!target.tracks.length && state.status !== 'error') { void capture(target, snapshot); return; }
     if (target.switching || !target.tracks.length) return;
     const live = new Set(snapshot.tracks.map(track => track.wave));
@@ -785,7 +799,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
   }
 
   function failNativeObservation(error: unknown): void {
-    const message = `Native audio observation failed: ${error instanceof Error ? error.message : String(error)}. Enhancement automation has stopped; disable and re-enable it after correcting the native error.`;
+    const message = `Native audio observation failed: ${error instanceof Error ? error.message : String(error)}. Enhancement observation has stopped; disable and re-enable it after correcting the native error.`;
     stopNativeObservation();
     console.error('[Babel Helper]', message);
     // Keep the existing serialized Original restoration and its truthful failure
@@ -870,7 +884,10 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
       return;
     }
     stopNativeObservation();
-    if (status.status !== 'ready') return;
+    if (status.status !== 'ready') {
+      reconcileNativeAudio(null);
+      return;
+    }
     try {
       stopNativeCommits = subscribeBabelEditorCommits(queueNativeReconcile);
       queueNativeReconcile();
@@ -894,7 +911,6 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     }
     enabled = value;
     if (value) {
-      if (!fetchInstalled) { window.fetch = selectedFetch; fetchInstalled = true; }
       try {
         if (!stopNativeCommits) stopNativeCommits = subscribeBabelEditorCommits(queueNativeReconcile);
         queueNativeReconcile();
@@ -906,7 +922,8 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     stopNativeObservation();
     const target = session;
     target?.captureAbort.abort();
-    target?.worker.cancelMix();
+    if (target) target.requested = false;
+    target?.worker?.cancelMix();
     if (window.fetch === selectedFetch) window.fetch = nativeFetch;
     fetchInstalled = false;
     if (target && current(target)) {
@@ -944,11 +961,27 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     }
   }
 
+  async function generate(): Promise<void> {
+    if (!enabled || disposing || disposed) return;
+    const target = session;
+    const snapshot = nativeSnapshot();
+    if (!target || !snapshot || !current(target, snapshot) ||
+        target.capturing || target.switching || target.requested && state.status !== 'error') return;
+    target.requested = true;
+    target.captureAbort = new AbortController();
+    if (!fetchInstalled) { window.fetch = selectedFetch; fetchInstalled = true; }
+    publish({ desiredStrength: 90, status: 'processing', message: 'Waiting for both native source tracks…' });
+    if (target.variantKey) await queueSwitch(target);
+    else if (target.tracks.length === 2) dispatchSources(target);
+    else await capture(target, snapshot);
+  }
+
   function selectStrength(strength: number): Promise<void> {
     if (!enabled || disposing || disposed) return Promise.resolve();
     if (!isAudioEnhancementStrength(strength)) return Promise.reject(new Error('Invalid audio strength.'));
+    if (!session?.requested || state.status === 'error' && !session.variantKey) return Promise.resolve();
     if (strength === state.desiredStrength && state.status !== 'error') return tail;
-    session?.worker.cancelMix();
+    session.worker?.cancelMix();
     publish({ desiredStrength: strength });
     return session ? queueSwitch(session) : Promise.resolve();
   }
@@ -997,6 +1030,8 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     if (!target || data.sessionId !== target.id || data.taskId !== target.taskId || !current(target)) return;
     if (data.type === 'select-strength' && isAudioEnhancementStrength(data.strength)) { await selectStrength(data.strength); return; }
     if (!enabled) return;
+    if (data.type === 'generate') { await generate(); return; }
+    if (!target.requested) return;
     if (data.type === 'progress' && !target.variantKey && state.status !== 'error') {
       if ((data.message !== undefined && typeof data.message !== 'string') ||
           (data.progress !== undefined && (!isAudioEnhancementProgress(data.progress) ||
@@ -1054,7 +1089,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
   const registry = serviceValue as ServiceRegistry<Record<string, object>>;
   const registrationOptions: { owner: string; priority?: number } = { owner: 'builtin:audio-enhancement' };
   const provider = registry.provide('page.audio-enhancement', {
-    getState, getActiveAudio, selectStrength, setEnabled
+    getState, getActiveAudio, generate, selectStrength, setEnabled
   }, registrationOptions);
   function dispose(): Promise<void> {
     if (disposal) return disposal;
@@ -1100,7 +1135,7 @@ export function initAudioEnhancementBridge(workerUrl = document.currentScript?.g
     if (session) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
   }); };
   const teardown = () => { if (!restorationFailed) void dispose(); };
-  facade = { getState, getActiveAudio, selectStrength, setEnabled, dispose };
+  facade = { getState, getActiveAudio, generate, selectStrength, setEnabled, dispose };
   page.__babelHelperAudioEnhancementBridge = facade;
   window.addEventListener('message', listener);
   window.addEventListener('babel-helper:native-session-change', handleNativeSessionChange, true);

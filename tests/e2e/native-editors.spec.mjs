@@ -72,7 +72,7 @@ test('native editor: selected-number and text-move settings disable and reenable
 test('native warnings: accept-all acknowledges every issue in one turn without approving errors', async ({ page, babel }) => {
   await ready(page);
   await enableOnlyLinterRules(babel, ['highlighted-words']);
-  await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
+  await babel.setExtensionSettings('helper', { features: { hideInlineIssues: false }, highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
   // Two highlighted terms are one grouped issue. Use two distinct real rules:
   // native consecutive-capitals and Helper highlighted-words.
   const source = 'АБВГД контроль.';

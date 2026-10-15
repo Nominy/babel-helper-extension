@@ -7,7 +7,7 @@ test.use({ extensions: ['helper'] });
 test('native highlighted-word card and ranges refresh when settings change without changing the issue key', async ({ page, babel }) => {
   await ready(page);
   await enableOnlyLinterRules(babel, ['highlighted-words']);
-  await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
+  await babel.setExtensionSettings('helper', { features: { hideInlineIssues: false }, highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
   await editText(page, 0, 'Здесь контроль и проверка.');
   await editors(page).first().click();
   const card = row(page, 0).locator('p').filter({

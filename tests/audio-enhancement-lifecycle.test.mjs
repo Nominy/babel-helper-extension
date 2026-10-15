@@ -191,7 +191,7 @@ test('options render enhancement immediately and persist changes and reset witho
   await settle();
   const enhancement = () => document.querySelector('input[name="audioEnhancement"]');
   assert.equal(enhancement().checked, false);
-  assert.equal(root.all().some(element => /Automatic Audio Enhancement/.test(element.textContent)), true);
+  assert.equal(root.all().some(element => element.textContent === 'Audio Enhancement'), true);
   const minimap = document.querySelector('input[name="minimap"]');
   minimap.checked = false; minimap.emit('change');
   await settle();

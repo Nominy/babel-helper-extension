@@ -39,6 +39,9 @@ export function createAudioEnhancementFeature(): FeatureModule {
   let currentSession = '';
   let currentTask = '';
   let selectedVariant = '';
+  let generationRequested = false;
+  let generationQueued = false;
+  let generationDispatched = false;
   let broker: AbortController | null = null;
   let assembler: AudioEnhancementStreamAssembler | null = null;
   let panel: HTMLElement | null = null;
@@ -71,6 +74,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
   }
 
   function stopElapsed(): void {
+    const label = panel?.shadowRoot?.querySelector<HTMLElement>('[data-elapsed]');
+    if (label) label.textContent = '';
     if (elapsedInterval !== null) window.clearInterval(elapsedInterval);
     elapsedInterval = null;
     elapsedStartedAt = null;
@@ -123,7 +128,8 @@ export function createAudioEnhancementFeature(): FeatureModule {
 
   function canSelectStrength(): boolean {
     return active && started && ctx.helper.settings.features.audioEnhancement &&
-      Boolean(currentSession && currentTask && state?.taskId === currentTask);
+      Boolean(currentSession && currentTask && state?.taskId === currentTask &&
+        state.status !== 'idle' && (state.status !== 'error' || state.pairedVariantKey));
   }
 
   function sliderSelectionIsCurrent(): boolean {
@@ -143,10 +149,10 @@ export function createAudioEnhancementFeature(): FeatureModule {
   }
 
   function renderSlider(slider: HTMLInputElement): void {
-    const originalMix = localOriginalMix ?? snapOriginalMix(100 - (state?.desiredStrength ?? 90));
+    const originalMix = localOriginalMix ?? snapOriginalMix(100 - (state?.desiredStrength ?? 0));
     const value = String(originalMix);
     if (slider.value !== value) slider.value = value;
-    slider.disabled = !state?.taskId;
+    slider.disabled = !canSelectStrength();
     slider.setAttribute('aria-valuetext', `${100 - originalMix}% Enhanced, ${originalMix}% Original`);
     const label = panel?.shadowRoot?.querySelector<HTMLElement>('[data-selection]');
     if (label) label.title = selectionLabel(state?.strength ?? 0);
@@ -265,10 +271,10 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const taskAvailable = Boolean(state?.taskId);
     const message = state?.message || (state?.status === 'ready'
       ? `${selectionLabel(state.strength)} audio selected`
-      : 'Waiting for both native tracks…');
+      : 'Original audio selected. Generate to enhance both tracks.');
     if (status.textContent !== message) status.textContent = message;
     status.classList.toggle('error', state?.status === 'error');
-    const pending = taskAvailable && state?.status !== 'ready' && state?.status !== 'error';
+    const pending = taskAvailable && (generationQueued || state?.status === 'processing' || state?.status === 'switching');
     const progressPanel = shadow.querySelector<HTMLElement>('[data-progress-panel]')!;
     const progressBar = shadow.querySelector<HTMLProgressElement>('progress')!;
     const progressLabel = shadow.querySelector<HTMLElement>('[data-progress-label]')!;
@@ -313,8 +319,12 @@ export function createAudioEnhancementFeature(): FeatureModule {
     if (label.textContent !== selected) label.textContent = selected;
     label.setAttribute('aria-label', `${state?.strength ?? 0}% Enhanced`);
     const detailsButton = shadow.querySelector<HTMLButtonElement>('[data-details-button]')!;
-    detailsButton.textContent = state?.status === 'error' ? '!' : pending ? '…' : 'i';
-    detailsButton.setAttribute('aria-label', `ZipEnhancer details: ${message}`);
+    const canGenerate = state?.status === 'idle' || state?.status === 'error';
+    detailsButton.textContent = canGenerate && !generationQueued ? 'Generate' : pending ? '…' : 'i';
+    detailsButton.disabled = !taskAvailable;
+    detailsButton.setAttribute('aria-label', canGenerate
+      ? `${state?.status === 'error' ? 'Retry' : 'Generate'} enhanced audio. Remote processing uploads Original audio.`
+      : `ZipEnhancer details: ${message}`);
     detailsButton.classList.toggle('error', state?.status === 'error');
     positionDetails();
   }
@@ -327,12 +337,12 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const shadow = panel.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>${UI_STYLES}
       :host { display: inline-flex; width: 360px; max-width: calc(100vw - 32px); height: 36px; }
-      .audio { position: relative; display: grid; grid-template-columns: 76px minmax(0, 1fr) 34px 24px; align-items: center; gap: 6px; width: 100%; height: 36px; box-sizing: border-box; padding: 0 6px; }
+      .audio { position: relative; display: grid; grid-template-columns: 76px minmax(0, 1fr) 34px auto; align-items: center; gap: 6px; width: 100%; height: 36px; box-sizing: border-box; padding: 0 6px; }
       .brand { font-size: 11px; white-space: nowrap; }
       .choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px; direction: ltr; font-size: 10px; white-space: nowrap; }
       input[type="range"] { width: 100%; min-width: 0; margin: 0; accent-color: var(--bui-accent-ink); }
       .selection { font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .details-button { width: 24px; min-width: 0; height: 24px; min-height: 0; padding: 0; font-size: 12px; }
+      .audio .details-button.bui-button { width: auto; min-width: 24px; height: 24px; min-height: 0; padding: 0 4px; font-size: 11px; white-space: nowrap; }
       .details { position: fixed; inset: auto; margin: 0; width: min(360px, calc(100vw - 24px)); max-height: min(360px, calc(100vh - 24px)); box-sizing: border-box; overflow: auto; padding: 10px; font-size: 12px; box-shadow: var(--bui-shadow); }
       .status, .progress-label { white-space: normal; overflow-wrap: anywhere; }
       .status { display: block; margin: 0; }
@@ -345,12 +355,12 @@ export function createAudioEnhancementFeature(): FeatureModule {
     </style><span class="audio bui-root bui-surface" role="group" aria-label="ZipEnhancer audio selection">
       <strong class="brand">ZipEnhancer</strong>
       <span class="choice"><span>Enhanced</span>
-      <input class="bui-range" type="range" data-strength min="0" max="100" step="10" value="10"
-        aria-label="Original audio mix" aria-orientation="horizontal" aria-valuetext="90% Enhanced, 10% Original">
+      <input class="bui-range" type="range" data-strength min="0" max="100" step="10" value="100"
+        aria-label="Original audio mix" aria-orientation="horizontal" aria-valuetext="0% Enhanced, 100% Original">
       <span>Original</span></span>
       <output class="selection" data-selection aria-label="0% Enhanced">0%</output>
-      <button class="details-button bui-icon-button bui-button" type="button" data-details-button
-        popovertarget="zipenhancer-details" aria-label="ZipEnhancer details">i</button>
+      <button class="details-button bui-button" type="button" data-details-button
+        popovertarget="zipenhancer-details" aria-label="Generate enhanced audio">Generate</button>
       <progress aria-label="Noise reduction progress" max="1"></progress>
     </span>
     <div class="details bui-root bui-surface" id="zipenhancer-details" data-details popover="auto" role="dialog" aria-label="ZipEnhancer status">
@@ -361,6 +371,20 @@ export function createAudioEnhancementFeature(): FeatureModule {
     themeRoot(shadow.querySelector<HTMLElement>('.bui-root')!);
     themeRoot(shadow.querySelector<HTMLElement>('[data-details]')!);
     shadow.querySelector<HTMLElement>('[data-details]')!.addEventListener('toggle', positionDetails);
+    const detailsButton = shadow.querySelector<HTMLButtonElement>('[data-details-button]')!;
+    detailsButton.addEventListener('keydown', event => event.stopPropagation());
+    detailsButton.addEventListener('keyup', event => event.stopPropagation());
+    detailsButton.addEventListener('click', () => {
+      if (!active || !currentSession || !currentTask || generationQueued ||
+          state?.taskId !== currentTask || state.status !== 'idle' && state.status !== 'error') return;
+      cancelStream();
+      cancelStrengthSelection();
+      generationRequested = true;
+      generationQueued = true;
+      generationDispatched = false;
+      post('generate', { sessionId: currentSession, taskId: currentTask });
+      render();
+    });
     const slider = shadow.querySelector<HTMLInputElement>('[data-strength]')!;
     slider.addEventListener('pointerdown', event => {
       if (event.button !== 0 || !canSelectStrength() || sliderPointerId !== null ||
@@ -412,7 +436,9 @@ export function createAudioEnhancementFeature(): FeatureModule {
   }
 
   async function dispatch(sessionId: string, taskId: string, tracks: EnhancementSourceTrack[]): Promise<void> {
-    if (!active || currentSession !== sessionId || currentTask !== taskId || broker) return;
+    if (!active || currentSession !== sessionId || currentTask !== taskId || broker ||
+        !generationRequested || generationDispatched) return;
+    generationDispatched = true;
     if (tracks.length !== 2 || new Set(tracks.map(track => track.trackId)).size !== 2 ||
         tracks.some(track => !track.trackId || !/^[a-f0-9]{64}$/.test(track.sourceSha256) ||
           !Number.isSafeInteger(track.frameCount) || track.frameCount <= 0 || !Number.isSafeInteger(track.sampleRate) || track.sampleRate <= 0)) {
@@ -478,8 +504,12 @@ export function createAudioEnhancementFeature(): FeatureModule {
         cancelStrengthSelection();
         currentSession = data.sessionId;
         currentTask = next.taskId;
+        generationRequested = false;
+        generationQueued = false;
+        generationDispatched = false;
       }
       if (next.desiredStrength !== state?.desiredStrength) cancelStrengthConfirmation();
+      generationQueued = false;
       state = next;
       const variant = `${currentSession}:${next.taskId}:${next.strength}:${next.variantKey}`;
       if (variant !== selectedVariant && next.status !== 'switching') {
@@ -565,6 +595,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     window.removeEventListener('pointerup', handleSliderPointerEnd, true);
     window.removeEventListener('pointercancel', handleSliderPointerEnd, true);
     currentSession = ''; currentTask = ''; selectedVariant = ''; state = null;
+    generationRequested = false; generationQueued = false; generationDispatched = false;
     lastStateRevision = -1;
     panel?.remove(); panel = null;
     const pendingInjection = injectionScript !== null;

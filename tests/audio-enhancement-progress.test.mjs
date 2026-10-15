@@ -276,17 +276,63 @@ test('enabled enhancement initializes its toolbar and bridge without another ext
   assert.equal(harness.panel.parentElement !== null, true);
   assert.equal(harness.panel.isConnected, true);
   assert.equal(harness.document.querySelector('#babel-gold-drafting-magic-button'), null);
-  assert.equal(harness.node('[data-strength]').value, '10');
-  assert.equal(harness.node('[data-strength]').getAttribute('aria-valuetext'), '90% Enhanced, 10% Original');
+  assert.equal(harness.node('[data-strength]').value, '100');
+  assert.equal(harness.node('[data-strength]').getAttribute('aria-valuetext'), '0% Enhanced, 100% Original');
   assert.equal(harness.scripts.length, 1);
   assert.equal(harness.posts.some(post => post.type === 'enable'), true);
+  await harness.feature.stop();
+});
+
+test('only explicit Generate dispatches once, retries errors, and resets intent for another task', async t => {
+  const harness = await featureHarness(t);
+  const button = harness.node('[data-details-button]');
+  const slider = harness.node('[data-strength]');
+  const tracks = ['one', 'two'].map(trackId => ({
+    trackId, speakerKey: trackId, trackLabel: trackId, sourceSha256: 'a'.repeat(64), sampleRate: 48000, frameCount: 2
+  }));
+  const sources = { source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready',
+    sessionId: 'session-1', taskId: 'task-1', tracks };
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  assert.equal(button.textContent, 'Generate');
+  assert.equal(slider.disabled, true);
+  slider.value = '10';
+  slider.dispatch('input');
+  slider.dispatch('change');
+  harness.timer.advance(1000);
+  harness.deliver(sources);
+  assert.equal(harness.ports.length, 0);
+  assert.equal(harness.posts.some(post => post.type === 'select-strength'), false);
+  assert.equal(harness.timer.timers.size, 0);
+  button.dispatch('click');
+  button.dispatch('click');
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 1);
+  harness.publish(state({ revision: 2 }));
+  harness.deliver(sources);
+  harness.deliver(sources);
+  assert.equal(harness.ports.length, 1);
+  harness.publish(state({ revision: 3, status: 'error', message: 'Remote inference failed' }));
+  assert.equal(button.textContent, 'Generate');
+  harness.deliver(sources);
+  assert.equal(harness.ports.length, 1, 'An error never retries automatically');
+  button.dispatch('click');
+  assert.equal(harness.ports[0].disconnected, true);
+  harness.publish(state({ revision: 4 }));
+  harness.deliver(sources);
+  assert.equal(harness.ports.length, 2);
+  harness.publish(state({ revision: 5, taskId: 'task-2', status: 'idle', desiredStrength: 0 }), 'session-2');
+  harness.deliver({ ...sources, taskId: 'task-2', sessionId: 'session-2' });
+  assert.equal(harness.ports.length, 2, 'Task navigation clears the explicit request intent');
+  assert.equal(slider.value, '100');
+  assert.equal(button.textContent, 'Generate');
+  assert.equal(harness.timer.timers.size, 0);
   await harness.feature.stop();
 });
 
 test('disable cancels broker and removes enhancement surfaces; enabling can activate again', async t => {
   const harness = await featureHarness(t);
   const firstPanel = harness.panel;
-  harness.publish(state());
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  harness.node('[data-details-button]').dispatch('click');
   harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready',
     sessionId: 'session-1', taskId: 'task-1', tracks: ['one', 'two'].map(trackId => ({
       trackId, speakerKey: trackId, trackLabel: trackId, sourceSha256: 'a'.repeat(64), sampleRate: 48000, frameCount: 2
@@ -372,7 +418,10 @@ test('cancelled pending injection settles without inventing a native disposal ac
 test('toolbar progress follows completed windows and terminal states stop pending work', async t => {
   const harness = await featureHarness(t);
   const bar = harness.node('progress');
-  harness.publish(state({ status: 'idle' }));
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  assert.equal(harness.node('[data-progress-panel]').hidden, true);
+  assert.equal(harness.timer.timers.size, 0);
+  harness.node('[data-details-button]').dispatch('click');
   assert.equal(harness.node('[data-progress-panel]').hidden, false);
   assert.equal(bar.value, undefined);
   harness.publish(state({ revision: 2, progress }));
@@ -431,13 +480,16 @@ test('cache stages remain indeterminate until the native paired commit and stale
 
 test('navigation cancels stale progress and resets elapsed work', async t => {
   const harness = await featureHarness(t);
-  harness.publish(state());
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  harness.node('[data-details-button]').dispatch('click');
   const tracks = ['track-1', 'track-2'].map(trackId => ({ trackId, speakerKey: trackId, trackLabel: trackId, sourceSha256: 'a'.repeat(64), sampleRate: 48000, frameCount: 48000 }));
   harness.deliver({ source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready', sessionId: 'session-1', taskId: 'task-1', tracks });
   harness.ports[0].deliver(event());
   harness.timer.advance(3000);
-  harness.publish(state({ revision: 2, taskId: 'task-2', status: 'idle' }), 'session-2');
-  assert.equal(harness.node('[data-elapsed]').textContent, 'Elapsed 0:00');
+  harness.publish(state({ revision: 2, taskId: 'task-2', status: 'idle', desiredStrength: 0 }), 'session-2');
+  assert.equal(harness.node('[data-elapsed]').textContent, '');
+  assert.equal(harness.node('[data-progress-panel]').hidden, true);
+  assert.equal(harness.node('[data-details-button]').textContent, 'Generate');
   assert.equal(harness.ports[0].disconnected, true);
   const before = harness.posts.filter(value => value.type === 'progress').length;
   harness.ports[0].deliver(event({ progress: { ...progress, completedChunks: 2 } }));

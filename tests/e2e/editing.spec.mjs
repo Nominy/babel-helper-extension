@@ -372,7 +372,7 @@ test.describe('Helper native editing', () => {
 
   test(featureScenarios.customLinter[1], async ({ page, babel }) => {
     await enableOnlyLinterRules(babel, ['highlighted-words']);
-    await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
+    await babel.setExtensionSettings('helper', { features: { hideInlineIssues: false }, highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
     await fillText(editors(page).first(), 'Это контроль.');
     await editors(page).first().click();
     const status = row(page, 0).getByRole('button', { name: 'My transcription is correct', exact: true });
@@ -445,6 +445,7 @@ featureScenarios.customLinter.push(...linterRuleScenarios.map(([rule]) =>
 for (const [rule, text, fixed] of linterRuleScenarios) {
   test(`customLinter: each rule displays a native issue and applies only supported fixes [${rule}]`, async ({ page, babel }) => {
     await ready(page);
+    await babel.setExtensionSettings('helper', { features: { hideInlineIssues: false } });
     await enableOnlyLinterRules(babel, [rule]);
     const editor = editors(page).first();
     await fillText(editor, text);

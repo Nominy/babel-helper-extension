@@ -14,7 +14,7 @@ const nativeWarnings = (page, index) => row(page, index).evaluate(element =>
 async function prepareWarnings(page, babel) {
   await ready(page);
   await enableOnlyLinterRules(babel, ['highlighted-words']);
-  await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
+  await babel.setExtensionSettings('helper', { features: { hideInlineIssues: false }, highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
   for (let index = 0; index < texts.length; index += 1) await fillText(editors(page).nth(index), texts[index]);
   await editors(page).first().click();
   for (let index = 0; index < 3; index += 1) {

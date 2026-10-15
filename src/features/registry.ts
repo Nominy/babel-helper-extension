@@ -4,6 +4,7 @@ import { createAudioEnhancementFeature } from './audio-enhancement-feature';
 import { createCustomLinterFeature } from './custom-linter';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
+import { createHideInlineIssuesFeature } from './hide-inline-issues-feature';
 import { createMagnifierFeature } from './magnifier-feature';
 import { createMinimapFeature } from './minimap-feature';
 import { createNativeSegmentClickSeekFeature } from './native-segment-click-seek-feature';
@@ -47,8 +48,8 @@ export const FEATURE_REGISTRATIONS = [
     setting: {
       key: 'audioEnhancement',
       defaultEnabled: true,
-      label: 'Automatic Audio Enhancement',
-      description: 'Enhance both tracks with Gold Drafting ZipEnhancer. Choose Automatic or Remote inference in Gold settings. Remote processing uploads Original audio to official GPU services first, then the swarm if needed. Disable to prevent enhancement uploads.'
+      label: 'Audio Enhancement',
+      description: 'Show ZipEnhancer controls. Click Generate for each task to enhance both tracks with Gold Drafting. Choose Automatic or Remote inference in Gold settings. Clicking Generate permits remote processing to upload Original audio to official GPU services first, then the swarm if needed. No enhancement runs until clicked.'
     },
     moduleOrder: 5,
     createModule: createAudioEnhancementFeature
@@ -120,6 +121,17 @@ export const FEATURE_REGISTRATIONS = [
     },
     moduleOrder: 22,
     createModule: createNativeFindReplaceFeature
+  }),
+  defineFeature({
+    id: 'hide-inline-issues',
+    setting: {
+      key: 'hideInlineIssues',
+      defaultEnabled: true,
+      label: 'Hide Inline Issues',
+      description: 'Hide issue panels beneath the active segment. Keep status indicators, hover details, text highlights and validation. Turn off to access the inline fix and confirmation buttons.'
+    },
+    moduleOrder: 23,
+    createModule: createHideInlineIssuesFeature
   }),
   defineFeature({
     id: 'playback-speed-hotkeys',
