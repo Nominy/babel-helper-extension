@@ -9,9 +9,9 @@ export const featureScenarios = {
   quickRegionAutocomplete: [
     'native autocomplete: wrapping and tag-part deletion retain native undo and save',
     'native autocomplete: native picker remains authoritative and disabling closes pending wrapping',
-    'native readonly: autocomplete and lint hotkeys cannot create an editor or edit text',
+    'native readonly: Helper mutations stay denied while native local edits retain Undo without saving',
   ],
-  customLinter: ['native readonly: autocomplete and lint hotkeys cannot create an editor or edit text'],
+  customLinter: ['native readonly: Helper mutations stay denied while native local edits retain Undo without saving'],
   minimap: ['native minimap: dense and empty transcripts survive live disable and re-enable'],
   hotkeysHelp: ['native visual settings: open shortcut help and tooltip styles clean up live'],
   wavesurferTooltipEllipsis: ['native visual settings: open shortcut help and tooltip styles clean up live'],
@@ -83,11 +83,53 @@ test(featureScenarios.quickRegionAutocomplete[2], async ({ page, babel }) => {
   await expect(nativeRows(page)).toHaveCount(4);
   await expect(page.getByRole('button', { name: 'Website Appearance', exact: true })).toBeVisible();
   const before = await readRows(page);
-  await nativeRows(page).first().click();
-  for (const key of ['Shift+Comma', 'Backspace', 'Alt+KeyF', 'Alt+Shift+KeyF']) await page.keyboard.press(key);
-  await expect(page.locator('section[data-annotation-id] [role="textbox"], section[data-annotation-id] [data-slate-editor="true"]')).toHaveCount(0);
+  await expect(editors(page)).toHaveCount(4);
   await expect(page.locator(MENU)).toBeHidden();
   expect(await readRows(page)).toEqual(before);
+
+  // Oct15 intentionally permits a local native draft on read-only tasks.
+  // Its visible textbox is not permission for Helper to write that draft.
+  const editor = editors(page).first();
+  const local = '  Локальный  черновик.';
+  await fillText(editor, local);
+  await expect.poll(() => readText(editor)).toBe(local);
+  await selectText(editor, local.length);
+  // These are Helper commands. Plain typing/Backspace and the native picker
+  // intentionally remain available for local-only edits on this task.
+  for (const key of ['Alt+KeyF', 'Alt+Shift+KeyF']) await page.keyboard.press(key);
+  await expect.poll(() => readText(editor)).toBe(local);
+  await caret(editor, local.length);
+  await expect(page.locator(MENU)).toBeHidden();
+  const denied = await nativeRows(page).first().evaluate(element => {
+    return ['replace', 'focus', 'select', 'syncSelection'].map(operation => {
+      const id = crypto.randomUUID();
+      element.dispatchEvent(new CustomEvent('babel-helper:editor-control', {
+        bubbles: true, detail: JSON.stringify({ id, annotationId: element.dataset.annotationId,
+          operation, text: 'Must not change the local draft.', start: 0, end: 0 })
+      }));
+      const result = JSON.parse(element.getAttribute('data-babel-helper-editor-result'));
+      element.removeAttribute('data-babel-helper-editor-result');
+      if (result.id !== id) throw new Error('Native editor bridge did not answer this request');
+      return { operation, ok: result.ok, reason: result.reason };
+    });
+  });
+  expect(denied).toEqual(['replace', 'focus', 'select', 'syncSelection']
+    .map(operation => ({ operation, ok: false, reason: 'read-only' })));
+  await expect.poll(() => readText(editor)).toBe(local);
+  await caret(editor, local.length);
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => readText(editor)).toBe(before[0].text);
+  await page.keyboard.press('Enter');
+  expect(await readRows(page)).toEqual(before);
+  // Native typing and its picker remain available; only Helper wrapping is denied.
+  await editor.click();
+  await page.keyboard.press('Shift+Comma');
+  await expect(nativeRows(page).first().getByRole('list')).toBeVisible();
+  await expect(page.locator(MENU)).toBeHidden();
+  await expect.poll(() => readText(editor)).toContain('<');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Enter');
+  expect((await babel.state()).action.annotations.map(annotation => annotation.content)).toEqual(before.map(turn => turn.text));
   expect((await babel.state()).calls.filter((call) => /saveAnnotations|submit/.test(call.procedure || call.path || ''))).toEqual([]);
 });
 

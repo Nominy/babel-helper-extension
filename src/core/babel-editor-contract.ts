@@ -1,4 +1,4 @@
-export const BABEL_EDITOR_CONTRACT_VERSION = 'native-36978-2026-10-13';
+export const BABEL_EDITOR_CONTRACT_VERSION = 'native-59327-2026-10-15';
 
 export const BABEL_TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id]';
 export const BABEL_ROW_EDITOR_SELECTOR = '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"]';

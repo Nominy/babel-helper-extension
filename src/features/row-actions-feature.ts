@@ -5,6 +5,8 @@ import { getBabelRowActionLabel } from '../core/babel-editor-contract';
 import type { RowModules } from '../services/row-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
+import { readNativeSessionState } from '../site/editor-control';
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
 
 export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
 
@@ -432,44 +434,23 @@ export function registerRowActionInput(helper: any, hooks: EditorHooks, input: E
   let acceptingWarnings = false;
 
   async function acceptAllWarnings() {
+    const session = readNativeSessionState();
+    if (!session) {
+      showNativeAutomationFailure('Accept all warnings', 'The current native task could not be bound');
+      return;
+    }
+    if (session.readOnly) return;
     acceptingWarnings = true;
-    const href = window.location.href;
-    const revision = helper.state.sessionLifecycleRevision;
-    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
-    const transcript = helper.getTranscriptRows()[0]?.parentElement;
-    const attemptedWarnings = new WeakSet<HTMLElement>();
-    const isCurrentSession = () =>
-      isFeatureEnabled('rowActions') &&
-      helper.runtime.isSessionInteractive() &&
-      helper.state.sessionLifecycleRevision === revision &&
-      window.location.href === href &&
-      (!reviewActionId || document.documentElement?.getAttribute('data-babel-review-action-id') === reviewActionId) &&
-      transcript?.isConnected &&
-      helper.getTranscriptRows()[0]?.parentElement === transcript;
     try {
-      while (isCurrentSession()) {
-        let warning = null;
-        // Requery after every native click: React handlers capture the current
-        // acknowledgement list, so a batch of stale handlers loses earlier clicks.
-        for (const row of helper.getTranscriptRows()) {
-          const editor = helper.getRowEditor(row);
-          if (!editor || !editor.isConnected || editor.readOnly || !transcript.contains(row)) {
-            continue;
-          }
-          warning = Array.from(row.querySelectorAll('button')).find((element) =>
-            element instanceof HTMLElement &&
-            !attemptedWarnings.has(element) &&
-            !element.matches(':disabled, [aria-disabled="true"]') &&
-            element.textContent?.trim() === 'My transcription is correct');
-          if (warning) {
-            attemptedWarnings.add(warning);
-            break;
-          }
-        }
-        if (!warning || !isCurrentSession()) break;
-        warning.click();
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (typeof helper.acceptAllNativeWarnings !== 'function') {
+        throw new Error('The native warning acknowledgement bridge is unavailable');
       }
+      const result = await helper.acceptAllNativeWarnings({ reviewActionId: session.reviewActionId });
+      if (!result?.ok) {
+        throw new Error(result?.error || 'Native warning acknowledgement did not complete');
+      }
+    } catch (error) {
+      showNativeAutomationFailure('Accept all warnings', error instanceof Error ? error.message : String(error));
     } finally {
       acceptingWarnings = false;
     }

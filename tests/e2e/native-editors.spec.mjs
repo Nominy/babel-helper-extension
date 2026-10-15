@@ -78,13 +78,22 @@ test('native warnings: accept-all acknowledges every issue in one turn without a
   const source = 'АБВГД контроль.';
   await fillText(editors(page).first(), source);
   await fillText(editors(page).nth(1), '');
+  await editors(page).first().click();
   const pending = row(page, 0).getByRole('button', { name: 'My transcription is correct', exact: true });
   await expect(pending).toHaveCount(2);
-  await expect(row(page, 1).locator('.border-red-200')).toBeVisible();
+  const error = row(page, 1).locator('[role="img"][aria-label]');
+  await expect(error).not.toHaveAccessibleName(/^(No issues|Checking…)$/);
+  const errorLabel = await error.getAttribute('aria-label');
   await editors(page).first().click();
   await page.keyboard.press('Alt+Shift+KeyA');
   await expect(pending).toHaveCount(0);
   await expect(row(page, 0).getByRole('button', { name: 'Show 2 confirmed warnings', exact: true })).toBeVisible();
-  await expect(row(page, 1).locator('.border-red-200')).toBeVisible();
+  await expect(error).toHaveAccessibleName(errorLabel);
+  await expect.poll(() => row(page, 0).evaluate(element =>
+    window.__BABEL_E2E__.snapshot().annotations.find(annotation => annotation.id === element.dataset.annotationId)
+      ?.metadata?.assertedWarnings ?? [])).toHaveLength(2);
+  await expect.poll(() => row(page, 1).evaluate(element =>
+    window.__BABEL_E2E__.snapshot().annotations.find(annotation => annotation.id === element.dataset.annotationId)
+      ?.metadata?.assertedWarnings ?? [])).toEqual([]);
   await expect.poll(() => readText(editors(page).first())).toBe(source);
 });

@@ -64,13 +64,10 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       };
       helper.state.blurRestorePending = true;
 
-      // Preserve the current cursor baseline. If the user manually moved
-      // the cursor since the last restore, cursorBaseline was already
-      // updated by the input/selectionchange listener. If not, use the
-      // current selection as a sensible default.
-      if (typeof helper.state.cursorBaseline !== 'number') {
-        helper.state.cursorBaseline = selStart;
-      }
+      // The native selection at blur owns the next playback floor. Input
+      // listeners can lag it (or never run for a native selection command),
+      // so a remembered numeric baseline must not override this snapshot.
+      helper.state.cursorBaseline = selStart;
 
       const cleared = helper.clearActiveFocus();
 

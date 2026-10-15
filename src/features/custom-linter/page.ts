@@ -5,7 +5,6 @@ import {
 } from "../../core/highlighted-words";
 import {
   applyRuleFixes,
-  buildRegistryIssues,
   createLateBoundLinterRuleResolver,
   getVisibleTooltipEntries,
 } from "./linter/rule-registry";
@@ -91,6 +90,7 @@ export function initLinterBridge() {
   const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
     "babel-helper-highlighted-word-clearances:v1";
   const ROW_EDITOR_SELECTOR = TRANSCRIPT_EDITOR_SELECTOR;
+  const HIGHLIGHT_TOOLTIP_SELECTOR = '[role="tooltip"], [data-radix-popper-content-wrapper]';
   const UNICODE_DOUBLE_QUOTE_PATTERN =
     /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
   const UNICODE_DASH_PATTERN =
@@ -107,6 +107,9 @@ export function initLinterBridge() {
   let initialNativeLintQueued = false;
   let fetchPatchInstalled = false;
   let highlightObserver = null;
+  let highlightPortalObserver = null;
+  const highlightRoots = new Set();
+  const paintedHighlightRoots = new Set();
   let highlightTimer = 0;
   let applyingHighlights = false;
   let currentHighlightIssues = [];
@@ -136,6 +139,14 @@ export function initLinterBridge() {
   let disabledCustomLinterRuleIds = [];
   let pageLinterService = null;
   let pageLinterServiceDisposer = null;
+  let builtInLintRules = null;
+  let cachedRuleDefinitions = [];
+  let cachedRowIssues = new Map();
+  let cachedLintRoute = "";
+  let nativeAnnotationEntries = [];
+  let nativeAnnotationEntriesById = new Map();
+  let nativeAnnotationOwner = null;
+  let nativeAnnotationReviewActionId = "";
   const INTERJECTION_CORRECTION_SPECS = [
     { canonical: "а", variants: ["аа", "а-а", "а-а-а"] },
     { canonical: "ага", variants: ["ага-а", "агаа"] },
@@ -372,46 +383,16 @@ export function initLinterBridge() {
     };
   }
 
+  function readSpeakerKey(source) {
+    const keys = ["processedRecordingId", "trackLabel", "speakerKey", "speakerId", "speakerName", "speaker"];
+    return (readStringProp(source, keys) || readStringProp(source?.annotation, keys) || "").trim();
+  }
+
   function extractAnnotationEntries(root) {
     if (!root || typeof root !== "object") {
       return [];
     }
 
-    function normalizeSpeakerKey(value) {
-      return typeof value === "string" ? value.trim() : "";
-    }
-
-    function readSpeakerKey(source) {
-      if (!source || typeof source !== "object") {
-        return "";
-      }
-
-      const direct = readStringProp(source, [
-        "processedRecordingId",
-        "trackLabel",
-        "speakerKey",
-        "speakerId",
-        "speakerName",
-        "speaker",
-      ]);
-      if (direct) {
-        return normalizeSpeakerKey(direct);
-      }
-
-      const annotation =
-        source.annotation && typeof source.annotation === "object"
-          ? source.annotation
-          : null;
-      const nested = readStringProp(annotation, [
-        "processedRecordingId",
-        "trackLabel",
-        "speakerKey",
-        "speakerId",
-        "speakerName",
-        "speaker",
-      ]);
-      return normalizeSpeakerKey(nested);
-    }
 
     const seen = new Set();
     const orderedEntries = [];
@@ -475,6 +456,59 @@ export function initLinterBridge() {
     visit(root);
     return orderedEntries;
   }
+  function clearCachedLintState() {
+    cachedRowIssues.clear();
+    cachedRuleDefinitions = [];
+    nativeAnnotationEntries = [];
+    nativeAnnotationEntriesById.clear();
+    nativeAnnotationOwner = null;
+    nativeAnnotationReviewActionId = "";
+  }
+
+  function getNativeLintAnnotationEntries(hooks) {
+    const owner = hooks.annotationHook.hook.queue;
+    if (nativeAnnotationOwner !== owner || nativeAnnotationReviewActionId !== hooks.reviewActionId) {
+      clearCachedLintState();
+      nativeAnnotationOwner = owner;
+      nativeAnnotationReviewActionId = hooks.reviewActionId;
+    }
+    let entries = null;
+    let entryIndex = 0;
+    // This is the verified native annotations array, not a request payload.
+    // Compare its values even if Babel reuses an object; never derive text from DOM.
+    for (const annotation of hooks.annotationHook.hook.memoizedState) {
+      const annotationId = readStringProp(annotation, ["annotationId", "id"]);
+      const text = readStringProp(annotation, ["text", "content", "value", "segmentText"]);
+      if (!annotationId || typeof text !== "string") continue;
+      const reviewActionId = readStringProp(annotation, ["reviewActionId", "actionId"]) || "";
+      const speakerKey = readSpeakerKey(annotation);
+      const warnings = readAnnotationMetadata(annotation)?.assertedWarnings;
+      const previous = nativeAnnotationEntriesById.get(annotationId);
+      let warningsEqual = Boolean(previous);
+      let warningIndex = 0;
+      if (Array.isArray(warnings)) {
+        for (const warning of warnings) {
+          if (typeof warning !== "string") continue;
+          if (previous?.assertedWarnings[warningIndex] !== warning) warningsEqual = false;
+          warningIndex += 1;
+        }
+      }
+      if (previous?.assertedWarnings.length !== warningIndex) warningsEqual = false;
+      const entry = previous && previous.text === text && previous.reviewActionId === reviewActionId &&
+        previous.speakerKey === speakerKey && warningsEqual ? previous :
+        { annotationId, reviewActionId, text, speakerKey, assertedWarnings: readAssertedWarnings(annotation) };
+      if (!entries && entry !== nativeAnnotationEntries[entryIndex]) {
+        entries = nativeAnnotationEntries.slice(0, entryIndex);
+      }
+      entries?.push(entry);
+      entryIndex += 1;
+    }
+    if (!entries && entryIndex === nativeAnnotationEntries.length) return nativeAnnotationEntries;
+    nativeAnnotationEntries = entries || nativeAnnotationEntries.slice(0, entryIndex);
+    nativeAnnotationEntriesById = new Map(nativeAnnotationEntries.map(entry => [entry.annotationId, entry]));
+    return nativeAnnotationEntries;
+  }
+
 
   function hasCommaSpacingViolation(text) {
     if (typeof text !== "string" || text.indexOf(",") === -1) {
@@ -2353,9 +2387,13 @@ export function initLinterBridge() {
     const rules = window.BabelMods?.registries?.get?.("linter.rules");
     return Array.isArray(rules) ? rules : [];
   }
+  function getBuiltInLintRules() {
+    return builtInLintRules ||= createBuiltInLintRules();
+  }
+
 
   const resolveCustomLintRules = createLateBoundLinterRuleResolver(
-    createBuiltInLintRules,
+    getBuiltInLintRules,
     getExternalLintRules,
   );
 
@@ -2385,7 +2423,7 @@ export function initLinterBridge() {
       return [];
     }
     const availableRuleIds = new Set(
-      createBuiltInLintRules().map((rule) => rule.id),
+      getBuiltInLintRules().map((rule) => rule.id),
     );
     const disabledRuleIds = [];
     const seen = new Set();
@@ -2440,16 +2478,91 @@ export function initLinterBridge() {
   }
 
   function buildBuiltInCustomIssues(annotationEntries) {
-    return buildRegistryIssues(
-      annotationEntries,
-      getCustomLintRules(),
-      makeCustomIssue,
-      {
-        createTextContext: createTranscriptTextContext,
-        disabledRuleIds: disabledCustomLinterRuleIds,
-        onRuleError: recordCustomLinterRuleError,
-      },
-    );
+    if (!Array.isArray(annotationEntries)) return [];
+    // Project-dependent rules read href (including Emotion mode).
+    const route = `${getRouteKey()}\u0000${window.location.href || ""}`;
+    if (cachedLintRoute !== route) {
+      cachedRowIssues.clear();
+      cachedRuleDefinitions = [];
+      cachedLintRoute = route;
+    }
+    const builtIns = getBuiltInLintRules();
+    const rulesChanged = builtIns.length !== cachedRuleDefinitions.length ||
+      builtIns.some((rule, index) => {
+        const previous = cachedRuleDefinitions[index];
+        return !previous || previous.rule !== rule || previous.getMatches !== rule.getMatches ||
+          previous.id !== rule.id || previous.reason !== rule.reason || previous.severity !== rule.severity;
+      });
+    if (rulesChanged) {
+      cachedRowIssues.clear();
+      cachedRuleDefinitions = builtIns.map(rule => ({
+        rule, getMatches: rule.getMatches, id: rule.id, reason: rule.reason, severity: rule.severity,
+      }));
+    }
+    const externalRules = getExternalLintRules();
+    const rules = externalRules.length ? builtIns.concat(externalRules) : builtIns;
+    const previousTextBySpeaker = new Map();
+    const nextRows = new Map();
+    const issues = [];
+    for (let index = 0; index < annotationEntries.length; index += 1) {
+      const entry = annotationEntries[index];
+      if (!entry) continue;
+      const previousText = entry.speakerKey ? previousTextBySpeaker.get(entry.speakerKey) : undefined;
+      if (entry.speakerKey) previousTextBySpeaker.set(entry.speakerKey, entry.text);
+      if (typeof entry.annotationId !== "string") continue;
+      const previous = cachedRowIssues.get(entry.annotationId);
+      const unchanged = previous && previous.text === entry.text &&
+        previous.reviewActionId === entry.reviewActionId && previous.speakerKey === entry.speakerKey;
+      const sameContinuation = unchanged && previous.previousText === previousText;
+      if (sameContinuation && !previous.failed && !externalRules.length) {
+        for (const issue of previous.issues) if (issue) issues.push(issue);
+        nextRows.set(entry.annotationId, previous);
+        continue;
+      }
+      let context;
+      let record = previous;
+      if (!unchanged || !sameContinuation || previous.failed) {
+        record = {
+          text: entry.text, reviewActionId: entry.reviewActionId, speakerKey: entry.speakerKey,
+          previousText, issues: [], failed: false,
+          textContext: unchanged ? previous.textContext : undefined,
+        };
+      }
+      for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex += 1) {
+        const rule = rules[ruleIndex];
+        const builtIn = ruleIndex < builtIns.length;
+        if (disabledCustomLinterRuleIds.includes(rule?.id)) continue;
+        // Only shipped rules have known dependencies. Registry rules retain the
+        // full transcript/index context and run every pass, including closed-over state.
+        if (builtIn && unchanged && !previous.failed &&
+            (rule.id !== "segment-start-capitalization" || sameContinuation)) {
+          const issue = previous.issues[ruleIndex];
+          record.issues[ruleIndex] = issue;
+          if (issue) issues.push(issue);
+          continue;
+        }
+        context ||= {
+          annotationEntries, index,
+          textContext: record.textContext ||= createTranscriptTextContext(entry.text),
+          previousSameSpeakerText: previousText,
+        };
+        try {
+          const matches = rule.getMatches(entry, context);
+          if (!Array.isArray(matches)) {
+            throw new TypeError(`Custom linter rule "${rule.id}" returned a non-array match result.`);
+          }
+          const issue = matches.length ? makeCustomIssue(entry, rule, matches) : null;
+          if (builtIn) record.issues[ruleIndex] = issue;
+          if (issue) issues.push(issue);
+        } catch (error) {
+          if (builtIn) record.failed = true;
+          recordCustomLinterRuleError(error, rule, entry, context);
+        }
+      }
+      nextRows.set(entry.annotationId, record);
+    }
+    cachedRowIssues = nextRows;
+    return issues;
   }
 
   function buildCustomIssues(annotationEntries) {
@@ -2606,8 +2719,7 @@ export function initLinterBridge() {
       return value;
     }
 
-    const annotations = hooks.annotationHook.hook.memoizedState;
-    const annotationEntries = extractAnnotationEntries(annotations);
+    const annotationEntries = getNativeLintAnnotationEntries(hooks);
 
     const helperIssues = buildCustomIssues(annotationEntries);
     const mergedIssues = mergeNativeAndHelperIssues(value, helperIssues);
@@ -2712,7 +2824,7 @@ export function initLinterBridge() {
       return [];
     }
 
-    return extractAnnotationEntries(hooks.annotationHook.hook.memoizedState);
+    return getNativeLintAnnotationEntries(hooks);
   }
 
   // Strips the helper's warning reason from native annotation state when the
@@ -2770,7 +2882,7 @@ export function initLinterBridge() {
     )
       ? hooks.lintHook.hook.queue.lastRenderedState
       : hooks.lintHook.hook.memoizedState;
-    const annotationEntries = extractAnnotationEntries(annotations);
+    const annotationEntries = getNativeLintAnnotationEntries(hooks);
     const helperIssues = buildCustomIssues(annotationEntries);
     const mergedIssues = mergeNativeAndHelperIssues(nativeIssues, helperIssues);
     setCurrentNativeHelperIssues(annotationEntries, helperIssues, reason);
@@ -3495,7 +3607,7 @@ export function initLinterBridge() {
       return [];
     }
 
-    const bodyText = document.body.innerText || "";
+    const bodyText = Array.from(highlightRoots, root => root.innerText || "").join("\n");
     return invokePageLinter(
       "getVisibleTooltipEntries",
       [rowText, bodyText],
@@ -3508,42 +3620,19 @@ export function initLinterBridge() {
       return null;
     }
 
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-    );
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (
-        isHighlightableTextNode(node) &&
-        (node.nodeValue || "").includes(reason)
-      ) {
-        return node;
+    for (const root of highlightRoots) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (isHighlightableTextNode(node) && (node.nodeValue || "").includes(reason)) {
+          return node;
+        }
       }
     }
 
     return null;
   }
 
-  function findNativeReasonTextNode(reasonPrefix) {
-    if (typeof reasonPrefix !== "string" || !reasonPrefix) {
-      return null;
-    }
-
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-    );
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      const value = node.nodeValue || "";
-      if (isHighlightableTextNode(node) && value.includes(reasonPrefix)) {
-        return node;
-      }
-    }
-
-    return null;
-  }
 
   function appendPreviewLine(reasonElement, tokens, color) {
     if (!(reasonElement instanceof HTMLElement) || !tokens.length) {
@@ -3718,7 +3807,10 @@ export function initLinterBridge() {
 
     applyingHighlights = true;
     try {
-      unwrapHighlightMarks(document);
+      for (const root of paintedHighlightRoots) unwrapHighlightMarks(root);
+      paintedHighlightRoots.clear();
+      if (!(highlightedRow instanceof HTMLElement)) return;
+      for (const root of highlightRoots) paintedHighlightRoots.add(root);
       const rowText = getHoveredRowText();
       const entries = mergeHighlightEntries(
         getIssueHighlightEntries(currentHighlightIssues, rowText).concat(
@@ -3745,10 +3837,7 @@ export function initLinterBridge() {
         const reasonNode = (
           Array.isArray(entry.aliases) ? entry.aliases : [entry.reason]
         )
-          .map(
-            (reason) =>
-              findReasonTextNode(reason) || findNativeReasonTextNode(reason),
-          )
+          .map(findReasonTextNode)
           .find(Boolean);
         if (!reasonNode || swatchedReasonNodes.has(reasonNode)) {
           return;
@@ -3761,6 +3850,7 @@ export function initLinterBridge() {
       // Discard only this synchronous pass's own overlay/swatch mutations.
       // Observing them would otherwise repaint the same highlights forever.
       highlightObserver?.takeRecords();
+      highlightPortalObserver?.takeRecords();
       nativeLintStateObserver?.takeRecords();
       applyingHighlights = false;
     }
@@ -3777,27 +3867,52 @@ export function initLinterBridge() {
     }, HIGHLIGHT_OBSERVER_DELAY_MS);
   }
 
+  function refreshHighlightRoots() {
+    highlightObserver.disconnect();
+    highlightRoots.clear();
+    if (!(highlightedRow instanceof HTMLElement)) return;
+    highlightRoots.add(highlightedRow);
+    for (const root of document.querySelectorAll(HIGHLIGHT_TOOLTIP_SELECTOR)) {
+      if (!highlightedRow.contains(root)) highlightRoots.add(root);
+    }
+    for (const root of highlightRoots) {
+      highlightObserver.observe(root, { childList: true, subtree: true, characterData: true });
+    }
+  }
+
   function startHighlightObserver() {
-    if (highlightObserver || !document.body || !(highlightedRow instanceof HTMLElement)) {
+    if (!isPageLinterEnabled() || !document.body || !(highlightedRow instanceof HTMLElement)) return;
+    if (highlightObserver) {
+      if (!highlightRoots.has(highlightedRow)) refreshHighlightRoots();
       return;
     }
-
     highlightObserver = new MutationObserver(() => {
-      if (!applyingHighlights) {
+      if (!applyingHighlights) scheduleLinterHighlights();
+    });
+    // Captured native tooltips render inline in the row; the shared tooltip
+    // wrapper uses a body portal without a container override. Watch only that
+    // mount boundary, never playback or unrelated application subtrees.
+    highlightPortalObserver = new MutationObserver(mutations => {
+      if (applyingHighlights) return;
+      const tooltipChanged = mutations.some(mutation =>
+        [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+          node instanceof Element &&
+          (node.matches(HIGHLIGHT_TOOLTIP_SELECTOR) || node.querySelector(HIGHLIGHT_TOOLTIP_SELECTOR))));
+      if (tooltipChanged) {
+        refreshHighlightRoots();
         scheduleLinterHighlights();
       }
     });
-    highlightObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    highlightPortalObserver.observe(document.body, { childList: true });
+    refreshHighlightRoots();
     countPerf("observer.start", { name: "linter-highlight" });
   }
 
   function handleHighlightPointerOver(event) {
+    if (!isPageLinterEnabled()) return;
     const target = event && event.target;
     const row = target instanceof Element ? target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
-    if (row instanceof HTMLElement) {
+    if (row instanceof HTMLElement && row !== highlightedRow) {
       highlightedRow = row;
       startHighlightObserver();
       scheduleLinterHighlights();
@@ -3805,6 +3920,7 @@ export function initLinterBridge() {
   }
 
   function handleHighlightPointerOut(event) {
+    if (!highlightedRow) return;
     const relatedTarget = event && event.relatedTarget;
     if (
       highlightedRow &&
@@ -3824,6 +3940,9 @@ export function initLinterBridge() {
       highlightObserver.disconnect();
       highlightObserver = null;
     }
+    highlightPortalObserver?.disconnect();
+    highlightPortalObserver = null;
+    highlightRoots.clear();
   }
 
   function findActiveHighlightedWordIssueForRow(row) {
@@ -3841,6 +3960,25 @@ export function initLinterBridge() {
           getIssueSourceText(issue) === rowText,
       ) || null
     );
+  }
+
+  function recordNativeWarningAcknowledgement(annotation, reviewActionId, reason) {
+    if (!isPageLinterEnabled() || reason !== HIGHLIGHTED_WORD_RULE_REASON) return false;
+    const binding = readBabelTranscriptBindings();
+    if (!binding || binding.readOnly || binding.reviewActionId !== reviewActionId) return false;
+    const current = binding.annotations.find((entry) => entry.id === annotation?.id);
+    if (!current || current.content !== annotation.content) return false;
+    const entry = getAnnotationEntryFromObject(annotation, reviewActionId);
+    if (!entry) return false;
+    markHighlightedWordCleared(entry);
+    const pending = binding.pendingTextById[annotation.id];
+    if (typeof pending === 'string' && pending !== entry.text) {
+      markHighlightedWordCleared({ ...entry, text: pending });
+    }
+    recordObservedHighlightedWordClearanceClick(entry);
+    scheduleNativeLintStateSync('native-warning-acknowledgement');
+    scheduleLinterHighlights();
+    return true;
   }
 
   function observeNativeHighlightedWordWarningClick(event) {
@@ -3863,6 +4001,7 @@ export function initLinterBridge() {
   }
 
   function handleHighlightClick(event) {
+    if (!isPageLinterEnabled()) return;
     observeNativeHighlightedWordWarningClick(event);
 
     const target = event && event.target;
@@ -3880,11 +4019,11 @@ export function initLinterBridge() {
       window.clearTimeout(highlightTimer);
       highlightTimer = 0;
     }
-    if (highlightObserver) {
-      disconnectHighlightObserver();
-    }
+    disconnectHighlightObserver();
+    highlightedRow = null;
     currentHighlightIssues = [];
-    unwrapHighlightMarks(document);
+    for (const root of paintedHighlightRoots) unwrapHighlightMarks(root);
+    paintedHighlightRoots.clear();
     removeHighlightStyle();
   }
 
@@ -4177,6 +4316,8 @@ export function initLinterBridge() {
     let status;
     try { status = JSON.parse(event.detail); } catch { return; }
     if (status?.href !== window.location.href || status.status !== 'ready') return;
+    clearCachedLintState();
+    stopHighlightObserver();
     autoLintTriggeredRoutes.delete(getRouteKey());
     scheduleInitialNativeLintTrigger('native-session-ready');
   }
@@ -4188,6 +4329,8 @@ export function initLinterBridge() {
     }
 
     currentRouteKey = nextRouteKey;
+    clearCachedLintState();
+    stopHighlightObserver();
     scheduleInitialNativeLintTrigger(source);
   }
 
@@ -4571,6 +4714,7 @@ export function initLinterBridge() {
   function setBuiltInEnabled(nextEnabled) {
     enabled = Boolean(nextEnabled);
     if (!enabled) {
+      clearCachedLintState();
       clearNativeHelperIssues();
       stopNativeLintStateObserver();
       stopHighlightObserver();
@@ -4592,6 +4736,7 @@ export function initLinterBridge() {
     disabledCustomLinterRuleIds = normalizeDisabledCustomLinterRuleIds(
       detail.disabledCustomLinterRuleIds,
     );
+    clearCachedLintState();
     if (!highlightedWordsEnabled) {
       removeCurrentHighlightedWordIssues();
     }
@@ -4613,6 +4758,7 @@ export function initLinterBridge() {
 
   function dispose() {
     enabled = false;
+    clearCachedLintState();
     clearNativeHelperIssues();
     for (const [queue, patch] of nativeLintDispatchPatches) {
       if (queue.dispatch === patch.patchedDispatch) queue.dispatch = patch.originalDispatch;
@@ -5267,6 +5413,7 @@ export function initLinterBridge() {
     get debug() {
       return debugState;
     },
+    recordNativeWarningAcknowledgement,
     autoFixCurrent,
     autoFixAll,
     applyAllFixes,

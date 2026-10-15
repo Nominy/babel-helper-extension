@@ -139,6 +139,7 @@ function nativeFixture() {
     start: Math.min(1, 2), end: Math.max(3, 4), lowConfidenceResolved: true, undo: () => {} });
   const wrapper = (id, direction) => { confidence.clearSegment(id); nativeMerge(id, direction); };
   f.binding.panel.onMergeAnnotations = wrapper;
+  f.binding.panel.onClearLowConfidence = () => assert.fail('only the verified current transaction owns confidence mutation');
   f.binding.history = history;
   f.binding.controller = { mergeUp(id) { wrapper(id, 'above'); } };
   const hooks = [[wrapper, [confidence, nativeMerge]],
@@ -373,38 +374,28 @@ test('unknown native eligibility memo fails before enabling a gap menu', () => {
   } finally { globalThis.location = originalLocation; }
 });
 
-test('older unrestricted native menus and their keyboard rules coexist without capability extraction', () => {
+test('obsolete unrestricted keyboard contracts fail before any native mutation', () => {
   const f = nativeFixture();
   const originalLocation = globalThis.location;
   globalThis.location = { pathname: '/task', search: '' };
-  let enabled = true;
-  const nativeCalls = [], failures = [];
+  const nativeCalls = [];
   f.editor.child.memoizedState = null;
   delete f.menuProps.mergeAboveHint;
   delete f.menuProps.mergeBelowHint;
   f.menuProps.canMergeAbove = f.menuProps.canMergeBelow = true;
   for (const item of f.items) item.props.disabled = false;
   const originalClick = f.items[0].props.onClick;
-  const nativeMerge = (id, direction) => nativeCalls.push([id, direction]);
-  const oldKeyboard = id => { nativeCalls.push([id, "turn above is a different speaker"]); };
-  f.binding.panel.onMergeAnnotations = nativeMerge;
+  const oldKeyboard = id => nativeCalls.push(id);
   f.binding.transcript.handlers = { onMergeUp: oldKeyboard };
-  const installed = policy.installNativeMergePolicy({ isEnabled: () => enabled,
-    onFailure: error => failures.push(error), readBindings: () => f.binding, findEditor: () => f.editor });
   try {
+    assert.throws(() => policy.installNativeMergePolicy({
+      onFailure(error) { throw error; }, readBindings: () => f.binding, findEditor: () => f.editor
+    }), /native-merge-keyboard-unsupported/);
     assert.equal(f.binding.transcript.handlers.onMergeUp, oldKeyboard);
     assert.equal(f.items[0].props.onClick, originalClick);
-    assert.equal(f.menuProps.canMergeAbove, true);
-    installed.merge('segment05', 'above', 'task');
-    assert.deepEqual(nativeCalls, [['segment05', 'above']]);
-    enabled = false;
-    installed.reconcile();
-    installed.merge('segment05', 'below', 'task');
-    assert.deepEqual(nativeCalls, [['segment05', 'above'], ['segment05', 'below']]);
-    assert.deepEqual(failures, []);
-    assert.equal(f.undo.length, 0, 'the override never synthesizes a legacy transaction');
+    assert.deepEqual(nativeCalls, []);
+    assert.equal(f.undo.length, 0);
   } finally {
-    installed.dispose();
     globalThis.location = originalLocation;
   }
 });
@@ -488,5 +479,29 @@ test('retained keyboard entrypoints dispatch through the current controller with
     assert.equal(f.binding.annotations.find(turn => turn.id === 'segment05').content, 'Earlier [laugh] Now');
     assert.equal(f.undo.length, 1);
     assert.deepEqual(oldCalls, []);
+  } finally { installed.dispose(); globalThis.location = previousLocation; }
+});
+
+test('retained keyboard callbacks cannot mutate a replacement root on the same task and route', () => {
+  const f = nativeFixture();
+  const previousLocation = globalThis.location;
+  globalThis.location = { pathname: '/task', search: '' };
+  const calls = [], failures = [];
+  const mergeUp = id => { calls.push({ id, direction: "above", hint: "There's no earlier turn within " }); };
+  const controller = { mergeUp };
+  const handlers = { onMergeUp: mergeUp };
+  f.binding.controller = controller;
+  f.binding.transcript.handlers = handlers;
+  f.hooks.push([controller, [f.binding.panel.onMergeAnnotations]]);
+  f.editor.memoizedState = f.hooks.reduceRight((next, memoizedState) => ({ next, memoizedState }), null);
+  let currentRoot = f.editor;
+  const installed = policy.installNativeMergePolicy({ onFailure: error => failures.push(error.message),
+    readBindings: () => f.binding, findEditor: () => currentRoot });
+  try {
+    currentRoot = { ...f.editor };
+    handlers.onMergeUp('previous');
+    assert.deepEqual(calls, []);
+    assert.deepEqual(failures, ['native-merge-stale-task']);
+    assert.equal(f.undo.length, 0);
   } finally { installed.dispose(); globalThis.location = previousLocation; }
 });

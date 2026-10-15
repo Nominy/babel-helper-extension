@@ -106,10 +106,16 @@ async function bootLinterBridgeOverNativeFetch(options = {}) {
 function nativeLintFixture() {
   const rowSelector = 'section[data-annotation-id]';
   const observers = [];
+  const tooltipRoots = [];
   class Element {
     constructor(row = null) { this.row = row; }
-    matches(selector) { return this === row && selector === rowSelector; }
+    matches(selector) {
+      return (this === row && selector === rowSelector) ||
+        (this.tooltip === true && selector.includes('[role="tooltip"]'));
+    }
     closest(selector) { return selector === rowSelector ? this.row : null; }
+    contains(node) { return node === this || node.row === this || this === document.body; }
+    getAttribute(name) { return name === 'data-annotation-id' && this.row ? 'turn' : null; }
     querySelector() { return null; }
     querySelectorAll() { return []; }
   }
@@ -126,7 +132,7 @@ function nativeLintFixture() {
   dirtyHook.next = lintHook;
   lintHook.next = versionHook;
   versionHook.next = refHook;
-  const transcript = { memoizedProps: { turns: [], handlers: { onChangeText() {} }, readOnly: false } };
+  const transcript = { memoizedProps: { turns: [], editingId: null, handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} }, readOnly: false } };
   const panel = { memoizedProps: {
     annotations: [], tracks: [], saveState: {}, renderTranscript() {}, onSave() {}, readOnly: false,
   }, child: transcript };
@@ -142,23 +148,28 @@ function nativeLintFixture() {
     body: new Element(),
     getElementById: () => null,
     querySelector: () => null,
-    querySelectorAll: selector => selector === 'main, [data-transcript-scroll]' ? [seed] : [],
+    querySelectorAll: selector => selector === 'main, [data-transcript-scroll]' ? [seed] :
+      selector.includes('[role="tooltip"]') ? tooltipRoots : [],
   };
   class MutationObserver {
-    constructor(callback) { this.callback = callback; observers.push(this); }
-    observe(target, options) { this.options = options; }
-    disconnect() { this.options = null; }
-    takeRecords() { return []; }
+    constructor(callback) { this.callback = callback; this.targets = []; this.drains = 0; observers.push(this); }
+    observe(target, options) { this.options = options; this.targets.push({ target, options }); }
+    disconnect() { this.options = null; this.targets = []; }
+    takeRecords() { this.drains += 1; return []; }
+  }
+  function mutate(mutation) {
+    for (const observer of observers) {
+      if (observer.targets.some(({ target, options }) =>
+        target === mutation.target || (options.subtree && target.contains(mutation.target)))) {
+        observer.callback([mutation]);
+      }
+    }
   }
   function renderIssues(action) {
     lintHook.memoizedState = typeof action === 'function' ? action(lintHook.memoizedState) : action;
     lintHook.queue.lastRenderedState = lintHook.memoizedState;
     versionHook.memoizedState += 1;
-    for (const observer of observers) {
-      if (observer.options?.characterData) observer.callback([{
-        type: 'childList', target: cardList, addedNodes: [new Element(row)], removedNodes: [],
-      }]);
-    }
+    mutate({ type: 'childList', target: cardList, addedNodes: [new Element(row)], removedNodes: [] });
   }
   lintHook.queue.dispatch = renderIssues;
   function setText(text) {
@@ -171,15 +182,19 @@ function nativeLintFixture() {
   setText('Да — нет.');
   return {
     document, Element, MutationObserver, props, panel, transcript, lintHook, renderIssues, setText,
+    row, observers, mutate,
     get issues() { return lintHook.memoizedState; },
     get annotations() { return annotationHook.memoizedState; },
     setMounted(value) { root.child = value ? owner : null; },
     renderUnrelatedPlaybackDOM() {
-      for (const observer of observers) {
-        if (observer.options) observer.callback([{
-          type: 'childList', target: document.body, addedNodes: [new Element()], removedNodes: [],
-        }]);
-      }
+      mutate({ type: 'childList', target: document.body, addedNodes: [new Element()], removedNodes: [] });
+    },
+    showTooltip() {
+      const tooltip = new Element();
+      tooltip.tooltip = true;
+      tooltipRoots.push(tooltip);
+      mutate({ type: 'childList', target: document.body, addedNodes: [tooltip], removedNodes: [] });
+      return tooltip;
     },
   };
 }
@@ -195,11 +210,13 @@ test('native lint publishes without controller memo state and repairs retained n
   assert.equal(fixture.issues[0].reason, rule.reason);
   assert.equal(fixture.issues[0].babelHelper.sourceText, 'Да — нет.');
   const originalAnnotations = fixture.annotations;
+  const originalHelperIssue = fixture.issues[0];
   const nativeIssue = { annotationId: 'turn', reason: 'Native diagnostic', severity: 'error' };
   fixture.renderIssues([nativeIssue]);
   bridge.tickLatestTimeout();
   assert.deepEqual(fixture.issues.map(issue => issue.reason), [nativeIssue.reason, rule.reason]);
   assert.equal(fixture.issues[0], nativeIssue);
+  assert.equal(fixture.issues[1], originalHelperIssue, 'captured-setter repair reuses unchanged Helper diagnostics');
   assert.equal(fixture.annotations, originalAnnotations, 'publication must not change native text or undo state');
 
   fixture.setText('Да - нет.');
@@ -236,6 +253,190 @@ test('unrelated playback DOM does not repaint lint highlights when no transcript
   fixture.renderUnrelatedPlaybackDOM();
   assert.equal(bridge.scheduledTimeoutCount, scheduled,
     'playback outside the transcript must not schedule document-wide highlight passes');
+});
+
+test('hover observes only its row and tooltip roots and releases both observers', async () => {
+  const fixture = nativeLintFixture();
+  fixture.setText('');
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  bridge.linter.setEnabled(true);
+  await Promise.resolve();
+  const event = new Event('pointerover');
+  Object.defineProperty(event, 'target', { value: fixture.row });
+  bridge.window.dispatchEvent(event);
+  const hoveredObservers = fixture.observers.slice(1);
+  assert.equal(hoveredObservers.length, 2);
+  assert.ok(hoveredObservers.some(observer => observer.targets.some(({ target, options }) =>
+    target === fixture.row && options.subtree)));
+  assert.ok(hoveredObservers.every(observer => observer.targets.every(({ target, options }) =>
+    target !== fixture.document.body || !options.subtree)));
+
+  const scheduled = bridge.scheduledTimeoutCount;
+  fixture.renderUnrelatedPlaybackDOM();
+  assert.equal(bridge.scheduledTimeoutCount, scheduled, 'playback does not repaint a hovered row');
+  const tooltip = fixture.showTooltip();
+  assert.ok(bridge.scheduledTimeoutCount > scheduled, 'a newly mounted portal schedules highlighting');
+  assert.ok(hoveredObservers.some(observer => observer.targets.some(({ target }) => target === tooltip)));
+  const beforeTooltipEdit = bridge.scheduledTimeoutCount;
+  fixture.mutate({ type: 'childList', target: tooltip, addedNodes: [], removedNodes: [] });
+  assert.ok(bridge.scheduledTimeoutCount > beforeTooltipEdit, 'tooltip content stays observed');
+  bridge.tickTimeouts(50);
+  assert.ok(hoveredObservers.every(observer => observer.drains > 0), 'highlight passes drain their own records');
+  bridge.linter.setEnabled(false);
+  assert.ok(fixture.observers.every(observer => observer.targets.length === 0));
+  const disabled = bridge.scheduledTimeoutCount;
+  bridge.window.dispatchEvent(event);
+  assert.equal(bridge.scheduledTimeoutCount, disabled, 'disabled hover does not restart work');
+});
+
+test('incremental rules reuse unchanged rows and invalidate same-speaker successors', async () => {
+  const { linter } = await bootLinterBridgeOverNativeFetch();
+  const enabledIds = ['unicode-dashes', 'segment-start-capitalization', 'highlighted-words'];
+  linter.configure({ disabledCustomLinterRuleIds: linter.getRules()
+    .filter(rule => !enabledIds.includes(rule.id)).map(rule => rule.id) });
+  const calls = [];
+  for (const rule of linter.getRules().filter(rule => enabledIds.includes(rule.id))) {
+    const original = rule.getMatches;
+    rule.getMatches = (entry, context) => {
+      calls.push(`${entry.annotationId}:${rule.id}`);
+      return original(entry, context);
+    };
+  }
+  const entries = [
+    { annotationId: 'a', text: 'Начало--', speakerKey: 'A' },
+    { annotationId: 'b', text: 'Да — нет.', speakerKey: 'B' },
+    { annotationId: 'c', text: 'продолжение.', speakerKey: 'A' },
+    { annotationId: 'd', text: 'конец.', speakerKey: 'A' },
+  ];
+  const original = linter.buildIssues(entries);
+  assert.equal(calls.length, 12);
+  calls.length = 0;
+  const same = linter.buildIssues(entries.map(entry => ({ ...entry })));
+  assert.deepEqual(calls, []);
+  assert.deepEqual(same, original);
+  assert.ok(same.every((issue, index) => issue === original[index]));
+
+  entries[0].text = 'Начало.';
+  const changed = linter.buildIssues(entries);
+  assert.deepEqual(calls.sort(), [
+    'a:highlighted-words', 'a:segment-start-capitalization', 'a:unicode-dashes',
+    'c:segment-start-capitalization',
+  ]);
+  assert.ok(changed.some(issue => issue.annotationId === 'c' &&
+    issue.reason === linter.getRules().find(rule => rule.id === 'segment-start-capitalization').reason));
+  assert.equal(changed.find(issue => issue.annotationId === 'b'), original.find(issue => issue.annotationId === 'b'));
+
+  // Insertions, deletion, reorder and speaker reassignment alter predecessor
+  // relationships without necessarily changing the dependent row's own text.
+  const reference = (await bootLinterBridgeOverNativeFetch()).linter;
+  const compare = () => {
+    const disabledCustomLinterRuleIds = reference.getRules()
+      .filter(rule => !enabledIds.includes(rule.id)).map(rule => rule.id);
+    reference.configure({ disabledCustomLinterRuleIds });
+    assert.deepEqual(linter.buildIssues(entries), reference.buildIssues(entries));
+  };
+  entries.splice(2, 0, { annotationId: 'inserted', text: 'Дальше--', speakerKey: 'A' });
+  compare();
+  entries.splice(0, 1);
+  compare();
+  entries.reverse();
+  compare();
+  entries[0].speakerKey = 'B';
+  compare();
+  entries[0].reviewActionId = 'next-task';
+  compare();
+});
+
+test('incremental issues preserve external full-transcript rules and settings invalidation', async () => {
+  const { linter, window } = await bootLinterBridgeOverNativeFetch();
+  let externalEnabled = true;
+  const external = {
+    id: 'cross-row', reason: 'External cross-row warning', severity: 'warning', markers: [],
+    getMatches(entry, context) {
+      return externalEnabled && context.annotationEntries[0].assertedWarnings?.includes('trigger') &&
+        context.index === 1 ? [{ start: 0, end: 1, text: entry.text[0] }] : [];
+    },
+  };
+  window.BabelMods.registries = { get: () => [external] };
+  const entries = [
+    { annotationId: 'a', text: 'Начало.', assertedWarnings: [] },
+    { annotationId: 'b', text: 'Угу.' },
+  ];
+  linter.buildIssues(entries);
+  entries[0].assertedWarnings.push('trigger');
+  assert.ok(linter.buildIssues(entries).some(issue => issue.reason === external.reason));
+  externalEnabled = false;
+  assert.ok(!linter.buildIssues(entries).some(issue => issue.reason === external.reason));
+  externalEnabled = true;
+  external.getMatches = () => [];
+  assert.ok(!linter.buildIssues(entries).some(issue => issue.reason === external.reason));
+  const highlightedReason = linter.getRules().find(rule => rule.id === 'highlighted-words').reason;
+  linter.configure({ highlightedWords: 'Угу', highlightedWordsEnabled: true });
+  assert.ok(linter.buildIssues(entries).some(issue => issue.reason === highlightedReason));
+  linter.configure({ highlightedWords: 'Другое', highlightedWordsEnabled: true });
+  assert.ok(!linter.buildIssues(entries).some(issue => issue.reason === highlightedReason));
+  linter.configure({ highlightedWords: 'Угу', disabledCustomLinterRuleIds: ['highlighted-words'] });
+  assert.ok(!linter.buildIssues(entries).some(issue => issue.reason === highlightedReason));
+
+  const emotionEntry = [{ annotationId: 'emotion', text: 'По {1}, {СКАЗ: одной} по порядку.' }];
+  const punctuationReason = linter.getRules().find(rule => rule.id === 'curly-tag-trailing-punctuation').reason;
+  window.location.href = 'https://babel.test/transcription/RU-Emotion-tx';
+  assert.ok(!linter.buildIssues(emotionEntry).some(issue => issue.reason === punctuationReason));
+  window.location.href = 'https://babel.test/transcription/RU-tx-gold';
+  assert.ok(linter.buildIssues(emotionEntry).some(issue => issue.reason === punctuationReason));
+});
+
+test('native reconciliation reuses normalized entries and handles in-place native changes', async () => {
+  const fixture = nativeLintFixture();
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  const entries = [];
+  bridge.window.BabelMods.registries = { get: () => [{
+    id: 'native-metadata', reason: 'Native metadata warning', severity: 'warning', markers: [],
+    getMatches(entry) {
+      entries.push(entry);
+      return entry.assertedWarnings.includes('trigger') ? [{ start: 0, end: 1, text: entry.text[0] }] : [];
+    },
+  }] };
+  bridge.linter.setEnabled(true);
+  await Promise.resolve();
+  const first = entries.at(-1);
+  fixture.renderIssues([]);
+  bridge.tickLatestTimeout();
+  assert.equal(entries.at(-1), first);
+  fixture.annotations[0].metadata = { assertedWarnings: ['trigger'] };
+  fixture.annotations[0].content = 'Понятно.';
+  fixture.renderIssues([]);
+  bridge.tickLatestTimeout();
+  assert.notEqual(entries.at(-1), first);
+  assert.equal(entries.at(-1).text, 'Понятно.');
+  assert.deepEqual(entries.at(-1).assertedWarnings, ['trigger']);
+  assert.ok(fixture.issues.some(issue => issue.reason === 'Native metadata warning'));
+  fixture.annotations[0].metadata.assertedWarnings.length = 0;
+  fixture.renderIssues([]);
+  bridge.tickLatestTimeout();
+  assert.ok(!fixture.issues.some(issue => issue.reason === 'Native metadata warning'));
+});
+
+test('failed rule results are not cached as clean rows and later warnings survive', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { linter, window } = await bootLinterBridgeOverNativeFetch();
+  linter.configure({ highlightedWords: 'Угу', disabledCustomLinterRuleIds: linter.getRules()
+    .filter(rule => !['unicode-dashes', 'highlighted-words'].includes(rule.id)).map(rule => rule.id) });
+  const rule = linter.getRules().find(rule => rule.id === 'unicode-dashes');
+  const original = rule.getMatches;
+  let first = true;
+  rule.getMatches = (entry, context) => {
+    if (first) { first = false; return null; }
+    return original(entry, context);
+  };
+  const entries = [{ annotationId: 'a', text: 'Угу — да.' }];
+  const initial = linter.buildIssues(entries);
+  assert.ok(!initial.some(issue => issue.reason === rule.reason));
+  assert.ok(initial.some(issue => issue.severity === 'warning'));
+  assert.equal(window.__babelHelperLinterBridge.debug.customRuleErrors.length, 1);
+  const recovered = linter.buildIssues(entries);
+  assert.ok(recovered.some(issue => issue.reason === rule.reason));
+  assert.ok(recovered.some(issue => issue.severity === 'warning'));
 });
 
 test('initial lint waits for native commits without retry polling', async () => {
@@ -1128,4 +1329,34 @@ test('fixes lowercase words after clear sentence boundaries inside a segment', a
     fixSentenceBoundaryCapitalization('"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c."- \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'),
     '"\u041f\u0440\u044f\u043c\u0430\u044f \u0440\u0435\u0447\u044c \u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c."- \u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430.'
   );
+});
+
+test('native all-row acknowledgement records task/source-bound highlighted clearance without visible cards', async () => {
+  const fixture = nativeLintFixture();
+  fixture.setText('Это контроль.');
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  const storage = new Map();
+  bridge.window.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  bridge.linter.configure({ highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
+  bridge.linter.setEnabled(true);
+  const record = bridge.window.__babelHelperLinterBridge.recordNativeWarningAcknowledgement;
+  const annotation = fixture.annotations[0];
+  const reason = 'Highlighted word requires clearance before use.';
+  const before = structuredClone(fixture.annotations);
+  assert.equal(record(annotation, 'other-task', reason), false);
+  assert.equal(record({ ...annotation, content: 'Изменённый контроль.' }, 'task', reason), false);
+  assert.equal(record(annotation, 'task', 'unrelated warning'), false);
+  assert.equal(storage.size, 0);
+  assert.equal(record(annotation, 'task', reason), true);
+  const clearance = JSON.parse(storage.get('babel-helper-highlighted-word-clearances:v1'));
+  assert.equal(clearance.taskKey, 'task');
+  assert.equal(clearance.clickObserved, true);
+  assert.equal(clearance.keys.length, 1);
+  assert.ok(clearance.keys[0].includes(annotation.content));
+  assert.deepEqual(fixture.annotations, before, 'clearance tracking never bypasses the native writer');
+  fixture.panel.memoizedProps.readOnly = true;
+  assert.equal(record(annotation, 'task', reason), false);
+  fixture.panel.memoizedProps.readOnly = false;
+  fixture.setText('Теперь новый контроль.');
+  assert.equal(record(annotation, 'task', reason), false, 'old source cannot clear edited text');
 });

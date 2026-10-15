@@ -15,6 +15,7 @@ export type NativeEditorState = {
   startSeconds?: number | null;
   endSeconds?: number | null;
   isActive?: boolean;
+  isEditing?: boolean;
   text: string;
   start: number;
   end: number;

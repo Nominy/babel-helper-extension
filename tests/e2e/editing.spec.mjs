@@ -374,17 +374,24 @@ test.describe('Helper native editing', () => {
     await enableOnlyLinterRules(babel, ['highlighted-words']);
     await babel.setExtensionSettings('helper', { highlightedWordsEnabled: true, highlightedWords: ['контроль'] });
     await fillText(editors(page).first(), 'Это контроль.');
-    await editors(page).nth(1).focus();
+    await editors(page).first().click();
     const status = row(page, 0).getByRole('button', { name: 'My transcription is correct', exact: true });
     await expect(status).toBeVisible();
     await status.hover();
     await expect(row(page, 0).locator('mark[data-babel-helper-linter-highlight]').first()).toBeVisible();
-    await expect(row(page, 0).locator('.border-amber-200')).toContainText('контроль');
+    await expect(row(page, 0).getByText('Highlighted word requires clearance before use.', { exact: false })).toContainText('"контроль"');
     await status.click();
     await expect(row(page, 0).getByRole('button', { name: 'Show 1 confirmed warning', exact: true })).toBeVisible();
+    const annotationId = await row(page, 0).getAttribute('data-annotation-id');
+    await expect.poll(() => page.evaluate(id => window.__BABEL_E2E__.snapshot().annotations
+      .find(annotation => annotation.id === id)?.metadata?.assertedWarnings ?? [], annotationId))
+      .toContain('Highlighted word requires clearance before use.');
     await fillText(editors(page).first(), 'Это новый контроль.');
-    await editors(page).nth(1).focus();
+    await editors(page).first().click();
     await expect(status).toBeVisible();
+    await expect.poll(() => page.evaluate(id => window.__BABEL_E2E__.snapshot().annotations
+      .find(annotation => annotation.id === id)?.metadata?.assertedWarnings ?? [], annotationId))
+      .not.toContain('Highlighted word requires clearance before use.');
   });
 
   test(featureScenarios.customLinter[2], async ({ page, babel }) => {
@@ -398,7 +405,11 @@ test.describe('Helper native editing', () => {
     await page.keyboard.press('Alt+KeyF');
     await editors(page).nth(1).focus();
     await expect.poll(() => readText(editors(page).first())).toBe('Да — нет.');
-    await expect(row(page, 0).locator('.border-red-200, .border-amber-200')).toHaveCount(0);
+    // Disabling a Helper rule must not suppress Babel's independent native warning.
+    await expect(row(page, 0).locator('[role="img"][aria-label]'))
+      .not.toHaveAccessibleName(/^(No issues|Checking…)$/);
+    await expect.poll(() => page.evaluate(() =>
+      window.__babelHelperLinterBridge.debug.nativeLint.issueCount)).toBe(0);
   });
 });
 
@@ -439,14 +450,15 @@ for (const [rule, text, fixed] of linterRuleScenarios) {
     await fillText(editor, text);
     // Keep the editor active: native blur trims and collapses spaces before
     // the whitespace-rule diagnostic can be exercised.
-    const status = row(page, 0).locator('.border-red-200');
-    await expect(status.first()).toBeVisible();
-    await expect(status.first()).not.toHaveText('');
+    const status = row(page, 0).locator('[role="img"][aria-label]');
+    await expect(status).not.toHaveAccessibleName(/^(No issues|Checking…)$/);
+    const issueLabel = await status.getAttribute('aria-label');
+    await expect(row(page, 0).locator('[data-turn-issues] p').first()).toBeVisible();
     await editor.focus();
     await page.keyboard.press('Alt+KeyF');
     await expect.poll(() => readText(editor)).toBe(fixed ?? text);
     await editors(page).nth(1).focus();
-    if (fixed === null) await expect(status.first()).toBeVisible();
-    else await expect(status).toHaveCount(0);
+    if (fixed === null) await expect.poll(() => status.getAttribute('aria-label')).toContain(issueLabel);
+    else await expect(status).toHaveAccessibleName('No issues');
   });
 }

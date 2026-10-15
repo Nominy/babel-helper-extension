@@ -18,7 +18,7 @@ async function prepare(page, babel) {
   await expect.poll(async () => (await audio(page)).every(track => track.currentTime > 4)).toBe(true);
 }
 
-test('segment click seek: clicks edit without rewinding, live opt-out restores native seek, explicit play still works', async ({ page, babel }) => {
+test('segment click seek: editing stays separate from selection, live opt-out restores native select seek, explicit play still works', async ({ page, babel }) => {
   await prepare(page, babel);
   const before = (await audio(page)).map(track => track.currentTime);
   await text(page, 0).click();
@@ -35,7 +35,14 @@ test('segment click seek: clicks edit without rewinding, live opt-out restores n
   await babel.setExtensionSettings('helper', { features: { disableNativeSegmentClickSeek: false } });
   await expect(page.locator('html')).not.toHaveAttribute(FLAG, 'true');
   await text(page, 0).click();
+  await expect(text(page, 0)).toBeFocused();
+  // Re-entering the current editor is activation, not native turn selection.
+  expect((await audio(page)).map(track => track.currentTime)).toEqual(before);
+  await text(page, 0).press('Enter');
+  // Selecting a non-editing row through its native control invokes onSelect.
+  await row(page, 0).getByRole('combobox', { name: 'Speaker', exact: true }).click();
   await expect.poll(async () => (await audio(page)).map(track => track.currentTime)).toEqual([0.5, 0.5]);
+  await page.keyboard.press('Escape');
 
   await babel.setExtensionSettings('helper', { features: { disableNativeSegmentClickSeek: true } });
   await expect(page.locator('html')).toHaveAttribute(FLAG, 'true');

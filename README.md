@@ -18,7 +18,7 @@ Load `babel-helper-extension/` unpacked in `chrome://extensions`. Run `npm run b
 
 ## Current Babel editor
 
-Helper targets the turn/Slate editor captured on 2026-10-13, not the archived
+Helper targets the turn/Slate editor captured on 2026-10-15 (module `59327`), not the archived
 table editor. Transcript operations use native model callbacks and an explicit
 editor control for raw text, selections and geometry; they do not create hidden
 textareas or replace Slate DOM. Native Ctrl/Meta+A updates the model and browser
@@ -30,26 +30,41 @@ Babel's outer seek handler.
 Pointer and programmatic turn changes blur the connected native editor before
 activating another turn, so its native blur handler can commit pending text before
 the old Slate instance unmounts.
+Native per-turn Slate history survives editor remounts independently of the global
+annotation Undo stack. Helper replacements in an active Slate editor use its
+genuine `withNewBatch` boundary, so Undo does not consume older typing. Missing
+verified history authority rejects the replacement before changing text or selection.
+The native `beforeinput` handler keeps a stable identity while invoking the latest
+committed controller. Unrelated row commits therefore do not detach the focused
+Slate editor's DOM mapping during input or blur.
 
 Focused PageUp/PageDown move the caret by a transcript viewport; Shift extends
 the native selection. Paging and Escape restoration scroll only that viewport.
 The document, sidebar and waveforms retain their original sizing and horizontal
 scrolling; Helper does not clip or paint-contain the document or editor shells.
 
-**Disable Native Segment Click Seek** is enabled by default. Clicking a turn still
-selects it and opens its native editor, but does not restart either audio lane at
-the turn's beginning or interrupt running playback. Explicit playback buttons,
-timeline navigation and Alt-click word seeking remain available. Disable this
-feature in Helper settings to restore Babel's native click-to-start behavior;
-changes apply without reloading.
-The hook covers both native mouse-down selection (`onSelect`) and editing focus
-(`onActivate`). Only their synchronous incidental seek is suppressed; native
-selection/highlighting and explicit seek/play handlers remain intact.
+**Disable Native Segment Click Seek** is enabled by default. It suppresses the
+incidental seek performed by native turn selection (`onSelect`), without changing
+native edit activation/deactivation (`onActivate`/`onDeactivate`). Explicit playback,
+timeline navigation and Alt-click word seeking remain available.
+Disabling the feature restores the current native selection behavior: it seeks
+when the playhead is outside the selected turn, rather than unconditionally
+rewinding whenever its text editor is reactivated. Changes apply without reloading.
 
 **Tag Dropdown Keyboard Navigation** is enabled by default. In the native style
 tag dropdown opened by selecting words, Up/Down cycles options and Enter applies
 the highlighted tag through Babel's native editor. The selection and native undo
 are preserved; Escape, mouse selection and ordinary search input stay native.
+Up/Down keeps the highlighted option visible by scrolling only the dropdown,
+including wrap-around and native keyboard-opened tag menus. Already-visible
+options do not jump; the transcript, page and waveform scroll positions stay
+unchanged. Rapid keys share one post-key frame, with no background polling.
+
+Native tag chips keep their compact static width in both playback and editable
+views. The existing remove button sits at the chip corner outside text flow,
+without covering the tag label or widening the chip on hover. This scoped CSS
+correction works with appearance settings on or off and leaves native tag
+removal, text content and Undo unchanged.
 
 Native WaveSurfer notifications drive playback tracking; there is no independent
 row/cursor polling loop. Clock-only updates are coalesced to 66ms using incoming
@@ -88,8 +103,9 @@ DOM updates outside a hovered row do not schedule document-wide highlight passes
 
 Readonly status comes from the current native task, not `displayFeedback` URL
 flags. Writable feedback routes and empty transcripts remain supported; actual
-readonly tasks reject editing operations. Task navigation, live feature toggles
-and speaker filtering retain their own lifecycle boundaries.
+readonly tasks reject Helper editing operations, including when Babel offers
+local-only edits. Task navigation, live feature toggles and speaker filtering
+retain their own lifecycle boundaries.
 Guarded transcript mutations and rollback bind the complete row snapshot, pending
 local text and exact native undo-command identity. An undo/redo fork at the same
 history depth cannot authorize an old replacement receipt.
@@ -97,6 +113,60 @@ history depth cannot authorize an old replacement receipt.
 Feedback draft restoration shares one native hydration gate with Review Helper:
 disabling Helper's setting releases Helper's ownership, not an independently
 enabled Review Helper protection.
+
+## Performance and listening coverage
+
+Helper installs precompiled rendering optimizations at `document_start` for the
+verified October 15 editor `59327` and waveform/region/timeline modules. Factory
+sources must match exactly; a different Babel build keeps its native implementation
+and displays an unsupported-version notification. No runtime source evaluation or
+remote replacement code is used. **Reload the extension and refresh existing Babel
+tabs after updating.** Disabling/removing Helper also requires a page refresh to
+remove already-executed native rendering changes.
+
+The current October 15 refresh targets editor chunk `8022-bab2b789674d6122.js`
+and regions/timeline chunk `6264-da8e30159773903a.js`. It preserves Babel's
+updated button components and project navigation links. The optimized editor
+boundaries and both plugins retain their prior behavior with renamed bindings;
+the regenerated patches still require exact native source matches.
+
+Playback uses indexed region/word lookup, transition-only region styling, shared
+viewport calculations, and cached per-turn word/lint inputs. Transcript rows stay
+mounted and searchable: `content-visibility: auto` skips offscreen layout/painting
+without replacing Slate editors, browser Find text, selection, or native Undo.
+Focused rows synchronously release containment through `:focus-within`, keeping
+native editing and caret layout unrestricted. This is rendering containment,
+not JavaScript row virtualization.
+The port retains the native transcript component, copy handling, local-history
+cache, editing state, CJK-space highlighting and draft-tag issue suppression.
+It reuses upstream word memoization instead of wrapping it again. Rate-aware
+bounded playback and its listener/timer cleanup remain native; timeline patches
+use the current viewport parameter order.
+
+
+Listening coverage follows continuous native Web Audio clock spans rather than
+discarding playback after a two-second UI callback delay. Explicit seek, pause,
+mute, speed, source and loop boundaries prevent skipped or inaudible intervals
+from becoming credit. Native speaker obligations, 100ms bins and final-half-second
+coverage semantics remain intact; the native store and submission gate remain
+authoritative. Missing coverage is maintained incrementally. UI notifications are
+coalesced to 200ms, and native-format storage checkpoints to two seconds during
+playback, with pause/task/page-lifecycle/submission flushes. A browser/process crash
+can still lose the uncheckpointed interval; this does not bypass listening checks.
+
+Minimap viewport movement reads geometry only; waveform/annotation/style changes
+invalidate content separately. Hidden lane candidates remain discoverable on
+visibility-only restoration. The magnifier reuses its decoded source and overlay
+nodes, rendering only for source/zoom/height/theme changes; a retired source is
+released before the next drag event acquires current ownership.
+
+Native-session publications own mount admission instead of duplicate global
+observers, including an initial MAIN bridge bootstrap before the editor mounts.
+Waveform theming uses verified registry recording IDs rather than DOM/Fiber graph
+crawling. Shipped linter rules reuse unchanged per-row work with explicit
+cross-row/settings/task invalidation; external rules remain uncached because their
+dependencies are not declared. Hover observation is scoped to the row and tooltip
+content, with shallow portal-mount observation.
 
 ## Automatic ZipEnhancer audio
 
@@ -107,6 +177,14 @@ Every new pair defaults to **90% Enhanced / 10% Original**; this is the committe
 The toolbar has one **Enhanced → Original** strength slider with **10-percentage-point detents**. Left is 100% Enhanced; right is byte-exact Original; intermediate positions linearly mix the retained recordings. Dragging only previews the snapped value; release commits one latest selection. Keyboard arrows move one detent, Home/End choose endpoints, and a 200ms release debounce prevents repeated reloads. Keyboard interaction cannot trigger Babel row navigation or seek. Cancelled gestures, task changes, disable, and teardown discard pending selections. The committed blend owns waveforms, playback, audio-boundary tools and Gold/Helper L0 capture. Transport, regions, transcript and selection survive paired reloads; choosing Original before enhancement finishes prevents a late result from overriding it.
 
 Changing strength never reruns the model. Endpoints reuse exact retained WAV bytes; intermediate output is mono PCM16 at the Original sample rate/frame count, with no gain normalization or extra gate. Original and Enhanced stay retained; only one committed mixed pair is kept in memory (plus temporary preparation/rollback resources), and mixed variants are not written to the persistent one-pair model cache. More Original brings back suppressed speech **and** noise/echo; the model changes phase, so linear blending can also cancel some components. Strength is a listening/recognition tradeoff, not a retuned neural model.
+
+Intermediate mixing and decoded-PCM WAV serialization run in a session-owned
+packaged worker before playback is paused for native source replacement. Superseded
+preparation is canceled; worker output buffers transfer back without a byte clone.
+Original/Enhanced endpoint data remains available for synchronous capture and
+restoration, while the worker holds no additional persistent endpoint-byte cache.
+Worker startup or processing failures are reported rather than falling back to
+main-thread DSP.
 
 Disabling waits for both native players to restore Original before releasing the
 bridge or allowing reactivation. Capture stays unavailable during that transition,
@@ -132,6 +210,12 @@ Every nonzero strength has a stable model/source/mix identity; timing and draft 
 ## Word-timed ghost cursor
 
 With Gold's current-task word timing available, the ghost cursor and Alt-click seeking use absolute word timestamps. Helper resolves visible speaker labels through Gold's task-scoped recording metadata, so UUID-named timing tracks work without access to page-world React internals. Stale or ambiguous mappings are not used. The cursor falls back to proportional positioning when no usable current-task timing or matching word anchors exist.
+
+Without word timing, rewinds reset the proportional cursor's lower bound on the
+same reaction-compensated clock used during forward playback. Lane toggles and
+Escape restoration share that bound instead of retaining a later word after seek.
+Each real blur captures the current native caret as its new baseline, including
+selections made by native commands without input or pointer events.
 
 Owned strength changes briefly hide/freeze the same ghost cursor instead of treating the native players' temporary pause as a real stop. Stale playback reads cannot stop a newly committed cursor. Same-task row remounts and equal-shaped native speaker filters resolve current DOM rows. A settled real pause, task navigation, or teardown disposes the cursor; the ghost never resumes transport itself.
 
@@ -230,7 +314,7 @@ Since **1.0.276**, **Normalized stutters** requires contiguous, case-insensitive
 
 ## Accept all linter warnings
 
-Press **Alt + Shift + A** on an editable transcription task to acknowledge all current linter warnings, including offscreen segments. This Workflow Helper action leaves errors, already-accepted warnings, and transcript text unchanged; it does not save or submit the task. Repeating it never undoes acknowledgements. It stops if the route or editing session changes.
+Press **Alt + Shift + A** on an editable transcription task to acknowledge current ordinary linter warnings, including offscreen segments. The action uses native history-backed callbacks and observes their commits; it does not depend on issue cards being visible in every row. Errors, signal questions, already-accepted warnings, transcript text and native selection are preserved. It does not explicitly save or submit, never toggles an accepted warning off, and stops if task, root, route, permissions or source identity changes.
 
 Change or disable the binding under **Shortcuts → Accept all linter warnings**. The action belongs to **Row Actions** and does not require Review Helper.
 

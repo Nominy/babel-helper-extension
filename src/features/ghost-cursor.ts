@@ -929,9 +929,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           playback.currentTime < previousTime;
         if (rewound) {
           // Explicit seeks and native loop wraps retire the forward-only floor.
+          // The new floor must use the same compensated clock as projection:
+          // raw seek time cancels reaction compensation and can pin the cursor
+          // to its pre-seek word. Lane toggles and Escape share this floor.
           helper.state.cursorBaseline = 0;
           helper.state.ghostCursorLaneProjections = {};
-          blurTime = playback.currentTime;
+          blurTime = helper.state.blurPlaybackTime = playback.currentTime - REACTION_TIME_OFFSET_SECONDS;
         }
         rememberGhostCursorPlaybackState(playback);
         if (!playback || !playback.ok || typeof playback.currentTime !== 'number') {

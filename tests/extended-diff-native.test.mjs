@@ -8,6 +8,24 @@ const bundled = await build({
   bundle: true, format: 'iife', platform: 'browser', write: false, logLevel: 'silent'
 });
 const source = bundled.outputFiles[0].text;
+const facadeBundle = await build({
+  entryPoints: ['../shared/babel-extension-platform/packages/babel-extension-e2e/fixtures/recreation/app/src/recovered/scenario-client.ts'],
+  bundle: true, format: 'cjs', platform: 'browser', write: false, logLevel: 'silent',
+  external: ['react', '@tanstack/react-query']
+});
+
+function recoveredFacade(client = {}) {
+  const module = { exports: {} };
+  vm.runInNewContext(facadeBundle.outputFiles[0].text, {
+    module, exports: module.exports,
+    require(name) {
+      if (name === 'react') return {};
+      if (name === '@tanstack/react-query') return { useQuery: options => options, useMutation: options => options };
+      throw new Error(`Unexpected facade import: ${name}`);
+    }
+  });
+  return module.exports.createTrpcFacade(client, {}).h;
+}
 
 function payload() {
   return {
@@ -39,7 +57,8 @@ function freeze(value) {
   return value;
 }
 
-function harness({ data = payload(), isDiffMode = true, selected = 'comparison', fetch } = {}) {
+function harness({ data = payload(), isDiffMode = true, selected = 'comparison', fetch,
+  queryKey = [['transcriptions', 'getTranscriptionDiff'], { input: { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' }, type: 'query' }] } = {}) {
   const timers = [], writes = [], selections = [], toggles = [];
   const window = new EventTarget();
   Object.assign(window, {
@@ -60,7 +79,7 @@ function harness({ data = payload(), isDiffMode = true, selected = 'comparison',
     }
   };
   const observer = {
-    options: { queryKey: [['transcriptions', 'getTranscriptionDiff'], { input: { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' } }] },
+    options: { queryKey },
     getCurrentResult: () => ({ data: query.state.data, status: query.state.status || (query.state.data ? 'success' : 'pending'),
       error: query.state.error, refetch: observer.refetch }),
     getCurrentQuery: () => query,
@@ -77,14 +96,14 @@ function harness({ data = payload(), isDiffMode = true, selected = 'comparison',
   function mount(reviewActionId) {
     const editor = { return: root, memoizedProps: { reviewActionId, readOnly: true, transcriptionChunkProcessedRecordings: [] }, memoizedState: { memoizedState: observer } };
     const panel = { return: editor, memoizedProps: { annotations: [], tracks: [], saveState: {}, onSave() {}, renderTranscript() {} } };
-    const transcript = { return: editor, memoizedProps: { turns: [], handlers: { onChangeText() {} }, readOnly: true } };
+    const transcript = { return: editor, memoizedProps: { turns: [], editingId: null, handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} }, readOnly: true } };
     const controls = { return: editor, memoizedProps: toolbar };
     root.child = editor; editor.child = panel; panel.sibling = transcript; transcript.sibling = controls;
     return editor;
   }
   mount('task');
   const attributes = new Map(), surface = { '__reactFiber$test': root };
-  const document = {
+  const document = Object.assign(new EventTarget(), {
     documentElement: {
       getAttribute: name => attributes.get(name) ?? null,
       setAttribute: (name, value) => attributes.set(name, value),
@@ -92,7 +111,7 @@ function harness({ data = payload(), isDiffMode = true, selected = 'comparison',
     },
     querySelector: selector => selector === '[data-transcript-scroll]' ? surface : null,
     querySelectorAll: () => [surface]
-  };
+  });
   class CustomEvent extends Event {
     constructor(type, options) { super(type); this.detail = options?.detail; }
   }
@@ -242,7 +261,7 @@ test('side projection keeps native split-turn alignment and tag metadata without
   for (const [mode, expected] of [['reference', ['old [laugh]', 'words']], ['current', ['new', 'words']]]) {
     h.apply(mode);
     const projected = h.query.state.data.speakerDiffs[0].segmentMappings[0];
-    // Native 36978 slices by current-side word positions; removed tokens wait
+    // Native diff rendering slices by current-side word positions; removed tokens wait
     // for the next current token instead of consuming a current-side position.
     const turns = projected.segmentsB.map(segment => {
       const [start, end] = segment.wordRange;
@@ -285,6 +304,62 @@ test('native diff readiness comes from the matching query, including cache-only 
   h.query.state.status = 'error';
   h.query.state.error = new Error('native query rejected');
   assert.equal(h.bridge.readExtendedDiffState().reason, 'native query rejected');
+  h.bridge.dispose();
+});
+
+test('recovered pending query is admitted before payload arrival and drives all readonly diff modes', () => {
+  const input = { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' };
+  const native = recoveredFacade().transcriptions.getTranscriptionDiff.useQuery(input, { enabled: true });
+  assert.deepEqual(structuredClone(native.queryKey), [['transcriptions', 'getTranscriptionDiff'], { input, type: 'query' }]);
+  const h = harness({ data: null, queryKey: native.queryKey });
+  const pending = h.bridge.readExtendedDiffState();
+  assert.equal(pending.ok, true);
+  assert.equal(pending.status, 'loading', 'an actual pending facade query is not a missing native contract');
+  assert.equal(h.timers.length, 0);
+  h.query.state.data = payload();
+  assert.equal(h.bridge.readExtendedDiffState().status, 'ready');
+  for (const mode of ['reference', 'current', 'fusion']) {
+    assert.equal(h.apply(mode).patchedCurrentDiffResult, true);
+    const text = h.render();
+    if (mode !== 'current') assert.match(text, /old \[laugh\]/);
+    if (mode !== 'reference') assert.match(text, /new/);
+    if (mode === 'reference') assert.doesNotMatch(text, /new/);
+    if (mode === 'current') assert.doesNotMatch(text, /old|laugh|deleted/);
+  }
+  assert.equal(h.timers.length, 0);
+  h.bridge.dispose();
+});
+
+test('recovered query cache utilities share native keys and preserve input-free filter prefixes', () => {
+  const calls = [];
+  const facade = recoveredFacade(new Proxy({}, { get: (_target, method) => (...args) => calls.push({ method, args }) }));
+  const input = { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' };
+  const queryKey = structuredClone(facade.transcriptions.getTranscriptionDiff.useQuery(input).queryKey);
+  const utilities = facade.useUtils().transcriptions.getTranscriptionDiff;
+  for (const operation of ['fetch', 'prefetch', 'getData', 'setData']) {
+    utilities[operation](input, payload());
+    const { args } = calls.at(-1);
+    assert.deepEqual(structuredClone(args[0].queryKey || args[0]), queryKey, operation);
+  }
+  for (const operation of ['invalidate', 'refetch', 'cancel']) {
+    utilities[operation](input);
+    assert.deepEqual(structuredClone(calls.at(-1).args[0].queryKey), [queryKey[0], { input }], operation);
+    utilities[operation]();
+    assert.deepEqual(structuredClone(calls.at(-1).args[0].queryKey), [queryKey[0]], `${operation} all inputs`);
+  }
+  assert.deepEqual(structuredClone(facade.worker.getProjects.useQuery().queryKey),
+    [['worker', 'getProjects'], { type: 'query' }]);
+  assert.deepEqual(structuredClone(facade.transcriptions.saveAnnotationsByReviewActionId.useMutation().mutationKey),
+    [['transcriptions', 'saveAnnotationsByReviewActionId']]);
+});
+
+test('an unsupported pending query contract still fails instead of waiting or polling', () => {
+  const h = harness({ data: null, queryKey: ['transcriptions.getTranscriptionDiff',
+    { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' }] });
+  const state = h.bridge.readExtendedDiffState();
+  assert.equal(state.ok, false);
+  assert.equal(state.reason, 'transcription-diff-query-not-found');
+  assert.equal(h.timers.length, 0);
   h.bridge.dispose();
 });
 

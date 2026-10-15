@@ -54,7 +54,21 @@ test('native playback ghost motion measurement preserves speed rewind and pause 
     : index === 1 ? { ...annotation, startTimeInSeconds: 9.1, endTimeInSeconds: 11 } : annotation) } });
   await ready(page);
   await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.ready)).toBe(true);
-  await editors(page).first().press('Home');
+  // Set both native Slate and browser selection, rather than a DOM-only range
+  // that can race the editor's initial selection or pending native focus command.
+  const origin = await editors(page).first().evaluate(element => {
+    const row = element.closest('[data-annotation-id]');
+    const id = crypto.randomUUID();
+    row.dispatchEvent(new CustomEvent('babel-helper:editor-control', {
+      bubbles: true,
+      detail: JSON.stringify({ id, annotationId: row.dataset.annotationId, operation: 'focus', start: 0, end: 0 })
+    }));
+    const result = JSON.parse(row.getAttribute('data-babel-helper-editor-result'));
+    row.removeAttribute('data-babel-helper-editor-result');
+    if (result.id !== id) throw new Error('Native focus command did not answer');
+    return result;
+  });
+  expect(origin).toMatchObject({ ok: true, start: 0, end: 0 });
   await caret(editors(page).first(), 0);
   await page.keyboard.press('Escape');
   const ghost = page.locator('[data-babel-helper-ghost-cursor]');

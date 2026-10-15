@@ -31,6 +31,7 @@
         "https://dashboard.babel.audio/*"
       ],
       "js": [
+        "dist/content/native-performance-entry.js",
         "dist/content/mod-host.js"
       ],
       "run_at": "document_start",
@@ -56,6 +57,7 @@
         "dist/content/lazy-session.js",
         "dist/content/playback-bridge.js",
         "dist/content/audio-enhancement-bridge.js",
+        "dist/content/audio-enhancement-worker.js",
         "dist/content/recovered-editor-bridge.js",
         "dist/content/timestamp-bridge.js",
         "dist/content/linter-bridge.js",

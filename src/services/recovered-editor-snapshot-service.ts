@@ -79,10 +79,17 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
     return bridgeLoadPromise;
   }
 
-  async function callRecoveredEditorBridge(operation, payload) {
+  async function callRecoveredEditorBridge(operation, payload, timeoutMs = BRIDGE_TIMEOUT_MS) {
+    const revision = helper.state.sessionLifecycleRevision;
     const ready = await injectRecoveredEditorBridge();
     if (!ready) {
       return null;
+    }
+    if (operation === 'accept-all-warnings' &&
+        (helper.state.sessionLifecycleRevision !== revision ||
+          readNativeSessionState()?.reviewActionId !== payload?.reviewActionId ||
+          !helper.runtime.isSessionInteractive() || !helper.isFeatureEnabled('rowActions'))) {
+      return { ok: false, error: 'The native warning acknowledgement session changed', acceptedCount: 0 };
     }
 
     return new Promise((resolve) => {
@@ -112,7 +119,7 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
         bridgeInjected = false;
         bridgeLoadPromise = null;
         finish(null);
-      }, BRIDGE_TIMEOUT_MS);
+      }, timeoutMs);
       window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
       window.dispatchEvent(
         new CustomEvent(BRIDGE_REQUEST_EVENT, {
@@ -195,6 +202,10 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
 
   helper.clearRecoveredEditorDiffState = async function clearRecoveredEditorDiffState(reason) {
     return callRecoveredEditorBridge('clear-extended-diff-state', { reason: reason || 'clear' });
+  };
+
+  helper.acceptAllNativeWarnings = async function acceptAllNativeWarnings(payload) {
+    return callRecoveredEditorBridge('accept-all-warnings', payload, 31_000);
   };
 
   Object.assign(helper, createNativeFindReplaceClient(callRecoveredEditorBridge));

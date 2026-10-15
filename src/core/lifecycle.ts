@@ -30,8 +30,6 @@ export function registerLifecycle(helper: any) {
   let sessionFailure = '';
   let lastHref = window.location.href;
   let routeRefreshQueued = false;
-  let observedSurface = document.querySelector('[data-transcript-scroll]');
-  let mountObserver = null;
   let hotkeysObservedBody: HTMLElement | null = null;
 
   function isFeatureEnabled(featureKey) {
@@ -124,10 +122,6 @@ export function registerLifecycle(helper: any) {
     hotkeysObservedBody = null;
   }
 
-  function stopMountObserver() {
-    mountObserver?.disconnect();
-    mountObserver = null;
-  }
 
   function isHotkeysMutationCandidate(node) {
     if (!(node instanceof HTMLElement)) {
@@ -181,22 +175,6 @@ export function registerLifecycle(helper: any) {
     hotkeysObservedBody = document.body;
   }
 
-  function startMountObserver() {
-    if (mountObserver || !document.documentElement) return;
-    observedSurface = document.querySelector('[data-transcript-scroll]');
-    mountObserver = new MutationObserver(() => {
-      if (disposed) return;
-      const surface = document.querySelector('[data-transcript-scroll]');
-      if (surface === observedSurface) return;
-      observedSurface = surface;
-      sessionFailure = '';
-      sessionAccessInFlight = null;
-      lastNativeSession = '';
-      clearSessionFeatures('native-surface-change');
-      helper.runtime.scheduleRouteRefresh('native-surface-change');
-    });
-    mountObserver.observe(document.documentElement, { childList: true, subtree: true });
-  }
 
 
   function bindGlobalListeners() {
@@ -259,6 +237,8 @@ export function registerLifecycle(helper: any) {
     helper.runtime.scheduleRouteRefresh('pageshow');
   }
   function handleNativeSession() {
+    // MAIN owns mount/root observation and publishes a generation even when
+    // React replaces the root without changing this surface or the URL.
     if (disposed) return;
     helper.runtime.scheduleRouteRefresh('native-session-change');
   }
@@ -271,7 +251,6 @@ export function registerLifecycle(helper: any) {
     window.addEventListener('popstate', handlePopState, true);
     window.addEventListener('hashchange', handleHashChange, true);
     window.addEventListener('pageshow', handlePageShow, true);
-    startMountObserver();
     helper.state.routeWatchBound = true;
   }
 
@@ -291,7 +270,6 @@ export function registerLifecycle(helper: any) {
     disposed = true;
     document.removeEventListener('DOMContentLoaded', helper.init, false);
     clearSessionFeatures(reason || 'lifecycle-dispose');
-    stopMountObserver();
     unbindRouteWatchers();
     unbindGlobalListeners();
     if (typeof helper.unbindRowTracking === 'function') {
@@ -564,7 +542,6 @@ export function registerLifecycle(helper: any) {
 
   helper.runtime.refreshRouteSession = function refreshRouteSession(reason) {
     if (disposed) return false;
-    startMountObserver();
     if (!isTranscriptionRoute()) {
       if (helper.state.sessionActive || helper.state.sessionBindPromise || helper.state.onLoadedInFlight) {
         clearSessionFeatures(reason || 'route-exit');
@@ -588,7 +565,8 @@ export function registerLifecycle(helper: any) {
       if (helper.state.sessionActive || helper.state.sessionBindPromise || helper.state.onLoadedInFlight) {
         clearSessionFeatures(reason || 'native-session-unavailable');
       }
-      if (hasTranscriptSurface()) requestNativeSessionAccess();
+      // MAIN must be injected before the surface mounts; it owns the only mount observer.
+      if (!publication || hasTranscriptSurface()) requestNativeSessionAccess();
       return false;
     }
     if (status.readOnly) {

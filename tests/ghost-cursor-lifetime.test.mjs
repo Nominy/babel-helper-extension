@@ -799,6 +799,74 @@ test('ghost follows authoritative speed samples, rewinds within a row, and stops
   assert.equal(h.intervals.size, 0);
 });
 
+test('blurring snapshots the native caret instead of retaining a stale input baseline', async t => {
+  const h = createHarness(t);
+  const row = h.rows[0];
+  Object.assign(row.identity, { startSeconds: 0.5, endSeconds: 8 });
+  row.editor.value = 'Проверяем движение курсора вместе со звуком без задержки на каждом следующем слове.';
+  h.helper.invalidateRowTimeCache();
+  h.helper.state.cursorBaseline = row.editor.value.length;
+  h.helper.focusRow(row, { selectionStart: 0, selectionEnd: 0 });
+  h.helper.isEditable = element => element === row.editor.element;
+  row.editor.element.blur = () => {
+    h.focusedEditor = null;
+    document.activeElement = h.body;
+  };
+
+  assert.equal(h.helper.toggleEditorFocus(), true);
+  assert.equal(h.helper.state.lastBlur.selectionStart, 0);
+  assert.equal(h.helper.state.cursorBaseline, 0, 'native selection changes need not emit an input or keyup event');
+  h.helper.state.blurPlaybackTime = 0.5;
+  h.playback.currentTime = 0.9013333333333334;
+  await h.start();
+  assert.equal(h.helper.state.ghostCursorOffset, 0, 'the first projection must use the just-blurred caret');
+  h.playback.currentTime = 3.1013333333333333;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorOffset, 19, 'normal forward playback advances from that caret');
+});
+
+for (const { blurTime, beforeOffset, description } of [
+  { blurTime: 0.5, beforeOffset: 44, description: 'a one-second rewind' },
+  { blurTime: 5, beforeOffset: 48, description: 'a rewind before the original blur' }
+]) {
+  test(`untimed ghost preserves reaction compensation across ${description} and lane changes`, async t => {
+    const h = createHarness(t);
+    for (const row of h.rows) {
+      Object.assign(row.identity, { startSeconds: 0.5, endSeconds: 8 });
+      row.editor.value = 'Проверяем движение курсора вместе со звуком без задержки на каждом следующем слове.';
+    }
+    h.helper.invalidateRowTimeCache();
+    h.helper.state.cursorBaseline = 0;
+    h.helper.state.blurPlaybackTime = blurTime;
+    h.helper.state.blurRestorePending = true;
+    h.playback = { ok: true, paused: false, currentTime: blurTime, playbackRate: 2 };
+    await h.start();
+    h.playback.currentTime = 5.226666666666667;
+    await h.tick();
+    assert.equal(h.helper.state.ghostCursorOffset, beforeOffset);
+    const element = h.helper.state.ghostCursorElement;
+    const beforeLeft = h.rows[0].editor.getCaretRect(beforeOffset).left;
+
+    h.playback.currentTime = 4.264000000000001;
+    await h.tick();
+    assert.equal(h.helper.state.ghostCursorOffset, 34, 'rewind projects compensated time, not the raw seek destination');
+    const rewindLeft = h.rows[0].editor.getCaretRect(34).left;
+    assert.ok(rewindLeft < beforeLeft);
+    assert.equal(element.style.transform, `translate3d(${rewindLeft}px, 10px, 0)`);
+    assert.equal(element.style.transition, 'none', 'the backward jump is immediate');
+    assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].offset, 34);
+    assert.equal(h.helper.toggleGhostCursorLane(), true);
+    assert.equal(h.helper.state.ghostCursorRow, h.rows[1]);
+    assert.equal(h.helper.state.ghostCursorOffset, 34, 'Tab must not restore the retired blur-time floor');
+
+    h.playback.currentTime = 4.482666666666667;
+    await h.tick();
+    assert.equal(h.helper.state.ghostCursorOffset, 37, 'forward samples resume from the compensated rewind position');
+    assert.equal(h.helper.toggleEditorFocus(), true);
+    assert.equal(h.rows[1].editor.selectionStart, 37, 'Escape restores the rendered lane and rewound position');
+  });
+}
+
 test('ghost reads caret geometry before writing styles and snaps across row boundaries', async t => {
   const h = createHarness(t);
   Object.assign(h.rows[1].identity, {

@@ -595,12 +595,45 @@ test('native minimap includes every committed turn and scale targets recording i
     closest(selector) { return selector.includes('[role="slider"]') ? this : null; }
     contains(element) { return element === this; }
   }
+  class NativeShadowRoot {
+    constructor(host, wrapper, scroll) { Object.assign(this, { host, wrapper, scroll }); }
+    querySelector(selector) {
+      return selector === '[part="wrapper"]' ? this.wrapper : selector === '[part="scroll"]' ? this.scroll : null;
+    }
+    contains(element) { return element === this.wrapper || element === this.scroll; }
+  }
+  const eventSource = () => {
+    const listeners = new Map();
+    return {
+      listeners,
+      on(event, listener) {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event).add(listener);
+        return () => listeners.get(event)?.delete(listener);
+      },
+      un(event, listener) { listeners.get(event)?.delete(listener); },
+      emit(event, ...args) { for (const listener of listeners.get(event) || []) listener(...args); }
+    };
+  };
+  const observers = [];
+  class NativeObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+  }
+  let styleReads = 0;
+  let annotationReads = 0;
+  const channel = new Float32Array([0.1, 0.4, 0.2]);
+  const audio = { duration: 1000, numberOfChannels: 1, getChannelData: () => channel };
+  const lensRenders = [];
+  const lensOptions = [];
+  const mount = new NativeElement();
   const services = new TestServiceRegistry();
   const pageWindow = new EventTarget();
   Object.assign(pageWindow, {
     BabelMods: { unsafe: { services } },
     setTimeout, clearTimeout,
-    getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+    getComputedStyle: () => { styleReads += 1; return { display: 'block', visibility: 'visible' }; }
   });
   const pageDocument = new EventTarget();
   const root = { stateNode: { current: null } };
@@ -617,7 +650,13 @@ test('native minimap includes every committed turn and scale targets recording i
   const calls = [];
   const lanes = ['first', 'second'].map(id => {
     const slider = new NativeElement({ role: 'slider', 'data-orientation': 'vertical', 'aria-valuemin': '0.3', 'aria-valuemax': '20', 'aria-valuenow': '20' });
-    const host = new NativeElement();
+    const host = new NativeElement({ 'data-babel-helper-minimap-host': `${id}-host` });
+    const wrapper = new NativeElement();
+    wrapper.scrollWidth = 10000;
+    const scroll = new NativeElement();
+    scroll.clientWidth = 320;
+    scroll.scrollLeft = 0;
+    host.shadowRoot = new NativeShadowRoot(host, wrapper, scroll);
     const fiber = {
       return: editor,
       memoizedProps: {
@@ -634,16 +673,56 @@ test('native minimap includes every committed turn and scale targets recording i
     host.__reactFiber$native = fiber;
     slider.__reactFiber$native = { return: fiber, memoizedProps: { min: 0.3, max: 20, step: 0.001 } };
     const wave = {
-      container: host, options: { minPxPerSec: 10 }, plugins: {},
+      ...eventSource(),
+      container: host, options: { minPxPerSec: 10, waveColor: 'blue' }, plugins: {},
+      renderer: { wrapper },
+      decodedData: audio,
       getDuration: () => 1000, getCurrentTime: () => 0,
-      setOptions() {}, exportPeaks: () => [[0.1, 0.4, 0.2]]
+      getDecodedData() { return this.decodedData; },
+      setOptions() {}, exportPeaks: () => [[0.1, 0.4, 0.2]],
+      constructor: {
+        create(options) {
+          const wrapper = new NativeElement();
+          wrapper.scrollWidth = 1000 * options.minPxPerSec;
+          const scroll = new NativeElement();
+          scroll.clientWidth = 180;
+          scroll.scrollLeft = 0;
+          mount.shadowRoot = new NativeShadowRoot(mount, wrapper, scroll);
+          const lens = {
+            options, renderer: {
+              wrapper,
+              reRender() {
+                wrapper.scrollWidth = 1000 * lens.options.minPxPerSec;
+                lensRenders.push(this.audioData);
+              }
+            },
+            setOptions(next) {
+              lensOptions.push(next);
+              this.options = { ...this.options, ...next };
+              this.renderer.reRender();
+            },
+            getDuration: () => 1000,
+            destroy() {}
+          };
+          return lens;
+        }
+      }
     };
     return { fiber, slider, host, wave };
   });
-  const annotations = Array.from({ length: 650 }, (_, index) => ({
+  const annotations = new Proxy(Array.from({ length: 650 }, (_, index) => ({
     id: `turn-${index}`, type: 'transcription', content: 'text',
     processedRecordingId: 'first', startTimeInSeconds: index, endTimeInSeconds: index + 0.5
+  })), { get(target, key, receiver) {
+    if (key === Symbol.iterator) annotationReads += 1;
+    return Reflect.get(target, key, receiver);
+  } });
+  const nativeRegions = annotations.map(annotation => ({
+    id: annotation.id, start: annotation.startTimeInSeconds, end: annotation.endTimeInSeconds,
+    color: 'blue', element: new NativeElement({ part: `region ${annotation.id}` })
   }));
+  const plugin = { ...eventSource(), getRegions: () => nativeRegions };
+  lanes[0].wave.plugins = { regions: plugin };
   const panel = {
     return: editor,
     memoizedProps: {
@@ -651,7 +730,7 @@ test('native minimap includes every committed turn and scale targets recording i
       onPlayPause() {}, onSeekToAnnotation() {}
     }
   };
-  const transcript = { return: panel, memoizedProps: { turns: annotations.slice(0, 2), handlers: { onChangeText() {} } } };
+  const transcript = { return: panel, memoizedProps: { turns: annotations.slice(0, 2), editingId: null, handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} } } };
   panel.child = transcript;
   editor.child = lanes[1].fiber;
   lanes[1].fiber.sibling = lanes[0].fiber;
@@ -659,8 +738,13 @@ test('native minimap includes every committed turn and scale targets recording i
   editor.memoizedState = { memoizedState: { current: Object.fromEntries(lanes.map(lane => [lane.fiber.memoizedProps.track.id, { wavesurfer: lane.wave }])) } };
   pageDocument.documentElement = seed;
   pageDocument.querySelectorAll = selector => selector.includes('main,') ? [seed] : selector.includes('[role="slider"]') ? [lanes[1].slider, lanes[0].slider] : [];
-  pageDocument.querySelector = selector => selector.includes('="first-host"') ? lanes[0].host : null;
-  for (const [name, value] of Object.entries({ window: pageWindow, document: pageDocument, HTMLElement: NativeElement, ShadowRoot: class {}, CustomEvent: TestCustomEvent })) {
+  pageDocument.querySelector = selector => selector.includes('="first-host"') ? lanes[0].host
+    : selector.includes('="lens-mount"') ? mount : null;
+  for (const [name, value] of Object.entries({
+    window: pageWindow, document: pageDocument, HTMLElement: NativeElement,
+    HTMLCanvasElement: class {}, ShadowRoot: NativeShadowRoot, CustomEvent: TestCustomEvent,
+    MutationObserver: NativeObserver, location: { href: 'https://dashboard.babel.audio/transcription?reviewActionId=native-task' }
+  })) {
     const old = Object.getOwnPropertyDescriptor(globalThis, name);
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
     t.after(() => old ? Object.defineProperty(globalThis, name, old) : delete globalThis[name]);
@@ -672,12 +756,202 @@ test('native minimap includes every committed turn and scale targets recording i
   assert.equal(minimap.ok, true);
   assert.equal(minimap.regions.length, 650, 'filtered/virtualized DOM does not truncate the full transcript');
   assert.equal(minimap.regions.at(-1).start, 649);
+  const reads = { styles: styleReads, annotations: annotationReads };
+  for (let index = 0; index < 20; index += 1) {
+    const viewport = native.getMinimapData('first-host', { viewportOnly: true });
+    assert.equal(viewport.ok, true);
+    assert.equal('regions' in viewport, false);
+    assert.equal('contentSignature' in viewport, false);
+  }
+  assert.deepEqual({ styles: styleReads, annotations: annotationReads }, reads,
+    'viewport requests must not read annotation contents or computed styles');
+
+  panel.memoizedProps.annotations = annotations.map(annotation => annotation.id === 'turn-10'
+    ? { ...annotation, endTimeInSeconds: 10.75 } : annotation);
+  root.stateNode.current = editor;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(native.getMinimapData('first-host', {}).regions[10].end, 10.75,
+    'native annotation commits invalidate cached content independently of viewport requests');
+
+  const ensured = native.ensureLens('first-host', 'lens-mount', 80, 3);
+  assert.equal(ensured.ok, true);
+  const firstLens = native.updateLens(ensured.id, 'turn-10', 'right', 180, 80, 3);
+  assert.equal(firstLens.ok, true);
+  const renderCount = lensRenders.length;
+  const optionsCount = lensOptions.length;
+  const dragReads = { styles: styleReads, annotations: annotationReads };
+  nativeRegions[10].end = 12;
+  const dragged = native.updateLens(ensured.id, 'turn-10', 'right', 180, 80, 3);
+  assert.equal(dragged.time, 12);
+  assert.equal(dragged.regions.find(region => region.id === 'turn-10').end, 12);
+  assert.equal(native.getMinimapData('first-host', {}).regions[10].end, 10.75,
+    'transient native bounds belong to the lens, not committed minimap content');
+  assert.equal(lensRenders.length, renderCount);
+  assert.equal(lensOptions.length, optionsCount);
+  // Full minimap data reads the host style once; the lens drag reads none.
+  assert.equal(styleReads, dragReads.styles + 1);
+  assert.equal(annotationReads, dragReads.annotations);
+  lanes[0].wave.options.waveColor = 'red';
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 80, 3);
+  assert.equal(lensRenders.length, renderCount + 1, 'theme update performs one renderer pass');
+  assert.equal(lensOptions.length, optionsCount + 1);
+  lanes[0].wave.decodedData = { ...audio };
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 80, 3);
+  assert.equal(lensRenders.length, renderCount + 2, 'new decoded source performs one renderer pass');
+  assert.equal(lensOptions.length, optionsCount + 1, 'source-only change does not reset options');
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 96, 3);
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 96, 3);
+  assert.equal(lensRenders.length, renderCount + 3, 'height changes render once, not on the next drag');
+  lanes[0].wave.renderer.wrapper.scrollWidth = 20000;
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 96, 3);
+  assert.equal(lensRenders.length, renderCount + 4, 'native zoom changes render once');
+  lanes[0].wave.emit('redraw');
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 96, 3);
+  native.updateLens(ensured.id, 'turn-10', 'right', 180, 96, 3);
+  assert.equal(lensRenders.length, renderCount + 5,
+    'a native redraw invalidates render-function/theme state even when option identities are unchanged');
   const scale = await native.setWaveformScaleByTrackId('first', 120, 1000, 'native-task');
   assert.equal(scale.ok, true);
   assert.equal(scale.current, 120);
   assert.deepEqual(calls, [['first', 120]], 'one native callback on the requested track, not visible index zero');
   editor.memoizedProps.reviewActionId = 'new-task';
+  const rendersBeforeStale = lensRenders.length;
+  assert.equal(native.updateLens(ensured.id, 'turn-10', 'right', 180, 80, 3).reason, 'stale-source');
+  assert.equal(lensRenders.length, rendersBeforeStale);
+  assert.equal(native.getMinimapData('first-host', { viewportOnly: true }).reason, 'stale-source');
+  native.destroyLens(ensured.id);
+  assert.ok(observers.every(observer => observer.disconnected), 'invalidated source observers are released');
   const stale = await native.setWaveformScaleByTrackId('first', 90, 1000, 'native-task');
   assert.equal(stale.reason, 'stale-task');
   assert.deepEqual(calls, [['first', 120]]);
+});
+
+test('magnifier keeps visible overlay nodes during drag and discards stale asynchronous updates', async t => {
+  const frames = [];
+  class LensElement {
+    constructor(part = '') {
+      this.attributes = new Map(part ? [['part', part]] : []);
+      this.children = [];
+      this.style = {};
+      this.isConnected = true;
+      this.parentElement = null;
+    }
+    setAttribute(name, value) { this.attributes.set(name, value); }
+    getAttribute(name) { return this.attributes.get(name) || null; }
+    removeAttribute(name) { this.attributes.delete(name); }
+    appendChild(node) { this.children.push(node); node.parentElement = this; }
+    remove() {
+      this.isConnected = false;
+      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this);
+    }
+    querySelector() { return null; }
+    getRootNode() { return scope; }
+    getBoundingClientRect() { return { left: 0, right: 100, top: 0, width: 400, height: 100 }; }
+  }
+  class LensShadowRoot {
+    querySelector(selector) {
+      return selector === '[part="regions-container"]' ? container
+        : ['[part="hover"]', '[part="wrapper"]', '[part="scroll"]'].includes(selector) ? host : null;
+    }
+  }
+  const host = new LensElement();
+  const container = new LensElement();
+  const scope = new LensShadowRoot();
+  scope.host = host;
+  host.shadowRoot = scope;
+  const region = new LensElement('region turn-one');
+  const handle = new LensElement('region-handle-right');
+  container.appendChild(region);
+  region.appendChild(handle);
+  const pageDocument = new EventTarget();
+  pageDocument.createElement = () => new LensElement();
+  const pageWindow = {
+    requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
+    cancelAnimationFrame() {}
+  };
+  const pageLocation = { href: 'https://dashboard.babel.audio/transcription?reviewActionId=one' };
+  let result = {
+    ok: true, time: 2, windowStart: 0, windowEnd: 3,
+    regions: [{ id: 'turn-one', start: 1, end: 2, backgroundColor: 'blue', borderRadius: '2px' }]
+  };
+  let pendingUpdate = null;
+  let lensSequence = 0;
+  const bridge = async operation => {
+    if (operation === 'ensure') return { ok: true, id: `lens-${++lensSequence}` };
+    if (operation === 'update') return pendingUpdate || result;
+    return { ok: true };
+  };
+  const helper = { state: {}, config: { hotkeysHelpRows: [] } };
+  t.after(() => helper.unbindMagnifier?.());
+  for (const [name, value] of Object.entries({
+    window: pageWindow, document: pageDocument, location: pageLocation,
+    HTMLElement: LensElement, Element: LensElement, ShadowRoot: LensShadowRoot,
+    __lensBridgeTest: bridge
+  })) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => previous ? Object.defineProperty(globalThis, name, previous) : delete globalThis[name]);
+  }
+  const bundled = await build({
+    entryPoints: [path.resolve('src/features/magnifier-feature.ts')],
+    bundle: true, write: false, format: 'esm', platform: 'browser', target: 'es2020',
+    plugins: [{
+      name: 'lens-render-boundaries',
+      setup(build) {
+        build.onResolve({ filter: /^(?:@nominy\/babel-extension-frontend|\.\.\/services\/bridge-client-service)$/ },
+          args => ({ path: args.path, namespace: 'lens-test' }));
+        build.onLoad({ filter: /.*/, namespace: 'lens-test' }, args => ({
+          contents: args.path.includes('bridge-client')
+            ? 'export const createMagnifierBridgeClient = () => globalThis.__lensBridgeTest;'
+            : 'export const themeRoot = () => {}; export const applyComponent = () => {};',
+          loader: 'js'
+        }));
+      }
+    }]
+  });
+  const feature = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
+  feature.registerMagnifierService(helper);
+  helper.bindMagnifier();
+  const pointer = type => {
+    const event = new Event(type);
+    Object.assign(event, { button: 0, buttons: 1, pointerId: 1, composedPath: () => [handle, region] });
+    pageDocument.dispatchEvent(event);
+  };
+  const draw = async () => {
+    frames.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  pointer('pointerdown');
+  await draw();
+  const magnifier = helper.state.magnifier;
+  const firstNode = magnifier.regionNodes.get('turn-one').node;
+  const firstWidth = firstNode.style.width;
+  result = { ...result, time: 2.5, regions: [{ ...result.regions[0], end: 2.5 }] };
+  pointer('pointermove');
+  await draw();
+  assert.equal(magnifier.regionNodes.get('turn-one').node, firstNode);
+  assert.notEqual(firstNode.style.width, firstWidth);
+  assert.equal(magnifier.regionsLayer.children.length, 1);
+  const retiredInstance = magnifier.bridgeInstanceId;
+  const resumedResult = { ...result, time: 2.75, regions: [{ ...result.regions[0], end: 2.75 }] };
+  result = { ok: false, reason: 'stale-source' };
+  pointer('pointermove');
+  await draw();
+  assert.equal(magnifier.bridgeInstanceId, null);
+  result = resumedResult;
+  pointer('pointermove');
+  await draw();
+  assert.notEqual(magnifier.bridgeInstanceId, retiredInstance);
+  assert.equal(magnifier.regionNodes.get('turn-one').node, firstNode);
+  assert.match(magnifier.badge.textContent, /2\.750s/);
+
+  let resolveUpdate;
+  pendingUpdate = new Promise(resolve => { resolveUpdate = resolve; });
+  pointer('pointermove');
+  await draw();
+  const widthBeforeNavigation = firstNode.style.width;
+  pageLocation.href = 'https://dashboard.babel.audio/transcription?reviewActionId=two';
+  resolveUpdate({ ...result, regions: [{ ...result.regions[0], end: 3 }] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(firstNode.style.width, widthBeforeNavigation, 'the previous task cannot repaint after navigation');
 });

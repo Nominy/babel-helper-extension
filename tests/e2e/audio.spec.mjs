@@ -213,6 +213,7 @@ test('stopping playback seeks to the ghost cursor inside an oversized wrapped ro
   await panel.getByLabel('Transcript editor text size in pixels').fill('30');
   await panel.getByRole('button', { name: 'Close Website Appearance editor' }).click();
   const row = nativeRow(page, 0);
+  const before = await rows(page);
   const scroll = transcriptScroll(page);
   await expect.poll(() => row.evaluate((element) => element.getBoundingClientRect().height))
     .toBeGreaterThan(await scroll.evaluate((element) => element.clientHeight));
@@ -223,18 +224,42 @@ test('stopping playback seeks to the ghost cursor inside an oversized wrapped ro
   await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
   const ghost = page.locator('[data-babel-helper-ghost-cursor]');
   const pane = await scroll.boundingBox();
+  const outerScroll = () => scroll.evaluate((element) => {
+    const offsets = [];
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      offsets.push([parent.scrollLeft, parent.scrollTop]);
+    }
+    return { offsets, window: [window.scrollX, window.scrollY] };
+  });
+  const beforeOuter = await outerScroll();
   await scroll.evaluate((element) => { element.scrollTop = 2400; });
   await expect(ghost).toBeHidden();
-  const ghostTop = await ghost.evaluate((element) => new DOMMatrixReadOnly(element.style.transform).m42);
-  expect(ghostTop).toBeGreaterThan(pane.y + pane.height);
-  const scrollBefore = await scroll.evaluate((element) => element.scrollTop);
+  // Hidden already before the manual scroll is not a fresh geometry sample.
+  // Wait for the playback marker to reflect the new viewport, without moving it.
+  await expect.poll(() => ghost.evaluate((element) =>
+    new DOMMatrixReadOnly(element.style.transform).m42)).toBeLessThan(pane.y);
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBe(2400);
   await page.keyboard.press('Escape');
   await expect(editor).toBeFocused();
   await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
-  const desired = scrollBefore + ghostTop - pane.y - pane.height / 2;
-  await expect.poll(async () => Math.abs((await scroll.evaluate((element) => element.scrollTop)) - desired))
-    .toBeLessThan(180);
-  expect((await textSelection(editor))[0]).toBeGreaterThan(0);
+  // Native blur swaps static text for Slate on restore. Inspect the actual
+  // restored caret, not a cached overlay transform from the previous layout.
+  await expect.poll(() => editor.evaluate((element) => {
+    const selection = window.getSelection();
+    if (!selection?.isCollapsed || !selection.rangeCount ||
+        !element.contains(selection.focusNode)) return Infinity;
+    const caret = selection.getRangeAt(0).getBoundingClientRect();
+    const viewport = element.closest('[data-transcript-scroll]');
+    const bounds = viewport.getBoundingClientRect();
+    if (!caret.height || caret.top < bounds.top || caret.bottom > bounds.bottom) return Infinity;
+    return Math.abs(caret.top + caret.height / 2 -
+      (bounds.top + viewport.clientTop + viewport.clientHeight / 2));
+  })).toBeLessThan(180);
+  const selection = await textSelection(editor);
+  expect(selection[0]).toBeGreaterThan(0);
+  expect(selection[1]).toBe(selection[0]);
+  expect(await outerScroll()).toEqual(beforeOuter);
+  expect(await rows(page)).toEqual(before);
 });
 
 test('disabled proportional restore restores the exact caret instead of advancing it', async ({ page, babel }) => {

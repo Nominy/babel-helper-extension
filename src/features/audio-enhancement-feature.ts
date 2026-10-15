@@ -8,6 +8,7 @@ import {
 } from '../services/audio-enhancement-stream';
 
 const SCRIPT_PATH = 'dist/content/audio-enhancement-bridge.js';
+const WORKER_PATH = 'dist/content/audio-enhancement-worker.js';
 const STRENGTH_KEYS: Record<string, true> = {
   ArrowLeft: true, ArrowRight: true, ArrowUp: true, ArrowDown: true, Home: true, End: true, PageUp: true, PageDown: true
 };
@@ -528,6 +529,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
         injectionScript = script;
         cancelInjection = () => { script.remove(); injectionScript = null; resolve(); };
         script.src = chromeApi.runtime.getURL(SCRIPT_PATH);
+        script.setAttribute('data-audio-worker-url', chromeApi.runtime.getURL(WORKER_PATH));
         script.async = false;
         script.onload = () => { script.remove(); injectionScript = null; cancelInjection = null; resolve(); };
         script.onerror = () => { script.remove(); injectionScript = null; cancelInjection = null; reject(new Error('Native audio enhancement bridge failed to load.')); };

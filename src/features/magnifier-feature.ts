@@ -213,11 +213,9 @@ export function registerMagnifierService(helper: any) {
       return;
     }
 
-    magnifier.regionsLayer.replaceChildren();
     const span = windowEnd - windowStart;
-    if (!(span > 0)) {
-      return;
-    }
+    const visible = new Set();
+    if (!(span > 0)) entries = [];
 
     for (const entry of entries) {
       const visibleStart = Math.max(windowStart, entry.start);
@@ -226,22 +224,36 @@ export function registerMagnifierService(helper: any) {
         continue;
       }
 
-      const region = document.createElement("div");
-      region.setAttribute("data-babel-helper-magnifier-region", entry.id);
-      region.style.position = "absolute";
-      region.style.top = "0";
+      visible.add(entry.id);
+      let overlay = magnifier.regionNodes.get(entry.id);
+      if (!overlay) {
+        const node = document.createElement("div");
+        node.setAttribute("data-babel-helper-magnifier-region", entry.id);
+        node.style.position = "absolute";
+        node.style.top = "0";
+        node.style.boxSizing = "border-box";
+        node.style.pointerEvents = "none";
+        overlay = { node, entry: {} };
+        magnifier.regionNodes.set(entry.id, overlay);
+        magnifier.regionsLayer.appendChild(node);
+      }
+      const region = overlay.node;
       region.style.left = ((visibleStart - windowStart) / span) * width + "px";
       region.style.width =
         Math.max(2, ((visibleEnd - visibleStart) / span) * width) + "px";
-      region.style.height = height + "px";
-      region.style.boxSizing = "border-box";
-      region.style.pointerEvents = "none";
-      region.style.borderRadius = entry.borderRadius;
-      region.style.backgroundColor = entry.backgroundColor;
-      region.style.borderLeft = entry.borderLeft;
-      region.style.borderRight = entry.borderRight;
-      region.style.filter = entry.filter;
-      magnifier.regionsLayer.appendChild(region);
+      if (overlay.height !== height) {
+        region.style.height = height + "px";
+        overlay.height = height;
+      }
+      for (const key of ["borderRadius", "backgroundColor", "borderLeft", "borderRight", "filter"]) {
+        if (overlay.entry[key] !== entry[key]) region.style[key] = entry[key];
+      }
+      overlay.entry = entry;
+    }
+    for (const [id, overlay] of magnifier.regionNodes) {
+      if (visible.has(id)) continue;
+      overlay.node.remove();
+      magnifier.regionNodes.delete(id);
     }
   }
 
@@ -306,6 +318,7 @@ export function registerMagnifierService(helper: any) {
       element,
       mount,
       regionsLayer,
+      regionNodes: new Map(),
       badge,
       hostMarker,
       mountMarker,
@@ -386,6 +399,8 @@ export function registerMagnifierService(helper: any) {
     }
 
     magnifier.syncPending = true;
+    const route = location.href;
+    const drag = helper.state.magnifierDrag;
 
     try {
       if (
@@ -400,7 +415,7 @@ export function registerMagnifierService(helper: any) {
       }
 
       const containerRect = magnifier.container.getBoundingClientRect();
-      const drag = helper.state.magnifierDrag;
+      if (!drag || drag.host !== magnifier.host) return;
       const x = getDragPosition(drag, containerRect);
       if (x === null || containerRect.width <= 0 || containerRect.height <= 0) {
         setStatus(magnifier, `${SCALE} waiting`);
@@ -433,7 +448,8 @@ export function registerMagnifierService(helper: any) {
           height,
           scale: SCALE,
         });
-        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) {
+        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected ||
+            location.href !== route || helper.state.magnifierDrag !== drag) {
           if (ensureResult?.id) void callBridge("destroy", { instanceId: ensureResult.id });
           return;
         }
@@ -446,7 +462,7 @@ export function registerMagnifierService(helper: any) {
         magnifier.bridgeInstanceId = ensureResult.id;
       }
 
-      let updateResult = await callBridge("update", {
+      const updateResult = await callBridge("update", {
         instanceId: magnifier.bridgeInstanceId,
         regionId: drag.regionId,
         side: drag.side,
@@ -454,40 +470,18 @@ export function registerMagnifierService(helper: any) {
         height,
         scale: SCALE,
       });
-      if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
-
-      if ((!updateResult || !updateResult.ok) && magnifier.bridgeInstanceId) {
-        await callBridge("destroy", {
-          instanceId: magnifier.bridgeInstanceId,
-        });
-        magnifier.bridgeInstanceId = null;
-        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
-
-        const retryEnsure = await callBridge("ensure", {
-          hostMarker: magnifier.hostMarker,
-          mountMarker: magnifier.mountMarker,
-          height,
-          scale: SCALE,
-        });
-        if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) {
-          if (retryEnsure?.id) void callBridge("destroy", { instanceId: retryEnsure.id });
-          return;
-        }
-        if (retryEnsure && retryEnsure.ok && retryEnsure.id) {
-          magnifier.bridgeInstanceId = retryEnsure.id;
-          updateResult = await callBridge("update", {
-            instanceId: magnifier.bridgeInstanceId,
-            regionId: drag.regionId,
-            side: drag.side,
-            width,
-            height,
-            scale: SCALE,
-          });
-        }
-      }
-      if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected) return;
+      if (helper.state.magnifier !== magnifier || !magnifier.host.isConnected ||
+          location.href !== route || helper.state.magnifierDrag !== drag) return;
 
       if (!updateResult || !updateResult.ok) {
+        if (updateResult?.reason === "stale-source") {
+          const retiredId = magnifier.bridgeInstanceId;
+          magnifier.bridgeInstanceId = null;
+          await callBridge("destroy", { instanceId: retiredId });
+          if (helper.state.magnifier !== magnifier || location.href !== route ||
+              helper.state.magnifierDrag !== drag) return;
+          // The next drag event acquires current ownership; other failures are not retried.
+        }
         setStatus(magnifier, `${SCALE} unavailable`);
         return;
       }

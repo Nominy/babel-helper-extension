@@ -62,6 +62,11 @@ const sharedModule = {
 const tasks = [
   {
     ...shared,
+    entryPoints: ['src/content/native-performance-entry.ts'],
+    outfile: 'dist/content/native-performance-entry.js'
+  },
+  {
+    ...shared,
     define: {
       __BABEL_MOD_INTERNALS_VERSION__: JSON.stringify(manifest.version)
     },
@@ -97,6 +102,11 @@ const tasks = [
     ...shared,
     entryPoints: ['src/content/audio-enhancement-bridge.ts'],
     outfile: 'dist/content/audio-enhancement-bridge.js'
+  },
+  {
+    ...shared,
+    entryPoints: ['src/content/audio-enhancement-worker.ts'],
+    outfile: 'dist/content/audio-enhancement-worker.js'
   },
   {
     ...shared,

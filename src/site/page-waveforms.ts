@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { AUDIO_ENHANCEMENT_STATE_EVENT, readAudioEnhancementState, readBabelPlaybackBindings, readBabelTrackBindings, readBabelTranscriptBindings, sleep, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
+import { AUDIO_ENHANCEMENT_STATE_EVENT, readAudioEnhancementState, readBabelAnnotationBindings, readBabelPlaybackBindings, readBabelTrackBindings, readBabelTranscriptBindings, sleep, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
 
 export function initMagnifierBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -1134,53 +1134,144 @@ export function initMagnifierBridge() {
     return options;
   }
 
-  function syncLensDecodedAudio(record) {
-    if (!record || !record.wave || !record.sourceWave) {
-      return false;
-    }
-
-    const decodedData =
-      safe(() => record.sourceWave.getDecodedData(), null) ||
-      safe(() => record.sourceWave.decodedData, null) ||
-      safe(() => record.sourceWave.renderer.audioData, null);
-
-    if (!decodedData) {
-      return false;
-    }
-
-    safe(() => {
-      record.wave.decodedData = decodedData;
-    }, null);
-    safe(() => {
-      record.wave.renderer.audioData = decodedData;
-    }, null);
-    safe(() => {
-      record.wave._duration = getDuration(record.sourceWave);
-    }, null);
-    safe(() => {
-      record.wave.options.duration = getDuration(record.sourceWave);
-    }, null);
-
-    const rendered = safe(() => {
-      if (record.wave.renderer && typeof record.wave.renderer.render === 'function') {
-        record.wave.renderer.render(decodedData);
-        return true;
-      }
-
-      return false;
-    }, false);
-
-    safe(() => {
-      if (rendered && record.wave.renderer && typeof record.wave.renderer.reRender === 'function') {
-        record.wave.renderer.reRender();
-      }
-    }, null);
-
-    return rendered;
+  function syncLensDecodedAudio(record, options) {
+    const decodedData = getDecodedAudioForPeaks(record.sourceWave);
+    if (!decodedData) return false;
+    const sourceChanged = record.decodedData !== decodedData;
+    if (!sourceChanged && !options && record.renderRevision === record.source.renderRevision) return true;
+    const duration = getDuration(record.sourceWave);
+    record.wave.decodedData = decodedData;
+    record.wave.renderer.audioData = decodedData;
+    record.wave._duration = duration;
+    record.wave.options.duration = duration;
+    // WaveSurfer.setOptions already calls renderer.reRender. Never follow it
+    // with render/reRender again, and leave an unchanged drag frame alone.
+    if (options) record.wave.setOptions(options);
+    else record.wave.renderer.reRender();
+    record.decodedData = decodedData;
+    record.renderRevision = record.source.renderRevision;
+    return true;
   }
 
   const minimapPeakCache = new WeakMap();
   const minimapNavigationTokens = new WeakMap();
+  const visualSources = new Map();
+  const minimapSources = new Map();
+  const CONTENT_EVENT = 'babel-helper-waveform-content-changed';
+
+  function releaseVisualSource(record) {
+    for (const dispose of record.disposers) dispose();
+    record.disposers.length = 0;
+    if (visualSources.get(record.wave) === record) visualSources.delete(record.wave);
+    for (const [marker, source] of minimapSources) {
+      if (source === record) minimapSources.delete(marker);
+    }
+  }
+
+  function releaseMinimapSources(event) {
+    if (!Array.isArray(event.detail)) return;
+    for (const marker of event.detail) {
+      const record = minimapSources.get(marker);
+      if (!record) continue;
+      minimapSources.delete(marker);
+      if (!Array.from(minimapSources.values()).includes(record) &&
+          !Array.from(instances.values()).some(lens => lens.source === record)) releaseVisualSource(record);
+    }
+  }
+
+  function visualSourceIsCurrent(record) {
+    return visualSources.get(record.wave) === record && record.host.isConnected &&
+      record.route === location.href && record.playback.isCurrent() &&
+      getCandidateContainer(record.wave) === record.container;
+  }
+
+  function getVisualSource(host, wave) {
+    let record = visualSources.get(wave);
+    if (record && visualSourceIsCurrent(record)) return record;
+    if (record) releaseVisualSource(record);
+    const playback = readBabelPlaybackBindings();
+    if (!playback?.isCurrent || !playback.waves.includes(wave)) return null;
+    record = {
+      host, wave, container: getCandidateContainer(wave), playback, route: location.href,
+      dirty: true, renderRevision: 0, regions: [], regionsById: new Map(), nativeRegions: new Map(),
+      annotations: null, disposers: []
+    };
+    const invalidate = (render = false) => {
+      record.dirty = true;
+      if (render === true) record.renderRevision += 1;
+      window.dispatchEvent(new CustomEvent(CONTENT_EVENT));
+    };
+    const invalidateRendering = () => invalidate(true);
+    const subscribe = (target, event, callback) => {
+      if (typeof target?.on !== 'function' || typeof target?.un !== 'function') {
+        throw new Error('Native waveform events unavailable: ' + event);
+      }
+      target.on(event, callback);
+      record.disposers.push(() => target.un(event, callback));
+    };
+    try {
+      record.disposers.push(subscribeBabelEditorCommits(() => {
+        if (!visualSourceIsCurrent(record)) {
+          releaseVisualSource(record);
+          invalidate();
+          return;
+        }
+        const annotations = readBabelAnnotationBindings()?.annotations;
+        if (annotations !== record.annotations) {
+          record.annotations = annotations;
+          invalidate();
+        }
+      }));
+      for (const event of ['decode', 'load', 'redraw']) subscribe(wave, event, invalidateRendering);
+      subscribe(wave, 'destroy', () => { releaseVisualSource(record); invalidate(); });
+      const plugin = Object.values(wave.plugins || {}).find(value => typeof value?.getRegions === 'function');
+      record.plugin = plugin;
+      if (plugin) {
+        for (const event of ['region-created', 'region-removed', 'region-updated']) {
+          subscribe(plugin, event, invalidate);
+        }
+      }
+      window.addEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, invalidateRendering);
+      record.disposers.push(() => window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, invalidateRendering));
+      const observer = new MutationObserver(mutations => {
+        if (mutations.some(mutation => {
+          const target = mutation.target;
+          if (!(target instanceof HTMLElement) ||
+              !target.getAttribute('part')?.split(/\s+/).includes('region')) return false;
+          if (mutation.attributeName !== 'style') return true;
+          // Native pointer movement changes only geometry; keep cached colors
+          // and computed borders until actual region styling changes.
+          const withoutBounds = value => (value || '').replace(/(?:^|;)\s*(?:left|width)\s*:[^;]*/g, '');
+          return withoutBounds(mutation.oldValue) !== withoutBounds(target.getAttribute('style'));
+        })) invalidate();
+      });
+      if (host.shadowRoot) observer.observe(host.shadowRoot, {
+        subtree: true, attributes: true, attributeOldValue: true, attributeFilter: ['style', 'class']
+      });
+      // Root theme changes affect computed region borders even without an
+      // inline style change on the region itself.
+      const themeObserver = new MutationObserver(invalidateRendering);
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+      record.disposers.push(() => observer.disconnect(), () => themeObserver.disconnect());
+    } catch (error) {
+      releaseVisualSource(record);
+      throw error;
+    }
+    visualSources.set(wave, record);
+    return record;
+  }
+
+  function refreshVisualRegions(record) {
+    if (!record.dirty) return;
+    record.regions = getSourceRegionEntries(record.wave);
+    record.regionsById = new Map(record.regions.map(region => [region.id, region]));
+    record.sortedRegions = record.regions.slice().sort((left, right) => left.start - right.start);
+    let maxEnd = 0;
+    record.prefixEnds = record.sortedRegions.map(region => (maxEnd = Math.max(maxEnd, region.end)));
+    record.nativeRegions = new Map((record.plugin?.getRegions() || []).map(region => [region.id, region]));
+    record.annotations = readBabelAnnotationBindings()?.annotations;
+    record.dirty = false;
+  }
 
   function resamplePeaksLinear(source, binCount) {
     if (!source || !source.length || !(binCount > 0)) {
@@ -1328,27 +1419,6 @@ export function initMagnifierBridge() {
     ].join(':');
   }
 
-  function getRegionSignatureForMinimap(wave) {
-    const regions = getSourceRegionEntries(wave);
-    if (!regions.length) {
-      return 'regions:0';
-    }
-
-    return (
-      'regions:' +
-      regions
-        .map((region) =>
-          [
-            Number(region.start).toFixed(3),
-            Number(region.end).toFixed(3),
-            region.backgroundColor || '',
-            region.borderLeft || '',
-            region.borderRight || ''
-          ].join(',')
-        )
-        .join(';')
-    );
-  }
 
   function getMinimapPeakSignature(wave) {
     const enhancement = readAudioEnhancementState();
@@ -1359,12 +1429,6 @@ export function initMagnifierBridge() {
     ].join('|');
   }
 
-  function getMinimapContentSignature(wave) {
-    return [
-      getMinimapPeakSignature(wave),
-      getRegionSignatureForMinimap(wave)
-    ].join('|');
-  }
 
   function downsampleAbsPeaksBounded(channelData, binCount) {
     if (!channelData || !channelData.length || !(binCount > 0)) {
@@ -3272,11 +3336,11 @@ export function initMagnifierBridge() {
     return bins === base.peaks.length ? Array.from(base.peaks) : resamplePeaksLinear(base.peaks, bins);
   }
 
-  function getSourceRegionEntries(sourceWave, liveBounds = false) {
+  function getSourceRegionEntries(sourceWave) {
     const host = getCandidateContainer(sourceWave);
     const trackProps = getTrackPropsForHost(host);
     const trackId = getTrackIdFromTrack(trackProps?.track);
-    const bindings = readBabelTranscriptBindings();
+    const bindings = readBabelAnnotationBindings();
     if (!bindings || !trackId) return [];
     const regionPlugin = Object.values(sourceWave.plugins || {}).find(
       plugin => typeof plugin?.getRegions === 'function'
@@ -3288,11 +3352,8 @@ export function initMagnifierBridge() {
           !Number.isFinite(annotation.startTimeInSeconds) || !Number.isFinite(annotation.endTimeInSeconds) ||
           annotation.endTimeInSeconds <= annotation.startTimeInSeconds) continue;
       const region = regionsById.get(annotation.id);
-      // Native annotations commit on region-updated (release), not region-update.
-      // Only the lens reads transient bounds; annotation-based operations keep
-      // using committed timestamps.
-      const start = liveBounds ? region?.start : annotation.startTimeInSeconds;
-      const end = liveBounds ? region?.end : annotation.endTimeInSeconds;
+      const start = annotation.startTimeInSeconds;
+      const end = annotation.endTimeInSeconds;
       if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
       const element = region?.element;
       const styles = element instanceof HTMLElement ? window.getComputedStyle(element) : null;
@@ -3516,7 +3577,16 @@ export function initMagnifierBridge() {
   }
 
   function getMinimapData(hostMarker, payload) {
-    const resolved = resolveWaveForHost(hostMarker);
+    const viewportOnly = Boolean(payload && payload.viewportOnly);
+    let source = minimapSources.get(hostMarker);
+    if (source && (!visualSourceIsCurrent(source) ||
+        source.host.getAttribute(MINIMAP_HOST_ATTR) !== hostMarker)) {
+      releaseVisualSource(source);
+      source = null;
+    }
+    // Viewport requests never discover a new host or inspect annotations.
+    if (viewportOnly && !source) return { ok: false, reason: 'stale-source' };
+    const resolved = source || resolveWaveForHost(hostMarker);
     const host = resolved.host;
     const wave = resolved.wave;
     if (!(host instanceof HTMLElement) || !host.isConnected || !wave || !isUsableWaveCandidate(wave, host)) {
@@ -3534,6 +3604,27 @@ export function initMagnifierBridge() {
       };
     }
 
+    if (!source) {
+      try {
+        source = getVisualSource(host, wave);
+      } catch (error) {
+        return { ok: false, reason: 'native-waveform-observation-unavailable', message: String(error) };
+      }
+      if (!source) return { ok: false, reason: 'missing-source-ownership' };
+      minimapSources.set(hostMarker, source);
+    }
+    if (viewportOnly) {
+      const viewport = getViewportMetrics(host, wave);
+      return {
+        ok: true,
+        duration: getDuration(wave),
+        currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
+        totalWidth: viewport.totalWidth,
+        visibleWidth: viewport.visibleWidth,
+        scrollLeft: viewport.scrollLeft
+      };
+    }
+
     const style = window.getComputedStyle(host);
     if (style.display === 'none' || style.visibility === 'hidden') {
       return {
@@ -3545,33 +3636,19 @@ export function initMagnifierBridge() {
     const duration = getDuration(wave);
     const sourcePixelsPerSecond = getSourcePixelsPerSecond(wave);
     const viewport = getViewportMetrics(host, wave);
-    const viewportOnly = Boolean(payload && payload.viewportOnly);
-
-    if (viewportOnly) {
-      return {
-        ok: true,
-        duration,
-        currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
-        contentSignature: getMinimapContentSignature(wave),
-        sourcePixelsPerSecond,
-        totalWidth: viewport.totalWidth,
-        visibleWidth: viewport.visibleWidth,
-        scrollLeft: viewport.scrollLeft
-      };
-    }
 
     const peakBins = clamp(Math.floor(Number(payload && payload.peakBins) || 512), 64, 2048);
+    refreshVisualRegions(source);
 
     return {
       ok: true,
       duration,
       currentTime: Number(safe(() => wave.getCurrentTime(), 0)) || 0,
-      contentSignature: getMinimapContentSignature(wave),
       sourcePixelsPerSecond,
       totalWidth: viewport.totalWidth,
       visibleWidth: viewport.visibleWidth,
       scrollLeft: viewport.scrollLeft,
-      regions: getSourceRegionEntries(wave),
+      regions: source.regions,
       peaks: collectMinimapPeaks(wave, peakBins)
     };
   }
@@ -3603,10 +3680,18 @@ export function initMagnifierBridge() {
       return { ok: false, reason: 'no-wave-instance' };
     }
 
+    let source;
+    try {
+      source = getVisualSource(host, sourceWave);
+    } catch (error) {
+      return { ok: false, reason: 'native-waveform-observation-unavailable', message: String(error) };
+    }
+    if (!source) return { ok: false, reason: 'missing-source-ownership' };
+
     let createError = null;
     const wave = safe(() => {
       try {
-        return factory(buildLensOptions(sourceWave, mount, scale, sourceMetrics));
+        return factory(buildLensOptions(sourceWave, mount, scale, { ...sourceMetrics, renderHeight: height }));
       } catch (error) {
         createError = error instanceof Error ? error.message : String(error);
         return null;
@@ -3623,6 +3708,7 @@ export function initMagnifierBridge() {
       sourcePath: sourceRecord ? sourceRecord.path : null,
       sourceMetrics,
       sourceWave,
+      source,
       wave
     };
 
@@ -3642,27 +3728,33 @@ export function initMagnifierBridge() {
     if (!record) {
       return { ok: false, reason: 'missing-instance' };
     }
-    const regions = getSourceRegionEntries(record.sourceWave, true);
-    const region = regions.find(entry => entry.id === regionId);
-    if (!region || (side !== 'left' && side !== 'right')) {
+    if (!record.mount.isConnected || !visualSourceIsCurrent(record.source)) {
+      return { ok: false, reason: 'stale-source' };
+    }
+    refreshVisualRegions(record.source);
+    const nativeRegion = record.source.nativeRegions.get(regionId);
+    const region = record.source.regionsById.get(regionId);
+    if (!region || !nativeRegion || !Number.isFinite(nativeRegion.start) ||
+        !Number.isFinite(nativeRegion.end) || nativeRegion.end <= nativeRegion.start ||
+        (side !== 'left' && side !== 'right')) {
       return { ok: false, reason: 'missing-region-boundary' };
     }
-    const time = side === 'left' ? region.start : region.end;
+    const time = side === 'left' ? nativeRegion.start : nativeRegion.end;
 
     const targetPixelsPerSecond = Math.max(1, (getSourcePixelsPerSecond(record.sourceWave) || 1) * scale);
 
-    safe(() => {
-      if (record.wave && typeof record.wave.setOptions === 'function') {
-        record.wave.setOptions({
-          minPxPerSec: targetPixelsPerSecond,
-          height: height
-        });
-      } else if (record.wave && typeof record.wave.zoom === 'function') {
-        record.wave.zoom(targetPixelsPerSecond);
-      }
-    }, null);
-
-    syncLensDecodedAudio(record);
+    let options = null;
+    for (const key of ['waveColor', 'progressColor', 'cursorColor', 'cursorWidth',
+      'barWidth', 'barGap', 'barRadius', 'barHeight', 'barAlign', 'barMinHeight',
+      'normalize', 'maxPeak', 'splitChannels', 'renderFunction']) {
+      const value = record.sourceWave.options[key];
+      if (record.wave.options[key] !== value) (options ||= {})[key] = value;
+    }
+    if (record.wave.options.minPxPerSec !== targetPixelsPerSecond) {
+      (options ||= {}).minPxPerSec = targetPixelsPerSecond;
+    }
+    if (record.wave.options.height !== height) (options ||= {}).height = height;
+    if (!syncLensDecodedAudio(record, options)) return { ok: false, reason: 'missing-audio' };
 
     const duration = getDuration(record.sourceWave) || getDuration(record.wave);
     if (!(duration > 0)) {
@@ -3697,11 +3789,32 @@ export function initMagnifierBridge() {
     const scrollLeft = clamp(time * targetPixelsPerSecond - width / 2, 0, maxScroll);
     scroll.scrollLeft = scrollLeft;
 
+    const windowStart = scrollLeft / targetPixelsPerSecond;
+    const windowEnd = (scrollLeft + width) / targetPixelsPerSecond;
+    // Only return overlays intersecting the lens. Read transient native
+    // bounds for the dragged region without rescanning annotations/styles.
+    const regions = [];
+    const sorted = record.source.sortedRegions;
+    let low = 0;
+    let high = sorted.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (record.source.prefixEnds[middle] <= windowStart) low = middle + 1;
+      else high = middle;
+    }
+    for (let index = low; index < sorted.length && sorted[index].start < windowEnd; index += 1) {
+      const entry = sorted[index];
+      if (entry.id !== regionId && entry.end > windowStart) regions.push(entry);
+    }
+    if (nativeRegion.end > windowStart && nativeRegion.start < windowEnd) {
+      regions.push({ ...region, start: nativeRegion.start, end: nativeRegion.end });
+    }
+
     return {
       ok: true,
       time,
-      windowStart: scrollLeft / targetPixelsPerSecond,
-      windowEnd: (scrollLeft + width) / targetPixelsPerSecond,
+      windowStart,
+      windowEnd,
       duration,
       sourcePixelsPerSecond: getSourcePixelsPerSecond(record.sourceWave),
       regions
@@ -3771,6 +3884,10 @@ export function initMagnifierBridge() {
       safe(() => record.wave.destroy(), null);
     }
     instances.delete(id);
+    if (record?.source && !Array.from(minimapSources.values()).includes(record.source) &&
+        !Array.from(instances.values()).some(lens => lens.source === record.source)) {
+      releaseVisualSource(record.source);
+    }
     return { ok: true };
   }
 
@@ -5002,6 +5119,7 @@ export function initMagnifierBridge() {
     for (const id of Array.from(instances.keys())) {
       destroyLens(id);
     }
+    for (const record of Array.from(visualSources.values())) releaseVisualSource(record);
     for (const hostMarker of Array.from(loops.keys())) {
       stopLoop(hostMarker, 'bridge-disposed');
     }
@@ -5016,6 +5134,7 @@ export function initMagnifierBridge() {
     unbindWaveformScaleUnlock();
     window.removeEventListener(REQUEST_EVENT, handleRequest, { capture: true });
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
+    window.removeEventListener('babel-helper-waveform-content-release', releaseMinimapSources);
     delete window.__babelHelperMagnifierBridge;
   }
 
@@ -5023,6 +5142,7 @@ export function initMagnifierBridge() {
 
   window.addEventListener(REQUEST_EVENT, handleRequest, { capture: true });
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
+  window.addEventListener('babel-helper-waveform-content-release', releaseMinimapSources);
 
   window.__babelHelperMagnifierBridge = {
     instances,

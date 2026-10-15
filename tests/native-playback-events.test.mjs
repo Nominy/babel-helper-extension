@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
+import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
 
 async function load(entry) {
   const result = await build({
@@ -308,3 +309,90 @@ test('clock event bursts have a 66ms event-only cadence and ordinary commits pub
   assert.equal(f.wave.listenerCount(), listenerCount, 'metadata-only commit does not churn wave listeners');
   release();
 });
+
+const editorContract = createNativeRenderFactories({}).find(entry => entry.id === 59327);
+const nativeEditorSource = editorContract.originals.find(source => source.includes('class tV {'));
+
+function boundedPlaybackFixture(f, source) {
+  const start = source.indexOf('let { getTracksRef: t11, tracks: n11, getTimelineIntervals:');
+  assert.notEqual(start, -1, 'The current native transport hook must be available');
+  const transport = source.slice(start, source.indexOf('let { getTracksRef: t11, playRegionOnce:', start));
+  const waves = [f.wave, wave()];
+  for (const player of waves) {
+    player.play = () => { player.paused = false; player.emit('play'); };
+    player.pause = () => { player.paused = true; player.emit('pause'); };
+    player.rate = 2;
+  }
+  const scope = {
+    p3: Object.fromEntries(waves.map((player, index) => [index, { wavesurfer: player }])),
+    k3: { current: null }, g3: { current: false }, h2: { current: false },
+    window: f.window, performance: { now: () => f.now }
+  };
+  // Execute the actual native callback bodies in their transport closure, both
+  // before and after Helper's factory transformation.
+  for (const name of ['S3', 'j2', 'N3', 'T3', 'I2', 'A2', 'E2', 'D2', 'M2', 'P2', 'L3']) {
+    const marker = `${name} = (0, a.useCallback)(`;
+    const offset = transport.indexOf(marker);
+    assert.notEqual(offset, -1, `Current transport callback ${name} must exist`);
+    const end = transport.indexOf('}, [', offset + marker.length);
+    assert.notEqual(end, -1);
+    scope[name] = new Function(...Object.keys(scope),
+      `return (${transport.slice(offset + marker.length, end + 1)});`)(...Object.values(scope));
+  }
+  return { waves, scope, playRegion: scope.M2, seek: scope.N3, toggle: scope.E2, cancel: scope.S3 };
+}
+
+for (const [variant, source] of [['native', nativeEditorSource], ['optimized', editorContract.factory.toString()]]) {
+  test(`${variant} current bounded playback uses rate-aware deadline and removes its listener at end crossing`, t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+    playback.playRegion(1, 3);
+    assert.equal([...f.timers.values()][0].delay, 2000, '2 audio seconds at 2x plus the native one-second grace');
+    assert.ok(playback.waves.every(player => !player.paused));
+    f.now = 500; f.wave.time = 2; f.wave.emit('timeupdate', 2);
+    assert.equal(f.timers.size, 1);
+    f.now = 1000; f.wave.time = 3; f.wave.emit('timeupdate', 3);
+    assert.ok(playback.waves.every(player => player.paused && player.time === 3));
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.wave.listenerCount(), 0);
+    assert.equal(playback.scope.k3.current, null);
+  });
+
+  test(`${variant} current bounded playback cancels on external seek, explicit seek and toggle without stale stops`, t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+    playback.playRegion(1, 3);
+    f.wave.time = 20; f.wave.emit('timeupdate', 20);
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.wave.listenerCount(), 0);
+    assert.equal(f.wave.time, 20, 'A discontinuity cancels, rather than seeking back to the old bound');
+    assert.equal(f.wave.paused, false);
+    playback.playRegion(1, 3);
+    playback.seek(10);
+    assert.equal(f.timers.size, 0);
+    assert.ok(playback.waves.every(player => player.time === 10));
+    playback.playRegion(1, 3);
+    playback.toggle();
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.wave.listenerCount(), 0);
+    assert.ok(playback.waves.every(player => player.paused));
+    playback.playRegion(1, 3);
+    f.wave.time = 0; f.wave.emit('timeupdate', 0);
+    assert.equal(f.timers.size, 0, 'Backward loop jumps cancel the old range as well');
+    playback.playRegion(1, 3);
+    playback.cancel();
+    playback.cancel();
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.wave.listenerCount(), 0, 'The native unmount cleanup is idempotent');
+  });
+
+  test(`${variant} current bounded playback deadline detects a seek even without a timeupdate`, t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+    playback.playRegion(1, 3);
+    const deadline = [...f.timers.values()][0];
+    f.now = 2000; f.wave.time = 20;
+    deadline.callback();
+    assert.equal(f.wave.time, 20);
+    assert.equal(f.wave.paused, false);
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.wave.listenerCount(), 0);
+  });
+}

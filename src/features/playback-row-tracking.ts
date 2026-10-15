@@ -113,8 +113,8 @@ export function registerPlaybackRowTracking(helper: any) {
     }
     const editor = getEditorControlFromTarget(event.target);
     if (!editor) return;
-    // Native36978 seeks on mousedown (static text) and mouseup (Slate).
-    // Own the complete gesture before either approximate native seek can run.
+    // Native text and Slate handlers may play on mouseup.
+    // Own the complete gesture before native approximate seeking can run.
     event.preventDefault();
     event.stopImmediatePropagation();
     if (event.type !== 'click') return;

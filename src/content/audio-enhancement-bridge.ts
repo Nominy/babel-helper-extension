@@ -11,7 +11,8 @@ import {
   validateEnhancementWav, isEnhancementInstalledTrack, isEnhancementCacheMetadata,
   type EnhancementCacheMetadata, type EnhancementSourceTrack
 } from '../services/audio-enhancement-stream';
-import { mixEnhancementWav, readSourceWavHeader } from './audio-enhancement-mix';
+import { readSourceWavHeader } from './audio-enhancement-mix';
+import { AudioEnhancementWorkerClient } from './audio-enhancement-worker-client';
 import { acquireNativeZoomReadiness } from './native-waveform-readiness';
 
 interface NativeRegionOptions {
@@ -140,6 +141,8 @@ type Session = {
   id: string; key: string; taskId: string; tracks: RetainedTrack[]; capturing: boolean; captureAbort: AbortController;
   model: string; variantKey: string; sourceNotice: string; patches: Map<NativeWave, WavePatch>; switching: boolean;
   selected?: SourcePair;
+  worker: AudioEnhancementWorkerClient;
+  queuedSwitch?: { nativeReplay: boolean; originalUrl: boolean; promise: Promise<void> };
   cache?: EnhancementCacheMetadata;
   regionAddPatches: Map<NativeRegionsPlugin, { add: NativeRegionsPlugin['addRegion']; wrapped: NativeRegionsPlugin['addRegion'] }>;
 };
@@ -192,36 +195,12 @@ function nativeSnapshot(restoringOriginal = false, includeSelection = false): Na
   };
 }
 
-/** Used only for a non-WAV/unreadable native source; preserve decoded float precision. */
-function decodedSourceWav(audio: AudioBuffer): ArrayBuffer {
-  const channels = audio.numberOfChannels;
-  const frames = audio.length;
-  const bytes = new ArrayBuffer(44 + frames * channels * 4);
-  const view = new DataView(bytes);
-  for (const [offset, value] of [[0, 'RIFF'], [8, 'WAVE'], [12, 'fmt '], [36, 'data']] as const) {
-    for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
-  }
-  view.setUint32(4, bytes.byteLength - 8, true);
-  view.setUint32(16, 16, true); view.setUint16(20, 3, true); view.setUint16(22, channels, true);
-  view.setUint32(24, audio.sampleRate, true); view.setUint32(28, audio.sampleRate * channels * 4, true);
-  view.setUint16(32, channels * 4, true); view.setUint16(34, 32, true); view.setUint32(40, frames * channels * 4, true);
-  const samples = Array.from({ length: channels }, (_, channel) => audio.getChannelData(channel));
-  let offset = 44;
-  for (let frame = 0; frame < frames; frame += 1) {
-    for (let channel = 0; channel < channels; channel += 1) {
-      view.setFloat32(offset, samples[channel][frame], true);
-      offset += 4;
-    }
-  }
-  return bytes;
-}
-
 function sourceWavTiming(bytes: ArrayBuffer): { sampleRate: number; frameCount: number } {
   const { sampleRate, frameCount } = readSourceWavHeader(bytes);
   return { sampleRate, frameCount };
 }
 
-export function initAudioEnhancementBridge(): void {
+export function initAudioEnhancementBridge(workerUrl = document.currentScript?.getAttribute('data-audio-worker-url') || ''): void {
   const page = window;
   if (page.__babelHelperAudioEnhancementBridge) return;
   let enabled = false;
@@ -293,6 +272,8 @@ export function initAudioEnhancementBridge(): void {
 
   function release(target: Session): void {
     target.captureAbort.abort();
+    target.worker.dispose();
+    target.queuedSwitch = undefined;
     for (const [plugin, patch] of target.regionAddPatches) {
       if (plugin.addRegion === patch.wrapped) plugin.addRegion = patch.add;
     }
@@ -321,8 +302,8 @@ export function initAudioEnhancementBridge(): void {
       if (target?.switching) await tail;
       if (!enabled || disposing || disposed || !ownsBridge() || !target || !current(target)) return nativeFetch.call(window, input, init);
       if (init?.signal?.aborted || (input instanceof Request && input.signal.aborted)) throw new DOMException('Aborted', 'AbortError');
-      const bytes = target.selected?.tracks[target.tracks.indexOf(track)]?.bytes;
-      if (bytes) return new Response(bytes, { status: 200, headers: { 'Content-Type': 'audio/wav', 'Content-Length': String(bytes.byteLength) } });
+      const blob = target.selected?.tracks[target.tracks.indexOf(track)]?.blob;
+      if (blob) return new Response(blob, { status: 200, headers: { 'Content-Type': 'audio/wav', 'Content-Length': String(blob.size) } });
     }
     return nativeFetch.call(window, input, init);
   };
@@ -342,12 +323,12 @@ export function initAudioEnhancementBridge(): void {
     // the selected WAV instead of supplying stale precomputed renderer peaks.
     patch.wrappedLoad = (...args: Parameters<NativeWave['load']>) => {
       if (!current(target)) return patch.load.apply(wave, args);
-      patch.strength = null;
+      if (args[0] !== track.audioUrl) patch.strength = null;
       return queueSwitch(target, true);
     };
     patch.wrappedLoadBlob = (...args: Parameters<NativeWave['loadBlob']>) => {
       if (!current(target)) return patch.loadBlob.apply(wave, args);
-      patch.strength = null;
+      if (args[0] !== target.selected?.tracks[target.tracks.indexOf(track)]?.blob) patch.strength = null;
       return queueSwitch(target, true);
     };
     wave.load = patch.wrappedLoad;
@@ -372,15 +353,19 @@ export function initAudioEnhancementBridge(): void {
       : await audioSha256(new TextEncoder().encode(JSON.stringify(['zip-linear-pcm16-v1', target.variantKey, strength])).buffer);
     // Hashing yields: discard an obsolete request before allocating either mix.
     if (!current(target) || strength !== latest()) throw new Error('Audio strength request was superseded.');
-    return {
-      strength, variantKey, tracks: target.tracks.map(track => {
-        if (strength === 0) return { bytes: track.original, blob: track.originalBlob };
-        if (!track.enhanced || !track.enhancedBlob) throw new Error('Enhanced audio is unavailable.');
-        if (strength === 100) return { bytes: track.enhanced, blob: track.enhancedBlob };
-        const bytes = mixEnhancementWav(track.original, track.enhanced, strength);
-        return { bytes, blob: new Blob([bytes], { type: 'audio/wav' }) };
-      })
-    };
+    const tracks = strength === 0
+      ? target.tracks.map(track => ({ bytes: track.original, blob: track.originalBlob }))
+      : strength === 100
+        ? target.tracks.map(track => {
+          if (!track.enhanced || !track.enhancedBlob) throw new Error('Enhanced audio is unavailable.');
+          return { bytes: track.enhanced, blob: track.enhancedBlob };
+        })
+        : await target.worker.mix(target.tracks.map(track => {
+          if (!track.enhancedBlob) throw new Error('Enhanced audio is unavailable.');
+          return { original: track.originalBlob, enhanced: track.enhancedBlob };
+        }), strength);
+    if (!current(target) || strength !== latest()) throw new Error('Audio strength request was superseded.');
+    return { strength, variantKey, tracks };
   }
 
   async function replaceSources(target: Session, strength: number, originalUrl = false, followDesired = true): Promise<void> {
@@ -404,6 +389,43 @@ export function initAudioEnhancementBridge(): void {
     if (!priorPair) return;
     const priorStatus = state.status;
     const priorMessage = state.message || '';
+    const stillSameWaves = () => {
+      const fresh = nativeSnapshot(!enabled);
+      return current(target, fresh) && entries.every(entry => fresh?.tracks.find(track => track.id === entry.track.trackId)?.wave === entry.wave);
+    };
+    target.switching = true;
+    publish({ status: 'switching', message: strength > 0 ? 'Preparing selected audio for native players…' : 'Restoring original audio…' });
+    let preparedPair: SourcePair | undefined;
+    try {
+      while (stillSameWaves()) {
+        const requested = latestStrength();
+        try {
+          preparedPair = await sourcePair(target, requested, latestStrength);
+          break;
+        } catch (error) {
+          if (!stillSameWaves()) break;
+          if (requested !== latestStrength()) continue;
+          throw error;
+        }
+      }
+    } catch (error) {
+      target.switching = false;
+      throw error;
+    }
+    if (!preparedPair || !stillSameWaves()) { target.switching = false; return; }
+    if (preparedPair === priorPair && entries.every(entry =>
+      entry.patch.strength === priorPair.strength && entry.patch.decoded === entry.wave.getDecodedData())) {
+      target.switching = false;
+      publish({
+        strength: priorPair.strength, variantKey: priorPair.variantKey,
+        status: !followDesired && priorStatus === 'error' ? 'error' : target.variantKey ? 'ready' : priorStatus,
+        message: !followDesired && priorStatus === 'error' ? priorMessage : target.variantKey
+          ? selectionNotice(target, priorPair.strength) : priorMessage
+      });
+      return;
+    }
+    // Worker preparation leaves the committed native audio playing. Snapshot
+    // regions and playback only now so edits made during preparation stay native.
     const transport = entries.map(({ wave }) => {
       const plugins = (wave.getActivePlugins?.() || []).filter(isRegionsPlugin);
       return {
@@ -421,9 +443,9 @@ export function initAudioEnhancementBridge(): void {
       };
     });
     if (transport.some((saved, index) => saved.plugins.length && typeof entries[index].wave.once !== 'function')) {
+      target.switching = false;
       throw new Error('Native region editing requires ready notifications for audio source replacement.');
     }
-    target.switching = true;
     let ownPlaybackCommand = false;
     const playbackCleanups = entries.map(({ wave }, index) => {
       const play = wave.play, pause = wave.pause;
@@ -459,10 +481,6 @@ export function initAudioEnhancementBridge(): void {
         plugin.addRegion = wrapped;
       }
     }
-    const stillSameWaves = () => {
-      const fresh = nativeSnapshot(!enabled);
-      return current(target, fresh) && entries.every(entry => fresh?.tracks.find(track => track.id === entry.track.trackId)?.wave === entry.wave);
-    };
     function restoreRegions(): void {
       if (!stillSameWaves()) return;
       for (const saved of transport) {
@@ -577,13 +595,16 @@ export function initAudioEnhancementBridge(): void {
       await Promise.all(playing);
     }
     try {
-      publish({ status: 'switching', message: strength > 0 ? 'Preparing selected audio for native players…' : 'Restoring original audio…' });
       pauseForSwitch();
-      let appliedPair: SourcePair | undefined;
+      let appliedPair: SourcePair | undefined = preparedPair;
+      preparedPair = undefined;
       while (stillSameWaves()) {
         const requested = latestStrength();
         try {
-          appliedPair = await sourcePair(target, requested, latestStrength);
+          if (appliedPair?.strength !== requested) {
+            appliedPair = undefined;
+            appliedPair = await sourcePair(target, requested, latestStrength);
+          }
         } catch (error) {
           if (!stillSameWaves()) return;
           if (requested !== latestStrength()) continue;
@@ -631,7 +652,11 @@ export function initAudioEnhancementBridge(): void {
   }
 
   function queueSwitch(target: Session, nativeReplay = false, originalUrl = false): Promise<void> {
+    if (target.queuedSwitch?.nativeReplay === nativeReplay && target.queuedSwitch.originalUrl === originalUrl) {
+      return target.queuedSwitch.promise;
+    }
     const operation = tail.then(async () => {
+      if (target.queuedSwitch?.promise === queued.promise) target.queuedSwitch = undefined;
       if (!current(target) || !target.tracks.length) return;
       const retainCommitted = nativeReplay && enabled && state.status === 'error';
       await replaceSources(target, retainCommitted ? state.strength : requestedStrength(target), originalUrl, !retainCommitted);
@@ -639,6 +664,8 @@ export function initAudioEnhancementBridge(): void {
     tail = operation.catch(error => {
       if (current(target)) publish({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     });
+    const queued = { nativeReplay, originalUrl, promise: tail };
+    target.queuedSwitch = queued;
     return tail;
   }
 
@@ -666,7 +693,7 @@ export function initAudioEnhancementBridge(): void {
           timing = sourceWavTiming(bytes);
         } catch (error) {
           if (target.captureAbort.signal.aborted || !current(target)) throw error;
-          bytes = decodedSourceWav(audio);
+          bytes = await target.worker.encode(audio);
           timing = { sampleRate: audio.sampleRate, frameCount: audio.length };
           target.sourceNotice = 'Original source WAV could not be read; preserving the native decoded audio as float32 WAV.';
         }
@@ -717,7 +744,8 @@ export function initAudioEnhancementBridge(): void {
       if (session) release(session);
       session = { id: crypto.randomUUID(), key: snapshot.key, taskId: snapshot.taskId,
         tracks: [], capturing: false, captureAbort: new AbortController(), model: '', variantKey: '', sourceNotice: '',
-        patches: new Map(), regionAddPatches: new Map(), switching: false };
+        patches: new Map(), regionAddPatches: new Map(), switching: false,
+        worker: new AudioEnhancementWorkerClient(workerUrl) };
       publish({ taskId: session.taskId, strength: 0, desiredStrength: 90, status: 'idle', variantKey: '', model: '', message: 'Waiting for both source tracks…' });
     }
     const target = session;
@@ -859,7 +887,7 @@ export function initAudioEnhancementBridge(): void {
       const key = nativeSnapshot()?.key;
       await dispose();
       if (!disposed || nativeSnapshot()?.key !== key) return;
-      initAudioEnhancementBridge();
+      initAudioEnhancementBridge(workerUrl);
       const next = page.__babelHelperAudioEnhancementBridge;
       if (next && next !== facade) await next.setEnabled(true);
       return;
@@ -878,6 +906,7 @@ export function initAudioEnhancementBridge(): void {
     stopNativeObservation();
     const target = session;
     target?.captureAbort.abort();
+    target?.worker.cancelMix();
     if (window.fetch === selectedFetch) window.fetch = nativeFetch;
     fetchInstalled = false;
     if (target && current(target)) {
@@ -918,6 +947,8 @@ export function initAudioEnhancementBridge(): void {
   function selectStrength(strength: number): Promise<void> {
     if (!enabled || disposing || disposed) return Promise.resolve();
     if (!isAudioEnhancementStrength(strength)) return Promise.reject(new Error('Invalid audio strength.'));
+    if (strength === state.desiredStrength && state.status !== 'error') return tail;
+    session?.worker.cancelMix();
     publish({ desiredStrength: strength });
     return session ? queueSwitch(session) : Promise.resolve();
   }

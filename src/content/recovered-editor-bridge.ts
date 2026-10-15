@@ -7,7 +7,9 @@ import {
 } from './native-transcript';
 import { SEGMENT_CLICK_SEEK_ATTRIBUTE } from '../features/native-segment-click-seek-feature';
 import { handleNativeTagDropdownKeydown } from './native-tag-dropdown-keyboard';
+import { acceptAllNativeWarnings } from './native-warning-actions';
 import { installNativeMergePolicy } from './native-merge-policy';
+import { installNativeCoveragePerformance } from './native-coverage-performance';
 import {
   getNativeReplacementStatus, runNativeReplacementRules, recoverNativeReplacementRules,
   invalidateNativeReplacementSession, installNativeReplacementTracking
@@ -20,7 +22,7 @@ const REPLACEMENT_METHODS = {
   'run-native-replacement-rules': 'runNativeReplacementRules',
   'recover-native-replacement-rules': 'recoverNativeReplacementRules'
 };
-const NATIVE_ACTIVATION_KEYS = ['onActivate', 'onSelect'];
+const NATIVE_ACTIVATION_KEYS = ['onSelect'];
 
 export function initRecoveredEditorBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -52,12 +54,33 @@ export function initRecoveredEditorBridge() {
   let sessionGeneration = Number(window[SESSION_GENERATION]) || 0;
   let sessionInitialized = false;
   let sessionError = '';
-  let publishedSession = '';
+  let publishedSession = null;
+  let publishedSessionPayload = '';
+  let publishedCommit = '';
+  let publishedCommitHref = '';
+  let publishedCommitGeneration = -1;
+  let sessionMountQueued = false;
+  let sessionMountSeeds = [];
+  const SESSION_MOUNT_SELECTOR = 'main, [data-transcript-scroll]';
+  const SESSION_DISCOVERY_SELECTOR = `${SESSION_MOUNT_SELECTOR}, ${TRANSCRIPT_ROW_SELECTOR}`;
   const historyPatches = [];
   let mergePolicy = null;
   let replacementTracking = null;
   let mergePolicyFailed = false;
   let replacementTrackingFailed = false;
+  let stopNativeCoverage = null;
+
+  function reconcileNativeCoverage(state) {
+    const stop = stopNativeCoverage;
+    stopNativeCoverage = null;
+    try {
+      stop?.();
+      if (state && !sessionError && !disposed) stopNativeCoverage = installNativeCoveragePerformance();
+    } catch (error) {
+      console.error('[Babel Helper] Timeline coverage optimization stopped:', error);
+      showNativeAutomationFailure('Timeline coverage', error instanceof Error ? error.message : String(error));
+    }
+  }
 
   function retireNativeCompatibility() {
     const merge = mergePolicy, stopTracking = replacementTracking;
@@ -122,36 +145,47 @@ export function initRecoveredEditorBridge() {
     catch (error) { compatibilityFailure('Merge across gaps', error); }
   }
 
-  function publishSession() {
+  function publishSession(state) {
     if (disposed) return;
-    const state = !sessionError && sessionUnsubscribe ? readBabelSessionState() : null;
-    const payload = JSON.stringify({
-      href: window.location.href, generation: sessionGeneration,
-      reviewActionId: state?.reviewActionId || '', readOnly: state?.readOnly ?? null,
-      status: sessionError ? 'error' : state ? 'ready' : 'unmounted', error: sessionError
-    });
-    if (payload === publishedSession) return;
+    const href = window.location.href;
+    const reviewActionId = state?.reviewActionId || '';
+    const readOnly = state?.readOnly ?? null;
+    const status = sessionError ? 'error' : state ? 'ready' : 'unmounted';
+    if (publishedSession?.href === href && publishedSession.generation === sessionGeneration &&
+        publishedSession.reviewActionId === reviewActionId && publishedSession.readOnly === readOnly &&
+        publishedSession.status === status && publishedSession.error === sessionError) return;
+    const publication = { href, generation: sessionGeneration, reviewActionId, readOnly, status, error: sessionError };
+    const payload = JSON.stringify(publication);
     retireNativeCompatibility();
     mergePolicyFailed = false;
     replacementTrackingFailed = false;
-    publishedSession = payload;
+    publishedSession = publication;
+    publishedSessionPayload = payload;
     document.documentElement.setAttribute(SESSION_ATTRIBUTE, payload);
     reconcileNativeCompatibility();
+    reconcileNativeCoverage(state);
     window.dispatchEvent(new CustomEvent(SESSION_EVENT, { detail: payload }));
   }
 
   function publishEditorCommit() {
-    window.dispatchEvent(new CustomEvent('babel-helper:native-editor-commit', {
-      detail: JSON.stringify({ href: window.location.href, generation: sessionGeneration })
-    }));
+    if (publishedCommitHref !== window.location.href || publishedCommitGeneration !== sessionGeneration) {
+      publishedCommitHref = window.location.href;
+      publishedCommitGeneration = sessionGeneration;
+      publishedCommit = JSON.stringify({ href: publishedCommitHref, generation: sessionGeneration });
+    }
+    window.dispatchEvent(new CustomEvent('babel-helper:native-editor-commit', { detail: publishedCommit }));
   }
 
-  function reconcileNativeSession() {
+  function reconcileNativeSession(mountChanged = false) {
     if (disposed) return;
+    // A native commit/route already reconciles any queued mount delivery.
+    mountChanged ||= sessionMountQueued;
+    sessionMountQueued = false;
     const surface = document.querySelector('[data-transcript-scroll]');
     const root = surface ? getRootFiber()?.stateNode : null;
     if (sessionInitialized && surface === sessionSurface && root === sessionRoot) {
-      publishSession();
+      if (mountChanged) rememberSessionMountSeeds();
+      publishSession(!sessionError && sessionUnsubscribe ? readBabelSessionState() : null);
       return;
     }
     sessionUnsubscribe?.();
@@ -160,8 +194,10 @@ export function initRecoveredEditorBridge() {
     sessionRoot = root;
     sessionSurface = surface;
     sessionError = '';
+    rememberSessionMountSeeds();
     const generation = ++sessionGeneration;
     window[SESSION_GENERATION] = generation;
+    let state = null;
     if (surface) {
       try {
         sessionUnsubscribe = subscribeBabelEditorCommits(() => {
@@ -169,7 +205,8 @@ export function initRecoveredEditorBridge() {
           reconcileNativeSession();
           if (!disposed && generation === sessionGeneration) publishEditorCommit();
         });
-        if (!readBabelSessionState()) throw new Error('Native editor committed session metadata is unavailable.');
+        state = readBabelSessionState();
+        if (!state) throw new Error('Native editor committed session metadata is unavailable.');
       } catch (error) {
         sessionUnsubscribe?.();
         sessionUnsubscribe = null;
@@ -177,7 +214,7 @@ export function initRecoveredEditorBridge() {
         console.error('[babel-helper] Native session automation stopped:', sessionError);
       }
     }
-    publishSession();
+    publishSession(state);
     publishEditorCommit();
   }
 
@@ -201,7 +238,58 @@ export function initRecoveredEditorBridge() {
       historyPatches.push({ name, original, wrapped });
     }
   }
-  const sessionMountObserver = new MutationObserver(() => reconcileNativeSession());
+  function readSessionMountRoot(seed) {
+    const key = seed.key || Object.getOwnPropertyNames(seed.node).find(name => name.startsWith('__reactFiber$'));
+    let fiber = key ? seed.node[key] : null;
+    while (fiber?.return) fiber = fiber.return;
+    return fiber?.stateNode || null;
+  }
+
+  function rememberSessionMountSeeds() {
+    sessionMountSeeds = [];
+    const remember = node => {
+      const seed = { node, key: Object.getOwnPropertyNames(node).find(name => name.startsWith('__reactFiber$')),
+        root: null, connected: node.isConnected };
+      seed.root = readSessionMountRoot(seed);
+      sessionMountSeeds.push(seed);
+    };
+    for (const node of document.querySelectorAll(SESSION_MOUNT_SELECTOR)) remember(node);
+    // Match the runtime's annotation seed only when its stable surfaces cannot locate this root.
+    if (sessionRoot && !sessionMountSeeds.some(seed => seed.root === sessionRoot)) {
+      for (const node of document.querySelectorAll(TRANSCRIPT_ROW_SELECTOR)) {
+        remember(node);
+        if (sessionMountSeeds[sessionMountSeeds.length - 1].root === sessionRoot) break;
+      }
+    }
+  }
+
+  function isSessionMountNode(node) {
+    const selector = sessionRoot ? SESSION_MOUNT_SELECTOR : SESSION_DISCOVERY_SELECTOR;
+    return node instanceof Element &&
+      (node.matches(selector) || Boolean(node.querySelector(selector)));
+  }
+
+  function hasSessionMountChange(mutations) {
+    // DOM nodes may survive a new React root at the same URL. Check only the
+    // remembered seed-to-root links, not editor props or session serialization.
+    for (const seed of sessionMountSeeds) {
+      if (seed.node.isConnected !== seed.connected || readSessionMountRoot(seed) !== seed.root) return true;
+    }
+    for (const mutation of mutations) {
+      if (mutation.type !== 'childList') continue;
+      for (const node of mutation.addedNodes) if (isSessionMountNode(node)) return true;
+      for (const node of mutation.removedNodes) if (isSessionMountNode(node)) return true;
+    }
+    return false;
+  }
+
+  const sessionMountObserver = new MutationObserver(mutations => {
+    if (disposed || sessionMountQueued || !hasSessionMountChange(mutations)) return;
+    sessionMountQueued = true;
+    queueMicrotask(() => {
+      if (!disposed && sessionMountQueued) reconcileNativeSession(true);
+    });
+  });
   sessionMountObserver.observe(document.documentElement, { childList: true, subtree: true });
   window.navigation?.addEventListener('currententrychange', publishRoute);
   window.addEventListener('popstate', publishRoute, true);
@@ -252,9 +340,9 @@ export function initRecoveredEditorBridge() {
             wave.seekTo = blockedSeek;
             patches.push({ wave, descriptor, blockedSeek });
           }
-          // Babel separates text mouse-down selection (onSelect) from editing
-          // focus (onActivate). Preserve both, suppressing only their incidental
-          // synchronous seek; onSeek/onPlay/onPlayFrom remain native.
+          // Oct15 onSelect may seek outside the current turn; onActivate is
+          // only the editingId setter and must retain its native identity.
+          // Explicit onSeek/onPlay/onPlayFrom remain native.
           return original.apply(this, args);
         } finally {
           for (const { wave, descriptor, blockedSeek } of patches) {
@@ -350,7 +438,7 @@ export function initRecoveredEditorBridge() {
       availableReviewActions: toolbar.availableReviewActions.map(({ id, level }) => ({ id, level }))
     };
     if (!state.isDiffMode) return { ...state, status: 'disabled' };
-    // Recovered 36978 passes isLoadingActions here; diff readiness belongs to its QueryObserver.
+    // The native toolbar passes isLoadingActions here; diff readiness belongs to its QueryObserver.
     if (toolbar.isLoading) return { ...state, status: 'loading' };
     if (!selectedCompareActionId) return { ...state, ok: false, reason: 'compare-action-not-found' };
     const observer = findCurrentTranscriptionDiffObserver({ id: selectedCompareActionId });
@@ -1142,7 +1230,13 @@ export function initRecoveredEditorBridge() {
           { start, end, direction: request.direction || 'none' };
       } else if (operation === 'replace') {
         const startEdit = !state.editor && request.focus ? getStartNativeEdit(annotationId) : null;
-        ok = (!request.focus || state.editor || startEdit) && replaceNativeTurn(annotationId, request.text, request);
+        try {
+          ok = (!request.focus || state.editor || startEdit) && replaceNativeTurn(annotationId, request.text, request);
+        } catch (error) {
+          ok = false;
+          reason = error instanceof Error ? error.message : String(error);
+          showNativeAutomationFailure('Native text editing', reason);
+        }
         if (ok) {
           const nextStart = Math.max(0, Math.min(request.start ?? request.text.length, request.text.length));
           const nextEnd = Math.max(nextStart, Math.min(request.end ?? nextStart, request.text.length));
@@ -1212,6 +1306,7 @@ export function initRecoveredEditorBridge() {
       trackLabel: binding?.tracks.find(track => track.id === state?.annotation.processedRecordingId)?.label ?? '',
       startSeconds: state?.annotation.startTimeInSeconds ?? null, endSeconds: state?.annotation.endTimeInSeconds ?? null,
       isActive: binding?.transcript?.activeIds?.has(annotationId) === true,
+      isEditing: latest?.isEditing === true,
       ...(operation === 'caretRect' && ok ? { rect: caretRect(row, state, request.start ?? state.start) } : {})
     }));
   }
@@ -1406,6 +1501,7 @@ export function initRecoveredEditorBridge() {
     getNativeReplacementStatus,
     runNativeReplacementRules,
     recoverNativeReplacementRules,
+    acceptAllNativeWarnings,
     getTranscriptionDiffToolbarProps,
     findCurrentTranscriptionDiffQueryResult,
     patchTranscriptionDiffPayload,
@@ -1419,6 +1515,7 @@ export function initRecoveredEditorBridge() {
     getNativeReplacementStatus,
     runNativeReplacementRules,
     recoverNativeReplacementRules,
+    acceptAllNativeWarnings,
     raw: rawImplementation
   };
 
@@ -1474,6 +1571,13 @@ export function initRecoveredEditorBridge() {
       }
       return;
     }
+    if (detail.operation === 'accept-all-warnings') {
+      Promise.resolve().then(() => invokeService('acceptAllNativeWarnings', detail.payload)).then(
+        result => respond(id, result),
+        error => respond(id, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      );
+      return;
+    }
 
     if (detail.operation === 'snapshot') {
       respond(id, {
@@ -1508,17 +1612,20 @@ export function initRecoveredEditorBridge() {
     if (disposed) return;
     disposed = true;
     retireNativeCompatibility();
+    reconcileNativeCoverage(null);
     sessionGeneration++;
     sessionUnsubscribe?.();
     sessionUnsubscribe = null;
     sessionMountObserver.disconnect();
+    sessionMountQueued = false;
+    sessionMountSeeds = [];
     window.navigation?.removeEventListener('currententrychange', publishRoute);
     window.removeEventListener('popstate', publishRoute, true);
     window.removeEventListener('hashchange', publishRoute, true);
     for (const { name, original, wrapped } of historyPatches) {
       if (window.history[name] === wrapped) window.history[name] = original;
     }
-    if (document.documentElement.getAttribute(SESSION_ATTRIBUTE) === publishedSession) {
+    if (document.documentElement.getAttribute(SESSION_ATTRIBUTE) === publishedSessionPayload) {
       document.documentElement.removeAttribute(SESSION_ATTRIBUTE);
     }
     clearExtendedDiffState();
@@ -1558,6 +1665,7 @@ export function initRecoveredEditorBridge() {
     readExtendedDiffState: (...args) => invokeService('readExtendedDiffState', ...args),
     applyExtendedDiffState: (...args) => invokeService('applyExtendedDiffState', ...args),
     clearExtendedDiffState: (...args) => invokeService('clearExtendedDiffState', ...args),
+    acceptAllNativeWarnings: (...args) => invokeService('acceptAllNativeWarnings', ...args),
     implementation: rawImplementation,
     dispose
   };

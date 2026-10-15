@@ -31,7 +31,7 @@ export async function fitNativeTimeline(page) {
   const target = Math.max(10, visibleWidth * 0.8 / duration);
   if (target > 10) {
     // Near-minimum track clicks hit the thumb rather than changing its value.
-    // Native36978 binds Ctrl+wheel on the tracks to zoom += -2 * deltaY.
+    // Native waveform controls bind Ctrl+wheel to zoom += -2 * deltaY.
     const box = await scroll.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

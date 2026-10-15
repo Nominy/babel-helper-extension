@@ -238,6 +238,17 @@ for (const drift of ['task', 'root', 'route', 'readonly', 'disabled', 'mode', 'c
   });
 }
 
+test('native read-only localEdits cannot authorize bulk replacement or a retained recovery receipt', t => {
+  const f = fixture(t), id = sessionId();
+  run(id);
+  Object.assign(f.binding.transcript, { readOnly: true, localEdits: true, editingId: 'one' });
+  assertNoMutation(f, () => run(id));
+  assertNoMutation(f, () => recover(id));
+  f.binding.transcript.readOnly = false;
+  assert.equal(api.getNativeReplacementStatus().canRecover, false,
+    'read-only transition retires recovery ownership rather than preserving a writable capability');
+});
+
 test('affected pending text waits for native blur; previously typed text remains in native Undo', t => {
   const f = fixture(t), id = sessionId();
   f.attach('one', 'typed ab <ab>');

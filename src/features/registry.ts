@@ -188,7 +188,7 @@ export const FEATURE_REGISTRATIONS = [
       key: 'nativeTagDropdownKeyboard',
       defaultEnabled: true,
       label: 'Tag Dropdown Keyboard Navigation',
-      description: 'Use Up/Down and Enter in the native selected-text style-tag dropdown without losing the selected words.'
+      description: 'Use Up/Down and Enter in the native selected-text style-tag dropdown without losing the selected words, and keep the highlighted native tag option visible.'
     },
     moduleOrder: 85,
     createModule: createNativeTagDropdownKeyboardFeature

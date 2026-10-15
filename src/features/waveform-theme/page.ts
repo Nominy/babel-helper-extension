@@ -1,15 +1,14 @@
 // @ts-nocheck
+import { findBabelEditorFiber, readBabelPlaybackBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
 // Wavesurfer paints the waveform into a canvas and the regions plugin writes its colours as
 // inline styles inside a shadow root, so neither can be themed from a page stylesheet. This
-// page-world bridge locates the live Wavesurfer instances behind the dashboard's React tree
-// and drives them directly, remembering every value it overwrites so a disable restores the
-// page exactly.
+// page-world bridge reads the workbench's native WaveSurfer registry and drives only its
+// current instances, remembering every value it overwrites so a disable restores the page.
 //
 // The dashboard colours lanes from a three-slot palette rotated over the track array
 // (`palette[index % 3]`), so the bridge mirrors that shape: `detail.lanes` is three slots and
-// a lane picks `lanes[(laneIndex - 1) % 3]`. Lane identity comes from the app's own track
-// descriptors (`{ id, label, processedRecordingId, colors }`) and their position in the track
-// array, falling back to document order when the descriptor cannot be reached.
+// a lane picks `lanes[(laneIndex - 1) % 3]`. Registry recording IDs and the authoritative
+// recording array determine lane identity; DOM order never substitutes for missing identity.
 //
 // The payload is exactly `{ enabled, lanes }`: the runtime derives every slot colour from the
 // core palette (wave from the shared wave colour, progress/region from the speaker colour,
@@ -27,12 +26,7 @@
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const GLOBAL_KEY = '__babelHelperWaveformThemeBridge';
   const RESCAN_DELAY_MS = 160;
-  const MAX_HOSTS = 200;
-  const MAX_SEEDS = 220;
-  const MAX_VISITS = 600;
-  const MAX_DEPTH = 3;
   const MAX_LANE_ROOT_HOPS = 6;
-  const MAX_TRACK_LIST = 64;
   const MAX_PLUGINS = 16;
   const LANE_SLOT_COUNT = 3;
   // The app renders its own region fill as `rgba(r, g, b, 0.25)`; a lane slot carries an
@@ -76,6 +70,10 @@
   // Instance -> record. A Map (not a WeakMap) because a disable has to walk every adopted
   // instance; stale entries are pruned whenever we rescan.
   const records = new Map();
+  const waveMetadata = new Map();
+  let sessionId = null;
+  let sessionRoot = null;
+  let unsubscribeCommits = null;
   const config = {
     enabled: false,
     lanes: null
@@ -256,118 +254,6 @@
     return isVisibleElement(host) && isVisibleElement(scroll);
   }
 
-  function getVisibleWaveHosts() {
-    const elements = safe(() => Array.from(document.querySelectorAll('div')), []);
-    const hosts = [];
-
-    for (const element of elements) {
-      if (hosts.length >= MAX_HOSTS) {
-        break;
-      }
-
-      if (isVisibleWaveHost(element)) {
-        hosts.push(element);
-      }
-    }
-
-    return hosts;
-  }
-
-  function getReactInternalValue(element, prefix) {
-    if (!(element instanceof HTMLElement)) {
-      return null;
-    }
-
-    for (const name of safe(() => Object.getOwnPropertyNames(element), [])) {
-      if (typeof name === 'string' && name.indexOf(prefix) === 0) {
-        return safe(() => element[name], null);
-      }
-    }
-
-    return null;
-  }
-
-  function getElementChain(host) {
-    const chain = [];
-    let current = host;
-    let depth = 0;
-
-    while (current instanceof HTMLElement && depth < 8) {
-      chain.push(current);
-
-      if (current.parentElement instanceof HTMLElement) {
-        current = current.parentElement;
-        depth += 1;
-        continue;
-      }
-
-      const root = safe(() => current.getRootNode(), null);
-      if (root && root.host instanceof HTMLElement && root.host !== current) {
-        current = root.host;
-        depth += 1;
-        continue;
-      }
-
-      break;
-    }
-
-    return chain;
-  }
-
-  function pushSeed(seeds, seen, value) {
-    if (!isObjectLike(value) || seen.has(value) || seeds.length >= MAX_SEEDS) {
-      return;
-    }
-
-    seen.add(value);
-    seeds.push(value);
-  }
-
-  function pushHookSeeds(seeds, seen, fiber) {
-    let hook = safe(() => fiber.memoizedState, null);
-    const seenHooks = new Set();
-    let index = 0;
-
-    while (isObjectLike(hook) && !seenHooks.has(hook) && index < 12) {
-      seenHooks.add(hook);
-      const memoizedState = safe(() => hook.memoizedState, null);
-      pushSeed(seeds, seen, memoizedState);
-      pushSeed(seeds, seen, safe(() => memoizedState.current, null));
-      pushSeed(seeds, seen, safe(() => memoizedState.value, null));
-      hook = safe(() => hook.next, null);
-      index += 1;
-    }
-  }
-
-  function pushFiberSeeds(seeds, seen, fiber) {
-    let current = fiber;
-    let depth = 0;
-
-    while (isObjectLike(current) && depth < 10) {
-      pushSeed(seeds, seen, current);
-      pushSeed(seeds, seen, safe(() => current.stateNode, null));
-      pushSeed(seeds, seen, safe(() => current.ref, null));
-      pushSeed(seeds, seen, safe(() => current.ref.current, null));
-      pushSeed(seeds, seen, safe(() => current.memoizedProps, null));
-      pushSeed(seeds, seen, safe(() => current.memoizedProps.ref, null));
-      pushSeed(seeds, seen, safe(() => current.memoizedProps.ref.current, null));
-      pushHookSeeds(seeds, seen, current);
-      current = safe(() => current.return, null);
-      depth += 1;
-    }
-  }
-
-  function getSearchSeeds(host) {
-    const seeds = [];
-    const seen = new Set();
-
-    for (const element of getElementChain(host)) {
-      pushSeed(seeds, seen, getReactInternalValue(element, '__reactProps$'));
-      pushFiberSeeds(seeds, seen, getReactInternalValue(element, '__reactFiber$'));
-    }
-
-    return seeds;
-  }
 
   function getInstanceContainer(instance) {
     const direct = safe(() => instance.container, null);
@@ -431,102 +317,31 @@
     const container = getInstanceContainer(value);
     return Boolean(container) && containerMatchesHost(host, container);
   }
-
-  // The dashboard's track descriptor, verbatim from its own bundle:
-  // { id, label, description, audioUrl, processedRecordingId, colors }. Requiring all three
-  // of label/processedRecordingId/colors keeps arbitrary props from being mistaken for a lane.
-  function isTrackDescriptor(value) {
-    return (
-      isObjectLike(value) &&
-      !Array.isArray(value) &&
-      typeof safe(() => value.label, null) === 'string' &&
-      typeof safe(() => value.processedRecordingId, null) === 'string' &&
-      isObjectLike(safe(() => value.colors, null))
-    );
-  }
-
-  function isTrackList(value) {
-    if (!Array.isArray(value) || !value.length || value.length > MAX_TRACK_LIST) {
-      return false;
-    }
-
-    for (const entry of value) {
-      if (!isTrackDescriptor(entry)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  function collectHostInstances(host, found) {
-    // Bounded breadth-first walk: the instance sits either directly on a ref/hook seed
-    // or a couple of hops inside a lane registry such as { [laneId]: { wavesurfer } }.
-    // The same walk harvests the lane's track descriptor and the track array it belongs to,
-    // so lane identity costs no extra traversal.
-    const queue = getSearchSeeds(host).map((value) => ({ value, depth: 0 }));
-    const visited = new Set();
-    const meta = { track: null, tracks: null };
-
-    while (queue.length && visited.size < MAX_VISITS) {
-      const current = queue.shift();
-      const value = current.value;
-      if (!isObjectLike(value) || visited.has(value)) {
-        continue;
-      }
-
-      visited.add(value);
-
-      if (isThemableInstance(value, host)) {
-        found.add(value);
-        continue;
-      }
-
-      if (!meta.track && isTrackDescriptor(value)) {
-        // Nearest wins: the lane's own fiber props are seeded before its ancestors'.
-        meta.track = value;
-      } else if (!meta.tracks && isTrackList(value)) {
-        meta.tracks = value;
-      }
-
-      if (current.depth >= MAX_DEPTH || value instanceof HTMLElement) {
-        continue;
-      }
-
-      const keys = safe(() => Object.keys(value), []);
-      if (!keys.length || keys.length > 64) {
-        continue;
-      }
-
-      for (const key of keys) {
-        queue.push({ value: safe(() => value[key], null), depth: current.depth + 1 });
-      }
-    }
-
+  function readWaveMetadata(instance, trackId, bindings) {
+    const position = bindings.recordingTracks.findIndex((track) => track.id === trackId);
+    if (position < 0) return null;
+    const container = getInstanceContainer(instance);
+    const wrapper = safe(() => instance.getWrapper(), null);
+    const wrapperHost = safe(() => wrapper.getRootNode().host, null);
+    const host = wrapperHost instanceof HTMLElement ? wrapperHost : container;
+    if (!host || !isThemableInstance(instance, host)) return null;
+    const media = safe(() => instance.getMediaElement(), null);
+    const source = media?.currentSrc || media?.src || instance.options?.url || '';
+    const decoded = safe(() => instance.getDecodedData(), null);
+    const label = normalizeColor(bindings.recordingTracks[position].label);
+    const laneRoot = getLaneRoot(host);
+    const regionsPlugin = getRegionsPlugin(instance);
+    const previous = waveMetadata.get(instance);
+    if (previous && previous.host === host && previous.laneRoot === laneRoot &&
+        previous.trackId === trackId && previous.laneIndex === position + 1 &&
+        previous.label === label && previous.media === media &&
+        previous.source === source && previous.decoded === decoded &&
+        previous.regionsPlugin === regionsPlugin) return previous;
+    const meta = { host, laneRoot, trackId, laneIndex: position + 1, label, media, source, decoded, regionsPlugin };
+    waveMetadata.set(instance, meta);
     return meta;
   }
 
-  function resolveLaneMeta(host, meta, documentOrderIndex) {
-    const track = meta.track;
-    let laneIndex = documentOrderIndex;
-
-    if (track && meta.tracks) {
-      // The app's own array order is the authority; document order is only the fallback for
-      // a lane whose descriptor or array we could not reach within the bounded walk.
-      const position = safe(() => meta.tracks.indexOf(track), -1);
-      if (typeof position === 'number' && position >= 0) {
-        laneIndex = position + 1;
-      }
-    }
-
-    const label = track ? normalizeColor(safe(() => track.label, null)) : null;
-    const trackId = track
-      ? normalizeColor(safe(() => track.processedRecordingId, null)) ||
-        normalizeColor(safe(() => track.id, null))
-      : null;
-
-    return { host, laneIndex, label, trackId };
-  }
 
   // The lane root is the app's frame node: a flex row carrying inline
   // `border-left: 2.5px solid <progress>` / `border-right`. Reading the inline style bag
@@ -919,6 +734,10 @@
       return;
     }
 
+    const bindings = readBabelPlaybackBindings();
+    const entry = bindings?.waveTracks.find((entry) => entry.wave === instance);
+    if (!entry || bindings.reviewActionId !== sessionId ||
+        readWaveMetadata(instance, entry.trackId, bindings) !== record.meta) return;
     busy = true;
     try {
       themeRegion(record, region);
@@ -1002,10 +821,12 @@
     return fill || border ? { fill: fill || null, border: border || null } : null;
   }
 
-  function applyToInstance(instance, meta) {
+  function applyToInstance(instance, meta, bindings) {
     let record = records.get(instance);
     if (!record) {
       record = {
+        meta,
+        sourceUnsubscribes: [],
         original: captureOriginal(instance),
         applied: {},
         laneIndex: null,
@@ -1014,11 +835,17 @@
         stamps: [],
         regions: new Map(),
         regionColors: null,
-        regionsPlugin: getRegionsPlugin(instance),
+        regionsPlugin: meta.regionsPlugin,
         regionUnsubscribes: []
       };
       records.set(instance, record);
       subscribeRegions(instance, record);
+      if (typeof instance.on === 'function') {
+        for (const event of ['load', 'decode', 'ready']) {
+          const off = instance.on(event, scheduleRescan);
+          if (typeof off === 'function') record.sourceUnsubscribes.push(off);
+        }
+      }
     }
 
     const laneIndex = meta.laneIndex;
@@ -1036,7 +863,7 @@
     // Stamp before writing: setOptions can re-enter the bridge (a disable triggered by the
     // dashboard from inside our own write), and that nested restore has to already see every
     // attribute we own.
-    stampElements(record.stamps, [meta.host, getLaneRoot(meta.host)], {
+    stampElements(record.stamps, [meta.host, meta.laneRoot], {
       [LANE_INDEX_ATTRIBUTE]: String(laneIndex),
       [LANE_SLOT_ATTRIBUTE]: String(slotIndex),
       [LANE_LABEL_ATTRIBUTE]: meta.label
@@ -1092,6 +919,10 @@
     if (disposed || !config.enabled || records.get(instance) !== record) {
       return false;
     }
+    if (!bindings.isCurrent() || readWaveMetadata(instance, meta.trackId, bindings) !== meta) {
+      scheduleRescan();
+      return false;
+    }
 
     if (!record.regionsPlugin) {
       record.regionsPlugin = getRegionsPlugin(instance);
@@ -1116,6 +947,8 @@
     }
 
     unsubscribeRegions(record);
+    for (const off of record.sourceUnsubscribes) off();
+    record.sourceUnsubscribes.length = 0;
     restoreRegions(record);
     restoreStamps(record.stamps);
     writeInstanceOptions(instance, patch);
@@ -1134,25 +967,20 @@
 
       restoreStamps(speakerCellStamps);
       records.clear();
+      waveMetadata.clear();
     } finally {
       busy = wasBusy;
     }
   }
 
-  function pruneDetachedRecords(live) {
-    for (const instance of Array.from(records.keys())) {
-      if (live.has(instance)) {
-        continue;
-      }
-
-      // Drop a record only when the lane is provably gone; an instance that merely scrolled
-      // out of discovery must stay restorable.
-      const container = getInstanceContainer(instance);
-      if (container && !container.isConnected) {
-        const record = records.get(instance);
-        unsubscribeRegions(record);
-        records.delete(instance);
-      }
+  function pruneRecords(live) {
+    for (const [instance, record] of records) {
+      if (live.has(instance)) continue;
+      records.delete(instance);
+      restoreInstance(instance, record);
+    }
+    for (const instance of waveMetadata.keys()) {
+      if (!live.has(instance)) waveMetadata.delete(instance);
     }
   }
 
@@ -1172,47 +1000,68 @@
     let applied = 0;
     busy = true;
     try {
+      const bindings = readBabelPlaybackBindings();
+      if (!bindings) {
+        restoreAll();
+        if (unsubscribeCommits) unsubscribeCommits();
+        unsubscribeCommits = null;
+        sessionId = null;
+        sessionRoot = null;
+        lastApplied = 0;
+        return 0;
+      }
+      let editorRoot = findBabelEditorFiber();
+      while (editorRoot?.return) editorRoot = editorRoot.return;
+      const currentRoot = editorRoot?.stateNode;
+      if (sessionId !== bindings.reviewActionId || sessionRoot !== currentRoot) {
+        restoreAll();
+        if (disposed || generation !== scanGeneration) return 0;
+        if (unsubscribeCommits) unsubscribeCommits();
+        unsubscribeCommits = null;
+        sessionId = bindings.reviewActionId;
+        sessionRoot = currentRoot;
+      }
+      if (!unsubscribeCommits) {
+        // Native commits also cover property-only speaker changes and registry updates.
+        // Failure to acquire the verified hook is explicit, not a polling fallback.
+        unsubscribeCommits = subscribeBabelEditorCommits(scheduleRescan);
+      }
       const live = new Set();
-      const metaByInstance = new Map();
-      const laneByTrackId = {};
-      let documentOrderIndex = 0;
-
-      for (const host of getVisibleWaveHosts()) {
-        documentOrderIndex += 1;
-        const hostInstances = new Set();
-        const hostMeta = collectHostInstances(host, hostInstances);
-        const laneMeta = resolveLaneMeta(host, hostMeta, documentOrderIndex);
-
-        if (laneMeta.trackId && !laneByTrackId[laneMeta.trackId]) {
-          laneByTrackId[laneMeta.trackId] = {
-            laneIndex: laneMeta.laneIndex,
-            slotIndex: ((laneMeta.laneIndex - 1) % LANE_SLOT_COUNT) + 1,
-            label: laneMeta.label
-          };
+      const ambiguous = new Set();
+      const laneByTrackId = Object.create(null);
+      for (const entry of bindings.waveTracks) {
+        const instance = entry.wave;
+        if (ambiguous.has(instance)) continue;
+        if (live.has(instance)) {
+          live.delete(instance);
+          ambiguous.add(instance);
+          continue;
         }
-
-        for (const instance of hostInstances) {
-          live.add(instance);
-          if (!metaByInstance.has(instance)) {
-            metaByInstance.set(instance, laneMeta);
-          }
-        }
+        const meta = readWaveMetadata(instance, entry.trackId, bindings);
+        if (!meta || !meta.host.isConnected) continue;
+        live.add(instance);
       }
-
-      pruneDetachedRecords(live);
-
+      pruneRecords(live);
       for (const instance of live) {
-        if (disposed || generation !== scanGeneration) {
-          // A nested config change or teardown invalidated this pass mid-flight.
-          break;
+        if (disposed || generation !== scanGeneration || !bindings.isCurrent()) break;
+        const meta = waveMetadata.get(instance);
+        const record = records.get(instance);
+        if (record && record.meta !== meta) {
+          records.delete(instance);
+          restoreInstance(instance, record);
+          if (disposed || generation !== scanGeneration || !bindings.isCurrent()) break;
         }
-
-        if (applyToInstance(instance, metaByInstance.get(instance))) {
-          applied += 1;
-        }
+        // Hidden native lanes remain owned/restorable but do not require canvas work.
+        if (!isVisibleWaveHost(meta.host)) continue;
+        laneByTrackId[meta.trackId] = {
+          laneIndex: meta.laneIndex,
+          slotIndex: ((meta.laneIndex - 1) % LANE_SLOT_COUNT) + 1,
+          label: meta.label
+        };
+        if (applyToInstance(instance, meta, bindings)) applied += 1;
       }
 
-      if (!disposed && config.enabled && generation === scanGeneration) {
+      if (!disposed && config.enabled && generation === scanGeneration && bindings.isCurrent()) {
         stampSpeakerCells(laneByTrackId);
       }
     } finally {
@@ -1297,6 +1146,12 @@
 
   function stopObserver() {
     cancelRescan();
+    if (unsubscribeCommits) {
+      unsubscribeCommits();
+      unsubscribeCommits = null;
+    }
+    sessionId = null;
+    sessionRoot = null;
 
     if (!observer) {
       return;
@@ -1318,8 +1173,8 @@
     // A colour drag re-dispatches this payload on every pointer move, and most of those
     // dispatches carry exactly what the page already wears: the dial that moved feeds a
     // token no lane slot reads, or the same slot arrived twice inside one frame. Everything
-    // below is host discovery, a bounded React-tree walk per host, a native speaker-select
-    // query and a setOptions on every lane, so an unchanged payload stops here. It stops
+    // below reconciles the native registry, speaker cells and lane options, so an unchanged
+    // payload stops here. It stops
     // before the rescan is cancelled too: a reconciliation already in flight is still owed
     // to this very config, so dropping it would strand a lane that mounted mid-debounce.
     if (enabled === config.enabled && lanesEqual(lanes, config.lanes)) {

@@ -697,3 +697,55 @@ test('programmatic turn focus blurs the connected prior Slate before activation 
   await expect(first.locator('[data-slate-editor="true"]')).toHaveCount(0);
   await expect.poll(async () => (await nativeAnnotations(page)).find(turn => turn.id === transition.oldId)?.content).toBe(pending);
 });
+
+test('a sibling text commit retains the focused native Slate DOM mapping and its current input controller', async ({ page, babel }) => {
+  await ready(page);
+  await loadBridge(page, babel, 'recovered-editor', '__babelHelperRecoveredEditorBridge');
+  const first = rows(page).first(), second = rows(page).nth(1);
+  expect((await control(second, { operation: 'focus', start: 0, end: 0 })).ok).toBe(true);
+  const editor = second.locator('[data-slate-editor="true"]');
+  const pending = 'Непрерывный черновик.';
+  await fillText(editor, pending);
+  expect((await control(second, { operation: 'select', start: 4, end: 4 })).ok).toBe(true);
+  await expect.poll(() => textSelection(editor)).toEqual([4, 4]);
+  const owner = await editor.evaluateHandle(element => {
+    const read = () => {
+      const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
+      let root = element[key];
+      while (root?.return) root = root.return;
+      const pending = [root?.stateNode?.current];
+      while (pending.length) {
+        const fiber = pending.pop();
+        if (!fiber) continue;
+        if (fiber.stateNode === element) {
+          for (let parent = fiber.return; parent; parent = parent.return) {
+            if (parent.memoizedProps?.editor) return { ref: fiber.ref, editor: parent.memoizedProps.editor };
+          }
+        }
+        for (let child = fiber.child; child; child = child.sibling) pending.push(child);
+      }
+      throw new Error('Focused native Slate lost its committed DOM owner');
+    };
+    return { element, read, ...read() };
+  });
+  const siblingText = 'Соседний сегмент изменён.';
+  expect((await control(first, { operation: 'replace', text: siblingText })).ok).toBe(true);
+  await expect.poll(async () => (await nativeAnnotations(page)).find(turn => turn.id === 'row-1').content).toBe(siblingText);
+  const retained = await owner.evaluate(owner => {
+    const current = owner.read();
+    return { connected: owner.element.isConnected, focused: document.activeElement === owner.element,
+      sameEditor: current.editor === owner.editor, sameDomRef: current.ref === owner.ref };
+  });
+  await owner.dispose();
+  expect(retained).toEqual({ connected: true, focused: true, sameEditor: true, sameDomRef: true });
+  await expect.poll(() => readText(editor)).toBe(pending);
+  await expect.poll(() => textSelection(editor)).toEqual([4, 4]);
+  await page.keyboard.insertText('!');
+  const typed = pending.slice(0, 4) + '!' + pending.slice(4);
+  await expect.poll(() => readText(editor)).toBe(typed);
+  await expect.poll(() => textSelection(editor)).toEqual([5, 5]);
+  await editor.press('Enter');
+  const state = await saved(page, babel);
+  expect(state.action.annotations.find(turn => turn.id === 'row-1').content).toBe(siblingText);
+  expect(state.action.annotations.find(turn => turn.id === 'row-2').content).toBe(typed);
+});

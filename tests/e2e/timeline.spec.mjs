@@ -448,13 +448,14 @@ test('long-track minimap navigates both ends without losing region tooltips or t
   await map.click({ position: { x: box.width * 0.85, y: 20 } });
   await expect.poll(async () => Math.abs((await media(page))[0].time / duration - 0.85)).toBeLessThan(0.03);
   await expect.poll(() => scroll.evaluate((element) => element.scrollLeft / (element.scrollWidth - element.clientWidth))).toBeGreaterThan(0.75);
-  // Drag the real minimap back to zero; playback time alone cannot prove that
-  // the native horizontal viewport returned from the far end.
+  // At 2000px/s one minimap pixel can represent hundreds of waveform pixels.
+  // Reach the actual left edge under pointer capture, not a nonzero timestamp.
   await page.mouse.move(box.x + box.width * 0.85, box.y + 20);
   await page.mouse.down();
-  await page.mouse.move(box.x + 1, box.y + 20, { steps: 8 });
+  await page.mouse.move(box.x, box.y + 20, { steps: 8 });
   await page.mouse.up();
   await expect.poll(async () => (await media(page))[0].time / duration).toBeLessThan(0.04);
+  await expect.poll(async () => (await media(page))[0].time).toBeLessThanOrEqual(0.01);
   await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeLessThanOrEqual(1);
   await expectBoundedMinimap();
   expect(await rows(page)).toEqual(before);
@@ -463,9 +464,13 @@ test('long-track minimap navigates both ends without losing region tooltips or t
   await region.hover();
   const tooltip = page.locator('.wavesurfer-region-label-tooltip > span').filter({ visible: true }).first();
   await expect(tooltip).toBeVisible();
-  const clipping = await tooltip.evaluate((element) => ({ overflow: getComputedStyle(element).overflow, ellipsis: getComputedStyle(element).textOverflow, nowrap: getComputedStyle(element).whiteSpace, text: element.textContent }));
-  expect(clipping).toMatchObject({ overflow: 'hidden', ellipsis: 'ellipsis', nowrap: 'nowrap' });
-  expect(clipping.text.trim()).toBe(before[0].text);
+  // Current Babel shows the words around the hovered audio time, not the whole label.
+  const regionBox = await region.boundingBox();
+  const words = before[0].text.trim().split(/\s+/);
+  await page.mouse.move(regionBox.x + Math.min(1, regionBox.width * 0.01), regionBox.y + regionBox.height / 2);
+  await expect.poll(async () => (await tooltip.textContent()).startsWith(words[0])).toBe(true);
+  await page.mouse.move(regionBox.x + regionBox.width - Math.min(1, regionBox.width * 0.01), regionBox.y + regionBox.height / 2);
+  await expect.poll(async () => (await tooltip.textContent()).endsWith(words.at(-1))).toBe(true);
 });
 
 test('read-only timeline rejects every mutating Helper gesture', async ({ page, babel }) => {

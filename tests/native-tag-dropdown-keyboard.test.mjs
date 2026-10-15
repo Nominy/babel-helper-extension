@@ -33,6 +33,24 @@ function harness(t) {
   const state = { kind: 'style', span: { start: 0, end: 5 }, filter: '', highlighted: 0, byKeyboard: false };
   const options = [{ name: 'quiet' }, { name: 'loud' }, { name: 'singing' }];
   const picks = [];
+  const frames = new Map();
+  let frameId = 0;
+  const list = new ElementFixture('list', row);
+  Object.assign(list, { tagName: 'UL', scrollTop: 0, clientTop: 2, clientHeight: 60, scrollHeight: 120 });
+  const scrolls = [];
+  list.getBoundingClientRect = () => ({ top: 100, bottom: 164, height: 64 });
+  list.scrollTo = ({ top }) => { list.scrollTop = top; scrolls.push(top); };
+  list.children = { get length() { return options.length; }, item(index) {
+    if (index < 0 || index >= options.length) return null;
+    const item = new ElementFixture('item', list);
+    item.getBoundingClientRect = () => {
+      const top = 102 + index * 40 - list.scrollTop;
+      return { top, bottom: top + 40, height: 40 };
+    };
+    return item;
+  } };
+  root.scrollTop = 47; row.scrollTop = 83;
+  root.scrollIntoView = row.scrollIntoView = list.scrollIntoView = () => assert.fail('must not scroll ancestors');
   const insertion = { wrap: { state, options }, pickWrap(option) { picks.push(option); insertion.wrap.state = null; } };
   const hook = { memoizedState: state, queue: { dispatch(update) {
     hook.memoizedState = update(hook.memoizedState);
@@ -45,16 +63,26 @@ function harness(t) {
     return node;
   };
   const host = fiber(); host.stateNode = editable;
-  const owner = fiber({}, [fiber({ editor: slate }, [host]), fiber({ insertion })]);
+  const menuHost = fiber({ role: 'list' }); menuHost.stateNode = list;
+  const menu = fiber({
+    get options() { return insertion.wrap.state ? insertion.wrap.options : insertion.tags?.query?.options; },
+    get highlighted() { return insertion.wrap.state ? insertion.wrap.state.highlighted : insertion.tags?.highlighted; },
+    get onPick() { return insertion.wrap.state ? insertion.pickWrap : insertion.pickTag; }
+  }, [menuHost]);
+  const owner = fiber({}, [fiber({ editor: slate }, [host]), fiber({ insertion }, [menu])]);
   owner.memoizedState = hook;
   const turn = fiber({ turn: { id: 'turn-one' }, handlers: {} }, [owner]);
-  const transcript = fiber({ turns: [], handlers: { onChangeText() {} } }, [turn]);
+  const transcript = fiber({ turns: [], editingId: null, handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} } }, [turn]);
   const panel = fiber({ annotations: [{ id: 'turn-one' }], saveState: {}, renderTranscript() {}, onSave() {} }, [transcript]);
   const workbench = fiber({ reviewActionId: 'task-one', transcriptionChunkProcessedRecordings: [] }, [panel]);
   const committed = fiber({}, [workbench]); committed.stateNode = { current: committed };
   row.__reactFiber$test = host;
   const doc = { documentElement: root, querySelectorAll: () => [row] };
-  for (const [key, value] of Object.entries({ document: doc, Element: ElementFixture, HTMLElement: ElementFixture })) {
+  for (const [key, value] of Object.entries({
+    document: doc, Element: ElementFixture, HTMLElement: ElementFixture,
+    requestAnimationFrame(callback) { const id = ++frameId; frames.set(id, callback); return id; },
+    cancelAnimationFrame(id) { frames.delete(id); }
+  })) {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { configurable: true, value });
     t.after(() => descriptor ? Object.defineProperty(globalThis, key, descriptor) : delete globalThis[key]);
@@ -68,7 +96,9 @@ function harness(t) {
     api.handleNativeTagDropdownKeydown(event);
     return event;
   }
-  return { root, row, editable, selection, slate, state, insertion, options, picks, hook, panel, host, feature, press };
+  return { root, row, editable, selection, slate, state, insertion, options, picks, hook, panel, host,
+    workbench, feature, press, list, scrolls, frames,
+    flushFrame() { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback()); } };
 }
 
 test('mouse-selected native wrap menu navigates cyclically and Enter delegates the exact option without changing selection', t => {
@@ -87,6 +117,24 @@ test('mouse-selected native wrap menu navigates cyclically and Enter delegates t
   assert.deepEqual(h.selection, { anchor: { path: [0, 0], offset: 0 }, focus: { path: [0, 0], offset: 5 } });
   assert.equal(h.press('ArrowDown').defaultPrevented, false, 'normal arrows resume after the picker closes');
 });
+
+for (const [key, highlighted] of [['ArrowUp', 2], ['ArrowDown', 0]]) {
+  test(`unhighlighted native mouse wrap enters ${key} at the correct boundary without moving the caret`, t => {
+    const h = harness(t);
+    h.state.highlighted = -1;
+    assert.equal(h.press('Enter').defaultPrevented, false, 'no implicit option before keyboard selection');
+    assert.equal(h.picks.length, 0);
+    assert.equal(h.press(key).defaultPrevented, true);
+    assert.equal(h.insertion.wrap.state.highlighted, highlighted);
+    h.flushFrame();
+    assert.equal(h.list.scrollTop, highlighted === 2 ? 60 : 0);
+    assert.equal(h.press('Enter').defaultPrevented, true);
+    assert.deepEqual(h.picks, [h.options[highlighted]]);
+    assert.equal(h.slate.selection, h.selection);
+    assert.equal(h.root.scrollTop, 47);
+    assert.equal(h.row.scrollTop, 83);
+  });
+}
 
 test('feature disable, Escape, search typing, mouse handling and keyboard-opened picker remain native', t => {
   const h = harness(t);
@@ -141,3 +189,63 @@ test('missing native dispatch fails closed and a queued highlight never resurrec
   assert.equal(queued(changed), changed);
   h.hook.queue.dispatch = dispatch;
 });
+
+test('highlight scrolling reveals partially hidden options, wraps both ways and never moves ancestors', t => {
+  const h = harness(t);
+  h.press('ArrowDown'); h.flushFrame();
+  assert.equal(h.list.scrollTop, 20);
+  h.press('ArrowDown'); h.flushFrame();
+  assert.equal(h.list.scrollTop, 60);
+  h.press('ArrowDown'); h.flushFrame();
+  assert.equal(h.list.scrollTop, 0);
+  h.press('ArrowUp'); h.flushFrame();
+  assert.equal(h.list.scrollTop, 60);
+  assert.equal(h.root.scrollTop, 47);
+  assert.equal(h.row.scrollTop, 83);
+  assert.equal(h.slate.selection, h.selection);
+});
+
+test('visible options retain manual scroll and rapid keys reveal only the final committed highlight', t => {
+  const h = harness(t);
+  h.list.scrollTop = 35;
+  h.press('ArrowDown'); h.flushFrame();
+  assert.deepEqual(h.scrolls, []);
+  h.press('ArrowDown');
+  h.press('ArrowUp');
+  h.press('ArrowDown');
+  assert.equal(h.frames.size, 1);
+  h.flushFrame();
+  assert.deepEqual(h.scrolls, [60]);
+});
+
+test('native keyboard-opened wrap and tag pickers scroll without intercepting native navigation', t => {
+  const h = harness(t);
+  h.insertion.wrap.state.byKeyboard = true;
+  assert.equal(h.press('ArrowUp').defaultPrevented, false);
+  h.insertion.wrap.state = { ...h.insertion.wrap.state, highlighted: 2 };
+  h.flushFrame();
+  assert.equal(h.list.scrollTop, 60);
+  h.insertion.wrap.state = null;
+  h.insertion.tags = { query: { kind: 'style', start: 0, options: h.options }, highlighted: 2 };
+  h.insertion.pickTag = option => h.picks.push(option);
+  assert.equal(h.press('ArrowDown').defaultPrevented, false);
+  h.insertion.tags.highlighted = 0;
+  h.flushFrame();
+  assert.equal(h.list.scrollTop, 0);
+});
+
+for (const change of ['close', 'filter', 'selection', 'task', 'readonly', 'disabled', 'detached']) {
+  test(`a queued reveal ignores ${change} before the next frame`, t => {
+    const h = harness(t);
+    h.press('ArrowUp');
+    if (change === 'close') h.insertion.wrap.state = null;
+    if (change === 'filter') h.insertion.wrap.state = { ...h.insertion.wrap.state, filter: 'new' };
+    if (change === 'selection') h.insertion.wrap.state = { ...h.insertion.wrap.state, span: { start: 6, end: 10 } };
+    if (change === 'task') h.workbench.memoizedProps.reviewActionId = 'new-task';
+    if (change === 'readonly') h.panel.memoizedProps.readOnly = true;
+    if (change === 'disabled') h.feature.deactivate();
+    if (change === 'detached') h.editable.isConnected = false;
+    h.flushFrame();
+    assert.deepEqual(h.scrolls, []);
+  });
+}

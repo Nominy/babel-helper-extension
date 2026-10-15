@@ -273,7 +273,7 @@ test('snapshot refresh rejects a reply from a replaced task even on the same rou
   nativeTask = 'task-two';
   listeners.get('babel-helper-recovered-editor-response')({ detail: {
     id: request.id, result: { ok: true, snapshot: {
-      contractVersion: 'native-36978-2026-10-13', capturedAt: Date.now(),
+      contractVersion: 'native-59327-2026-10-15', capturedAt: Date.now(),
       routeKey: '/transcription/job', reviewActionId: 'task-one', readOnly: false, rows: []
     } }
   } });
@@ -283,7 +283,7 @@ test('snapshot refresh rejects a reply from a replaced task even on the same rou
   await Promise.resolve();
   const currentRequest = requests.at(-1);
   const currentSnapshot = {
-    contractVersion: 'native-36978-2026-10-13', capturedAt: Date.now(),
+    contractVersion: 'native-59327-2026-10-15', capturedAt: Date.now(),
     routeKey: '/transcription/job', reviewActionId: 'task-two', readOnly: false, rows: []
   };
   listeners.get('babel-helper-recovered-editor-response')({ detail: {
@@ -293,39 +293,85 @@ test('snapshot refresh rejects a reply from a replaced task even on the same rou
   assert.equal(root.getAttribute('data-babel-review-action-id'), 'task-one');
 });
 
-test('accept-all processes native issue buttons individually and stops on a same-route task replacement', async (t) => {
+test('accept-all uses native task authority without rendered cards, gates repeats and reports rejection', async (t) => {
   const h = harness(t), row = h.turn('unchanged transcript');
   const root = new ElementFixture('html');
-  root.setAttribute('data-babel-review-action-id', 'task-one');
+  root.ownerDocument = h.doc;
+  root.setAttribute('data-babel-review-action-id', 'stale-gold-marker');
   h.doc.documentElement = root;
-  const transcript = new ElementFixture();
-  transcript.contains = (element) => element === row;
-  row.parentElement = transcript;
-  const frames = [];
-  h.install('window', { location: h.doc.location, requestAnimationFrame: (callback) => frames.push(callback) });
-  const buttons = [new ElementFixture('button'), new ElementFixture('button')];
-  let clicked = 0;
-  for (const button of buttons) {
-    button.textContent = 'My transcription is correct';
-    button.click = () => { clicked++; button.acknowledged = true; };
-  }
-  row.querySelectorAll = () => buttons.filter((button) => !button.acknowledged);
+  let readOnly = false;
+  root.dispatchEvent = event => {
+    const request = JSON.parse(event.detail);
+    root.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+      id: request.id, ok: true, reviewActionId: 'native-task', readOnly, routeKey: ''
+    }));
+  };
+  h.install('window', { location: h.doc.location });
+  h.install('nativeAutomationFailures', []);
+  row.querySelectorAll = () => { assert.fail('No DOM issue-card discovery'); };
+  const requests = [];
+  let finish;
   const helper = {
     state: { sessionLifecycleRevision: 0 }, config: {},
     runtime: { isSessionInteractive: () => true },
-    getTranscriptRows: () => [row], getRowEditor: api.getEditorControl
+    acceptAllNativeWarnings(payload) {
+      requests.push(payload);
+      return new Promise(resolve => { finish = resolve; });
+    }
   };
   let accept;
   api.registerRowActionInput(helper, { on(_phase, handler, order) { if (order === 94) accept = handler; } },
     { isFeatureEnabled: () => true, isTypingInTextControl: () => false });
-  assert.equal(accept({ key: 'A', code: 'KeyA', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
-    preventDefault() {}, stopPropagation() {} }), true);
-  assert.equal(clicked, 1);
-  root.setAttribute('data-babel-review-action-id', 'task-two');
-  frames.shift()();
+  const event = { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
+    preventDefault() {}, stopPropagation() {} };
+  assert.equal(accept(event), true);
+  assert.deepEqual(requests, [{ reviewActionId: 'native-task' }]);
+  accept(event);
+  assert.equal(requests.length, 1);
+  finish({ ok: false, error: 'Native task changed' });
   await Promise.resolve();
-  assert.equal(clicked, 1, 'the next task never inherits the pending acknowledgement loop');
+  assert.deepEqual(globalThis.nativeAutomationFailures, [{ feature: 'Accept all warnings', reason: 'Native task changed' }]);
+  readOnly = true;
+  accept(event);
+  assert.equal(requests.length, 1);
   assert.equal(row.state.text, 'unchanged transcript');
+});
+
+test('warning bridge client uses a long action deadline and rejects replaced sessions before dispatch', async t => {
+  const h = harness(t);
+  const root = new ElementFixture('html');
+  root.ownerDocument = h.doc;
+  h.doc.documentElement = root;
+  let task = 'task-one';
+  root.dispatchEvent = event => {
+    const request = JSON.parse(event.detail);
+    root.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+      id: request.id, ok: true, reviewActionId: task, readOnly: false, routeKey: ''
+    }));
+  };
+  const listeners = new Map(), requests = [], delays = [];
+  h.install('window', {
+    location: h.doc.location, __babelHelperRecoveredEditorBridge: {},
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: name => listeners.delete(name),
+    setTimeout(_callback, delay) { delays.push(delay); return 1; }, clearTimeout() {},
+    dispatchEvent(event) { requests.push(event.detail); }
+  });
+  const helper = { state: { sessionLifecycleRevision: 0 },
+    runtime: { isSessionInteractive: () => true }, isFeatureEnabled: () => true };
+  api.registerRecoveredEditorSnapshotService(helper);
+  const pending = helper.acceptAllNativeWarnings({ reviewActionId: task });
+  await Promise.resolve();
+  assert.deepEqual(delays, [31_000]);
+  assert.equal(requests[0].operation, 'accept-all-warnings');
+  listeners.get('babel-helper-recovered-editor-response')({ detail: {
+    id: requests[0].id, result: { ok: true, acceptedCount: 3 }
+  } });
+  assert.deepEqual(await pending, { ok: true, acceptedCount: 3 });
+  const stale = helper.acceptAllNativeWarnings({ reviewActionId: task });
+  task = 'task-two';
+  assert.equal((await stale).ok, false);
+  assert.equal(requests.length, 1);
 });
 
 test('arrow suppression runs after native handling, follows live settings, and leaves unrelated controls alone', (t) => {
@@ -688,7 +734,7 @@ test('writable native feedback sessions admit editing even with zero turns; actu
   assert.equal(h.helper.runtime.refreshRouteSession('native-readonly'), false);
   assert.equal(h.helper.state.sessionActive, false);
   assert.equal(h.helper.state.rowTrackingBound, false);
-  assert.equal(h.observers.at(-1).options.attributes, undefined);
+  assert.equal(h.observers.length, 0, 'session discovery belongs to the MAIN native publisher');
   h.setStatus({ ...h.writable });
   assert.equal(h.helper.runtime.isSessionInteractive(), true, 'native writability, not displayFeedback, owns permission');
 });
@@ -753,7 +799,7 @@ test('same-URL native permission events retire and readmit once without DOM muta
   h.setStatus({ ...h.writable, readOnly: true });
   h.helper.init();
   await settleNativeSession();
-  for (let index = 0; index < 30; index++) h.observers[0].callback([]);
+  assert.equal(h.observers.length, 0, 'readonly sessions do not install a duplicate global mount observer');
   assert.equal(h.calls.ensure, 0);
   assert.equal(h.timers.size, 0);
   h.setStatus({ ...h.writable });
@@ -770,23 +816,24 @@ test('same-URL native permission events retire and readmit once without DOM muta
   assert.equal(h.helper.state.sessionActive, false);
 });
 
-test('missing surface waits for real mount without bootstrap retries', async t => {
+test('missing surface bootstraps MAIN once before waiting for its native mount publication', async t => {
   const h = nativeSessionHarness(t, { known: false });
   h.setSurface(null);
+  h.helper.refreshEditorSnapshot = async () => {
+    h.calls.refresh++;
+    h.publish({ status: 'unmounted', reviewActionId: '', readOnly: null });
+    return null;
+  };
   h.helper.init();
   await settleNativeSession();
-  assert.equal(h.calls.refresh, 0);
+  assert.equal(h.calls.refresh, 1);
   assert.equal(h.calls.ensure, 0);
   assert.equal(h.timers.size, 0);
-  h.helper.refreshEditorSnapshot = async () => { h.calls.refresh++; h.setStatus({ ...h.writable }); };
   h.setSurface(h.surface);
-  // First observe the removal, then the real mount (distinct delivery turns).
-  h.setSurface(null);
-  h.observers[0].callback([]);
-  h.setSurface(h.surface);
-  h.observers[0].callback([]);
+  h.setStatus({ ...h.writable });
+  h.publish({ reviewActionId: 'task-one', readOnly: false });
   await settleNativeSession();
-  assert.equal(h.calls.refresh, 1);
+  assert.equal(h.calls.refresh, 1, 'ready native publication needs no extra snapshot discovery');
   assert.deepEqual(h.calls.activationIds, ['task-one']);
   assert.equal(h.intervals.size, 0);
 });
@@ -800,10 +847,8 @@ test('unsupported native hook fails visibly and unrelated DOM or pageshow cannot
   assert.equal(h.calls.ensure, 0);
   assert.equal(h.calls.refresh, 0);
   assert.match(h.failures[0].reason, /not configurable/);
-  for (let index = 0; index < 10; index++) {
-    h.observers[0].callback([]);
-    h.emit('pageshow');
-  }
+  assert.equal(h.observers.length, 0);
+  for (let index = 0; index < 10; index++) h.emit('pageshow');
   await settleNativeSession();
   assert.equal(h.failures.length, 1);
   assert.equal(h.timers.size, 0);
@@ -833,7 +878,7 @@ test('settings reconciliation keeps one hotkeys observer until its feature is di
   const observer = h.helper.state.hotkeysObserver;
   assert.ok(observer);
   for (let index = 0; index < 30; index++) h.helper.runtime.reconcileSessionSettings();
-  assert.equal(h.observers.filter(item => item !== observer).length, 1, 'one mount observer remains alongside hotkeys');
+  assert.equal(h.observers.filter(item => item !== observer).length, 0, 'hotkeys alone owns its filtered dialog observer');
   assert.equal(h.helper.state.hotkeysObserver, observer);
   assert.notEqual(observer.disconnected, true);
   h.helper.isFeatureEnabled = () => false;
@@ -883,6 +928,34 @@ test('same-task native root generation replacement disposes and rebinds exactly 
   assert.equal(h.calls.ensure, 2);
   assert.deepEqual(h.calls.activationIds, ['task-one', 'task-one']);
   assert.equal(h.timers.size, 0);
+});
+
+test('native unmount publication cancels an in-flight admission and same-URL remount admits the new generation', async t => {
+  const h = nativeSessionHarness(t);
+  const first = h.deferEnsure();
+  h.publish({ reviewActionId: 'task-one', readOnly: false });
+  h.helper.init();
+  await settleNativeSession();
+  assert.equal(h.calls.ensure, 1);
+  h.setSurface(null);
+  h.setStatus(null);
+  h.publish({ generation: 2, status: 'unmounted', reviewActionId: '', readOnly: null });
+  await settleNativeSession();
+  first.resolve(true);
+  await settleNativeSession();
+  assert.equal(h.helper.state.sessionActive, false);
+  assert.equal(h.helper.state.nativeSessionAdmission, null);
+  assert.deepEqual(h.calls.activationIds, []);
+  h.setSurface(h.surface);
+  h.setStatus({ ...h.writable });
+  h.publish({ generation: 3, reviewActionId: 'task-one', readOnly: false });
+  await settleNativeSession();
+  assert.equal(h.helper.state.sessionActive, true);
+  assert.equal(h.calls.ensure, 2);
+  assert.deepEqual(h.calls.activationIds, ['task-one']);
+  assert.equal(h.calls.refresh, 0);
+  assert.equal(h.observers.length, 0);
+  assert.equal(h.intervals.size, 0);
 });
 
 test('a missing MAIN bridge after explicit bootstrap fails visibly instead of retrying or fabricating permissions', async t => {

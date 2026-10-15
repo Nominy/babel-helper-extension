@@ -4,6 +4,25 @@ import { findBabelEditorFiber, readBabelTranscriptBindings } from '@nominy/babel
 export const TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id]';
 export const TRANSCRIPT_EDITOR_SELECTOR = '[data-slate-editor="true"], [role="textbox"][aria-label="Edit turn text"]';
 
+// The exact native factory supplies its own slate-history module. Keep this
+// editor-local so independently emitted MAIN bundles share the same lease.
+const NATIVE_SLATE_HISTORY = Symbol.for('babel-helper/native-slate-history/oct15');
+
+export function bindNativeSlateHistory(editor, historyEditor) {
+  if (typeof historyEditor?.withNewBatch === 'function' && historyEditor.isHistoryEditor?.(editor)) {
+    Object.defineProperty(editor, NATIVE_SLATE_HISTORY, { value: historyEditor });
+  }
+  return editor;
+}
+
+/** Slate's DOM ref depends on this callback. Replacing it during a sibling
+ * commit clears the still-focused editor's DOM mapping before layout effects. */
+export function useNativeSlateBeforeInput(React, callback) {
+  const current = React.useRef(callback);
+  React.useLayoutEffect(() => { current.current = callback; });
+  return React.useCallback(event => current.current(event), [current]);
+}
+
 export function findNativeDescendant(root, predicate) {
   const pending = root ? [root] : [];
   const seen = new Set();
@@ -137,6 +156,8 @@ export function readNativeTurn(annotationId, bindings = readBabelTranscriptBindi
   return { annotation, editor, text, start: Math.min(anchor ?? text.length, focus ?? text.length),
     end: Math.max(anchor ?? text.length, focus ?? text.length),
     direction: anchor == null || anchor === focus ? 'none' : anchor > focus ? 'backward' : 'forward',
+    isActive: bindings.transcript.activeIds?.has(annotationId) === true,
+    isEditing: bindings.transcript.editingId === annotationId,
     readOnly: bindings.readOnly };
 }
 
@@ -148,22 +169,29 @@ export function replaceNativeTurn(annotationId, text, options = {}) {
   if (!state || typeof text !== 'string') return false;
   if (state.text === text) return true;
   if (state.editor) {
-    // insertData is the captured editor's own plain-text tokenizer. Its Slate
-    // transforms replace the selected fragment, retaining tag nodes and undo.
-    if (!selectNativeSlate(state.editor, 0, state.text.length)) return false;
-    if (text) {
-      const data = new DataTransfer();
-      data.setData('text/plain', text);
-      state.editor.insertData(data);
-    } else {
-      state.editor.deleteFragment();
-    }
-    selectNativeSlate(state.editor, options.start ?? text.length, options.end ?? options.start ?? text.length, options.direction);
-    // Slate schedules onChange in a microtask. Flush its native change listener
-    // now so a caller that immediately blurs cannot lose the debounced edit.
-    state.editor.onChange();
+    const history = state.editor[NATIVE_SLATE_HISTORY];
+    if (typeof history?.withNewBatch !== 'function') throw new Error('native-slate-history-unavailable');
+    // Use this editor's genuine history boundary. Retained Oct15 history must
+    // not merge a Helper replacement into typing from a previous mount.
+    let selected = false;
+    history.withNewBatch(state.editor, () => {
+      selected = selectNativeSlate(state.editor, 0, state.text.length);
+      if (!selected) return;
+      // insertData is the native plain-text tokenizer, retaining raw tag nodes.
+      if (text) {
+        const data = new DataTransfer();
+        data.setData('text/plain', text);
+        state.editor.insertData(data);
+      } else {
+        state.editor.deleteFragment();
+      }
+      selectNativeSlate(state.editor, options.start ?? text.length, options.end ?? options.start ?? text.length, options.direction);
+      // Flush native onChange before immediate blur can lose the debounced edit.
+      state.editor.onChange();
+    });
+    if (!selected) return false;
   } else {
-    const change = bindings.transcript?.handlers?.onChangeText || bindings.panel.onChangeAnnotationContent;
+    const change = bindings.transcript.handlers.onChangeText;
     if (typeof change !== 'function') return false;
     change(annotationId, text);
   }

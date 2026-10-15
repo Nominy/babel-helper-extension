@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { build, transform } from 'esbuild';
-import { join } from 'node:path';
-import { defaultSnapshotDir } from '@nominy/babel-extension-e2e/recreation-snapshot';
+import { build } from 'esbuild';
+import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
 import { AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_PROTOCOL_VERSION, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
+import { AudioWorkerFixture } from './fixtures/audio-enhancement-worker.mjs';
 
-const { recoveredModuleSources, recoveredEditorModuleId } = await loadEntry(
-  join(defaultSnapshotDir, 'app/src/recovered/generated/moduleSources.ts')
-);
-const recoveredEditor = (await transform(`(${recoveredModuleSources[recoveredEditorModuleId]})`, { loader: 'js', minify: false })).code;
+const recoveredEditor = createNativeRenderFactories({}).find(entry => entry.id === 59327)
+  .originals.find(source => source.includes('class tV {'));
+assert.ok(recoveredEditor, 'The current native editor oracle must be available');
+const createNativeHistory = new Function('ib',
+  recoveredEditor.slice(recoveredEditor.indexOf('function iR('), recoveredEditor.indexOf('function iM(')) +
+  recoveredEditor.slice(recoveredEditor.indexOf('function ob('), recoveredEditor.indexOf('let ow =')) +
+  '; return ob;'
+)({ xv: { isText: node => typeof node.text === 'string' } });
 
 function nativeCallback(name, scope) {
   const marker = `${name} = (0, a.useCallback)(`;
@@ -79,9 +83,10 @@ class NativeEditorFixture {
     })) };
     this.initial = structuredClone(this.annotations.current);
     // Execute the recovered annotation command, not an imitation split or event echo.
-    this.splitAnnotation = nativeCallback('q3', {
+    this.commands = [];
+    this.splitAnnotation = nativeCallback('Q3', {
       x3: this.annotations, crypto,
-      D3: command => command.do(),
+      D2: command => { this.commands.push(command); command.do(); },
       C2: update => {
         this.annotations.current = update(this.annotations.current);
         this.writes += 1;
@@ -92,12 +97,12 @@ class NativeEditorFixture {
   select(trackId, regionId) { this.selected = { ...this.selected, [trackId]: { activeRegionId: regionId } }; this.selectionHook.memoizedState = this.selected; }
   register(wave, region) {
     const refs = { [region.id]: { start: {}, end: {}, text: {}, label: { style: {} } } };
-    const bind = nativeCallback('re2', {
-      nP2: null, X2: { current: () => ({ region: '#ccc', regionBorder: '#999' }) },
+    const bind = nativeCallback('n72', {
+      nB2: null, et2: { current: () => ({ region: '#ccc', regionBorder: '#999' }) },
       ey2: () => {}, ex2: { refs: { current: refs } },
-      t_2: {}, eA2: (id, selected) => this.select(id, selected), t42: { current: new Set() },
-      x2: 'transcription', G2: false, tY2: false,
-      ny2: this.splitAnnotation, nn2: { current: false }, nO: { SHORT: 1 }, setTimeout,
+      tb2: {}, eR2: (id, selected) => this.select(id, selected), nl2: { current: new Set() },
+      b2: 'transcription', U2: false, tA2: false,
+      nC2: this.splitAnnotation, nh2: { current: false }, af: { SHORT: 1 }, setTimeout,
       MouseEvent: NativeMouseEventFixture
     });
     bind({ id: wave.id }, region, false);
@@ -166,7 +171,7 @@ class NativeWaveFixture {
     this.media = { volume: this.volume, muted: this.muted, decodedMarker: 100 };
     this.regions = new NativeRegionPluginFixture(this, editor);
     this.onLoading = onLoading;
-    // Recovered native editor module 73681 invokes zoom on ready, synchronizing
+    // Current native editor module 59327 invokes zoom on ready, synchronizing
     // it to the other lane. Module 99407 zoom rejects a missing decoded buffer.
     this.on('ready', () => {
       for (const other of otherWaves()) if (other !== this) other.zoom(100);
@@ -266,6 +271,13 @@ test(`real native split and paired selection remain correct with ${scenario.name
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
   t.after(() => { for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]; });
+  AudioWorkerFixture.instances = [];
+  AudioWorkerFixture.onRequest = null;
+  install('Worker', AudioWorkerFixture);
+  t.after(() => {
+    AudioWorkerFixture.onRequest = null;
+    for (const worker of AudioWorkerFixture.instances) worker.terminate();
+  });
   const attributes = new Map();
   const listeners = new Map();
   const publications = [];
@@ -316,8 +328,18 @@ test(`real native split and paired selection remain correct with ${scenario.name
   const unexpectedTranscriptWrite = () => { throw new Error('Audio work must not invoke transcript mutation callbacks'); };
   const transcript = { memoizedProps: {
     get turns() { return editor.annotations.current; },
-    handlers: { onChangeText: unexpectedTranscriptWrite }, readOnly: false
-  } };
+    editingId: 'region-lane-1',
+    localEdits: false,
+    highlightCjkSpaces: true,
+    diffOtherSide: 'submitted',
+    onCopy: unexpectedTranscriptWrite,
+    handlers: {
+      onActivate: unexpectedTranscriptWrite, onDeactivate: unexpectedTranscriptWrite,
+      onSelect: unexpectedTranscriptWrite, onChangeText: unexpectedTranscriptWrite
+    }, readOnly: false
+  }, memoizedState: { memoizedState: createNativeHistory() },
+  child: { memoizedProps: { history: null } } };
+  transcript.child.memoizedProps.history = transcript.memoizedState.memoizedState;
   const panel = { memoizedProps: {
     get annotations() { return editor.annotations.current; },
     saveState: {}, renderTranscript: unexpectedTranscriptWrite, onSave: unexpectedTranscriptWrite,
@@ -344,7 +366,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
   install('navigator', { platform: 'Win32' });
   const stream = await loadEntry('src/services/audio-enhancement-stream.ts');
   const bridge = await loadEntry('src/content/audio-enhancement-bridge.ts');
-  bridge.initAudioEnhancementBridge();
+  bridge.initAudioEnhancementBridge('chrome-extension://helper/dist/content/audio-enhancement-worker.js');
   facade = window.__babelHelperAudioEnhancementBridge;
   try {
     if (scenario.nativeAdmission) {
@@ -436,6 +458,12 @@ test(`real native split and paired selection remain correct with ${scenario.name
     assert.deepEqual(facade.getActiveAudio('default-original', 'task-native', 'original').tracks.map(track => track.bytes),
       [sourceWav(100), sourceWav(100)], 'Default mixing never overwrites byte-exact Original');
     assert.deepEqual(loading.map(value => value.id), ['lane-1', 'lane-2']);
+    const duplicateLoads = waves.map(wave => wave.loads.length);
+    const workerRequests = AudioWorkerFixture.instances.flatMap(worker => worker.requests).length;
+    await facade.selectStrength(90);
+    await waves[0].load('https://babel.test/lane-1.wav', [[999]], 999);
+    assert.deepEqual(waves.map(wave => wave.loads.length), duplicateLoads, 'Same selection and same-source native replay do not decode again');
+    assert.equal(AudioWorkerFixture.instances.flatMap(worker => worker.requests).length, workerRequests, 'Same-source replays never allocate another mix');
     assert.ok(loading.every(value => value.counterpartDecoded), 'Native cross-lane zoom must always have decoded audio');
     assert.ok(loading.every(value => !value.active && value.state.strength === 0 && value.state.status === 'switching'), 'Paired strength is unavailable and uncommitted while either lane loads');
     if (!scenario.originalBefore) assert.ok(publications.filter(value => value.status === 'ready').every(value => value.strength === 90), 'Ready cannot precede the initial paired native commit');
@@ -490,8 +518,29 @@ test(`real native split and paired selection remain correct with ${scenario.name
         assert.equal(editor.selected['lane-1'].activeRegionId, annotation.id);
       }
     };
+    const preparing = Promise.withResolvers();
+    AudioWorkerFixture.onRequest = request => { if (request.type === 'mix') preparing.resolve(); };
+    const preparingLoads = waves.map(wave => wave.loads.length);
+    const selecting = facade.selectStrength(60);
+    await preparing.promise;
+    AudioWorkerFixture.onRequest = null;
+    assert.ok(waves.every(wave => wave.isPlaying()), 'Worker preparation does not pause the committed native pair');
+    assert.deepEqual(waves.map(wave => wave.loads.length), preparingLoads);
+    assert.equal(facade.getActiveAudio('preparing', 'task-native').available, false);
+    assert.equal(facade.getActiveAudio('original-preparing', 'task-native', 'original').available, true);
+    const beforePreparationSplit = structuredClone(editor.annotations.current);
     await splitCurrent();
-    await facade.selectStrength(60);
+    const editedDuringPreparation = structuredClone(editor.annotations.current);
+    await selecting;
+    assert.deepEqual(editor.annotations.current, editedDuringPreparation, 'A split during worker preparation survives native source replacement');
+    const splitCommand = editor.commands.at(-1);
+    splitCommand.undo();
+    await Promise.resolve();
+    assert.deepEqual([...editor.annotations.current].sort((a, b) => a.id.localeCompare(b.id)),
+      [...beforePreparationSplit].sort((a, b) => a.id.localeCompare(b.id)),
+      'The real native history command survives source replacement and restores the prior annotation');
+    splitCommand.do();
+    await Promise.resolve();
     const priorMix = facade.getActiveAudio('prior-mix', 'task-native');
     assert.equal(priorMix.strength, 60);
     assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [160, 160]);
@@ -565,6 +614,30 @@ test(`real native split and paired selection remain correct with ${scenario.name
         }
       }
       assert.equal(keys.size, 99, 'Every committed intermediate has its own stable identity');
+      const supersededLoads = waves.map(wave => wave.loads.length);
+      const mixEntered = Promise.withResolvers();
+      AudioWorkerFixture.onRequest = (request, worker) => { if (request.type === 'mix') mixEntered.resolve(worker); };
+      const obsolete = facade.selectStrength(70);
+      const obsoleteWorker = await mixEntered.promise;
+      AudioWorkerFixture.onRequest = null;
+      const originalSelection = facade.selectStrength(0);
+      assert.equal(obsoleteWorker.terminated, true, 'A superseded CPU mix is terminated instead of blocking the latest selection');
+      await Promise.all([obsolete, originalSelection]);
+      assert.deepEqual(waves.map(wave => wave.loads.slice(supersededLoads[waves.indexOf(wave)])), [[100], [100]], 'An obsolete worker result never reaches native loading');
+      assert.equal(facade.getState().strength, 0);
+      assert.deepEqual(facade.getActiveAudio('restored-after-cancellation', 'task-native').tracks.map(track => track.bytes),
+        [sourceWav(100), sourceWav(100)]);
+      await facade.selectStrength(99);
+      const unchangedLoads = waves.map(wave => wave.loads.length);
+      const returning = Promise.withResolvers();
+      AudioWorkerFixture.onRequest = request => { if (request.type === 'mix') returning.resolve(); };
+      const cancelledAgain = facade.selectStrength(70);
+      await returning.promise;
+      AudioWorkerFixture.onRequest = null;
+      const unchangedSelection = facade.selectStrength(99);
+      await Promise.all([cancelledAgain, unchangedSelection]);
+      assert.deepEqual(waves.map(wave => wave.loads.length), unchangedLoads, 'Returning to the committed strength during preparation does not reload either source');
+      assert.equal(facade.getState().status, 'ready');
       await waves[0].load('https://babel.test/lane-1.wav', [[999]], 999);
       await waves[1].loadBlob(new Blob([sourceWav(999)]), [[999]], 999);
       assert.deepEqual(waves.map(wave => wave.getDecodedData().marker), [199, 199], 'Native renderer replays use the committed mix, not stale URL/blob/peaks');
@@ -617,6 +690,15 @@ test(`real native split and paired selection remain correct with ${scenario.name
         editor.select('lane-1', 'new-region');
         editor.select('lane-2', null);
         const selection = structuredClone(editor.selected);
+        const activeTurn = editor.annotations.current.find(annotation => annotation.processedRecordingId === 'lane-2');
+        transcript.memoizedProps.editingId = playIntent ? activeTurn.id : null;
+        const turnHistory = { undos: [[{ type: 'insert_text', text: 'local edit' }]], redos: [] };
+        const history = transcript.child.memoizedProps.history;
+        history.save(activeTurn.id, {
+          value: [{ type: 'paragraph', children: [{ text: activeTurn.content }] }], history: turnHistory
+        });
+        const transcriptProps = transcript.memoizedProps;
+        const handlers = transcriptProps.handlers;
         finishDecode.resolve();
         await switching;
         assert.equal(facade.getState().status, 'ready');
@@ -632,6 +714,12 @@ test(`real native split and paired selection remain correct with ${scenario.name
         assert.deepEqual(editor.selected, selection, 'New native selection survives source reload without a captured React state replay');
         assert.equal(editor.writes, writes);
         assert.deepEqual(editor.annotations.current, annotations);
+        assert.equal(transcript.memoizedProps, transcriptProps, 'Audio replacement never replaces native turn props');
+        assert.equal(transcriptProps.editingId, playIntent ? activeTurn.id : null, 'Current editing intent survives decoding');
+        assert.equal(transcript.child.memoizedProps.history, history, 'The native turn history owner is retained');
+        assert.equal(history.restore(activeTurn.id, activeTurn.content).history, turnHistory,
+          'The real native history store still restores the turn undo stack after source replacement');
+        assert.equal(transcriptProps.handlers, handlers, 'Native activation/deactivation callbacks are not replayed or wrapped');
         for (let index = 0; index < waves.length; index += 1) {
           assert.equal(waves[index].play, originalMethods[index].play);
           assert.equal(waves[index].pause, originalMethods[index].pause);
@@ -875,7 +963,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
       const retired = facade;
       const nextSources = Promise.withResolvers();
       onSources = nextSources.resolve;
-      bridge.initAudioEnhancementBridge();
+      bridge.initAudioEnhancementBridge('chrome-extension://helper/dist/content/audio-enhancement-worker.js');
       facade = window.__babelHelperAudioEnhancementBridge;
       await facade.setEnabled(true);
       await nextSources.promise;

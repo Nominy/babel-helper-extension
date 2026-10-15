@@ -95,13 +95,13 @@ function elementText(value) {
   return value?.props ? elementText(value.props.children) : '';
 }
 
-function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMerge, route, readBindings, closeMenus,
+function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMerge, route, readBindings, findEditor, onFailure, closeMenus,
   annotationId = null, keyboardOnly = false }) {
   const panel = findNativeDescendant(editor, fiber => fiber.memoizedProps === binding.panel);
   if (!panel) throw new Error('native-merge-panel-unsupported');
-  let capabilityValidated = false, eligibilityFound = false, restrictionObserved = false;
+  let capabilityValidated = false, eligibilityFound = false;
   const transcriptionCount = binding.annotations.filter(turn => turn.type === 'transcription').length;
-  // aJ's eligibility useMemo owns the records rendered into aF. Its inputs are
+  // The native panel's eligibility useMemo owns the menu records. Its inputs are
   // the current sorted transcription annotations and the real lock flag.
   // Keeping these records adapted preserves eligibility on playback renders
   // without touching the React commit hot path.
@@ -124,7 +124,6 @@ function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMe
       for (const direction of ['above', 'below']) {
         const suffix = direction === 'above' ? 'Above' : 'Below';
         if (original(record, `merge${suffix}Hint`) !== gapHints[direction]) continue;
-        restrictionObserved = true;
         const pair = readSameLaneMerge(binding, turn.id, direction);
         if (pair.reason || pair.gap <= 2) continue;
         if (!capabilityValidated) {
@@ -216,19 +215,16 @@ function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMe
     }
   }
   const handlers = binding.transcript?.handlers;
-  for (const key of ['onMergeUp', 'onMergeDown']) {
-    if (!Object.hasOwn(handlers || {}, key)) continue;
+  const key = 'onMergeUp';
+  if (Object.hasOwn(handlers || {}, key)) {
     const callback = original(handlers, key);
     const callbackSource = typeof callback === 'function' ? Function.prototype.toString.call(callback) : '';
-    const direction = key === 'onMergeUp' ? 'above' : 'below';
+    const direction = 'above';
     if (!callbackSource.includes(`"${direction}"`) || !callbackSource.includes("There's no ") ||
         !callbackSource.includes('within ')) {
-      // Older native editors have no two-second policy. Their independent
-      // keyboard adjacency rules are not this feature's control point.
-      if (!restrictionObserved && !capabilityValidated) continue;
       throw new Error('native-merge-keyboard-unsupported');
     }
-    const nativeOperation = direction === 'above' ? 'mergeUp' : 'mergeDown';
+    const nativeOperation = 'mergeUp';
     const currentOperation = binding.controller?.[nativeOperation];
     // The committed transcript owns this entrypoint, but may retain an older
     // closure. Match its native role, then execute only the current controller.
@@ -242,6 +238,13 @@ function reconcileNativeMergeMenus({ binding, editor, patch, original, requestMe
     }
     patch(handlers, key, annotationId => {
       const current = readBindings();
+      const currentEditor = findEditor();
+      if (current?.reviewActionId !== binding.reviewActionId ||
+          (currentEditor !== editor && currentEditor?.alternate !== editor) ||
+          `${location.pathname}${location.search}` !== route) {
+        onFailure(new Error('native-merge-stale-task'));
+        return;
+      }
       const pair = readSameLaneMerge(current, annotationId, direction);
       if (!pair.reason && pair.gap > 2) {
         requestMerge(annotationId, direction, binding.reviewActionId, editor, route);
@@ -291,9 +294,7 @@ export function installNativeMergePolicy({ onFailure, isEnabled = () => true, re
     if (!isEnabled()) return binding.panel.onMergeAnnotations(annotationId, direction);
     const scope = prepare(annotationId, true);
     if (!scope || scope.binding.annotations !== binding.annotations) throw new Error('native-merge-stale-transcript');
-    // No supported restriction means native owns this action, not a fallback
-    // transaction. In particular, unrestricted older editors remain unchanged.
-    if (!scope.restricted) return binding.panel.onMergeAnnotations(annotationId, direction);
+    if (!scope.restricted) throw new Error('native-merge-policy-unsupported');
     return executeSameLaneMerge(binding, pair, resolveNativeAnnotationTransaction(editor, binding));
   }
 
@@ -332,7 +333,6 @@ export function installNativeMergePolicy({ onFailure, isEnabled = () => true, re
           }
           if (Object.hasOwn(binding.pendingTextById || {}, current.id)) return;
         }
-        binding.panel.onClearLowConfidence?.(annotationId);
         merge(annotationId, direction, task, root, requestRoute);
         finish();
       } catch (error) { finish(error); }
@@ -389,7 +389,7 @@ export function installNativeMergePolicy({ onFailure, isEnabled = () => true, re
       return null;
     }
     try {
-      const restricted = reconcileNativeMergeMenus({ binding, editor, patch, original, requestMerge, readBindings, closeMenus,
+      const restricted = reconcileNativeMergeMenus({ binding, editor, patch, original, requestMerge, readBindings, findEditor, onFailure, closeMenus,
         route: route(), annotationId, keyboardOnly });
       prepared = { annotations: binding.annotations, task: binding.reviewActionId, editor, restricted };
     } catch (error) { restore(); throw error; }

@@ -587,7 +587,8 @@ test('extended diff reads the native comparison switch, never reviewer visibilit
 });
 
 function nativeSessionTree(task = 'task-a') {
-  const transcript = { memoizedProps: { turns: [], handlers: { onChangeText() {} }, readOnly: false } };
+  const transcript = { memoizedProps: { turns: [], editingId: null,
+    handlers: { onActivate() {}, onDeactivate() {}, onSelect() {}, onChangeText() {} }, readOnly: false } };
   const panel = { memoizedProps: { annotations: [], saveState: {}, renderTranscript() {}, onSave() {} }, child: transcript };
   const editor = { memoizedProps: { reviewActionId: task, transcriptionChunkProcessedRecordings: [] }, child: panel };
   const root = { child: editor };
@@ -596,7 +597,11 @@ function nativeSessionTree(task = 'task-a') {
   editor.return = root;
   panel.return = editor;
   transcript.return = panel;
-  return { editor, root, host, transcript, seed: { __reactFiber$test: editor }, surface: new TestElement() };
+  const surface = new TestElement();
+  surface.isConnected = true;
+  surface.__reactFiber$test = editor;
+  surface.matches = selector => selector.includes('[data-transcript-scroll]');
+  return { editor, root, host, transcript, seed: surface, surface };
 }
 
 test('native commit publisher observes unchanged DOM task/permission transitions and owns root replacement lifetime', async () => {
@@ -618,7 +623,9 @@ test('native commit publisher observes unchanged DOM task/permission transitions
   const old = tree, generation = events.at(-1).generation;
   tree = nativeSessionTree('task-b');
   tree.transcript.memoizedProps.readOnly = true;
-  observers[0].callback([]);
+  old.surface.isConnected = false;
+  observers[0].callback([{ type: 'childList', addedNodes: [tree.surface], removedNodes: [old.surface] }]);
+  await Promise.resolve();
   assert.ok(events.at(-1).generation > generation, 'same-task root replacement publishes a new binding identity');
   assert.equal(Object.getOwnPropertyDescriptor(old.host, 'current').value, old.root);
   const count = events.length;
@@ -633,6 +640,8 @@ test('native commit publisher observes unchanged DOM task/permission transitions
   window.__babelHelperRecoveredEditorBridge.dispose();
   assert.equal(observers[0].disconnected, true);
   assert.equal(Object.getOwnPropertyDescriptor(tree.host, 'current').value, tree.root);
+  assert.equal(document.documentElement.getAttribute('data-babel-helper-native-session'), null,
+    'teardown removes the publication owned by this bridge');
 });
 
 test('native session publisher waits for DOM mount but reports an unsupported mounted hook explicitly', async () => {
@@ -646,13 +655,91 @@ test('native session publisher waits for DOM mount but reports an unsupported mo
   assert.equal(events.at(-1).status, 'unmounted');
   tree = nativeSessionTree();
   Object.defineProperty(tree.host, 'current', { configurable: false });
-  observers[0].callback([]);
+  observers[0].callback([{ type: 'childList', addedNodes: [tree.surface], removedNodes: [] }]);
+  await Promise.resolve();
   assert.equal(events.at(-1).status, 'error');
   assert.match(events.at(-1).error, /configurable writable/);
   const count = events.length;
-  for (let index = 0; index < 10; index++) observers[0].callback([]);
+  const unrelated = new TestElement();
+  for (let index = 0; index < 10; index++) {
+    observers[0].callback([{ type: 'childList', addedNodes: [unrelated], removedNodes: [] }]);
+  }
+  await Promise.resolve();
   assert.equal(events.length, count, 'unrelated DOM cannot restart failed hook installation');
   window.__babelHelperRecoveredEditorBridge.dispose();
+});
+
+test('unrelated childList churn does not rediscover or republish native sessions; native commits still publish', async t => {
+  const { window, document, observers } = installPageEnvironment();
+  const tree = nativeSessionTree();
+  let surfaceReads = 0, fiberSearches = 0;
+  document.querySelector = () => { surfaceReads++; return tree.surface; };
+  document.querySelectorAll = () => { fiberSearches++; return [tree.seed]; };
+  const sessions = [], commits = [];
+  window.addEventListener('babel-helper:native-session-change', event => sessions.push(event.detail));
+  window.addEventListener('babel-helper:native-editor-commit', event => commits.push(event.detail));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  t.after(() => window.__babelHelperRecoveredEditorBridge?.dispose());
+  const before = { surfaceReads, fiberSearches, sessions: sessions.length, commits: commits.length };
+  const unrelated = new TestElement();
+  for (let index = 0; index < 30; index++) {
+    observers[0].callback([{ type: 'childList', target: tree.surface,
+      addedNodes: [unrelated], removedNodes: [unrelated] }]);
+    await Promise.resolve();
+  }
+  assert.equal(surfaceReads, before.surfaceReads, 'highlight/overlay text churn does not query the document');
+  assert.equal(fiberSearches, before.fiberSearches, 'unrelated DOM does not rediscover native task authority');
+  assert.equal(sessions.length, before.sessions);
+  assert.equal(commits.length, before.commits);
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  assert.equal(sessions.length, before.sessions, 'unchanged native access is not republished');
+  assert.equal(commits.length, before.commits + 1, 'editing consumers still receive every committed update');
+  assert.equal(commits.at(-1), commits.at(-2));
+});
+
+test('same-surface same-URL React root replacement is coalesced and detached commits lose authority', async t => {
+  const { window, document, observers } = installPageEnvironment();
+  let tree = nativeSessionTree();
+  const surface = tree.surface;
+  let surfaceReads = 0;
+  document.querySelector = () => { surfaceReads++; return surface; };
+  document.querySelectorAll = () => [surface];
+  const sessions = [];
+  window.addEventListener('babel-helper:native-session-change', event => sessions.push(JSON.parse(event.detail)));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  t.after(() => window.__babelHelperRecoveredEditorBridge?.dispose());
+  const old = tree, generation = sessions.at(-1).generation, beforeReads = surfaceReads;
+  tree = nativeSessionTree();
+  surface.__reactFiber$test = tree.editor;
+  const unrelated = new TestElement();
+  const records = [{ type: 'childList', addedNodes: [unrelated], removedNodes: [] }];
+  for (let index = 0; index < 20; index++) observers[0].callback(records);
+  assert.equal(surfaceReads, beforeReads, 'mount deliveries do not synchronously rescan the native session');
+  await Promise.resolve();
+  assert.equal(surfaceReads, beforeReads + 1, 'one reconciliation covers the burst');
+  assert.equal(sessions.length, 2);
+  assert.ok(sessions.at(-1).generation > generation);
+  assert.equal(sessions.at(-1).reviewActionId, 'task-a');
+  assert.equal(Object.getOwnPropertyDescriptor(old.host, 'current').value, old.root);
+  old.editor.memoizedProps.reviewActionId = 'detached-task';
+  old.host.current = old.root;
+  await Promise.resolve();
+  assert.equal(sessions.length, 2);
+  tree.editor.memoizedProps.reviewActionId = 'task-b';
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  assert.equal(sessions.at(-1).reviewActionId, 'task-b', 'new root commits own the unchanged surface');
+  surface.isConnected = false;
+  observers[0].callback(records);
+  document.documentElement.setAttribute('data-babel-helper-native-session', 'new-owner');
+  window.__babelHelperRecoveredEditorBridge.dispose();
+  const count = sessions.length;
+  await Promise.resolve();
+  assert.equal(sessions.length, count, 'queued mount work cannot revive a disposed bridge');
+  assert.equal(Object.getOwnPropertyDescriptor(tree.host, 'current').value, tree.root);
+  assert.equal(document.documentElement.getAttribute('data-babel-helper-native-session'), 'new-owner',
+    'teardown never removes a newer publication owner');
 });
 
 test('MAIN history signals work without Navigation API and cleanup never restores over foreign wrappers', async () => {
@@ -690,7 +777,10 @@ test('native text selection preserves lane clocks while editing and explicit see
     if (!(time >= turn.startTimeInSeconds && time < turn.endTimeInSeconds)) seek(turn);
     selected = turn.id;
   };
-  handlers.onActivate = id => { editing = id; };
+  const activate = id => { editing = id; };
+  const deactivate = id => { if (editing === id) editing = null; };
+  handlers.onActivate = activate;
+  handlers.onDeactivate = deactivate;
   handlers.onSeek = seek;
   tree.editor.memoizedState = { memoizedState: { current: {
     first: { wavesurfer: waves[0] }, second: { wavesurfer: waves[1] }
@@ -704,11 +794,17 @@ test('native text selection preserves lane clocks while editing and explicit see
   t.after(() => window.__babelHelperRecoveredEditorBridge?.dispose());
   const turn = { id: 'selected-turn', startTimeInSeconds: 1, endTimeInSeconds: 2 };
   window.dispatchEvent(new TestEvent('mousedown', { target }));
+  assert.equal(handlers.onActivate, activate, 'the native editingId setter must not be wrapped');
+  assert.equal(handlers.onDeactivate, deactivate, 'native conditional leave ownership must remain intact');
   handlers.onSelect(turn);
   handlers.onActivate(turn.id);
   assert.deepEqual(times, [8, 9]);
   assert.equal(selected, turn.id);
   assert.equal(editing, turn.id);
+  handlers.onDeactivate('different-turn');
+  assert.equal(editing, turn.id);
+  handlers.onDeactivate(turn.id);
+  assert.equal(editing, null);
   handlers.onSeek(turn);
   assert.deepEqual(times, [1, 1]);
   times[0] = 8; times[1] = 9;

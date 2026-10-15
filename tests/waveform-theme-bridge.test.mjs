@@ -283,6 +283,7 @@ function getBundle() {
 }
 
 function createWave(container, colors, plugins = []) {
+  const listeners = new Map();
   const wave = {
     options: { container, ...colors },
     plugins,
@@ -291,6 +292,16 @@ function createWave(container, colors, plugins = []) {
     // its listeners run synchronously inside setOptions and may call back into the bridge.
     onWrite: null,
     getDuration: () => 42,
+    getCurrentTime: () => 0,
+    on(event, listener) {
+      let set = listeners.get(event);
+      if (!set) listeners.set(event, set = new Set());
+      set.add(listener);
+      return () => set.delete(listener);
+    },
+    emit(event) {
+      for (const listener of listeners.get(event) || []) listener();
+    },
     setOptions(patch) {
       Object.assign(wave.options, patch);
       wave.calls.push({ ...patch });
@@ -384,19 +395,45 @@ function createEnvironment() {
   const cells = [];
   const pageWindow = new FakeWindow();
   const body = new FakeElement();
+  const registry = {};
+  const tracks = [];
+  let nextTrack = 0;
+  const editor = {
+    memoizedProps: {
+      reviewActionId: 'theme-session',
+      get transcriptionChunkProcessedRecordings() {
+        return tracks.map(track => ({
+          processedRecordingId: track.id,
+          speaker: track.label.startsWith('Speaker ') ? track.label.slice(8) : null
+        }));
+      }
+    },
+    memoizedState: { memoizedState: { current: registry }, next: null }
+  };
+  const root = { current: { child: editor } };
+  body.__reactFiber$native = { return: { stateNode: root } };
+  editor.return = body.__reactFiber$native.return;
+  function registerWave(wave, track = null) {
+    if (!track) {
+      track = createTrack(++nextTrack, `Speaker ${nextTrack}`);
+      tracks.push(track);
+    }
+    registry[track.id] = { wavesurfer: wave };
+    return track;
+  }
   const pageDocument = Object.assign(new EventTarget(), {
     body,
     documentElement: new FakeElement(),
     querySelectorAll: (selector) => {
       measurements.query += 1;
-      if (selector === 'div') {
-        return hosts.slice();
-      }
+      if (selector === 'main, [data-transcript-scroll]') return [body];
+      if (selector === 'div') throw new Error('Wave discovery must use the native registry');
       return selector === 'section[data-annotation-id] select[id^="speaker-"]' ? cells.slice() : [];
     }
   });
 
   FakeMutationObserver.instances = [];
+  const nativeTracks = tracks;
   measurements.computedStyle = 0;
   measurements.rect = 0;
   measurements.query = 0;
@@ -433,6 +470,7 @@ function createEnvironment() {
     const host = addHost((element) => {
       wave = createWave(element, colors);
       element['__reactProps$abc123'] = { waveformRef: { current: wave } };
+      registerWave(wave);
     });
     return { host, wave };
   }
@@ -441,21 +479,15 @@ function createEnvironment() {
     let wave = null;
     const host = addHost((element) => {
       wave = createWave(element, colors);
-      const registry = { 'lane-1': { wavesurfer: wave } };
-      element['__reactFiber$abc123'] = {
-        memoizedState: { memoizedState: { current: registry }, next: null },
-        return: null
-      };
+      registerWave(wave);
     });
     return { host, wave };
   }
 
-  // A lane as the dashboard builds it: the wavesurfer host inside the frame div that carries
-  // the inline 2.5px border, with the track descriptor and the whole track array on the
-  // host's React props. `mountOrder` mounts the hosts in a different document order than the
-  // track array so a test can prove which of the two the bridge trusts.
+  // Native recording order is independent of registry insertion and document mount order.
   function addLaneStack(labels, mountOrder) {
     const tracks = labels.map((label, index) => createTrack(index + 1, label));
+    tracks.forEach(track => nativeTracks.push(track));
     const lanes = [];
 
     function mount(trackIndex) {
@@ -472,6 +504,7 @@ function createEnvironment() {
         element.parentElement = frame;
         wave = createWave(element, NATIVE_COLORS, [regions]);
         element['__reactProps$abc123'] = { track, tracks, waveformRef: { current: wave } };
+        registerWave(wave, track);
       });
 
       const lane = { track, host, frame, wave, regions };
@@ -520,6 +553,11 @@ function createEnvironment() {
   }
 
   return {
+    registry,
+    tracks,
+    root,
+    editor,
+    registerWave,
     window: pageWindow,
     document: pageDocument,
     body,
@@ -543,7 +581,7 @@ async function installBridge() {
   return globalThis.window[GLOBAL_KEY];
 }
 
-test('applies canvas colors to instances found through props and lane registries', async () => {
+test('applies canvas colors only to native registry instances', async () => {
   const env = createEnvironment();
   const props = env.addReactPropsHost(NATIVE_COLORS);
   const registry = env.addRegistryHost(NATIVE_COLORS);
@@ -757,6 +795,8 @@ test('instances reached across a shadow boundary are themed', async () => {
     const container = new FakeElement();
     container.root = { host: element };
     wave = createWave(container, NATIVE_COLORS);
+    wave.getWrapper = () => ({ getRootNode: () => ({ host: element }) });
+    env.registerWave(wave);
     element.parentElement = null;
     element.root = { host: outer };
     outer['__reactProps$abc123'] = { waveformRef: { current: wave } };
@@ -765,7 +805,7 @@ test('instances reached across a shadow boundary are themed', async () => {
 
   env.sendConfig(THEME);
 
-  assert.equal(wave.options.waveColor, LANES[0].waveColor, 'seed walk must hop out of the shadow root');
+  assert.equal(wave.options.waveColor, LANES[0].waveColor, 'native wrapper identifies the shadow host');
   assert.equal(wave.options.progressColor, LANES[0].progressColor);
   assert.equal(bridge.instanceCount(), 1);
   assert.ok(host.shadowRoot);
@@ -918,15 +958,15 @@ test('detached instances are pruned while hidden-but-live ones stay restorable',
   const replacement = env.addReactPropsHost(NATIVE_COLORS);
 
   assert.equal(bridge.refresh(), 1);
-  assert.equal(removed.wave.calls.length, 1, 'a removed lane is not touched again');
+  assert.equal(removed.wave.calls.length, 2, 'detached owned colors are restored before pruning');
   assert.equal(bridge.instanceCount(), 2, 'the hidden lane keeps its record');
-  assert.equal(replacement.wave.options.progressColor, LANES[0].progressColor);
+  assert.equal(replacement.wave.options.progressColor, LANES[2].progressColor);
 
   env.sendConfig(DISABLED);
 
   assert.deepEqual(hidden.wave.calls[hidden.wave.calls.length - 1], RESTORED_COLORS);
   assert.equal(hidden.wave.options.waveColor, NATIVE_COLORS.waveColor);
-  assert.equal(removed.wave.calls.length, 1);
+  assert.equal(removed.wave.calls.length, 2);
   bridge.dispose();
 });
 
@@ -1052,24 +1092,17 @@ test('lane order comes from the app track array, not from document order', async
   bridge.dispose();
 });
 
-test('lane order falls back to document order when no track array is reachable', async () => {
+test('unknown registry recording identity never falls back to document order', async () => {
   const env = createEnvironment();
   const first = env.addReactPropsHost(NATIVE_COLORS);
-  const second = env.addReactPropsHost(NATIVE_COLORS);
+  const second = env.addRegistryHost(NATIVE_COLORS);
+  delete env.registry['rec-2'];
+  env.registry.unknown = { wavesurfer: second.wave };
   const bridge = await installBridge();
-
-  bridge.applyConfig(THEME);
-
+  assert.equal(bridge.applyConfig(THEME), 1);
   assert.equal(first.wave.options.progressColor, LANES[0].progressColor);
-  assert.equal(second.wave.options.progressColor, LANES[1].progressColor);
-  assert.equal(first.host.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
-  assert.equal(second.host.getAttribute(LANE_SLOT_ATTRIBUTE), '2');
-  assert.equal(
-    second.host.getAttribute(LANE_LABEL_ATTRIBUTE),
-    null,
-    'an unresolvable label must leave the attribute off rather than invent one'
-  );
-  assert.equal(env.body.getAttribute(LANE_INDEX_ATTRIBUTE), null, 'a shared ancestor is never a lane root');
+  assert.equal(second.wave.options.progressColor, NATIVE_COLORS.progressColor);
+  assert.equal(second.host.getAttribute(LANE_SLOT_ATTRIBUTE), null);
   bridge.dispose();
 });
 
@@ -1234,6 +1267,8 @@ test('a lane that moves up sheds its old stamp and takes the new slot', async ()
 
   first.host.isConnected = false;
   env.hosts.splice(0, 1);
+  env.tracks.splice(0, 1);
+  delete env.registry['rec-1'];
 
   assert.equal(bridge.refresh(), 1);
 
@@ -1246,7 +1281,7 @@ test('a lane that moves up sheds its old stamp and takes the new slot', async ()
 
 test('native speaker selects and turns follow recording identity, not label or colour', async () => {
   const env = createEnvironment();
-  env.addLaneStack(['Same speaker', 'Same speaker', 'Speaker 3']);
+  env.addLaneStack(['Speaker same', 'Speaker same', 'Speaker 3']);
   const cellOne = env.addSpeakerCell('rec-1', 'Same speakerSame speakerSpeaker 3');
   const cellThree = env.addSpeakerCell('rec-3', 'Same speakerSame speakerSpeaker 3');
   const unrelated = env.addSpeakerCell('missing-recording', 'Same speaker');
@@ -1255,7 +1290,7 @@ test('native speaker selects and turns follow recording identity, not label or c
   bridge.applyConfig(THEME);
 
   assert.equal(cellOne.getAttribute(LANE_SLOT_ATTRIBUTE), '1');
-  assert.equal(cellOne.getAttribute(LANE_LABEL_ATTRIBUTE), 'Same speaker');
+  assert.equal(cellOne.getAttribute(LANE_LABEL_ATTRIBUTE), 'Speaker same');
   assert.equal(
     cellThree.getAttribute(LANE_SLOT_ATTRIBUTE),
     '3',
@@ -1470,5 +1505,113 @@ test('native long transcripts theme every mounted turn and region and restore th
   assert.equal(lastTurn.getAttribute(LANE_SLOT_ATTRIBUTE), null);
   assert.equal(lastTurn.parentElement.getAttribute(LANE_SLOT_ATTRIBUTE), null);
   assert.equal(lastRegion.element.style.getPropertyValue('background-color'), APP_REGION_FILL);
+  bridge.dispose();
+});
+
+test('registry removal without DOM removal releases colors and region subscriptions', async () => {
+  const env = createEnvironment();
+  const { lanes } = env.addLaneStack(['Speaker 1']);
+  const [lane] = lanes;
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  delete env.registry['rec-1'];
+  env.root.current = { child: env.editor };
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(lane.host.isConnected, true);
+  assert.equal(bridge.instanceCount(), 0);
+  assert.equal(lane.wave.options.waveColor, NATIVE_COLORS.waveColor);
+  assert.equal(lane.host.getAttribute(LANE_SLOT_ATTRIBUTE), null);
+  assert.equal(lane.regions.listenerCount(), 0);
+  bridge.dispose();
+});
+
+test('native registry reassignment updates a reused wave without document order guesses', async () => {
+  const env = createEnvironment();
+  const { lanes } = env.addLaneStack(['Speaker 1', 'Speaker 2'], [0]);
+  const [lane] = lanes;
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  delete env.registry['rec-1'];
+  env.registry['rec-2'] = { wavesurfer: lane.wave };
+  env.root.current = { child: env.editor };
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(lane.wave.options.progressColor, LANES[1].progressColor);
+  assert.equal(lane.host.getAttribute(LANE_SLOT_ATTRIBUTE), '2');
+  assert.equal(lane.host.getAttribute(LANE_LABEL_ATTRIBUTE), 'Speaker 2');
+  bridge.dispose();
+});
+
+test('source replacement invalidates cached ownership and restores the newer native colors', async () => {
+  const env = createEnvironment();
+  const { wave } = env.addRegistryHost(NATIVE_COLORS);
+  const media = { src: 'first.wav' };
+  let decoded = {};
+  wave.getMediaElement = () => media;
+  wave.getDecodedData = () => decoded;
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  const writes = wave.calls.length;
+  bridge.refresh();
+  assert.equal(wave.calls.length, writes, 'unchanged wave metadata does not rewrite options');
+  media.src = 'second.wav';
+  decoded = {};
+  wave.options.progressColor = '#abcdef';
+  wave.emit('decode');
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(wave.options.progressColor, LANES[0].progressColor);
+  bridge.applyConfig(DISABLED);
+  assert.equal(wave.options.progressColor, '#abcdef');
+  assert.equal(wave.options.waveColor, NATIVE_COLORS.waveColor);
+  bridge.dispose();
+});
+
+test('a new task releases the old session even when native wave objects are reused', async () => {
+  const env = createEnvironment();
+  const { wave } = env.addRegistryHost(NATIVE_COLORS);
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  env.editor.memoizedProps.reviewActionId = 'next-session';
+  wave.options.waveColor = '#abcabc';
+  env.root.current = { child: env.editor };
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(wave.options.waveColor, LANES[0].waveColor);
+  bridge.applyConfig(DISABLED);
+  assert.equal(wave.options.waveColor, '#abcabc');
+  bridge.dispose();
+});
+
+test('native commits discover late registry members and property-only speaker changes', async () => {
+  const env = createEnvironment();
+  const stack = env.addLaneStack(['Speaker 1', 'Speaker 2'], [0]);
+  const cell = env.addSpeakerCell('rec-1');
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  const second = stack.mount(1);
+  cell.value = 'rec-2';
+  env.tracks[1].label = 'Speaker renamed';
+  env.root.current = { child: env.editor };
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(second.wave.options.progressColor, LANES[1].progressColor);
+  assert.equal(second.host.getAttribute(LANE_LABEL_ATTRIBUTE), 'Speaker renamed');
+  assert.equal(cell.getAttribute(LANE_SLOT_ATTRIBUTE), '2');
+  assert.equal(cell.getAttribute(LANE_LABEL_ATTRIBUTE), 'Speaker renamed');
+  bridge.dispose();
+});
+
+test('same-task root replacement observes subsequent property-only speaker commits', async () => {
+  const env = createEnvironment();
+  env.addLaneStack(['Speaker 1', 'Speaker 2']);
+  const cell = env.addSpeakerCell('rec-1');
+  const bridge = await installBridge();
+  bridge.applyConfig(THEME);
+  const nextRoot = { current: { child: env.editor } };
+  env.editor.return = { stateNode: nextRoot };
+  env.body.__reactFiber$native = { return: env.editor.return };
+  env.notifyAdded(env.body);
+  await sleep(RESCAN_SETTLE_MS);
+  cell.value = 'rec-2';
+  nextRoot.current = { child: env.editor };
+  await sleep(RESCAN_SETTLE_MS);
+  assert.equal(cell.getAttribute(LANE_SLOT_ATTRIBUTE), '2');
   bridge.dispose();
 });
