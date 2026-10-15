@@ -1,6 +1,7 @@
 // @ts-nocheck
-import { readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
+import { readBabelTranscriptBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
 import { parseTimeValue } from '../hooks/parsing';
+import { invokeNativeSameLaneMerge } from './native-merge-policy';
 
 export function initTimestampBridge() {
   const REQUEST_EVENT = 'babel-helper-timestamp-request';
@@ -18,6 +19,7 @@ export function initTimestampBridge() {
   const historyEpoch = crypto.randomUUID();
   const commandIds = new WeakMap();
   let nextCommandId = 0;
+  const pendingVerifications = new Set();
 
   function historyToken(binding, depth = binding?.history?.undoStack.length) {
     const history = binding?.history;
@@ -36,9 +38,40 @@ export function initTimestampBridge() {
       payload.expectedHistoryToken === historyToken(binding);
   }
 
+  function validateSelection(context, binding) {
+    const target = context.payload?.selectionTarget;
+    if (target === undefined) return null;
+    let result;
+    try {
+      result = window.BabelMods?.unsafe?.services?.invoke('page.magnifier', 'validateSelectionTarget', target);
+    } catch {
+      return failure(context.backend, 'selection-target-unavailable');
+    }
+    if (!result?.ok) return failure(context.backend, result?.reason || 'selection-target-unavailable');
+    if (result.processedRecordingId !== target.processedRecordingId ||
+        result.reviewActionId !== binding.reviewActionId ||
+        context.payload.processedRecordingId !== target.processedRecordingId) {
+      return failure(context.backend, 'stale-selection-source');
+    }
+    const source = context.selectionTurn;
+    if (source) {
+      const currentTurn = binding.annotations.find(turn => turn.id === source.id);
+      if (!currentTurn || currentTurn.processedRecordingId !== target.processedRecordingId ||
+          currentTurn.startTimeInSeconds !== source.startTimeInSeconds ||
+          currentTurn.endTimeInSeconds !== source.endTimeInSeconds ||
+          (context.payload.startSeconds !== undefined && currentTurn.startTimeInSeconds !== context.payload.startSeconds) ||
+          (context.payload.endSeconds !== undefined && currentTurn.endTimeInSeconds !== context.payload.endSeconds)) {
+        return failure(context.backend, 'stale-transcript');
+      }
+    }
+    return null;
+  }
+
   function invokeNativeCommand(context, invoke) {
     const binding = current(context);
     if (!binding) return { error: failure(context.backend, 'stale-task') };
+    const selectionError = validateSelection(context, binding);
+    if (selectionError) return { error: selectionError };
     if (context.guarded && (!matchesExpectedHistory(binding, context.payload) ||
         Object.keys(binding.pendingTextById || {}).length)) return { error: failure(context.backend, 'history-conflict') };
     const previousHistoryToken = historyToken(binding);
@@ -93,7 +126,10 @@ export function initTimestampBridge() {
     if (guarded && (!matchesExpectedHistory(binding, payload) || Object.keys(binding.pendingTextById || {}).length)) {
       return { error: failure(backend, 'history-conflict') };
     }
-    return { binding, taskId: binding.reviewActionId, route: routeKey(), backend, guarded, payload, execution };
+    const context = { binding, taskId: binding.reviewActionId, route: routeKey(), backend, guarded, payload, execution,
+      deadline: Date.now() + 1600 };
+    const selectionError = validateSelection(context, binding);
+    return selectionError ? { error: selectionError } : context;
   }
 
   function current(context) {
@@ -102,22 +138,62 @@ export function initTimestampBridge() {
       ? binding : null;
   }
 
-  async function settle(context, predicate, command = null) {
-    const deadline = Date.now() + 1600;
-    do {
+  function settle(context, predicate, command = null) {
+    const inspect = () => {
       const binding = current(context);
       if (!binding) return { error: failure(context.backend, 'stale-task') };
       if (command && historyToken(binding) !== command.receipt.historyToken) {
         return { error: failure(context.backend, 'history-conflict') };
       }
       const value = (!command || binding.annotations !== command.annotationsBefore) && predicate(binding);
-      if (value) return { binding, value };
-      await new Promise(resolve => window.setTimeout(resolve, 16));
-    } while (Date.now() < deadline);
-    return { error: failure(context.backend, 'verify-timeout') };
+      return value ? { binding, value } : null;
+    };
+    const immediate = inspect();
+    if (immediate) return Promise.resolve(immediate);
+    const { promise, resolve } = Promise.withResolvers();
+    let finished = false;
+    let unsubscribe = null;
+    let deadline = null;
+    const finish = result => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(deadline);
+      unsubscribe?.();
+      pendingVerifications.delete(cancel);
+      resolve(result);
+    };
+    const cancel = () => finish({ error: failure(context.backend, 'bridge-disposed') });
+    const verify = () => {
+      try {
+        const result = inspect();
+        if (result) finish(result);
+      } catch (error) {
+        finish({ error: { ...failure(context.backend, 'native-commit-verification-failed'), message: String(error) } });
+      }
+    };
+    pendingVerifications.add(cancel);
+    deadline = window.setTimeout(() => finish({ error: failure(context.backend, 'verify-timeout') }),
+      Math.max(0, context.deadline - Date.now()));
+    try {
+      unsubscribe = subscribeBabelEditorCommits(verify);
+    } catch (error) {
+      finish({ error: { ...failure(context.backend, 'native-commit-subscription-failed'), message: String(error) } });
+      return promise;
+    }
+    // Close the read/subscribe window once; subsequent verification belongs
+    // exclusively to actual native commits, never interval polling.
+    verify();
+    return promise;
   }
 
   function resolveTurn(binding, payload, boundary = null) {
+    if (payload?.selectionTarget !== undefined) {
+      const target = payload.selectionTarget;
+      const id = payload.annotationId;
+      return typeof id === 'string' && id && target?.processedRecordingId === payload.processedRecordingId
+        ? turns(binding).find(turn => turn.id === id && turn.processedRecordingId === target.processedRecordingId) || null
+        : null;
+    }
     const id = payload?.annotationId || payload?.rowIdentity?.annotationId;
     if (id) return turns(binding).find(turn => turn.id === id) || null;
     const lane = payload?.processedRecordingId || payload?.speakerKey;
@@ -198,6 +274,7 @@ export function initTimestampBridge() {
     if (context.error) return context.error;
     const turn = resolveTurn(context.binding, payload);
     if (!turn) return failure(backend, 'row-not-found');
+    context.selectionTurn = turn;
     if (context.binding.transcript?.lockSegments) return failure(backend, 'segments-locked');
     const flushed = await flushEdits(context, [turn]);
     if (flushed) return flushed;
@@ -232,7 +309,7 @@ export function initTimestampBridge() {
     }
     if (typeof binding.panel.onMergeAnnotations !== 'function') return failure(backend, 'binding-not-found');
     const rowCountBefore = turns(binding).length;
-    const command = invokeNativeCommand(context, latest => latest.panel.onMergeAnnotations(turn.id, direction));
+    const command = invokeNativeCommand(context, latest => invokeNativeSameLaneMerge(latest, turn.id, direction));
     if (command.error) return command.error;
     const result = await settle(context, latest => !latest.annotations.some(item => item.id === adjacent.id), command);
     if (result.error) return result.error;
@@ -247,6 +324,7 @@ export function initTimestampBridge() {
     if (context.error) return context.error;
     const turn = resolveTurn(context.binding, payload, { side, time: target });
     if (!turn) return failure(backend, 'row-not-found');
+    context.selectionTurn = turn;
     const range = { start: side === 'left' ? target : turn.startTimeInSeconds,
       end: side === 'right' ? target : turn.endTimeInSeconds };
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.end <= range.start) return failure(backend, 'next-range-invalid');
@@ -279,6 +357,7 @@ export function initTimestampBridge() {
     if (context.error) return context.error;
     const turn = resolveTurn(context.binding, payload);
     if (!turn) return failure(backend, 'row-not-found');
+    context.selectionTurn = turn;
     const expectedTrack = payload?.processedRecordingId || payload?.rowIdentity?.processedRecordingId;
     const expectedStart = payload?.startSeconds ?? payload?.rowIdentity?.startSeconds;
     const expectedEnd = payload?.endSeconds ?? payload?.rowIdentity?.endSeconds;
@@ -384,6 +463,7 @@ export function initTimestampBridge() {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const cancel of Array.from(pendingVerifications)) cancel();
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     provider.dispose();

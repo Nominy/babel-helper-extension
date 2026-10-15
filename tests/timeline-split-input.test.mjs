@@ -15,13 +15,16 @@ test.before(() => Object.defineProperty(globalThis, 'HTMLElement', { configurabl
 test.after(() => previousHTMLElement
   ? Object.defineProperty(globalThis, 'HTMLElement', previousHTMLElement)
   : delete globalThis.HTMLElement);
-function harness({ typing = false, interactive = true, shortcuts } = {}) {
+function harness({ typing = false, interactive = true, shortcuts, selectionSite = {} } = {}) {
   const commits = [];
   const helper = {
     state: {}, config: { shortcuts, hotkeysHelpRows: [] },
     runtime: { isSessionInteractive: () => interactive }
   };
-  registerTimelineSelection(helper, { site: { isFeatureEnabled: () => false, getLaneZoomSignature: () => 'zoom' } });
+  registerTimelineSelection(helper, {
+    site: { isFeatureEnabled: () => false, getLaneZoomSignature: () => 'zoom', ...selectionSite },
+    loop: { SELECTION_LOOP_HOST_ATTR: 'selection-host' }
+  });
   helper.state.cutPreview = { zoomSignature: 'zoom', container: {} };
   const nativeCommit = helper.commitCutPreview;
   helper.commitCutPreview = options => { commits.push(options?.smartSplit === true ? 'smart' : 'native'); };
@@ -90,17 +93,24 @@ test('a preview invalidated by its originating task or audio source never reache
   const h = harness();
   h.helper.state.cutPreview.isCurrentTask = () => false;
   assert.equal(await h.nativeCommit({ smartSplit: true }), false);
+  assert.equal(h.helper.state.cutPreview.failureReason, 'stale-selection-source');
   assert.equal(h.helper.state.cutCommitPending, false);
   assert.deepEqual(h.commits, []);
 });
 
 test('preview time admission owns the command before awaiting and releases invalid ranges', async () => {
-  const h = harness();
+  const selectionTarget = { hostMarker: 'preview', processedRecordingId: 'recording-a', token: 'bound' };
+  const host = { isConnected: true, getAttribute: () => 'preview' };
+  const h = harness({ selectionSite: {
+    getWaveformHostFromContainer: () => host,
+    callSelectionBridge: async () => ({ ok: true, selectionTarget, bounds: [], startSeconds: 1, endSeconds: 1.2 })
+  } });
   h.helper.stopSelectionLoop = () => {};
   const preview = h.helper.state.cutPreview;
-  preview.isCurrentTask = () => true;
+  Object.assign(preview, { host, hostMarker: 'preview', selectionTarget, leftPx: 100, rightPx: 120,
+    container: { isConnected: true }, isCurrentTask: () => true });
   let resolveRange;
-  preview.timeRangeRequest = new Promise(resolve => { resolveRange = resolve; });
+  preview.targetRequest = new Promise(resolve => { resolveRange = resolve; });
   const pending = h.nativeCommit({ smartSplit: true });
   assert.equal(h.helper.state.cutCommitPending, true);
   assert.equal(await h.nativeCommit({ smartSplit: true }), false);

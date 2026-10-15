@@ -2,6 +2,7 @@
 import { createEditorInput } from '../features/editor-input';
 import { registerPlaybackRowTracking } from '../features/playback-row-tracking';
 import { readNativeSessionState } from '../site/editor-control';
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
 
 export function registerLifecycle(helper: any) {
   if (!helper || helper.__mainInitialized) {
@@ -23,14 +24,14 @@ export function registerLifecycle(helper: any) {
   registerPlaybackRowTracking(helper);
   helper.handleKeydown = handleKeydown;
 
-  const ROUTE_REFRESH_DELAY_MS = 80;
-  const ROUTE_REFRESH_MAX_ATTEMPTS = 60;
-  const ROUTE_REFRESH_MAX_WINDOW_MS = 10000;
-  const URL_POLL_INTERVAL_MS = 2000;
-  const SESSION_BIND_RETRY_DELAYS_MS = [250, 750, 1500, 3000];
   let disposed = false;
-  let sessionAccessInFlight = false;
-  let lastPolledNativeSession = '';
+  let sessionAccessInFlight = null;
+  let lastNativeSession = '';
+  let sessionFailure = '';
+  let lastHref = window.location.href;
+  let routeRefreshQueued = false;
+  let observedSurface = document.querySelector('[data-transcript-scroll]');
+  let mountObserver = null;
   let hotkeysObservedBody: HTMLElement | null = null;
 
   function isFeatureEnabled(featureKey) {
@@ -46,22 +47,31 @@ export function registerLifecycle(helper: any) {
   }
 
   function requestNativeSessionAccess() {
-    if (disposed || sessionAccessInFlight) return;
-    sessionAccessInFlight = true;
+    if (disposed || sessionAccessInFlight || sessionFailure) return;
     const href = window.location.href;
     const revision = helper.state.sessionLifecycleRevision;
-    // Lifecycle registration can precede snapshot-service registration during
-    // kernel boot. Resolve that dependency on the next microtask, not from URL.
-    void Promise.resolve()
-      .then(() => {
-        if (disposed || href !== window.location.href || revision !== helper.state.sessionLifecycleRevision) return;
-        return helper.refreshEditorSnapshot?.('native-session-access');
-      })
-      .then(() => {
-        if (!disposed && href === window.location.href && revision === helper.state.sessionLifecycleRevision &&
-            readNativeSessionState()) helper.runtime.scheduleRouteRefresh('native-session-ready', 0);
-      })
-      .finally(() => { sessionAccessInFlight = false; });
+    const request = Promise.resolve().then(async () => {
+      if (disposed || href !== window.location.href || revision !== helper.state.sessionLifecycleRevision) return;
+      await helper.refreshEditorSnapshot?.('native-session-access');
+      if (disposed || href !== window.location.href || revision !== helper.state.sessionLifecycleRevision) return;
+      if (readNativeSessionState()) helper.runtime.scheduleRouteRefresh('native-session-ready');
+      else if (hasTranscriptSurface()) failSession('native-session-access',
+        new Error(readSessionPublication()?.error || 'Native editor session subscription is unavailable.'));
+    }).catch(error => {
+      if (!disposed && href === window.location.href && revision === helper.state.sessionLifecycleRevision) {
+        failSession('native-session-access', error);
+      }
+    }).finally(() => {
+      if (sessionAccessInFlight === request) sessionAccessInFlight = null;
+    });
+    sessionAccessInFlight = request;
+  }
+
+  function readSessionPublication() {
+    try {
+      const state = JSON.parse(document.documentElement.getAttribute('data-babel-helper-native-session') || 'null');
+      return state?.href === window.location.href ? state : null;
+    } catch { return null; }
   }
 
   function hasTranscriptSurface() {
@@ -72,18 +82,13 @@ export function registerLifecycle(helper: any) {
   helper.runtime.isSessionInteractive = function isSessionInteractive() {
     return Boolean(
       !disposed &&
+      !sessionFailure &&
       isTranscriptionRoute() &&
       hasTranscriptSurface() &&
       readNativeSessionState()?.readOnly === false
     );
   };
 
-  function resetRouteRefreshWindow() {
-    helper.state.routeRefreshAttempts = 0;
-    helper.state.routeRefreshWindowStartedAt = Date.now();
-    helper.state.sessionBindRetryCount = 0;
-    helper.state.onLoadedCalled = false;
-  }
 
   function startHotkeysEnhanceFrame() {
     if (!isFeatureEnabled('hotkeysHelp')) {
@@ -119,13 +124,9 @@ export function registerLifecycle(helper: any) {
     hotkeysObservedBody = null;
   }
 
-  function stopRouteRecoveryObserver() {
-    const observer = helper.state.routeRecoveryObserver;
-    if (observer && typeof observer.disconnect === 'function') {
-      observer.disconnect();
-    }
-
-    helper.state.routeRecoveryObserver = null;
+  function stopMountObserver() {
+    mountObserver?.disconnect();
+    mountObserver = null;
   }
 
   function isHotkeysMutationCandidate(node) {
@@ -180,45 +181,21 @@ export function registerLifecycle(helper: any) {
     hotkeysObservedBody = document.body;
   }
 
-  function startRouteRecoveryObserver() {
-    if (helper.state.routeRecoveryObserver || !(document.body instanceof HTMLElement)) {
-      return;
-    }
-
-    if (typeof MutationObserver !== 'function') {
-      return;
-    }
-
-    const observer = new MutationObserver(() => {
-      if (!isTranscriptionRoute() || disposed) {
-        return;
-      }
-
-      if (!hasTranscriptSurface()) {
-        return;
-      }
-      const status = readNativeSessionState();
-      // Unrelated rendering must not restart the bounded bootstrap window or
-      // repeatedly rebind a known read-only session. The URL fallback still
-      // detects native metadata transitions without a corresponding DOM event.
-      if (!status || (status.readOnly && `${status.reviewActionId}:${status.readOnly}` === lastPolledNativeSession)) {
-        return;
-      }
-
-      stopRouteRecoveryObserver();
-      resetRouteRefreshWindow();
-      helper.runtime.scheduleRouteRefresh('recovery-observer');
+  function startMountObserver() {
+    if (mountObserver || !document.documentElement) return;
+    observedSurface = document.querySelector('[data-transcript-scroll]');
+    mountObserver = new MutationObserver(() => {
+      if (disposed) return;
+      const surface = document.querySelector('[data-transcript-scroll]');
+      if (surface === observedSurface) return;
+      observedSurface = surface;
+      sessionFailure = '';
+      sessionAccessInFlight = null;
+      lastNativeSession = '';
+      clearSessionFeatures('native-surface-change');
+      helper.runtime.scheduleRouteRefresh('native-surface-change');
     });
-
-    observer.observe(document.documentElement || document.body, {
-      attributes: true,
-      attributeFilter: ['data-transcript-scroll', 'data-babel-review-action-id', 'role', 'contenteditable', 'disabled'],
-      childList: true,
-      subtree: true
-    });
-
-    helper.perf?.count?.('observer.start', { name: 'route-recovery' });
-    helper.state.routeRecoveryObserver = observer;
+    mountObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
 
 
@@ -263,145 +240,49 @@ export function registerLifecycle(helper: any) {
     helper.state.rightShiftPressed = false;
   }
 
-  function patchHistoryMethod(name) {
-    const current = window.history[name];
-    if (typeof current !== 'function') {
-      return;
-    }
-
-    if (current.__babelHelperPatched) {
-      return;
-    }
-
-    const original = current.__babelHelperOriginal || current;
-
-    function patchedHistoryMethod() {
-      const result = original.apply(this, arguments);
-      resetRouteRefreshWindow();
-      helper.runtime.scheduleRouteRefresh('route-change');
-      return result;
-    }
-
-    patchedHistoryMethod.__babelHelperPatched = true;
-    patchedHistoryMethod.__babelHelperOriginal = original;
-    window.history[name] = patchedHistoryMethod;
-  }
-
-  function restoreHistoryMethod(name) {
-    const current = window.history[name];
-    if (
-      current &&
-      current.__babelHelperPatched &&
-      typeof current.__babelHelperOriginal === 'function'
-    ) {
-      window.history[name] = current.__babelHelperOriginal;
-    }
-  }
-
-  function ensureHistoryPatches() {
-    if (
-      typeof window.history.pushState === 'function' &&
-      !window.history.pushState.__babelHelperPatched
-    ) {
-      patchHistoryMethod('pushState');
-    }
-
-    if (
-      typeof window.history.replaceState === 'function' &&
-      !window.history.replaceState.__babelHelperPatched
-    ) {
-      patchHistoryMethod('replaceState');
-    }
-  }
-
-  var lastPolledHref = '';
-  var urlPollTimer = 0;
-
-  function startUrlPolling() {
-    if (urlPollTimer) {
-      return;
-    }
-
-    lastPolledHref = window.location.href;
-    urlPollTimer = window.setInterval(function pollUrl() {
-      helper.perf?.count?.('url.poll.tick');
-      ensureHistoryPatches();
-
-      var currentHref = window.location.href;
-      if (currentHref !== lastPolledHref) {
-        lastPolledHref = currentHref;
-        handleRouteEvent('url-poll');
-      }
-      else if (isTranscriptionRoute() && hasTranscriptSurface()) {
-        const status = readNativeSessionState();
-        const key = status ? `${status.reviewActionId}:${status.readOnly}` : '';
-        if (key !== lastPolledNativeSession) {
-          lastPolledNativeSession = key;
-          handleRouteEvent('native-session-change');
-        }
-      }
-    }, URL_POLL_INTERVAL_MS);
-  }
-
-  function stopUrlPolling() {
-    if (!urlPollTimer) {
-      return;
-    }
-
-    window.clearInterval(urlPollTimer);
-    urlPollTimer = 0;
-  }
-
   function handleRouteEvent(reason) {
-    lastPolledHref = window.location.href;
-    resetRouteRefreshWindow();
-    if (
-      helper.state.sessionActive ||
-      helper.state.onLoadedInFlight ||
-      helper.state.sessionBindPromise
-    ) {
-      clearSessionFeatures(reason || 'route-change');
-    }
+    if (disposed || lastHref === window.location.href) return;
+    lastHref = window.location.href;
+    sessionFailure = '';
+    sessionAccessInFlight = null;
+    lastNativeSession = '';
+    clearSessionFeatures(reason || 'route-change');
     helper.runtime.scheduleRouteRefresh(reason);
-    if (helper.analytics) {
-      helper.analytics.record('session:route-change', {
-        reason,
-        url: window.location.href
-      });
-    }
+    helper.analytics?.record('session:route-change', { reason, url: window.location.href });
   }
 
-  function handlePopState() {
-    handleRouteEvent('popstate');
-  }
-
+  function handlePopState() { handleRouteEvent('popstate'); }
+  function handleHashChange() { handleRouteEvent('hashchange'); }
+  function handleNavigation() { handleRouteEvent('navigation'); }
   function handlePageShow() {
     handleRouteEvent('pageshow');
+    helper.runtime.scheduleRouteRefresh('pageshow');
+  }
+  function handleNativeSession() {
+    if (disposed) return;
+    helper.runtime.scheduleRouteRefresh('native-session-change');
   }
 
   function bindRouteWatchers() {
-    if (helper.state.routeWatchBound) {
-      return;
-    }
-
-    patchHistoryMethod('pushState');
-    patchHistoryMethod('replaceState');
+    if (helper.state.routeWatchBound) return;
+    window.navigation?.addEventListener('currententrychange', handleNavigation);
+    window.addEventListener('babel-helper:native-route-change', handleNavigation, true);
+    window.addEventListener('babel-helper:native-session-change', handleNativeSession, true);
     window.addEventListener('popstate', handlePopState, true);
+    window.addEventListener('hashchange', handleHashChange, true);
     window.addEventListener('pageshow', handlePageShow, true);
-    startUrlPolling();
+    startMountObserver();
     helper.state.routeWatchBound = true;
   }
 
   function unbindRouteWatchers() {
-    if (!helper.state.routeWatchBound) {
-      return;
-    }
-
+    if (!helper.state.routeWatchBound) return;
+    window.navigation?.removeEventListener('currententrychange', handleNavigation);
+    window.removeEventListener('babel-helper:native-route-change', handleNavigation, true);
+    window.removeEventListener('babel-helper:native-session-change', handleNativeSession, true);
     window.removeEventListener('popstate', handlePopState, true);
+    window.removeEventListener('hashchange', handleHashChange, true);
     window.removeEventListener('pageshow', handlePageShow, true);
-    stopUrlPolling();
-    restoreHistoryMethod('pushState');
-    restoreHistoryMethod('replaceState');
     helper.state.routeWatchBound = false;
   }
 
@@ -409,9 +290,8 @@ export function registerLifecycle(helper: any) {
     if (disposed) return;
     disposed = true;
     document.removeEventListener('DOMContentLoaded', helper.init, false);
-    helper.runtime.clearRuntimeTimer();
     clearSessionFeatures(reason || 'lifecycle-dispose');
-    stopRouteRecoveryObserver();
+    stopMountObserver();
     unbindRouteWatchers();
     unbindGlobalListeners();
     if (typeof helper.unbindRowTracking === 'function') {
@@ -424,6 +304,11 @@ export function registerLifecycle(helper: any) {
   function clearSessionFeatures(reason) {
     helper.state.sessionLifecycleRevision =
       Math.max(0, Number(helper.state.sessionLifecycleRevision) || 0) + 1;
+    helper.state.nativeSessionAdmission = null;
+    helper.state.sessionBindPromise = null;
+    helper.state.onLoadedCalled = false;
+    helper.state.onLoadedInFlight = false;
+    helper.state.onLoadedInFlightRevision = -1;
     stopHotkeysObserver();
     stopHotkeysEnhanceFrame();
     void helper.runtime.deactivateFeature?.('session', reason || 'session-clear');
@@ -472,22 +357,17 @@ export function registerLifecycle(helper: any) {
     helper.perf?.count?.('lifecycle.error', { stage, message });
   }
 
-  function getSessionBindRetryDelay() {
-    const retryCount = Math.max(1, Number(helper.state.sessionBindRetryCount) || 1);
-    const index = Math.min(retryCount - 1, SESSION_BIND_RETRY_DELAYS_MS.length - 1);
-    return SESSION_BIND_RETRY_DELAYS_MS[index];
-  }
-
-  function scheduleSessionBindRetry(reason, error) {
-    if (error) {
-      recordLifecycleError(reason || 'session-bind-retry', error);
-    }
-    helper.state.sessionBindRetryCount = Math.max(0, Number(helper.state.sessionBindRetryCount) || 0) + 1;
-    helper.runtime.scheduleRouteRefresh(reason || 'session-bind-retry', getSessionBindRetryDelay());
+  function failSession(stage, error) {
+    if (disposed || sessionFailure) return;
+    sessionFailure = getLifecycleErrorMessage(error);
+    recordLifecycleError(stage, error);
+    console.error('[babel-helper] Session automation stopped:', sessionFailure);
+    clearSessionFeatures(stage);
+    showNativeAutomationFailure('Session automation', sessionFailure);
   }
 
   function isCurrentSessionSurface(href, reviewActionId) {
-    if (disposed || href !== window.location.href || !isTranscriptionRoute() || !hasTranscriptSurface()) return false;
+    if (disposed || sessionFailure || href !== window.location.href || !isTranscriptionRoute() || !hasTranscriptSurface()) return false;
     const status = readNativeSessionState();
     return Boolean(status?.readOnly === false && status.reviewActionId === reviewActionId);
   }
@@ -515,22 +395,21 @@ export function registerLifecycle(helper: any) {
         isCurrentSessionSurface(bindHref, reviewActionId) ? helper.runtime.onLoaded(reason || 'session-ready') : false)
       .then((activated) => {
         if (
-          activated === false ||
           lifecycleRevision !== helper.state.sessionLifecycleRevision ||
           !isCurrentSessionSurface(bindHref, reviewActionId)
         ) {
           return;
         }
+        if (activated === false) throw new Error('Native session feature activation was refused.');
         helper.state.onLoadedCalled = true;
         helper.state.onLoadedCalledRevision = lifecycleRevision;
-        helper.state.sessionBindRetryCount = 0;
       })
       .catch((error) => {
         if (lifecycleRevision !== helper.state.sessionLifecycleRevision) {
           return;
         }
         helper.state.onLoadedCalled = false;
-        scheduleSessionBindRetry('on-loaded-error', error);
+        failSession('on-loaded-error', error);
       })
       .finally(() => {
         if (helper.state.onLoadedInFlightRevision === lifecycleRevision) {
@@ -584,16 +463,19 @@ export function registerLifecycle(helper: any) {
       0,
       Number(helper.state.sessionLifecycleRevision) || 0
     );
-    helper.state.sessionBindPromise = (async () => {
+    const bindPromise = (async () => {
       const wasSessionActive = Boolean(helper.state.sessionActive);
-      stopRouteRecoveryObserver();
-      await helper.runtime.ensureSessionRuntime?.(reason || 'session-ready');
+      const ready = await helper.runtime.ensureSessionRuntime?.(reason || 'session-ready');
       if (
         lifecycleRevision !== helper.state.sessionLifecycleRevision ||
         !isCurrentSessionSurface(bindHref, reviewActionId)
       ) {
         return false;
       }
+      if (ready === false) throw new Error('Native session runtime initialization was refused.');
+      // This identity lease is published only after live task/permission validation.
+      // Gold's DOM task marker can still describe the previous same-URL task.
+      helper.state.nativeSessionAdmission = { href: bindHref, reviewActionId, lifecycleRevision };
 
       if (typeof helper.invalidateRowTimeCache === 'function') {
         helper.invalidateRowTimeCache();
@@ -653,7 +535,6 @@ export function registerLifecycle(helper: any) {
       }
 
       helper.state.sessionActive = true;
-      helper.state.sessionBindRetryCount = 0;
       helper.perf?.setPhase?.('session-ready', { reason });
 
       if (!wasSessionActive && helper.analytics) {
@@ -663,106 +544,70 @@ export function registerLifecycle(helper: any) {
       }
       return { lifecycleRevision };
     })();
+    helper.state.sessionBindPromise = bindPromise;
 
     try {
-      return await helper.state.sessionBindPromise;
+      return await bindPromise;
     } finally {
-      helper.state.sessionBindPromise = null;
+      if (helper.state.sessionBindPromise === bindPromise) helper.state.sessionBindPromise = null;
     }
   }
 
-  helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason, delayMs) {
-    if (disposed) return;
-    helper.runtime.clearRuntimeTimer();
-    const delay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : ROUTE_REFRESH_DELAY_MS;
-    helper.state.routeRefreshTimer = window.setTimeout(() => {
-      helper.state.routeRefreshTimer = 0;
-      void helper.runtime.refreshRouteSession(reason || 'scheduled');
-    }, delay);
+  helper.runtime.scheduleRouteRefresh = function scheduleRouteRefresh(reason) {
+    if (disposed || routeRefreshQueued) return;
+    routeRefreshQueued = true;
+    queueMicrotask(() => {
+      routeRefreshQueued = false;
+      if (!disposed) helper.runtime.refreshRouteSession(reason || 'native-event');
+    });
   };
 
   helper.runtime.refreshRouteSession = function refreshRouteSession(reason) {
     if (disposed) return false;
+    startMountObserver();
     if (!isTranscriptionRoute()) {
-      clearSessionFeatures(reason || 'route-exit');
-      stopRouteRecoveryObserver();
-      helper.runtime.clearRuntimeTimer();
-      helper.state.routeRefreshAttempts = 0;
-      helper.state.routeRefreshWindowStartedAt = 0;
-      lastPolledNativeSession = '';
+      if (helper.state.sessionActive || helper.state.sessionBindPromise || helper.state.onLoadedInFlight) {
+        clearSessionFeatures(reason || 'route-exit');
+      }
       return false;
     }
-
-    const hasSurface = hasTranscriptSurface();
-    const status = hasSurface ? readNativeSessionState() : null;
-    if (status) {
-      const key = `${status.reviewActionId}:${status.readOnly}`;
-      if (lastPolledNativeSession && key !== lastPolledNativeSession &&
-          (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise)) {
-        clearSessionFeatures('native-session-change');
-      }
-      lastPolledNativeSession = key;
+    const publication = readSessionPublication();
+    const status = hasTranscriptSurface() ? readNativeSessionState() : null;
+    const key = status ? `${window.location.href}:${publication?.generation || 0}:${status.reviewActionId}:${status.readOnly}` : '';
+    if (key && key !== lastNativeSession) {
+      if (lastNativeSession) clearSessionFeatures('native-session-change');
+      lastNativeSession = key;
+      sessionFailure = '';
     }
-    if (status?.readOnly === true) {
-      if (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise) {
+    if (publication?.status === 'error') {
+      failSession('native-session-hook', new Error(publication.error || 'Native editor commit subscription failed.'));
+      return false;
+    }
+    if (sessionFailure) return false;
+    if (!status) {
+      if (helper.state.sessionActive || helper.state.sessionBindPromise || helper.state.onLoadedInFlight) {
+        clearSessionFeatures(reason || 'native-session-unavailable');
+      }
+      if (hasTranscriptSurface()) requestNativeSessionAccess();
+      return false;
+    }
+    if (status.readOnly) {
+      if (helper.state.sessionActive || helper.state.sessionBindPromise || helper.state.onLoadedInFlight) {
         clearSessionFeatures(reason || 'native-read-only');
       }
-      startRouteRecoveryObserver();
-      helper.runtime.clearRuntimeTimer();
-      helper.state.routeRefreshAttempts = 0;
-      helper.state.routeRefreshWindowStartedAt = 0;
       return false;
     }
-
-    if (status?.readOnly === false) {
-      const bindHref = window.location.href;
-      void bindSessionFeatures(reason || 'transcript-surface', status.reviewActionId)
-        .then((bound) => {
-          if (!bound) {
-            if (bindHref === window.location.href) {
-              helper.runtime.scheduleRouteRefresh('stale-session-bind');
-            }
-            return;
-          }
-          runSessionOnLoaded(
-            reason || 'transcript-surface',
-            bindHref,
-            bound.lifecycleRevision,
-            status.reviewActionId
-          );
-        })
-        .catch((error) => {
-          scheduleSessionBindRetry('session-bind-error', error);
-        });
-
-      helper.runtime.clearRuntimeTimer();
-      helper.state.routeRefreshAttempts = 0;
-      helper.state.routeRefreshWindowStartedAt = 0;
-      return true;
-    }
-
-    startRouteRecoveryObserver();
-    if (helper.state.sessionActive || helper.state.onLoadedInFlight || helper.state.sessionBindPromise) {
-      clearSessionFeatures(reason || 'native-session-unavailable');
-    }
-    requestNativeSessionAccess();
-
-    const startedAt = helper.state.routeRefreshWindowStartedAt || Date.now();
-    if (!helper.state.routeRefreshWindowStartedAt) {
-      helper.state.routeRefreshWindowStartedAt = startedAt;
-    }
-
-    helper.state.routeRefreshAttempts += 1;
-    if (
-      helper.state.routeRefreshAttempts >= ROUTE_REFRESH_MAX_ATTEMPTS ||
-      Date.now() - startedAt >= ROUTE_REFRESH_MAX_WINDOW_MS
-    ) {
-      helper.runtime.clearRuntimeTimer();
-      return false;
-    }
-
-    helper.runtime.scheduleRouteRefresh(reason === 'await-surface' ? reason : 'await-surface');
-    return false;
+    if (helper.state.sessionActive || helper.state.sessionBindPromise) return true;
+    const bindHref = window.location.href;
+    const revision = helper.state.sessionLifecycleRevision;
+    void bindSessionFeatures(reason || 'transcript-surface', status.reviewActionId)
+      .then(bound => {
+        if (bound) runSessionOnLoaded(reason || 'transcript-surface', bindHref, bound.lifecycleRevision, status.reviewActionId);
+      })
+      .catch(error => {
+        if (!disposed && revision === helper.state.sessionLifecycleRevision) failSession('session-bind-error', error);
+      });
+    return true;
   };
 
   helper.init = function init() {
@@ -773,7 +618,6 @@ export function registerLifecycle(helper: any) {
     helper.state.runtimeBound = true;
     bindRouteWatchers();
     bindGlobalListeners();
-    resetRouteRefreshWindow();
     void helper.runtime.refreshRouteSession('init');
   };
 

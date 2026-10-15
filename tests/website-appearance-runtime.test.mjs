@@ -26,7 +26,7 @@ async function importKernelHarness({ realController = false } = {}) {
   };
   const modules = new Map([
     ['./config', `export const createConfig = (features) => ({ ...features });`],
-    ['./state-store', `export const createState = () => ({ routeRefreshTimer: 0 });`],
+    ['./state-store', `export const createState = () => ({});`],
     ['./logger', `export const createLogger = () => ({});`],
     [
       '../hooks/dom',

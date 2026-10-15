@@ -12,15 +12,13 @@ export function registerTimestampEditService(helper: any) {
   const BRIDGE_REQUEST_EVENT = 'babel-helper-timestamp-request';
   const BRIDGE_RESPONSE_EVENT = 'babel-helper-timestamp-response';
   const BRIDGE_SCRIPT_PATH = 'dist/content/timestamp-bridge.js';
-  const BRIDGE_TIMEOUT_MS = 1600;
+  // Let MAIN return its 1600ms operation deadline and exact command receipt.
+  const BRIDGE_TIMEOUT_MS = 2000;
 
   let bridgeInjected = false;
   let bridgeLoadPromise = null;
   let bridgeRequestId = 0;
 
-  function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
-  }
 
   function getRowTimeLabels(row) {
     if (!(row instanceof HTMLElement)) {
@@ -219,101 +217,53 @@ export function registerTimestampEditService(helper: any) {
   }
 
   async function callTimestampBridge(operation, payload, isCurrentTask) {
-    if (isCurrentTask && !isCurrentTask()) return null;
+    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task' };
     const ready = await injectTimestampBridge();
-    if (isCurrentTask && !isCurrentTask()) return null;
-    if (!ready) {
-      return null;
-    }
-
-    return new Promise((resolve) => {
-      bridgeRequestId += 1;
-      const id = 'timestamp-request-' + bridgeRequestId;
-      let settled = false;
-
-      const finish = (result) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-        window.clearTimeout(timeoutId);
-        resolve(result || null);
-      };
-
-      const handleResponse = (event) => {
-        const detail = event.detail || {};
-        if (detail.id !== id) {
-          return;
-        }
-
-        finish(detail.result || null);
-      };
-
-      const timeoutId = window.setTimeout(() => finish(null), BRIDGE_TIMEOUT_MS);
-      window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
-      window.dispatchEvent(
-        new CustomEvent(BRIDGE_REQUEST_EVENT, {
-          detail: {
-            id,
-            operation,
-            payload: payload || {}
-          }
-        })
-      );
-    });
+    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task' };
+    if (!ready) return { ok: false, reason: 'bridge-unavailable' };
+    const { promise, resolve } = Promise.withResolvers();
+    const id = 'timestamp-request-' + ++bridgeRequestId;
+    let settled = false;
+    let tornDown = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
+      window.removeEventListener('babel-helper-bridge-teardown', handleTeardown, true);
+      window.clearTimeout(timeoutId);
+      resolve(result && typeof result.ok === 'boolean' ? result : { ok: false, reason: 'invalid-bridge-response' });
+    };
+    const handleResponse = event => {
+      if (event.detail?.id === id) finish(event.detail.result);
+    };
+    // MAIN resolves cancelled verification with its exact native receipt.
+    // Do not discard that response by settling early in the teardown event.
+    const handleTeardown = () => { tornDown = true; };
+    const timeoutId = window.setTimeout(() => finish({
+      ok: false, reason: tornDown ? 'bridge-disposed' : 'bridge-response-timeout'
+    }), BRIDGE_TIMEOUT_MS);
+    window.addEventListener(BRIDGE_RESPONSE_EVENT, handleResponse, true);
+    window.addEventListener('babel-helper-bridge-teardown', handleTeardown, true);
+    window.dispatchEvent(new CustomEvent(BRIDGE_REQUEST_EVENT, {
+      detail: { id, operation, payload: payload || {} }
+    }));
+    return promise;
   }
 
-  async function retryTimestampMutation(settings, operation, backend, buildPayload) {
-    const attempts = clamp(Math.round(Number(settings.attempts) || 0) || 2, 1, 4);
-    const retryDelayMs = clamp(Math.round(Number(settings.retryDelayMs) || 0) || 80, 0, 400);
+  async function invokeTimestampMutation(operation, backend, buildPayload) {
     const isCurrentTask = captureL0TaskGuard();
-    const staleTaskResult = (attempts) => ({
-      ok: false, reason: 'stale-task', attempts, backend, verification: null
-    });
-    let lastResult = null;
-
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (!isCurrentTask()) return staleTaskResult(attempt);
-      const bridgeResult = await callTimestampBridge(operation, buildPayload(), isCurrentTask);
-      lastResult = bridgeResult;
-      if (!isCurrentTask()) return staleTaskResult(attempt + 1);
-      if (bridgeResult && bridgeResult.ok) {
-        return {
-          ok: true,
-          attempts: attempt + 1,
-          backend:
-            typeof bridgeResult.backend === 'string' && bridgeResult.backend
-              ? bridgeResult.backend
-              : backend,
-          verification: bridgeResult
-        };
-      }
-      if (bridgeResult && (
-        settings.expectedHistoryRevision !== undefined ||
-        settings.expectedHistoryToken !== undefined ||
-        bridgeResult.reason === 'history-conflict' ||
-        bridgeResult.reason === 'read-only' ||
-        bridgeResult.reason === 'stale-task' ||
-        (Number.isInteger(bridgeResult.previousHistoryRevision) &&
-          bridgeResult.historyRevision !== bridgeResult.previousHistoryRevision)
-        || (typeof bridgeResult.previousHistoryToken === 'string' &&
-          bridgeResult.historyToken !== bridgeResult.previousHistoryToken)
-      )) {
-        return { ...bridgeResult, attempts: attempt + 1, backend, verification: bridgeResult };
-      }
-      if (attempt < attempts - 1 && retryDelayMs > 0) {
-        await helper.sleep(retryDelayMs);
-        if (!isCurrentTask()) return staleTaskResult(attempt + 1);
-      }
-    }
-
-    return { ...lastResult, ok: false, attempts, backend, verification: lastResult };
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task', backend, verification: null };
+    const result = await callTimestampBridge(operation, buildPayload(), isCurrentTask);
+    return {
+      ...result,
+      ...(!isCurrentTask() ? { ok: false, reason: 'stale-task' } : {}),
+      backend: typeof result.backend === 'string' && result.backend ? result.backend : backend,
+      verification: result
+    };
   }
 
   function resolveRowMutationPayload(settings) {
-    const row =
+    const row = settings.selectionTarget ? null :
       (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
         ? helper.findRowByIdentity(settings.rowIdentity)
         : null) ||
@@ -328,6 +278,8 @@ export function registerTimestampEditService(helper: any) {
       expectedReviewActionId: settings.expectedReviewActionId,
       expectedHistoryRevision: settings.expectedHistoryRevision,
       expectedHistoryToken: settings.expectedHistoryToken,
+      processedRecordingId: settings.processedRecordingId,
+      selectionTarget: settings.selectionTarget,
       startText: settings.startText,
       endText: settings.endText,
       startSeconds: settings.startSeconds,
@@ -366,7 +318,10 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'set-boundary-time', 'page-react-row-time-change', () => {
+    return invokeTimestampMutation('set-boundary-time', 'page-react-row-time-change', () => {
+      if (settings.selectionTarget) {
+        return { ...resolveRowMutationPayload(settings), side, targetSeconds };
+      }
       const row =
         (typeof helper.findRowByIdentity === 'function' && settings.rowIdentity
           ? helper.findRowByIdentity(settings.rowIdentity)
@@ -408,7 +363,7 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'split-segment-at-time', 'page-react-split-annotation', () => {
+    return invokeTimestampMutation('split-segment-at-time', 'page-react-split-annotation', () => {
       const payload = resolveRowMutationPayload(settings);
       payload.splitSeconds = splitSeconds;
       if (settings.sourceText !== undefined) payload.sourceText = settings.sourceText;
@@ -422,7 +377,7 @@ export function registerTimestampEditService(helper: any) {
   helper.mergeSegmentWithNativeAction = async function mergeSegmentWithNativeAction(options) {
     const settings = options || {};
     const direction = settings.direction === 'below' ? 'below' : 'above';
-    return retryTimestampMutation(settings, 'merge-segment', 'page-react-row-action', () => {
+    return invokeTimestampMutation('merge-segment', 'page-react-row-action', () => {
       const payload = resolveRowMutationPayload(settings);
       payload.direction = direction;
       return payload;
@@ -443,7 +398,7 @@ export function registerTimestampEditService(helper: any) {
       };
     }
 
-    return retryTimestampMutation(settings, 'create-segment', 'page-react-create-annotation', () => ({
+    return invokeTimestampMutation('create-segment', 'page-react-create-annotation', () => ({
       expectedReviewActionId: settings.expectedReviewActionId,
       expectedHistoryRevision: settings.expectedHistoryRevision,
       expectedHistoryToken: settings.expectedHistoryToken,
@@ -461,7 +416,7 @@ export function registerTimestampEditService(helper: any) {
 
   helper.deleteSegmentWithNativeAction = async function deleteSegmentWithNativeAction(options) {
     const settings = options || {};
-    return retryTimestampMutation(settings, 'delete-segment', 'page-react-row-action', () =>
+    return invokeTimestampMutation('delete-segment', 'page-react-row-action', () =>
       resolveRowMutationPayload(settings)
     );
   };

@@ -1,5 +1,6 @@
 import { createHelperKernel } from '../core/kernel';
 import { bootstrapCustomLinterBridge, preloadCustomLinterBridge } from '../features/custom-linter';
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
 
 declare global {
   interface Window {
@@ -27,33 +28,45 @@ async function boot() {
       'script[data-babel-helper-linter-bridge="true"], script[data-babel-helper-quick-region-autocomplete-bridge="true"], script[data-babel-helper-recovered-editor-bridge="true"]'
     )
     .forEach((script) => script.remove());
-  const linterBridgePreload = preloadCustomLinterBridge();
+  const linterBridgePreload = preloadCustomLinterBridge().catch(error => {
+    console.error('[Babel Helper] Linter bridge preload failed:', error);
+    showNativeAutomationFailure('Custom linter', String(error));
+    return false;
+  });
 
 
   const kernel = createHelperKernel();
   window.__babelHelperKernel = kernel;
 
-  await kernel.start().catch((error) => {
-    if (window.__babelHelperKernel === kernel) {
-      delete window.__babelHelperKernel;
+  await kernel.start().catch(async error => {
+    try {
+      await kernel.stop('kernel-start-error');
+    } catch (stopError) {
+      // Keep ownership when native cleanup could not finish; never retry a new
+      // kernel over an unresolved Original-audio restoration.
+      console.error('[Babel Helper] Startup and native cleanup failed:', error, stopError);
+      throw new Error(`Helper startup failed: ${String(error)}. Native cleanup also failed: ${String(stopError)}`);
     }
-    void kernel.stop('kernel-start-error').catch(() => {});
+    if (window.__babelHelperKernel === kernel) delete window.__babelHelperKernel;
     throw error;
   });
 
   const enableLinter = Boolean(kernel.helper?.isFeatureEnabled?.('customLinter'));
-  void linterBridgePreload
-    .then(
-      () => bootstrapCustomLinterBridge({ helper: kernel.helper }, { enableLinter }),
-      () => bootstrapCustomLinterBridge({ helper: kernel.helper }, { enableLinter })
-    )
-    .catch(() => {});
+  if (!await linterBridgePreload) {
+    showNativeAutomationFailure('Custom linter', 'The MAIN-world linter bridge could not be loaded');
+    return;
+  }
+  try {
+    if (!await bootstrapCustomLinterBridge({ helper: kernel.helper }, { enableLinter })) {
+      throw new Error('The MAIN-world linter bridge could not be configured');
+    }
+  } catch (error) {
+    console.error('[Babel Helper] Linter bootstrap failed:', error);
+    showNativeAutomationFailure('Custom linter', String(error));
+  }
 }
 
-function scheduleBootRetry() {
-  window.setTimeout(() => {
-    void boot().catch(scheduleBootRetry);
-  }, 1000);
-}
-
-void boot().catch(scheduleBootRetry);
+void boot().catch(error => {
+  console.error('[Babel Helper] Startup stopped:', error);
+  showNativeAutomationFailure('Helper startup', error instanceof Error ? error.message : String(error));
+});

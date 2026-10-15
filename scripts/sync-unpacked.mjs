@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const target = join(root, 'babel-helper-extension');
-const entries = ['manifest.json', 'options.html', 'icons', 'dist'];
+const entries = ['manifest.json', 'options.html', 'popup.html', 'icons', 'dist'];
 
 for (const entry of entries) {
   if (!existsSync(join(root, entry))) throw new Error(`Required build input is missing: ${entry}`);

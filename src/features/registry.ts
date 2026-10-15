@@ -8,6 +8,8 @@ import { createMagnifierFeature } from './magnifier-feature';
 import { createMinimapFeature } from './minimap-feature';
 import { createNativeSegmentClickSeekFeature } from './native-segment-click-seek-feature';
 import { createNativeTagDropdownKeyboardFeature } from './native-tag-dropdown-keyboard-feature';
+import { createNativeMergeGapsFeature } from './native-merge-gaps-feature';
+import { createNativeFindReplaceFeature } from './native-find-replace-feature';
 import { createQuickRegionAutocompleteFeature } from './quick-region-autocomplete-feature';
 import { createRowActionsFeature } from './row-actions-feature';
 import { createTextMoveFeature } from './text-move-feature';
@@ -96,6 +98,28 @@ export const FEATURE_REGISTRATIONS = [
       add('warnings.acceptAll', 'Accept all linter warnings without changing transcript text');
       return rows;
     }
+  }),
+  defineFeature({
+    id: 'native-merge-across-gaps',
+    setting: {
+      key: 'nativeMergeAcrossGaps',
+      defaultEnabled: true,
+      label: 'Merge Across Gaps',
+      description: 'Allow adjacent turns in the same recording to merge across gaps longer than 2 seconds. Keep real lane edges, readonly access and segment locks.'
+    },
+    moduleOrder: 21,
+    createModule: createNativeMergeGapsFeature
+  }),
+  defineFeature({
+    id: 'native-find-replace',
+    setting: {
+      key: 'nativeFindReplace',
+      defaultEnabled: true,
+      label: 'Replacement Rules',
+      description: 'Run saved replacement rules from the extension toolbar across native transcript text and tags, including hidden speakers. No third-party extension required.'
+    },
+    moduleOrder: 22,
+    createModule: createNativeFindReplaceFeature
   }),
   defineFeature({
     id: 'playback-speed-hotkeys',

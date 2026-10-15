@@ -256,15 +256,6 @@ export function createTimelineSiteApi(helper: any) {
   }
 
 
-  async function deleteRegionByTimeLabels(startText, endText, options) {
-    const row = findRowByTimeLabels(startText, endText, options);
-    if (!(row instanceof HTMLElement)) {
-      return false;
-    }
-
-    helper.setCurrentRow(row);
-    return helper.runRowAction('deleteSegment');
-  }
 
 
   function getWaveformScope(container) {
@@ -470,10 +461,6 @@ export function createTimelineSiteApi(helper: any) {
   }
 
 
-  function getSelectionAudioElement() {
-    const audio = document.querySelector('audio');
-    return audio instanceof HTMLMediaElement ? audio : null;
-  }
 
 
   function injectSelectionBridge() {
@@ -1303,5 +1290,5 @@ export function createTimelineSiteApi(helper: any) {
     };
   }
 
-  return { isFeatureEnabled, getWaveformHostFromContainer, clamp, isRegionHandle, isRegionBody, getRegionHandleElement, getOwningRegionBody, getZoomSliderElement, getReactFiber, callSelectionBridge, getWaveformEntryForContainer, getWaveformPixelsPerSecond, getSelectionAudioElement, getLaneZoomSignature, rememberCutContainer, getRegionElements, discoverWaveformContainers, getRowTimeLabels, getRowTimeRange, getSpeakerKeyForContainer, isAutoInsertLaneSemanticallyVisible, findRowByTimeLabels, findRowByTimeRange, rememberTimelineSegmentTarget, findRegionEntryForRow, isVisibleWaveformContainer, getLaneTimeScale, collectRegionSnapshot, findCurrentSegmentTarget, collectAllSegmentTargets, deleteRegionByTimeLabels, captureTimelineSegmentTarget };
+  return { isFeatureEnabled, getWaveformHostFromContainer, clamp, isRegionHandle, isRegionBody, getRegionHandleElement, getOwningRegionBody, getZoomSliderElement, getReactFiber, callSelectionBridge, getWaveformEntryForContainer, getWaveformPixelsPerSecond, getLaneZoomSignature, rememberCutContainer, getRegionElements, discoverWaveformContainers, getRowTimeLabels, getRowTimeRange, getSpeakerKeyForContainer, isAutoInsertLaneSemanticallyVisible, findRowByTimeLabels, findRowByTimeRange, rememberTimelineSegmentTarget, findRegionEntryForRow, isVisibleWaveformContainer, getLaneTimeScale, collectRegionSnapshot, findCurrentSegmentTarget, collectAllSegmentTargets, captureTimelineSegmentTarget };
 }

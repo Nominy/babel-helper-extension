@@ -183,6 +183,7 @@ class NativeWaveFixture {
     this.listeners.set(type, group);
     return () => group.delete(listener);
   }
+  un(type, listener) { this.listeners.get(type)?.delete(listener); }
   once(type, listener) {
     const cleanup = this.on(type, (...args) => { cleanup(); listener(...args); });
     return cleanup;
@@ -278,14 +279,13 @@ test(`real native split and paired selection remain correct with ${scenario.name
   let resolveCommitted;
   let onSources;
   let enhancementProviders = 0;
-  let pollTick = null;
   const window = {
     location: { origin: 'https://babel.test', href: 'https://babel.test/transcription?reviewActionId=task-native' +
       (scenario.nativeAdmission ? '&displayFeedback=true' : '') },
     fetch: async () => new Response(sourceWav(100), { headers: { 'Content-Type': 'audio/wav' } }),
     setTimeout, clearTimeout,
-    setInterval(callback) { pollTick = callback; return 1; },
-    clearInterval() { pollTick = null; },
+    setInterval() { throw new Error('Native enhancement must not poll'); },
+    clearInterval() {},
     addEventListener(type, listener) { const group = listeners.get(type) ?? new Set(); group.add(listener); listeners.set(type, group); },
     removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     dispatchEvent() {},
@@ -775,7 +775,7 @@ test(`real native split and paired selection remain correct with ${scenario.name
       };
       window.location.href = 'https://babel.test/transcription?reviewActionId=task-native&displayFeedback=true';
       panel.memoizedProps.readOnly = true;
-      pollTick();
+      root.stateNode.current = fiber;
       await entered.promise;
       assert.equal(readAudioEnhancementState().status, 'switching',
         'Confirmed native readonly starts Original restoration without waiting for UI disposal');
@@ -833,13 +833,15 @@ test(`real native split and paired selection remain correct with ${scenario.name
         const sourcesCount = messages.filter(message => message.type === 'sources-ready').length;
         fiber.child = null;
         assert.equal(facade.getActiveAudio('unknown-native-view', 'task-native').available, false);
-        pollTick();
+        root.stateNode.current = fiber;
+        await new Promise(resolve => setImmediate(resolve));
         assert.equal(window.__babelHelperAudioEnhancementBridge, owner);
         assert.equal(enhancementProviders, 1);
         assert.deepEqual(waves.map(wave => wave.loads.length), beforeLoads, 'Unknown metadata cannot start new source work');
         assert.deepEqual(facade.getState(), before, 'Transient missing metadata retains the enabled owner and selected pair');
         fiber.child = panel;
-        pollTick();
+        root.stateNode.current = fiber;
+        await new Promise(resolve => setImmediate(resolve));
         assert.equal(facade.getActiveAudio('view-returned', 'task-native').available, true,
           'The still-enabled preference recovers without a manual toggle');
         assert.equal(messages.filter(message => message.type === 'sources-ready').length, sourcesCount,

@@ -52,6 +52,7 @@ export function registerPlaybackSpeedInput(helper: any, hooks: EditorHooks, inpu
 
 export function installNativeSpeedFix() {
   const speedPatches = new Map();
+  const rateCorrectionIntent = Symbol.for('babel-helper-native-rate-correction');
   function patchNativeSpeed() {
     const waves = readBabelPlaybackBindings()?.waves || [];
     for (const [wave, patch] of speedPatches) {
@@ -69,20 +70,26 @@ export function installNativeSpeedFix() {
         const duration = this.getDuration();
         // Babel's native speed control changes the WebAudio time base.
         // Restore this lane after the rate change, including native UI calls.
-        if (Number.isFinite(time) && duration > 0) this.seekTo(Math.max(0, Math.min(1, time / duration)));
+        if (Number.isFinite(time) && duration > 0) {
+          const previousIntent = this[rateCorrectionIntent];
+          this[rateCorrectionIntent] = time;
+          try {
+            this.seekTo(Math.max(0, Math.min(1, time / duration)));
+          } finally {
+            if (previousIntent === undefined) delete this[rateCorrectionIntent];
+            else this[rateCorrectionIntent] = previousIntent;
+          }
+        }
         return result;
       }
       wave.setPlaybackRate = wrapped;
       speedPatches.set(wave, { original, wrapped });
     }
   }
-  const speedObserver = new MutationObserver(patchNativeSpeed);
-  speedObserver.observe(document, { childList: true, subtree: true });
   patchNativeSpeed();
 
   return {
     patchNativeSpeed, dispose() {
-      speedObserver.disconnect();
       for (const [wave, patch] of speedPatches) {
         if (wave.setPlaybackRate === patch.wrapped) wave.setPlaybackRate = patch.original;
       }

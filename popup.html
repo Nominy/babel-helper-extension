@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Babel Helper — Advanced replacement</title>
+    <link rel="stylesheet" href="dist/popup/popup.css">
+    <script defer src="dist/popup/popup.js"></script>
+  </head>
+  <body class="bui-root replacement-popup" data-bui-accent="purple">
+    <header class="bui-header">
+      <h1 class="bui-title">Advanced replacement</h1>
+      <a id="settings" class="bui-link" href="options.html">Settings</a>
+    </header>
+    <main class="bui-body">
+      <p class="bui-hint">Saved rules run in order on all native segments, including hidden lanes and raw tags. Nothing runs automatically.</p>
+      <section class="task-section" aria-label="Native task">
+        <p id="task-status" class="bui-status" role="status">Checking the current native task…</p>
+        <div class="popup-actions">
+          <button id="run-all" class="bui-button" data-variant="primary" type="button" disabled>Run all</button>
+          <button id="recover" class="bui-button" type="button" disabled>Recover latest run</button>
+          <button id="refresh-task" class="bui-button" data-size="sm" type="button" disabled>Refresh task status</button>
+        </div>
+      </section>
+      <p id="result" class="bui-status" role="status" hidden></p>
+      <p id="error" class="bui-status" data-tone="danger" role="alert" hidden></p>
+      <section aria-labelledby="rules-heading" class="saved-section">
+        <div class="popup-actions">
+          <h2 id="rules-heading" class="bui-title">Saved rules</h2>
+          <button id="add-rule" class="bui-button" type="button" disabled>Add rule</button>
+          <button id="reload-rules" class="bui-button" data-size="sm" type="button" disabled>Reload saved rules</button>
+        </div>
+        <p id="storage-error" class="bui-status" data-tone="danger" role="alert" hidden></p>
+        <p id="empty-rules" class="bui-hint" hidden>No saved rules. Add a rule to get started.</p>
+        <ol id="rules" class="rule-list" aria-label="Saved replacement rules"></ol>
+      </section>
+      <form id="rule-editor" class="bui-card" aria-labelledby="editor-heading" hidden>
+        <h2 id="editor-heading" class="bui-title">Add rule</h2>
+        <fieldset id="editor-fields">
+          <label class="bui-field" for="find">Find
+            <textarea id="find" class="bui-textarea" rows="2" required spellcheck="false"></textarea>
+          </label>
+          <label class="bui-field" for="replace">Replace with
+            <textarea id="replace" class="bui-textarea" rows="2" spellcheck="false" aria-describedby="replacement-help"></textarea>
+          </label>
+          <p id="replacement-help" class="bui-hint">Leave replacement empty to delete matches. Regex captures: $0 or $&amp; for the match, $1–$99 for groups, $$ for a dollar sign.</p>
+          <div class="rule-flags">
+            <label><input id="regex" type="checkbox"> Regular expression</label>
+            <label><input id="case-sensitive" type="checkbox"> Case-sensitive</label>
+            <label><input id="whole-word" type="checkbox"> Unicode whole-word</label>
+            <label><input id="enabled" type="checkbox" checked> Enabled</label>
+          </div>
+          <div class="popup-actions">
+            <button class="bui-button" data-variant="primary" type="submit">Save rule</button>
+            <button id="cancel-edit" class="bui-button" type="button">Cancel</button>
+          </div>
+        </fieldset>
+      </form>
+    </main>
+  </body>
+</html>

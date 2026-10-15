@@ -173,6 +173,7 @@ function nativeLintFixture() {
     document, Element, MutationObserver, props, panel, transcript, lintHook, renderIssues, setText,
     get issues() { return lintHook.memoizedState; },
     get annotations() { return annotationHook.memoizedState; },
+    setMounted(value) { root.child = value ? owner : null; },
     renderUnrelatedPlaybackDOM() {
       for (const observer of observers) {
         if (observer.options) observer.callback([{
@@ -189,7 +190,7 @@ test('native lint publishes without controller memo state and repairs retained n
   const rule = bridge.linter.getRules().find(rule => rule.id === 'unicode-dashes');
   bridge.linter.configure({ disabledCustomLinterRuleIds: bridge.linter.getRules().filter(item => item.id !== rule.id).map(item => item.id) });
   bridge.linter.setEnabled(true);
-  bridge.tickTimeouts(1750);
+  await Promise.resolve();
   assert.equal(fixture.issues.length, 1);
   assert.equal(fixture.issues[0].reason, rule.reason);
   assert.equal(fixture.issues[0].babelHelper.sourceText, 'Да — нет.');
@@ -229,12 +230,28 @@ test('unrelated playback DOM does not repaint lint highlights when no transcript
   const fixture = nativeLintFixture();
   const bridge = await bootLinterBridgeOverNativeFetch(fixture);
   bridge.linter.setEnabled(true);
-  bridge.tickTimeouts(1750);
+  await Promise.resolve();
   assert.ok(fixture.issues.some(issue => issue.babelHelper?.sourceText === 'Да — нет.'));
   const scheduled = bridge.scheduledTimeoutCount;
   fixture.renderUnrelatedPlaybackDOM();
   assert.equal(bridge.scheduledTimeoutCount, scheduled,
     'playback outside the transcript must not schedule document-wide highlight passes');
+});
+
+test('initial lint waits for native commits without retry polling', async () => {
+  const fixture = nativeLintFixture();
+  fixture.setMounted(false);
+  const bridge = await bootLinterBridgeOverNativeFetch(fixture);
+  const scheduled = bridge.scheduledTimeoutCount;
+  bridge.linter.setEnabled(true);
+  await Promise.resolve();
+  assert.deepEqual(fixture.issues, []);
+  assert.equal(bridge.scheduledTimeoutCount, scheduled, 'missing native state does not schedule timed guesses');
+  fixture.setMounted(true);
+  bridge.window.dispatchEvent(new Event('babel-helper:native-editor-commit'));
+  await Promise.resolve();
+  assert.ok(fixture.issues.some(issue => issue.babelHelper?.sourceText === 'Да — нет.'));
+  bridge.linter.setEnabled(false);
 });
 
 test('shipped lint rules detect invalid text and accept valid text through the page service', async () => {

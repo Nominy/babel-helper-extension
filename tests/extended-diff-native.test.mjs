@@ -41,12 +41,14 @@ function freeze(value) {
 
 function harness({ data = payload(), isDiffMode = true, selected = 'comparison', fetch } = {}) {
   const timers = [], writes = [], selections = [], toggles = [];
-  const window = {
-    location: { pathname: '/transcription/task', search: '?reviewActionId=task&readOnly=true' },
-    addEventListener() {}, removeEventListener() {},
+  const window = new EventTarget();
+  Object.assign(window, {
+    location: { pathname: '/transcription/task', search: '?reviewActionId=task&readOnly=true',
+      href: 'https://babel.test/transcription/task?reviewActionId=task&readOnly=true' },
+    history: { pushState() {}, replaceState() {} },
     setTimeout(callback) { timers.push(callback); return timers.length; },
     fetch: fetch || (async () => new Response(JSON.stringify(data)))
-  };
+  });
   const query = {
     state: { data: freeze(structuredClone(data)) },
     setData(next, options) {
@@ -58,7 +60,9 @@ function harness({ data = payload(), isDiffMode = true, selected = 'comparison',
     }
   };
   const observer = {
-    getCurrentResult: () => ({ data: query.state.data, refetch: observer.refetch }),
+    options: { queryKey: [['transcriptions', 'getTranscriptionDiff'], { input: { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' } }] },
+    getCurrentResult: () => ({ data: query.state.data, status: query.state.status || (query.state.data ? 'success' : 'pending'),
+      error: query.state.error, refetch: observer.refetch }),
     getCurrentQuery: () => query,
     refetch() { throw new Error('Mode changes must not need an extra network request'); }
   };
@@ -79,12 +83,27 @@ function harness({ data = payload(), isDiffMode = true, selected = 'comparison',
     return editor;
   }
   mount('task');
-  const document = { querySelectorAll: () => [{ '__reactFiber$test': root }] };
-  vm.runInNewContext(source, { window, document, URL, Request, Response, structuredClone, console });
+  const attributes = new Map(), surface = { '__reactFiber$test': root };
+  const document = {
+    documentElement: {
+      getAttribute: name => attributes.get(name) ?? null,
+      setAttribute: (name, value) => attributes.set(name, value),
+      removeAttribute: name => attributes.delete(name)
+    },
+    querySelector: selector => selector === '[data-transcript-scroll]' ? surface : null,
+    querySelectorAll: () => [surface]
+  };
+  class CustomEvent extends Event {
+    constructor(type, options) { super(type); this.detail = options?.detail; }
+  }
+  class MutationObserver { observe() {} disconnect() {} }
+  vm.runInNewContext(source, { window, document, URL, Request, Response, structuredClone, console,
+    MutationObserver, CustomEvent, queueMicrotask });
   const bridge = window.__babelHelperRecoveredEditorBridge;
   let memoizedData, rendered;
   return {
-    window, query, toolbar, bridge, writes, selections, toggles, mount,
+    window, query, toolbar, bridge, writes, selections, toggles, mount, timers,
+    commit() { root.stateNode.current = root; },
     apply: (textMode) => bridge.applyExtendedDiffState({ selectedCompareActionId: 'comparison', textMode }),
     flush: () => { for (const callback of timers.splice(0)) callback(); },
     render() {
@@ -150,12 +169,13 @@ test('reference/current are relative to the open task, not the query side orderi
   h.bridge.clearExtendedDiffState();
 });
 
-test('disable restores an initially inactive native comparison and invalidates superseded repaint callbacks', () => {
+test('disable restores an initially inactive native comparison without speculative repaint timers', () => {
   const h = harness({ isDiffMode: false, selected: null });
   h.apply('reference'); h.apply('current');
   const writes = h.writes.length;
   h.flush();
-  assert.equal(h.writes.length, writes + 1, 'only the newest scheduled operation may repaint');
+  assert.equal(h.writes.length, writes, 'native projection never schedules a timer retry');
+  assert.equal(h.timers.length, 0);
   assert.deepEqual(h.selections, ['comparison']);
   h.bridge.clearExtendedDiffState();
   assert.deepEqual(h.toggles, [true, false]);
@@ -246,4 +266,86 @@ test('side projection keeps native split-turn alignment and tag metadata without
   }
   h.bridge.clearExtendedDiffState();
   assert.deepEqual(h.query.state.data, data);
+});
+
+test('native diff readiness comes from the matching query, including cache-only arrivals and errors', () => {
+  const h = harness({ data: null });
+  assert.equal(h.bridge.readExtendedDiffState().status, 'loading');
+  assert.equal(h.timers.length, 0);
+  h.query.state.data = payload();
+  const ready = h.bridge.readExtendedDiffState();
+  assert.equal(ready.status, 'ready');
+  assert.deepEqual(ready.payload, payload());
+  h.apply('reference');
+  assert.deepEqual(h.bridge.readExtendedDiffState().payload, payload(), 'snapshot exposes the original rather than the owned projection');
+  const fresh = payload();
+  fresh.speakerDiffs[0].segmentMappings[0].hypothesisText = 'cached edit';
+  h.query.state.data = fresh;
+  assert.deepEqual(h.bridge.readExtendedDiffState().payload, fresh);
+  h.query.state.status = 'error';
+  h.query.state.error = new Error('native query rejected');
+  assert.equal(h.bridge.readExtendedDiffState().reason, 'native query rejected');
+  h.bridge.dispose();
+});
+
+test('native commit notification announces cached updates without requiring a resource or DOM mutation', async () => {
+  const h = harness();
+  let commits = 0;
+  h.window.addEventListener('babel-helper:native-editor-commit', () => { commits++; });
+  h.commit();
+  await Promise.resolve();
+  assert.equal(commits, 1);
+  h.bridge.dispose();
+  h.commit();
+  await Promise.resolve();
+  assert.equal(commits, 1, 'teardown restores the native commit descriptor and listener');
+});
+
+test('native read identity rejects a same-route same-task remount before projection', () => {
+  const h = harness();
+  const snapshot = h.bridge.readExtendedDiffState();
+  h.mount('task');
+  const result = h.bridge.applyExtendedDiffState({ routeKey: snapshot.routeKey,
+    nativeSessionGeneration: snapshot.generation, editorGeneration: snapshot.editorGeneration,
+    selectedCompareActionId: 'comparison', textMode: 'reference' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'stale-task');
+  assert.equal(h.writes.length, 0);
+  h.bridge.dispose();
+});
+
+test('cache-only replacement supersedes earlier fetched originals without losing native edits on disable', async () => {
+  const h = harness();
+  h.apply('reference');
+  const sharedProjection = h.query.state.data;
+  const response = await h.window.fetch('/api/trpc/transcriptions.getTranscriptionDiff');
+  h.query.setData(await response.json(), { manual: true });
+  assert.equal(h.query.state.data, sharedProjection, 'an equal fetched projection retains the older query root');
+  h.apply('reference');
+  const fresh = payload();
+  fresh.speakerDiffs[0].segmentMappings[0].hypothesisText = 'cached words';
+  h.query.state.data = fresh;
+  assert.deepEqual(h.bridge.readExtendedDiffState().payload, fresh);
+  h.apply('current');
+  assert.match(h.render(), /cached words/);
+  const later = payload();
+  later.speakerDiffs[0].segmentMappings[0].hypothesisText = 'later cache edit';
+  h.query.state.data = later;
+  h.bridge.clearExtendedDiffState();
+  assert.deepEqual(h.query.state.data, later, 'cleanup does not restore over an unowned native update');
+  h.bridge.dispose();
+});
+
+test('an unconsumed fetched projection cannot claim a later cache-only value by action IDs', async () => {
+  const h = harness();
+  h.apply('reference');
+  const response = await h.window.fetch('/api/trpc/transcriptions.getTranscriptionDiff');
+  h.query.setData(await response.json(), { manual: true });
+  const fresh = payload();
+  fresh.speakerDiffs[0].segmentMappings[0].hypothesisText = 'native cache replacement';
+  h.query.state.data = fresh;
+  assert.deepEqual(h.bridge.readExtendedDiffState().payload, fresh);
+  h.bridge.clearExtendedDiffState();
+  assert.deepEqual(h.query.state.data, fresh);
+  h.bridge.dispose();
 });

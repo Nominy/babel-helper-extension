@@ -471,17 +471,26 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
   }
 
 
-  function buildSmartSplitPlanForRegion(entry, pivotPx, container) {
+  function buildSmartSplitPlanForRegion(entry, pivotPx, container, selectionTarget) {
     if (!entry) {
       return null;
     }
 
-    const speakerKey = api.site.getSpeakerKeyForContainer(container);
-    let sourceRow = api.site.findRowByTimeLabels(entry.startText, entry.endText, {
-      speakerKey
-    });
+    const speakerKey = selectionTarget?.processedRecordingId || api.site.getSpeakerKeyForContainer(container);
+    let sourceRow;
+    if (selectionTarget) {
+      const matches = helper.getTranscriptRows().filter(row => {
+        const identity = helper.getRowIdentity(row);
+        return identity?.annotationId === entry.annotationId &&
+          identity.processedRecordingId === selectionTarget.processedRecordingId;
+      });
+      if (matches.length !== 1) return null;
+      sourceRow = matches[0];
+    } else {
+      sourceRow = api.site.findRowByTimeLabels(entry.startText, entry.endText, { speakerKey });
+    }
 
-    if (!(sourceRow instanceof HTMLElement) && container instanceof HTMLElement) {
+    if (!selectionTarget && !(sourceRow instanceof HTMLElement) && container instanceof HTMLElement) {
       const laneTimeScale = api.site.getLaneTimeScale(container);
       if (laneTimeScale && Number.isFinite(laneTimeScale.secondsPerPx) && laneTimeScale.secondsPerPx > 0) {
         const startSeconds = laneTimeScale.offsetSeconds + entry.leftPx * laneTimeScale.secondsPerPx;
@@ -502,9 +511,9 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       return null;
     }
 
-    const sameSpeakerRows = speakerKey
-      ? rows.filter((row) => helper.getRowSpeakerKey(row) === speakerKey)
-      : rows;
+    const sameSpeakerRows = selectionTarget
+      ? rows.filter(row => helper.getRowIdentity(row)?.processedRecordingId === selectionTarget.processedRecordingId)
+      : speakerKey ? rows.filter((row) => helper.getRowSpeakerKey(row) === speakerKey) : rows;
     const sourceSpeakerIndex = sameSpeakerRows.indexOf(sourceRow);
 
     const sourceText = helper.getRowTextValue(sourceRow);
@@ -514,6 +523,9 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       width > 0 ? api.site.clamp((pivotPx - entry.leftPx) / width, 0, 1) : 0.5;
     const sourceRange = api.site.getRowTimeRange(sourceRow);
     if (!sourceRange) {
+      return null;
+    }
+    if (selectionTarget && (sourceRange.startSeconds !== entry.startSeconds || sourceRange.endSeconds !== entry.endSeconds)) {
       return null;
     }
     const splitSeconds =

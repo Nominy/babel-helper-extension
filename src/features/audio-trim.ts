@@ -177,9 +177,7 @@ export function registerAudioTrim(helper: any, api: Pick<TimelineModules, 'loop'
       targetSeconds,
       annotationId:
         rowIdentity && typeof rowIdentity.annotationId === 'string' ? rowIdentity.annotationId : '',
-      rowIdentity,
-      attempts: 2,
-      retryDelayMs: 70
+      rowIdentity
     });
   }
 

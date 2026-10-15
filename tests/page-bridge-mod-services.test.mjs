@@ -69,6 +69,9 @@ class TestElement extends TestEventTarget {
     this[name] = String(value);
   }
 
+  getAttribute(name) { return this[name] ?? null; }
+  removeAttribute(name) { delete this[name]; }
+
   appendChild(child) {
     this.children.push(child);
     child.isConnected = true;
@@ -206,9 +209,12 @@ function createServiceHarness() {
 function installPageEnvironment() {
   const window = new TestEventTarget();
   const document = new TestDocument();
+  const observers = [];
   window.window = window;
   window.document = document;
-  window.location = { pathname: '/transcription', search: '?id=fixture' };
+  window.location = { href: 'https://babel.test/transcription?id=fixture', pathname: '/transcription', search: '?id=fixture' };
+  window.navigation = new TestEventTarget();
+  window.history = { pushState() {}, replaceState() {} };
   window.setTimeout = setTimeout;
   window.clearTimeout = clearTimeout;
 
@@ -221,6 +227,11 @@ function installPageEnvironment() {
     HTMLTableRowElement: TestTableRow,
     Event: TestEvent,
     CustomEvent: TestEvent,
+    MutationObserver: class {
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe() {}
+      disconnect() { this.disconnected = true; }
+    },
     InputEvent: TestEvent,
     KeyboardEvent: TestEvent,
     MouseEvent: TestEvent,
@@ -229,7 +240,7 @@ function installPageEnvironment() {
     Response: class Response {}
   };
   for (const [key, value] of Object.entries(values)) globalThis[key] = value;
-  return { window, document };
+  return { window, document, observers };
 }
 
 async function importBundledBridge(relativeEntry) {
@@ -573,4 +584,136 @@ test('extended diff reads the native comparison switch, never reviewer visibilit
   assert.equal(isDiffViewEnabled(), true);
   document.querySelector = (selector) => selector === '[role=\"switch\"]' ? reviewers : null;
   assert.equal(isDiffViewEnabled(), false, 'unmounted task controls do not inherit another switch');
+});
+
+function nativeSessionTree(task = 'task-a') {
+  const transcript = { memoizedProps: { turns: [], handlers: { onChangeText() {} }, readOnly: false } };
+  const panel = { memoizedProps: { annotations: [], saveState: {}, renderTranscript() {}, onSave() {} }, child: transcript };
+  const editor = { memoizedProps: { reviewActionId: task, transcriptionChunkProcessedRecordings: [] }, child: panel };
+  const root = { child: editor };
+  const host = { current: root };
+  root.stateNode = host;
+  editor.return = root;
+  panel.return = editor;
+  transcript.return = panel;
+  return { editor, root, host, transcript, seed: { __reactFiber$test: editor }, surface: new TestElement() };
+}
+
+test('native commit publisher observes unchanged DOM task/permission transitions and owns root replacement lifetime', async () => {
+  const { window, document, observers } = installPageEnvironment();
+  let tree = nativeSessionTree();
+  document.querySelector = () => tree.surface;
+  document.querySelectorAll = () => [tree.seed];
+  const events = [];
+  window.addEventListener('babel-helper:native-session-change', event => events.push(JSON.parse(event.detail)));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  assert.equal(events.at(-1).status, 'ready');
+  assert.equal(events.at(-1).reviewActionId, 'task-a');
+  tree.editor.memoizedProps.reviewActionId = 'task-b';
+  tree.transcript.memoizedProps.readOnly = true;
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  assert.equal(events.at(-1).reviewActionId, 'task-b');
+  assert.equal(events.at(-1).readOnly, true);
+  const old = tree, generation = events.at(-1).generation;
+  tree = nativeSessionTree('task-b');
+  tree.transcript.memoizedProps.readOnly = true;
+  observers[0].callback([]);
+  assert.ok(events.at(-1).generation > generation, 'same-task root replacement publishes a new binding identity');
+  assert.equal(Object.getOwnPropertyDescriptor(old.host, 'current').value, old.root);
+  const count = events.length;
+  old.editor.memoizedProps.reviewActionId = 'stale-task';
+  old.host.current = old.root;
+  await Promise.resolve();
+  assert.equal(events.length, count, 'detached root callbacks cannot publish stale task authority');
+  tree.transcript.memoizedProps.readOnly = false;
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  assert.equal(events.at(-1).readOnly, false);
+  window.__babelHelperRecoveredEditorBridge.dispose();
+  assert.equal(observers[0].disconnected, true);
+  assert.equal(Object.getOwnPropertyDescriptor(tree.host, 'current').value, tree.root);
+});
+
+test('native session publisher waits for DOM mount but reports an unsupported mounted hook explicitly', async () => {
+  const { window, document, observers } = installPageEnvironment();
+  let tree = null;
+  document.querySelector = () => tree?.surface || null;
+  document.querySelectorAll = () => tree ? [tree.seed] : [];
+  const events = [];
+  window.addEventListener('babel-helper:native-session-change', event => events.push(JSON.parse(event.detail)));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  assert.equal(events.at(-1).status, 'unmounted');
+  tree = nativeSessionTree();
+  Object.defineProperty(tree.host, 'current', { configurable: false });
+  observers[0].callback([]);
+  assert.equal(events.at(-1).status, 'error');
+  assert.match(events.at(-1).error, /configurable writable/);
+  const count = events.length;
+  for (let index = 0; index < 10; index++) observers[0].callback([]);
+  assert.equal(events.length, count, 'unrelated DOM cannot restart failed hook installation');
+  window.__babelHelperRecoveredEditorBridge.dispose();
+});
+
+test('MAIN history signals work without Navigation API and cleanup never restores over foreign wrappers', async () => {
+  const { window } = installPageEnvironment();
+  delete window.navigation;
+  const originalPush = function (_state, _title, href) { window.location.href = href; return 'native-result'; };
+  const originalReplace = function () {};
+  window.history.pushState = originalPush;
+  window.history.replaceState = originalReplace;
+  const routes = [];
+  window.addEventListener('babel-helper:native-route-change', event => routes.push(event.detail));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  assert.equal(window.history.pushState({}, '', 'https://babel.test/projects'), 'native-result');
+  assert.deepEqual(routes, ['https://babel.test/projects']);
+  const foreign = function () {};
+  window.history.replaceState = foreign;
+  window.__babelHelperRecoveredEditorBridge.dispose();
+  assert.equal(window.history.pushState, originalPush);
+  assert.equal(window.history.replaceState, foreign);
+});
+
+test('native text selection preserves lane clocks while editing and explicit seeking remain native', async (t) => {
+  const { window, document } = installPageEnvironment();
+  const tree = nativeSessionTree();
+  const times = [8, 9];
+  const waves = times.map((_, index) => ({
+    getCurrentTime: () => times[index],
+    seekTo(position) { times[index] = position * 100; }
+  }));
+  const seek = turn => waves.forEach(wave => wave.seekTo(turn.startTimeInSeconds / 100));
+  let selected = null, editing = null;
+  const handlers = tree.transcript.memoizedProps.handlers;
+  handlers.onSelect = turn => {
+    const time = waves[0].getCurrentTime();
+    if (!(time >= turn.startTimeInSeconds && time < turn.endTimeInSeconds)) seek(turn);
+    selected = turn.id;
+  };
+  handlers.onActivate = id => { editing = id; };
+  handlers.onSeek = seek;
+  tree.editor.memoizedState = { memoizedState: { current: {
+    first: { wavesurfer: waves[0] }, second: { wavesurfer: waves[1] }
+  } }, next: null };
+  document.querySelector = () => tree.surface;
+  document.querySelectorAll = () => [tree.seed];
+  document.documentElement.setAttribute('data-babel-helper-disable-segment-click-seek', 'true');
+  const target = new TestElement();
+  target.closest = () => tree.surface;
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  t.after(() => window.__babelHelperRecoveredEditorBridge?.dispose());
+  const turn = { id: 'selected-turn', startTimeInSeconds: 1, endTimeInSeconds: 2 };
+  window.dispatchEvent(new TestEvent('mousedown', { target }));
+  handlers.onSelect(turn);
+  handlers.onActivate(turn.id);
+  assert.deepEqual(times, [8, 9]);
+  assert.equal(selected, turn.id);
+  assert.equal(editing, turn.id);
+  handlers.onSeek(turn);
+  assert.deepEqual(times, [1, 1]);
+  times[0] = 8; times[1] = 9;
+  document.documentElement.removeAttribute('data-babel-helper-disable-segment-click-seek');
+  window.dispatchEvent(new TestEvent('mousedown', { target }));
+  handlers.onSelect(turn);
+  assert.deepEqual(times, [1, 1]);
 });

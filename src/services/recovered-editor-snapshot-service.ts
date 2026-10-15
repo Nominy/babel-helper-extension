@@ -3,6 +3,8 @@ import {
   BABEL_EDITOR_CONTRACT_VERSION,
   BABEL_TRANSCRIPT_ROW_SELECTOR
 } from '../core/babel-editor-contract';
+import { readNativeSessionState } from '../site/editor-control';
+import { createNativeFindReplaceClient } from './native-find-replace-client';
 
 export function registerRecoveredEditorSnapshotService(helper: any) {
   if (!helper || helper.__recoveredEditorSnapshotRegistered) {
@@ -125,10 +127,10 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
   }
 
   function isCurrentSnapshot(snapshot) {
-    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const session = readNativeSessionState();
     return snapshot?.contractVersion === BABEL_EDITOR_CONTRACT_VERSION &&
       snapshot.routeKey === `${window.location.pathname || ''}${window.location.search || ''}` &&
-      (!reviewActionId || !snapshot.reviewActionId || snapshot.reviewActionId === reviewActionId);
+      Boolean(session && snapshot.reviewActionId === session.reviewActionId);
   }
 
   function isFreshSnapshot(snapshot) {
@@ -183,6 +185,10 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
     return isCurrentSnapshot(snapshot) ? snapshot : null;
   };
 
+  helper.readExtendedDiffState = async function readExtendedDiffState() {
+    return callRecoveredEditorBridge('read-extended-diff-state');
+  };
+
   helper.applyRecoveredEditorDiffState = async function applyRecoveredEditorDiffState(payload) {
     return callRecoveredEditorBridge('apply-extended-diff-state', payload || {});
   };
@@ -190,6 +196,8 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
   helper.clearRecoveredEditorDiffState = async function clearRecoveredEditorDiffState(reason) {
     return callRecoveredEditorBridge('clear-extended-diff-state', { reason: reason || 'clear' });
   };
+
+  Object.assign(helper, createNativeFindReplaceClient(callRecoveredEditorBridge));
 
   helper.findRowFromEditorSnapshot = function findRowFromEditorSnapshot(target) {
     const snapshot = helper.getEditorSnapshot();

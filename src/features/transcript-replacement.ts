@@ -499,8 +499,7 @@ export async function replaceTranscriptSegmentation(
         ...deleteOptions(original[index]),
         expectedReviewActionId: original.reviewActionId,
         expectedHistoryRevision: historyRevision,
-        expectedHistoryToken: historyToken,
-        attempts: 1
+        expectedHistoryToken: historyToken
       });
     } catch (error) {
       result = { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -526,7 +525,6 @@ export async function replaceTranscriptSegmentation(
           expectedReviewActionId: original.reviewActionId,
           expectedHistoryRevision: historyRevision,
           expectedHistoryToken: historyToken,
-          attempts: 1,
           processedRecordingId: row.processedRecordingId,
           speakerKey: row.speakerKey,
           startSeconds: row.startSeconds,

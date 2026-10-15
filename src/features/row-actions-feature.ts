@@ -233,9 +233,7 @@ export function registerRowActions(helper: any, api: Pick<RowModules, 'time'>) {
       endSeconds:
         typeof timeRange.endSeconds === 'number'
           ? timeRange.endSeconds
-          : api.time.parseSegmentTimeValue(endText),
-      attempts: 1,
-      retryDelayMs: 0
+          : api.time.parseSegmentTimeValue(endText)
     };
   }
 

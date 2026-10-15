@@ -1,4 +1,5 @@
 import { themeRoot, applyComponent } from '@nominy/babel-extension-frontend';
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
 type SegmentRecord = {
   startTimeInSeconds?: unknown;
   endTimeInSeconds?: unknown;
@@ -40,10 +41,6 @@ type DiffPayload = {
   timestampMetrics?: unknown;
 };
 
-type ReviewActionCandidate = {
-  id: string;
-  level: number | null;
-};
 
 type DiffToken = {
   text: string;
@@ -97,11 +94,6 @@ type LoadedDiff = {
   overlays: OverlayItem[];
 };
 
-type DiffUrlEntry = {
-  url: string;
-  startTime: number;
-  source: 'native' | 'generated';
-};
 
 type WaveformLane = {
   speakerLabel: string;
@@ -113,21 +105,23 @@ type WaveformLane = {
 
 type ExtendedDiffState = {
   helper: any;
-  timer: number;
-  retryTimers: number[];
-  observerDebounceTimer: number;
+  refreshScheduled: boolean;
+  refreshPending: boolean;
+  listenerCleanup: Array<() => void>;
+  nativeSessionKey: string;
+  nativeGeneration: number | null;
+  nativeEditorGeneration: number | null;
+  nativeDiffSignature: string;
+  failed: boolean;
   mutationObserver: MutationObserver | null;
   performanceObserver: PerformanceObserver | null;
   routeKey: string;
   lifecycle: 'inactive' | 'waiting' | 'loading' | 'mounted';
   loadGeneration: number;
-  lastDiffViewEnabled: boolean;
   disposed: boolean;
   loading: boolean;
   lastLoadError: string;
   loadedUrls: Set<string>;
-  loadedReviewActionUrls: Set<string>;
-  generatedDiffUrls: Set<string>;
   activeNativeUrl: string | null;
   appliedRecoveredDiffActionId: string;
   pendingRecoveredDiffActionId: string;
@@ -137,9 +131,6 @@ type ExtendedDiffState = {
   diffs: LoadedDiff[];
 };
 
-const NORMAL_POLL_INTERVAL_MS = 2500;
-const DIFF_TOGGLE_RETRY_DELAYS_MS = [120, 450, 1100];
-const OBSERVER_TICK_DEBOUNCE_MS = 180;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -461,37 +452,15 @@ function addSegmentOverlay(
   });
 }
 
-function getJsonInputFromUrl(url: string): unknown {
-  try {
-    const parsed = new URL(url, window.location.origin);
-    const input = parsed.searchParams.get('input') || '';
-    return input ? JSON.parse(decodeURIComponent(input)) : null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function getCurrentReviewActionIdFromDiffUrl(url: string): string {
-  let reviewActionId = '';
-  walkJson(getJsonInputFromUrl(url), (record) => {
-    if (!reviewActionId) {
-      reviewActionId = asString(record.currentReviewActionId);
-    }
-  });
-  return reviewActionId;
-}
-
 function getCurrentReviewActionId(): string {
   const queryValue = new URLSearchParams(window.location.search || '').get('reviewActionId') || '';
   if (queryValue) return queryValue;
 
-  const diffEntries = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
-    .filter((entry) => (entry.name || '').includes('/api/trpc/transcriptions.getTranscriptionDiff'))
-    .sort((left, right) => right.startTime - left.startTime);
-
-  for (const entry of diffEntries) {
-    const reviewActionId = getCurrentReviewActionIdFromDiffUrl(entry.name || '');
-    if (reviewActionId) return reviewActionId;
+  try {
+    const session = JSON.parse(document.documentElement.getAttribute('data-babel-helper-native-session') || 'null');
+    if (session?.href === window.location.href && session.status === 'ready') return asString(session.reviewActionId);
+  } catch {
+    // A malformed native session is reported by the event-driven refresh.
   }
   return '';
 }
@@ -529,84 +498,6 @@ function getRouteKey(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-function diffUrlMentionsReviewAction(url: string, reviewActionId: string): boolean {
-  if (!reviewActionId) return true;
-  try {
-    const parsed = new URL(url);
-    const input = parsed.searchParams.get('input') || '';
-    return decodeURIComponent(input).includes(reviewActionId);
-  } catch (_error) {
-    return url.includes(reviewActionId);
-  }
-}
-
-function discoverDiffUrlEntries(): DiffUrlEntry[] {
-  const reviewActionId = getCurrentReviewActionId();
-  const urls = new Map<string, DiffUrlEntry>();
-  for (const entry of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
-    const url = entry.name || '';
-    if (url.includes('/api/trpc/transcriptions.getTranscriptionDiff') && diffUrlMentionsReviewAction(url, reviewActionId)) {
-      urls.set(url, { url, startTime: entry.startTime, source: 'native' });
-    }
-  }
-  return Array.from(urls.values()).sort((left, right) => left.startTime - right.startTime);
-}
-
-function discoverReviewActionUrls(): string[] {
-  const urls = new Set<string>();
-  for (const entry of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
-    const url = entry.name || '';
-    if (url.includes('/api/trpc/') && url.includes('getReviewActionsForChunk')) {
-      urls.add(url);
-    }
-  }
-  return Array.from(urls);
-}
-
-function walkJson(value: unknown, visit: (record: Record<string, unknown>) => void) {
-  if (Array.isArray(value)) {
-    for (const item of value) walkJson(item, visit);
-    return;
-  }
-  const record = asRecord(value);
-  if (!record) return;
-  visit(record);
-  for (const child of Object.values(record)) walkJson(child, visit);
-}
-
-function collectReviewActionsFromText(text: string): ReviewActionCandidate[] {
-  const byId = new Map<string, ReviewActionCandidate>();
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  const sources = lines.length > 1 ? lines : [text];
-
-  for (const source of sources) {
-    try {
-      walkJson(JSON.parse(source), (record) => {
-        const id = asString(record.id);
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return;
-        if (!('level' in record) && !('label' in record)) return;
-        byId.set(id, { id, level: asNumber(record.level) });
-      });
-    } catch (_error) {
-      // Ignore non-JSONL fragments.
-    }
-  }
-
-  return Array.from(byId.values());
-}
-
-function inferCurrentLevel(actions: ReviewActionCandidate[]): number | null {
-  const levels = actions
-    .map((action) => action.level)
-    .filter((level): level is number => level != null)
-    .sort((left, right) => left - right);
-  if (!levels.length) return null;
-  for (let level = levels[0]; level <= levels[levels.length - 1]; level += 1) {
-    if (!levels.includes(level)) return level;
-  }
-  return levels[0] > 0 ? levels[0] - 1 : levels[levels.length - 1] + 1;
-}
-
 function buildDiffUrl(referenceReviewActionId: string, currentReviewActionId: string): string {
   const url = new URL('/api/trpc/transcriptions.getTranscriptionDiff', window.location.origin);
   url.searchParams.set('batch', '1');
@@ -614,86 +505,6 @@ function buildDiffUrl(referenceReviewActionId: string, currentReviewActionId: st
   return url.toString();
 }
 
-function buildGeneratedDiffUrlForAction(
-  currentReviewActionId: string,
-  currentLevel: number | null,
-  action: ReviewActionCandidate
-): string {
-  if (currentLevel != null && action.level != null && action.level < currentLevel) {
-    return buildDiffUrl(action.id, currentReviewActionId);
-  }
-  return buildDiffUrl(currentReviewActionId, action.id);
-}
-
-function dedupeDiffEntries(entries: DiffUrlEntry[]): DiffUrlEntry[] {
-  const byUrl = new Map<string, DiffUrlEntry>();
-  for (const entry of entries) {
-    const previous = byUrl.get(entry.url);
-    if (!previous || previous.source === 'generated') {
-      byUrl.set(entry.url, entry);
-    }
-  }
-  return Array.from(byUrl.values()).sort((left, right) => left.startTime - right.startTime);
-}
-
-async function discoverGeneratedDiffUrls(state: ExtendedDiffState): Promise<string[]> {
-  const currentReviewActionId = getCurrentReviewActionId();
-  if (!currentReviewActionId) return [];
-
-  const urls: string[] = [];
-  for (const actionUrl of discoverReviewActionUrls().filter((url) => !state.loadedReviewActionUrls.has(url))) {
-    state.loadedReviewActionUrls.add(actionUrl);
-    const response = await fetch(actionUrl, { credentials: 'include' });
-    if (!response.ok) continue;
-
-    const actions = collectReviewActionsFromText(await response.text()).filter((action) => action.id !== currentReviewActionId);
-    const currentLevel = inferCurrentLevel(actions);
-    for (const action of actions) {
-      const url = buildGeneratedDiffUrlForAction(currentReviewActionId, currentLevel, action);
-      if (!state.generatedDiffUrls.has(url)) {
-        state.generatedDiffUrls.add(url);
-        urls.push(url);
-      }
-    }
-  }
-  return urls;
-}
-
-function extractPayloadsFromTrpcJson(source: unknown): DiffPayload[] {
-  const payloads: DiffPayload[] = [];
-  for (const record of Array.isArray(source) ? source : [source]) {
-    const root = asRecord(record);
-    const result = asRecord(root?.result);
-    const data = asRecord(result?.data);
-    const json = asRecord(data?.json);
-    if (json) payloads.push(json as DiffPayload);
-  }
-  return payloads;
-}
-
-function parseTrpcPayload(text: string): DiffPayload[] {
-  try {
-    return extractPayloadsFromTrpcJson(JSON.parse(text));
-  } catch (_error) {
-    const payloads: DiffPayload[] = [];
-    for (const line of text.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        payloads.push(...extractPayloadsFromTrpcJson(JSON.parse(trimmed)));
-      } catch (_lineError) {
-        // Ignore non-JSONL fragments.
-      }
-    }
-    return payloads;
-  }
-}
-
-async function fetchDiffUrl(url: string): Promise<DiffPayload[]> {
-  const response = await fetch(url, { credentials: 'include' });
-  if (!response.ok) throw new Error(`Diff fetch failed: HTTP ${response.status}`);
-  return parseTrpcPayload(await response.text());
-}
 
 function payloadMentionsPageAction(payload: DiffPayload): boolean {
   const currentReviewActionId = getCurrentReviewActionId();
@@ -930,19 +741,7 @@ function renderSegmentationModeControls(state: ExtendedDiffState) {
 }
 
 function getRenderableDiffs(state: ExtendedDiffState): LoadedDiff[] {
-  const visibleCompareLevel = getVisibleCompareLevel();
-  if (visibleCompareLevel != null) {
-    const visibleNative = state.diffs.filter((diff) => diff.source === 'native' && diff.compareLevel === visibleCompareLevel);
-    if (visibleNative.length) return visibleNative;
-    return state.diffs.filter((diff) => diff.compareLevel === visibleCompareLevel);
-  }
-  if (state.activeNativeUrl) {
-    return state.diffs.filter((diff) => diff.url === state.activeNativeUrl);
-  }
-  const generated = state.diffs.filter((diff) => diff.source === 'generated');
-  if (generated.length <= 1) return generated;
-  const compareLevels = new Set(generated.map((diff) => diff.compareLevel).filter((level) => level != null));
-  return compareLevels.size === 1 ? generated : [];
+  return state.diffs.filter((diff) => diff.url === state.activeNativeUrl);
 }
 
 function createElement<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -985,7 +784,7 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
   const recoveredDiff = renderableDiffs.find((diff) => diff.selectedCompareActionId);
   if (recoveredDiff && typeof helper?.applyRecoveredEditorDiffState === 'function') {
     const actionId = recoveredDiff.selectedCompareActionId;
-    const textDiffSignature = `${getRouteKey()}:${actionId}:${state.overlayMode}`;
+    const textDiffSignature = `${state.nativeSessionKey}:${state.nativeEditorGeneration}:${getRouteKey()}:${actionId}:${state.overlayMode}:${state.nativeDiffSignature}`;
     if (
       state.appliedRecoveredDiffSignature !== textDiffSignature &&
       state.pendingRecoveredDiffSignature !== textDiffSignature
@@ -994,6 +793,8 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
       state.pendingRecoveredDiffSignature = textDiffSignature;
       void helper.applyRecoveredEditorDiffState({
         routeKey: getRouteKey(),
+        nativeSessionGeneration: state.nativeGeneration,
+        editorGeneration: state.nativeEditorGeneration,
         selectedCompareActionId: actionId,
         compareLevel: recoveredDiff.compareLevel,
         referenceReviewActionId: recoveredDiff.referenceReviewActionId,
@@ -1001,25 +802,21 @@ function reconcileRecoveredEditorTextDiffState(state: ExtendedDiffState) {
         source: recoveredDiff.source,
         textMode: state.overlayMode
       }).then((result: any) => {
-        if (state.disposed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
-        state.pendingRecoveredDiffActionId = '';
-        state.pendingRecoveredDiffSignature = '';
+        if (state.disposed || state.failed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
         if (result?.ok) {
+          state.pendingRecoveredDiffActionId = '';
+          state.pendingRecoveredDiffSignature = '';
           state.appliedRecoveredDiffActionId = actionId;
           state.appliedRecoveredDiffSignature = textDiffSignature;
         } else {
-          state.appliedRecoveredDiffActionId = '';
-          state.appliedRecoveredDiffSignature = '';
+          stopDiffAutomation(state, result?.reason || 'Native diff projection was rejected');
         }
         if (helper?.state && typeof helper.state === 'object') {
           helper.state.extendedDiffTextApplyResult = result || null;
         }
       }).catch((error: unknown) => {
-        if (state.disposed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
-        state.pendingRecoveredDiffActionId = '';
-        state.pendingRecoveredDiffSignature = '';
-        state.appliedRecoveredDiffActionId = '';
-        state.appliedRecoveredDiffSignature = '';
+        if (state.disposed || state.failed || state.routeKey !== getRouteKey() || state.pendingRecoveredDiffSignature !== textDiffSignature) return;
+        stopDiffAutomation(state, error);
         if (helper?.state && typeof helper.state === 'object') {
           helper.state.extendedDiffTextApplyResult = {
             ok: false,
@@ -1350,50 +1147,135 @@ function renderDiffAugmentations(state: ExtendedDiffState) {
 }
 
 async function loadAvailableDiffs(state: ExtendedDiffState) {
-  if (state.loading) return;
-  const generation = state.loadGeneration;
+  if (state.loading) {
+    state.refreshPending = true;
+    return;
+  }
+  let generation = state.loadGeneration;
   state.loading = true;
   state.lifecycle = 'loading';
   try {
-    const nativeEntries = discoverDiffUrlEntries();
-    state.activeNativeUrl = nativeEntries.length ? nativeEntries[nativeEntries.length - 1].url : state.activeNativeUrl;
-    const generatedUrls = await discoverGeneratedDiffUrls(state);
-    const entries = dedupeDiffEntries([
-      ...nativeEntries,
-      ...generatedUrls.map((url): DiffUrlEntry => ({ url, startTime: Number.MAX_SAFE_INTEGER, source: 'generated' }))
-    ]).filter((entry) => !state.loadedUrls.has(entry.url));
-
-    for (const entry of entries) {
-      const { url } = entry;
-      try {
-        const payloads = await fetchDiffUrl(url);
-        if (state.disposed || generation !== state.loadGeneration || !isFeedbackRoute() || !isDiffViewEnabled()) {
-          return;
-        }
-        state.loadedUrls.add(url);
-        state.lastLoadError = '';
-        for (const payload of payloads) {
-          if (!payloadMentionsPageAction(payload)) continue;
-          state.diffs.push(buildLoadedDiff(url, payload, entry.source));
-        }
-      } catch (error) {
-        state.lastLoadError = error instanceof Error ? error.message : String(error);
-      }
+    if (typeof state.helper.readExtendedDiffState !== 'function') {
+      throw new Error('Native diff state reader is unavailable');
     }
+    const native = await state.helper.readExtendedDiffState();
+    if (state.disposed || state.failed || generation !== state.loadGeneration || state.routeKey !== getRouteKey()) return;
+    // An actual notification received during this read supersedes its snapshot.
+    if (state.refreshPending) return;
+    if (!native?.ok) throw new Error(native?.reason || 'Native diff state bridge did not respond');
+    if (native.routeKey !== state.routeKey) return;
+    const sessionKey = `${native.generation}:${native.reviewActionId}`;
+    if ((state.nativeSessionKey && state.nativeSessionKey !== sessionKey) ||
+        (state.nativeEditorGeneration != null && state.nativeEditorGeneration !== native.editorGeneration)) {
+      resetForRoute(state);
+      generation = state.loadGeneration;
+      state.loading = true;
+    }
+    state.nativeSessionKey = sessionKey;
+    state.nativeGeneration = native.generation;
+    state.nativeEditorGeneration = native.editorGeneration;
+    if (native.status !== 'ready') {
+      if (!['loading', 'unmounted', 'disabled'].includes(native.status)) throw new Error('Unsupported native diff readiness state');
+      state.activeNativeUrl = null;
+      state.nativeDiffSignature = '';
+      clearWaveformOverlays();
+      removeSegmentationModeControls();
+      state.lifecycle = 'waiting';
+      return;
+    }
+    if (typeof state.helper.applyRecoveredEditorDiffState !== 'function') throw new Error('Native diff projection hook is unavailable');
+    const payload = asRecord(native.payload) as DiffPayload | null;
+    if (!payload || !payloadMentionsPageAction(payload)) throw new Error('Native diff does not match the current task');
+    const nativeUrl = buildDiffUrl(asString(payload.referenceReviewActionId), asString(payload.currentReviewActionId));
+    const signature = JSON.stringify(payload);
+    state.activeNativeUrl = nativeUrl;
+    state.loadedUrls.add(nativeUrl);
+    if (signature !== state.nativeDiffSignature) {
+      state.nativeDiffSignature = signature;
+      state.diffs = state.diffs.filter((diff) => diff.url !== nativeUrl);
+      state.diffs.push(buildLoadedDiff(nativeUrl, payload, 'native'));
+    }
+    state.lifecycle = 'mounted';
+    renderDiffAugmentations(state);
+    preloadNativeComparisons(state, native.availableReviewActions, native.selectedCompareActionId);
+  } catch (error) {
+    if (!state.disposed && generation === state.loadGeneration) stopDiffAutomation(state, error);
   } finally {
-    state.loading = false;
-    if (!state.disposed && generation === state.loadGeneration && isFeedbackRoute() && isDiffViewEnabled()) {
-      state.lifecycle = state.diffs.length ? 'mounted' : 'waiting';
-      renderDiffAugmentations(state);
+    if (generation === state.loadGeneration) {
+      state.loading = false;
+      if (state.refreshPending && !state.disposed && !state.failed) {
+        state.refreshPending = false;
+        scheduleObservedTick(state);
+      }
     }
   }
 }
 
+function preloadNativeComparisons(state: ExtendedDiffState, availableActions: unknown, selectedActionId: string) {
+  const pageActionId = getCurrentReviewActionId();
+  const pageLevel = getRenderableDiffs(state)[0]?.pageLevel;
+  const generation = state.loadGeneration;
+  for (const candidate of asArray(availableActions)) {
+    const action = asRecord(candidate);
+    const actionId = asString(action?.id);
+    if (!actionId || actionId === pageActionId || actionId === selectedActionId) continue;
+    const level = asNumber(action?.level);
+    const url = pageLevel != null && level != null && level < pageLevel
+      ? buildDiffUrl(actionId, pageActionId) : buildDiffUrl(pageActionId, actionId);
+    if (state.loadedUrls.has(url)) continue;
+    state.loadedUrls.add(url);
+    // Preserve all same-task comparisons, but never infer their ownership from old resource entries.
+    void (async () => {
+      try {
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response.ok) throw new Error(`Diff fetch failed: HTTP ${response.status}`);
+        const text = await response.text();
+        if (state.disposed || state.failed || generation !== state.loadGeneration) return;
+        const payloads: DiffPayload[] = [];
+        const collect = (source: unknown) => {
+          for (const item of Array.isArray(source) ? source : [source]) {
+            const json = asRecord(asRecord(asRecord(asRecord(item)?.result)?.data)?.json);
+            if (json && payloadMentionsPageAction(json) &&
+                [json.referenceReviewActionId, json.currentReviewActionId].includes(actionId)) payloads.push(json);
+          }
+        };
+        try {
+          collect(JSON.parse(text));
+        } catch {
+          for (const line of text.split(/\r?\n/).filter((part) => part.trim())) collect(JSON.parse(line));
+        }
+        if (!payloads.length) throw new Error('Native comparison response does not match the current task');
+        if (!state.diffs.some((diff) => diff.url === url && diff.source === 'native')) {
+          state.diffs.push(...payloads.map((payload) => buildLoadedDiff(url, payload, 'generated')));
+        }
+      } catch (error) {
+        if (!state.disposed && generation === state.loadGeneration) stopDiffAutomation(state, error);
+      }
+    })();
+  }
+}
+
+function stopDiffAutomation(state: ExtendedDiffState, error: unknown) {
+  if (state.disposed || state.failed) return;
+  state.failed = true;
+  state.lastLoadError = error instanceof Error ? error.message : String(error);
+  state.mutationObserver?.disconnect();
+  state.performanceObserver?.disconnect();
+  state.listenerCleanup.splice(0).forEach((cleanup) => cleanup());
+  clearRecoveredEditorTextDiffState(state);
+  clearWaveformOverlays();
+  removeSegmentationModeControls();
+  showNativeAutomationFailure('Extended diff view', state.lastLoadError);
+}
+
 function resetForRoute(state: ExtendedDiffState) {
   state.loadGeneration += 1;
+  state.nativeDiffSignature = '';
+  state.nativeSessionKey = '';
+  state.nativeGeneration = null;
+  state.nativeEditorGeneration = null;
+  state.refreshPending = false;
   state.loadedUrls.clear();
-  state.loadedReviewActionUrls.clear();
-  state.generatedDiffUrls.clear();
   state.activeNativeUrl = null;
   state.lastLoadError = '';
   state.diffs = [];
@@ -1407,133 +1289,79 @@ function resetForRoute(state: ExtendedDiffState) {
 }
 
 function tick(state: ExtendedDiffState) {
-  if (state.disposed) {
-    return;
-  }
-
-  const feedbackRoute = isFeedbackRoute();
-  const diffViewEnabled = feedbackRoute && isDiffViewEnabled();
-  if (diffViewEnabled && !state.lastDiffViewEnabled) {
-    scheduleDiffToggleRetries(state);
-  }
-  state.lastDiffViewEnabled = diffViewEnabled;
-
-  if (!feedbackRoute || !diffViewEnabled) {
-    if (state.lifecycle !== 'inactive' || state.diffs.length || state.loadedUrls.size) {
-      resetForRoute(state);
-    }
-    state.lifecycle = feedbackRoute ? 'waiting' : 'inactive';
-    return;
-  }
-
+  if (state.disposed || state.failed) return;
   const routeKey = getRouteKey();
   if (state.routeKey !== routeKey) {
-    state.routeKey = routeKey;
     resetForRoute(state);
-    state.lifecycle = 'waiting';
+    state.routeKey = routeKey;
+  }
+  if (!isFeedbackRoute() || !isDiffViewEnabled()) {
+    if (state.lifecycle !== 'inactive') resetForRoute(state);
+    return;
+  }
+  const sessionText = document.documentElement.getAttribute('data-babel-helper-native-session');
+  if (sessionText) {
+    try {
+      const session = JSON.parse(sessionText);
+      if (session.href === window.location.href && session.status === 'error') {
+        stopDiffAutomation(state, session.error || 'Native editor commit subscription failed');
+        return;
+      }
+      if (session.href === window.location.href) {
+        const sessionKey = `${session.generation}:${session.reviewActionId}`;
+        if (state.nativeSessionKey && state.nativeSessionKey !== sessionKey) resetForRoute(state);
+        state.nativeSessionKey = sessionKey;
+      }
+    } catch (error) {
+      stopDiffAutomation(state, error);
+      return;
+    }
   }
   void loadAvailableDiffs(state);
 }
 
-function scheduleDiffToggleRetries(state: ExtendedDiffState) {
-  clearDiffToggleRetries(state);
-  state.retryTimers = DIFF_TOGGLE_RETRY_DELAYS_MS.map((delay) => {
-    const retryTimer = window.setTimeout(() => {
-      state.retryTimers = state.retryTimers.filter((timer) => timer !== retryTimer);
-      if (!state.disposed && isFeedbackRoute() && isDiffViewEnabled()) {
-        tick(state);
-      }
-    }, delay);
-    return retryTimer;
-  });
-}
-
-function clearDiffToggleRetries(state: ExtendedDiffState) {
-  for (const timer of state.retryTimers) {
-    window.clearTimeout(timer);
-  }
-  state.retryTimers = [];
-}
 
 function scheduleObservedTick(state: ExtendedDiffState) {
-  if (state.disposed || state.observerDebounceTimer) {
-    return;
-  }
-
-  state.observerDebounceTimer = window.setTimeout(() => {
-    state.observerDebounceTimer = 0;
+  if (state.disposed || state.failed || state.refreshScheduled) return;
+  state.refreshScheduled = true;
+  queueMicrotask(() => {
+    state.refreshScheduled = false;
     tick(state);
-  }, OBSERVER_TICK_DEBOUNCE_MS);
+  });
 }
 
-function getDiffObserverRoot(): HTMLElement | null {
-  return (
-    document.querySelector('main') ||
-    document.querySelector('[role="main"]') ||
-    document.documentElement
-  );
-}
 
 function bindMutationObserver(state: ExtendedDiffState) {
-  if (state.mutationObserver || typeof MutationObserver !== 'function') {
-    return;
-  }
-
-  const root = getDiffObserverRoot();
-  if (!(root instanceof HTMLElement)) {
-    return;
-  }
-
+  if (typeof MutationObserver !== 'function') throw new Error('Native diff DOM notifications are unavailable');
   state.mutationObserver = new MutationObserver((mutations) => {
+    const owned = '#bh-segmentation-mode-controls, .bh-waveform-overlay-layer, [id^="babel-helper-native-failure-"]';
     const relevant = mutations.some((mutation) => {
-      const target = mutation.target;
-      if (target instanceof HTMLElement && target.getAttribute('role') === 'switch') {
-        return true;
-      }
-      for (const node of Array.from(mutation.addedNodes)) {
-        if (
-          node instanceof HTMLElement &&
-          (node.getAttribute('role') === 'switch' || node.querySelector('[role="switch"]'))
-        ) {
-          return true;
-        }
-      }
-      return false;
+      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+      if (target?.closest(owned)) return false;
+      if (mutation.type === 'attributes') return true;
+      if (mutation.type === 'characterData') return Boolean(target?.closest('[role="combobox"], [data-transcript-scroll]'));
+      return [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
+        .some((node) => !(node instanceof Element) || !node.matches(owned));
     });
-    if (relevant) {
-      scheduleObservedTick(state);
-    }
+    if (relevant) scheduleObservedTick(state);
   });
-  state.mutationObserver.observe(root, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['aria-checked', 'data-state']
+  // Keep one observer on the stable document root so a replaced main/task is visible.
+  state.mutationObserver.observe(document.documentElement, {
+    childList: true, subtree: true, characterData: true, attributes: true,
+    attributeFilter: ['aria-checked', 'data-state', 'data-babel-helper-native-session']
   });
 }
 
 function bindPerformanceObserver(state: ExtendedDiffState) {
-  if (state.performanceObserver || typeof PerformanceObserver !== 'function') {
-    return;
-  }
-
-  try {
-    state.performanceObserver = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        const url = entry.name || '';
-        if (
-          url.includes('/api/trpc/transcriptions.getTranscriptionDiff') ||
-          (url.includes('/api/trpc/') && url.includes('getReviewActionsForChunk'))
-        ) {
-          scheduleObservedTick(state);
-          return;
-        }
-      }
-    });
-    state.performanceObserver.observe({ entryTypes: ['resource'] });
-  } catch (_error) {
-    state.performanceObserver = null;
-  }
+  if (typeof PerformanceObserver !== 'function') throw new Error('Native diff resource notifications are unavailable');
+  state.performanceObserver = new PerformanceObserver((list) => {
+    if (list.getEntries().some((entry) =>
+      entry.name.includes('/api/trpc/transcriptions.getTranscriptionDiff') ||
+      (entry.name.includes('/api/trpc/') && entry.name.includes('getReviewActionsForChunk')))) {
+      scheduleObservedTick(state);
+    }
+  });
+  state.performanceObserver.observe({ entryTypes: ['resource'] });
 }
 
 export function registerExtendedDiffViewService(helper: any) {
@@ -1541,21 +1369,23 @@ export function registerExtendedDiffViewService(helper: any) {
   helper.__extendedDiffViewRegistered = true;
   const state: ExtendedDiffState = {
     helper,
-    timer: 0,
-    retryTimers: [],
-    observerDebounceTimer: 0,
+    refreshScheduled: false,
+    refreshPending: false,
+    listenerCleanup: [],
+    nativeSessionKey: '',
+    nativeGeneration: null,
+    nativeEditorGeneration: null,
+    nativeDiffSignature: '',
+    failed: false,
     mutationObserver: null,
     performanceObserver: null,
     routeKey: '',
     lifecycle: 'inactive',
     loadGeneration: 0,
-    lastDiffViewEnabled: false,
     disposed: false,
     loading: false,
     lastLoadError: '',
     loadedUrls: new Set<string>(),
-    loadedReviewActionUrls: new Set<string>(),
-    generatedDiffUrls: new Set<string>(),
     activeNativeUrl: null,
     appliedRecoveredDiffActionId: '',
     pendingRecoveredDiffActionId: '',
@@ -1565,21 +1395,21 @@ export function registerExtendedDiffViewService(helper: any) {
     diffs: []
   };
 
-  bindMutationObserver(state);
-  bindPerformanceObserver(state);
-  tick(state);
-  state.timer = window.setInterval(() => tick(state), NORMAL_POLL_INTERVAL_MS);
+  try {
+    bindMutationObserver(state);
+    bindPerformanceObserver(state);
+    const onChange = () => scheduleObservedTick(state);
+    for (const event of ['babel-helper:native-route-change', 'babel-helper:native-editor-commit', 'babel-helper:native-session-change', 'popstate', 'pageshow']) {
+      window.addEventListener(event, onChange);
+      state.listenerCleanup.push(() => window.removeEventListener(event, onChange));
+    }
+    tick(state);
+  } catch (error) {
+    stopDiffAutomation(state, error);
+  }
   helper.unbindExtendedDiffView = function unbindExtendedDiffView() {
     state.disposed = true;
-    if (state.timer) {
-      window.clearInterval(state.timer);
-      state.timer = 0;
-    }
-    clearDiffToggleRetries(state);
-    if (state.observerDebounceTimer) {
-      window.clearTimeout(state.observerDebounceTimer);
-      state.observerDebounceTimer = 0;
-    }
+    state.listenerCleanup.splice(0).forEach((cleanup) => cleanup());
     state.mutationObserver?.disconnect();
     state.mutationObserver = null;
     state.performanceObserver?.disconnect();

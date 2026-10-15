@@ -2,6 +2,7 @@
 import { readBabelPlaybackBindings } from '@nominy/babel-babel-runtime';
 import { setSpeakerWorkflow } from '../features/speaker-workflow';
 import { installNativeSpeedFix } from '../features/playback-speed-hotkeys';
+import { readNativePlaybackState, samePlaybackBindings, subscribeNativePlayback } from './native-playback-events';
 
 export function initPlaybackBridge() {
   if (window.__babelHelperPlaybackBridge) {
@@ -10,20 +11,15 @@ export function initPlaybackBridge() {
 
   const REQUEST_EVENT = 'babel-helper-playback-request';
   const RESPONSE_EVENT = 'babel-helper-playback-response';
+  const SAMPLE_EVENT = 'babel-helper-playback-sample';
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
   const SERVICE_ID = 'page.playback';
   const DEFAULT_PLAYBACK_SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
   const speedFix = installNativeSpeedFix();
+  const subscriptions = new Map();
+  const pendingCommands = new Set();
 
-  function safe(callback, fallbackValue) {
-    try {
-      const value = callback();
-      return value == null ? fallbackValue : value;
-    } catch (_error) {
-      return fallbackValue;
-    }
-  }
 
   function respond(id, result) {
     window.dispatchEvent(
@@ -41,18 +37,7 @@ export function initPlaybackBridge() {
     return Number.isFinite(speed) && speed > 0 && speed <= 4 ? speed : null;
   }
 
-  function stateFromBindings(bindings) {
-    const waves = bindings?.waves || [];
-    if (!waves.length) return { ok: false, reason: 'playback-unavailable', paused: null, waveCount: 0 };
-    const currentTime = Number(safe(() => waves[0].getCurrentTime(), NaN));
-    const duration = Number(safe(() => waves[0].getDuration(), NaN));
-    return {
-      ok: Number.isFinite(currentTime), source: 'wavesurfer', currentTime,
-      duration: Number.isFinite(duration) ? duration : null,
-      playbackRate: normalizePlaybackSpeed(safe(() => waves[0].getPlaybackRate(), null)),
-      paused: !waves.some(wave => wave.isPlaying()), waveCount: waves.length
-    };
-  }
+  const stateFromBindings = readNativePlaybackState;
 
   function getPlaybackState() {
     return stateFromBindings(readBabelPlaybackBindings());
@@ -76,22 +61,36 @@ export function initPlaybackBridge() {
     const before = stateFromBindings(bindings);
     if (!before.ok || !bindings?.togglePlayPause) return { ok: false, reason: 'playback-unavailable' };
     if (before.paused === desired) return { ...before, changed: false, previousPaused: before.paused, via: 'noop' };
-    bindings.togglePlayPause();
-    // Native play() can complete asynchronously; never replay the toggle.
-    const deadline = Date.now() + 500;
-    let after = stateFromBindings(bindings);
-    while (after.paused !== desired && Date.now() < deadline) {
-      await new Promise(resolve => window.setTimeout(resolve, 16));
-      const current = readBabelPlaybackBindings();
-      if (current?.reviewActionId !== bindings.reviewActionId) return { ok: false, reason: 'stale-task' };
-      if (current.waves.length !== bindings.waves.length ||
-          current.waves.some((wave, index) => wave !== bindings.waves[index])) {
-        return { ok: false, reason: 'playback-unavailable' };
-      }
-      after = stateFromBindings(current);
+    const { promise, resolve } = Promise.withResolvers();
+    let release = null;
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(deadline);
+      release?.();
+      pendingCommands.delete(finish);
+      resolve(result);
+    };
+    const deadline = window.setTimeout(() => finish({ ok: false, reason: 'native-playback-timeout', paused: null }), 500);
+    pendingCommands.add(finish);
+    try {
+      release = subscribeNativePlayback(sample => {
+        const current = readBabelPlaybackBindings();
+        if (!samePlaybackBindings(bindings, current)) {
+          finish({ ok: false, reason: current?.reviewActionId !== bindings.reviewActionId ? 'stale-task' : 'playback-replaced', paused: null });
+        } else if (sample.fatal) {
+          finish(sample);
+        } else if (sample.ok && sample.paused === desired) {
+          finish({ ...sample, changed: true, previousPaused: before.paused, via: 'native-event' });
+        }
+      }, speedFix.patchNativeSpeed, { includeHidden: true });
+      // Subscribe before the one native toggle, including synchronous pause.
+      bindings.togglePlayPause();
+    } catch (error) {
+      finish({ ok: false, reason: 'native-playback-subscription-failed', message: String(error), paused: null });
     }
-    return { ...after, ok: after.ok && after.paused === desired, changed: after.paused !== before.paused,
-      previousPaused: before.paused, via: 'native-callback' };
+    return promise;
   }
 
   function setPlaybackSpeed(speed) {
@@ -152,6 +151,34 @@ export function initPlaybackBridge() {
     if (!id) {
       return;
     }
+    if (operation === 'unsubscribe') {
+      subscriptions.get(payload.subscriptionId)?.();
+      subscriptions.delete(payload.subscriptionId);
+      respond(id, { ok: true });
+      return;
+    }
+    if (operation === 'subscribe') {
+      const subscriptionId = payload.subscriptionId;
+      if (typeof subscriptionId !== 'string' || !subscriptionId) {
+        respond(id, { ok: false, reason: 'invalid-subscription' });
+        return;
+      }
+      subscriptions.get(subscriptionId)?.();
+      try {
+        const release = subscribeNativePlayback(sample => {
+          if (disposed || subscriptions.get(subscriptionId) !== release) return;
+          window.dispatchEvent(new CustomEvent(SAMPLE_EVENT, {
+            detail: { subscriptionId, lifecycleRevision: payload.lifecycleRevision, href: payload.href, sample }
+          }));
+          if (sample.fatal) subscriptions.delete(subscriptionId);
+        }, speedFix.patchNativeSpeed);
+        subscriptions.set(subscriptionId, release);
+        respond(id, { ok: true });
+      } catch (error) {
+        respond(id, { ok: false, reason: 'native-playback-subscription-failed', message: String(error) });
+      }
+      return;
+    }
     if (operation !== 'state' && payload.reviewActionId &&
         payload.reviewActionId !== readBabelPlaybackBindings()?.reviewActionId) {
       respond(id, { ok: false, reason: 'stale-task' });
@@ -196,6 +223,9 @@ export function initPlaybackBridge() {
       return;
     }
     disposed = true;
+    for (const release of subscriptions.values()) release();
+    subscriptions.clear();
+    for (const finish of pendingCommands) finish({ ok: false, reason: 'playback-disposed', paused: null });
     speedFix.dispose();
     window.removeEventListener(REQUEST_EVENT, handleRequest, true);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);

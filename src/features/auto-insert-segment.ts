@@ -330,9 +330,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
       endText: plan.current.endText,
       startSeconds: plan.current.startSeconds,
       endSeconds: plan.current.endSeconds,
-      speakerKey: plan.current.speakerKey,
-      attempts: 2,
-      retryDelayMs: 80
+      speakerKey: plan.current.speakerKey
     });
     if (!result || !result.ok) {
       return {
@@ -632,9 +630,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
           processedRecordingId: target.trackId,
           speakerKey: target.speakerKey,
           startSeconds,
-          endSeconds,
-          attempts: 2,
-          retryDelayMs: 80
+          endSeconds
         });
         if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         if (!createResult || !createResult.ok) {

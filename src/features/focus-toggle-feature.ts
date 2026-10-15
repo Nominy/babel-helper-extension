@@ -284,7 +284,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
   }
 
 
-  helper.syncCurrentRowToPlayback = async function syncCurrentRowToPlayback() {
+  helper.syncCurrentRowToPlayback = function syncCurrentRowToPlayback(playback) {
     if (document.hidden) return null;
     if (
       helper.runtime &&
@@ -297,13 +297,12 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
     const isCurrentPlayback = api.cursor.capturePlaybackGuard();
     if (api.cursor.isSourceSwitching() || helper.state.speakerSwitchPending) return null;
 
-    const playback =
-      typeof helper.getPlaybackState === 'function'
-        ? await helper.getPlaybackState()
-        : api.playback.unavailablePlaybackState();
     if (document.hidden || !isCurrentPlayback()) return null;
-    if (!playback || !playback.ok) {
-      return api.time.getLastPlaybackRow();
+    if (!playback || !playback.ok) return null;
+    // The active ghost already owns this native sample's one row collection,
+    // lane-locked current row and lastPlaybackRow update.
+    if (playback.paused === false && helper.state.ghostCursorElement) {
+      return { row: helper.state.ghostCursorRow, playback };
     }
 
     const playbackRow =
@@ -339,7 +338,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
     const ghostTarget = api.cursor.getGhostCursorTarget();
     // toggleEditorFocus either was not called (blurRestorePending was false)
     // or failed before reaching its own stopGhostCursor. Tear down the ghost
-    // now so the interval / DOM element are cleaned up in every code path.
+    // now so its native subscription and DOM element are cleaned up.
     api.cursor.stopGhostCursor();
 
     if (ghostTarget) {
@@ -492,6 +491,10 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       const isCurrentPlayback = api.cursor.capturePlaybackGuard();
       const playback = await helper.getPlaybackState();
       if (!isCurrentSession() || !isCurrentPlayback()) return;
+      if (!playback?.ok) {
+        helper.reportPlaybackFailure?.(playback);
+        return;
+      }
       const focused = Boolean(helper.getActiveRowEditor());
       const isPlaying = Boolean(playback && playback.ok && playback.paused === false);
       const currentTime = playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
@@ -512,7 +515,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
             playbackTime: currentTime
           });
         }
-        await helper.setPlaybackPaused(true);
+        if (!(await helper.setPlaybackPaused(true))?.ok) return;
         if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:pause', { via: 'esc-state1', playbackTime: currentTime });
@@ -548,7 +551,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
         }
 
         focusCurrentEditorForEscape();
-        await helper.setPlaybackPaused(true);
+        if (!(await helper.setPlaybackPaused(true))?.ok) return;
         if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:pause', { via: 'esc-state2', playbackTime: currentTime });
@@ -584,7 +587,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
           });
         }
 
-        await helper.setPlaybackPaused(false);
+        if (!(await helper.setPlaybackPaused(false))?.ok) return;
         if (!isCurrentSession()) return;
         if (helper.analytics) {
           helper.analytics.record('playback:resume', { via: 'esc-state3', playbackTime: currentTime });
@@ -641,7 +644,7 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
         helper.setCurrentRow(bootstrapRow);
       }
 
-      await helper.setPlaybackPaused(false);
+      if (!(await helper.setPlaybackPaused(false))?.ok) return;
       if (!isCurrentSession()) return;
       if (helper.analytics) {
         helper.analytics.record('playback:resume', { via: 'esc-state4', playbackTime: currentTime });

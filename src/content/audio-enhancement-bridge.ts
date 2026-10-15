@@ -1,7 +1,7 @@
 import {
   AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_ACTIVE_RESPONSE,
   AUDIO_ENHANCEMENT_PROTOCOL_VERSION, AUDIO_ENHANCEMENT_STATE_ATTRIBUTE, AUDIO_ENHANCEMENT_STATE_EVENT,
-  findBabelEditorFiber, isAudioEnhancementProgress, isAudioEnhancementStrength, parseBabelRoute, readBabelEditorState, readBabelTranscriptBindings, readAudioEnhancementState,
+  findBabelEditorFiber, isAudioEnhancementProgress, isAudioEnhancementStrength, parseBabelRoute, readBabelEditorState, readBabelSessionState, readAudioEnhancementState, subscribeBabelEditorCommits,
   type ActiveAudioResponse, type AudioEnhancementState
 } from '@nominy/babel-babel-runtime';
 import type { BabelModsHost } from '../mod-platform/page-host';
@@ -12,6 +12,7 @@ import {
   type EnhancementCacheMetadata, type EnhancementSourceTrack
 } from '../services/audio-enhancement-stream';
 import { mixEnhancementWav, readSourceWavHeader } from './audio-enhancement-mix';
+import { acquireNativeZoomReadiness } from './native-waveform-readiness';
 
 interface NativeRegionOptions {
   id: string;
@@ -143,11 +144,11 @@ type Session = {
   regionAddPatches: Map<NativeRegionsPlugin, { add: NativeRegionsPlugin['addRegion']; wrapped: NativeRegionsPlugin['addRegion'] }>;
 };
 
-function nativeSnapshot(restoringOriginal = false): NativeSnapshot | null {
+function nativeSnapshot(restoringOriginal = false, includeSelection = false): NativeSnapshot | null {
   const route = parseBabelRoute();
   if (!route.isTranscriptionRoute) return null;
   const state = readBabelEditorState();
-  const bindings = readBabelTranscriptBindings();
+  const bindings = readBabelSessionState();
   // New audio work requires known native editability. Owned Original cleanup
   // remains safe on the same workbench even while its transcript is unmounted.
   if (!restoringOriginal && (!bindings || bindings.readOnly)) return null;
@@ -171,7 +172,7 @@ function nativeSnapshot(restoringOriginal = false): NativeSnapshot | null {
       }
     }
     const selected = hook.memoizedState;
-    if (typeof selected === 'object' && selected !== null && typeof hook.queue?.dispatch === 'function' &&
+    if (includeSelection && typeof selected === 'object' && selected !== null && typeof hook.queue?.dispatch === 'function' &&
         state.tracks.every(track => {
           const entry: unknown = Reflect.get(selected, track.id);
           return typeof entry === 'object' && entry !== null && 'activeRegionId' in entry &&
@@ -179,6 +180,7 @@ function nativeSnapshot(restoringOriginal = false): NativeSnapshot | null {
         })) {
       selection = selected as NativeSelectionState;
     }
+    if (!includeSelection && waves.size === state.tracks.length) break;
     value = hook.next;
   }
   return {
@@ -238,7 +240,11 @@ export function initAudioEnhancementBridge(): void {
   };
   const nativeFetch = window.fetch;
   let fetchInstalled = false;
-  let poll: number | null = null;
+  let stopNativeCommits: (() => void) | null = null;
+  let nativeObservationGeneration = 0;
+  let nativeReconcileQueued = false;
+  let lastNativeSnapshot: NativeSnapshot | null = null;
+  const nativeWaveObservers = new Map<NativeWave, { dispose: (() => void)[]; decoded: AudioBuffer | null }>();
 
   function ownsBridge(): boolean {
     return facade !== null && page.__babelHelperAudioEnhancementBridge === facade;
@@ -330,6 +336,8 @@ export function initAudioEnhancementBridge(): void {
       wrappedLoad: wave.load, wrappedLoadBlob: wave.loadBlob,
       decoded: null, strength: null, unbind: [], activeAbort: null
     };
+    const releaseZoom = acquireNativeZoomReadiness(wave);
+    if (releaseZoom) patch.unbind.push(releaseZoom);
     // A native rerender may replay its old URL/peaks. Keep all native loaders on
     // the selected WAV instead of supplying stale precomputed renderer peaks.
     patch.wrappedLoad = (...args: Parameters<NativeWave['load']>) => {
@@ -547,7 +555,7 @@ export function initAudioEnhancementBridge(): void {
       // A user may have started the old WebAudio buffer during decoding. Rebind
       // playback to the newly decoded pair without changing the latest intent.
       pauseForSwitch();
-      const selection = nativeSnapshot(!enabled)?.selection;
+      const selection = nativeSnapshot(!enabled, true)?.selection;
       for (let index = 0; index < entries.length; index += 1) {
         const activeRegionId = selection?.[entries[index].track.trackId]?.activeRegionId;
         if (activeRegionId === undefined) continue;
@@ -692,9 +700,8 @@ export function initAudioEnhancementBridge(): void {
     }
   }
 
-  function tick(): void {
+  function reconcileNativeAudio(snapshot: NativeSnapshot | null): void {
     if (disposed || !enabled) return;
-    const snapshot = nativeSnapshot();
     if (!snapshot) {
       const owned = session && nativeSnapshot(true);
       if (owned && session && owned.key === session.key) {
@@ -737,6 +744,113 @@ export function initAudioEnhancementBridge(): void {
     }
   }
 
+  function stopNativeObservation(): void {
+    nativeObservationGeneration += 1;
+    nativeReconcileQueued = false;
+    stopNativeCommits?.();
+    stopNativeCommits = null;
+    for (const binding of nativeWaveObservers.values()) {
+      for (const dispose of binding.dispose) dispose();
+    }
+    nativeWaveObservers.clear();
+    lastNativeSnapshot = null;
+  }
+
+  function failNativeObservation(error: unknown): void {
+    const message = `Native audio observation failed: ${error instanceof Error ? error.message : String(error)}. Enhancement automation has stopped; disable and re-enable it after correcting the native error.`;
+    stopNativeObservation();
+    console.error('[Babel Helper]', message);
+    // Keep the existing serialized Original restoration and its truthful failure
+    // state. A missing event source must never create a polling replacement.
+    void setEnabled(false).then(() => {
+      publish({ status: 'error', message: state.strength === 0 ? message : `${message} ${state.message || ''}` });
+    }).catch(restoreError => {
+      publish({ status: 'error', message: `${message} Original restoration failed: ${String(restoreError)}` });
+    });
+  }
+
+  function queueNativeReconcile(): void {
+    if (disposed || !enabled || nativeReconcileQueued) return;
+    nativeReconcileQueued = true;
+    const generation = nativeObservationGeneration;
+    queueMicrotask(() => {
+      if (generation !== nativeObservationGeneration || disposed || !enabled) return;
+      nativeReconcileQueued = false;
+      try {
+        const snapshot = nativeSnapshot(true);
+        if (!snapshot && parseBabelRoute().isTranscriptionRoute && readBabelSessionState()?.readOnly === false) {
+          throw new Error('The native editor did not expose the required two-track source bindings');
+        }
+        let changed = snapshot?.key !== lastNativeSnapshot?.key ||
+          snapshot?.readOnly !== lastNativeSnapshot?.readOnly;
+        for (const [wave, binding] of nativeWaveObservers) {
+          if (!snapshot?.tracks.some(track => track.wave === wave)) {
+            for (const dispose of binding.dispose) dispose();
+            nativeWaveObservers.delete(wave);
+            changed = true;
+          }
+        }
+        for (const track of snapshot?.tracks || []) {
+          const wave = track.wave;
+          if (!wave) continue;
+          let binding = nativeWaveObservers.get(wave);
+          if (!binding) {
+            if (typeof wave.on !== 'function') throw new Error('The native player has no event subscription API');
+            binding = { dispose: [], decoded: null };
+            nativeWaveObservers.set(wave, binding);
+            const releaseZoom = acquireNativeZoomReadiness(wave);
+            if (releaseZoom) binding.dispose.push(releaseZoom);
+            for (const event of ['ready', 'destroy', 'error']) {
+              const owned = binding;
+              const dispose = wave.on(event, (...args: unknown[]) => {
+                if (!enabled || nativeWaveObservers.get(wave) !== owned) return;
+                if (event === 'error') {
+                  // Owned source writes already surface their rejected load and
+                  // serialize Original restoration; do not start a second writer.
+                  if (!session?.switching) failNativeObservation(args[0] || new Error('Native audio loading failed'));
+                } else if (event === 'destroy' || !session?.patches.has(wave)) queueNativeReconcile();
+              });
+              if (typeof dispose !== 'function') throw new Error(`The native ${event} subscription has no disposer`);
+              binding.dispose.push(dispose);
+            }
+            changed = true;
+          }
+          const decoded = wave.getDecodedData();
+          if (binding.decoded !== decoded) {
+            binding.decoded = decoded;
+            changed = true;
+          }
+        }
+        lastNativeSnapshot = snapshot;
+        if (changed) reconcileNativeAudio(snapshot?.readOnly === false ? snapshot : null);
+      } catch (error) {
+        failNativeObservation(error);
+      }
+    });
+  }
+
+  function handleNativeSessionChange(event: Event): void {
+    if (!enabled || disposed) return;
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (typeof detail !== 'string') return;
+    let status: { href?: string; status?: string; error?: string };
+    try { status = JSON.parse(detail); } catch { return; }
+    if (!status || typeof status !== 'object' || status.href !== window.location.href ||
+        !['ready', 'unmounted', 'error'].includes(status.status || '')) return;
+    if (status.status === 'error') {
+      failNativeObservation(new Error(status.error || 'Native session observation failed'));
+      return;
+    }
+    stopNativeObservation();
+    if (status.status !== 'ready') return;
+    try {
+      stopNativeCommits = subscribeBabelEditorCommits(queueNativeReconcile);
+      queueNativeReconcile();
+    } catch (error) {
+      failNativeObservation(error);
+    }
+  }
+
   async function setEnabled(value: boolean): Promise<void> {
     if (disposed || value && disposing) return;
     if (value && restorationFailed) {
@@ -753,11 +867,15 @@ export function initAudioEnhancementBridge(): void {
     enabled = value;
     if (value) {
       if (!fetchInstalled) { window.fetch = selectedFetch; fetchInstalled = true; }
-      if (poll === null) poll = window.setInterval(tick, 350);
-      tick();
+      try {
+        if (!stopNativeCommits) stopNativeCommits = subscribeBabelEditorCommits(queueNativeReconcile);
+        queueNativeReconcile();
+      } catch (error) {
+        failNativeObservation(error);
+      }
       return;
     }
-    if (poll !== null) { window.clearInterval(poll); poll = null; }
+    stopNativeObservation();
     const target = session;
     target?.captureAbort.abort();
     if (window.fetch === selectedFetch) window.fetch = nativeFetch;
@@ -926,6 +1044,7 @@ export function initAudioEnhancementBridge(): void {
         provider.dispose();
         if (window.fetch === selectedFetch) window.fetch = nativeFetch;
         window.removeEventListener('message', listener);
+        window.removeEventListener('babel-helper:native-session-change', handleNativeSessionChange, true);
         window.removeEventListener('babel-helper-bridge-teardown', teardown);
         if (ownsBridge()) {
           delete page.__babelHelperAudioEnhancementBridge;
@@ -953,6 +1072,7 @@ export function initAudioEnhancementBridge(): void {
   facade = { getState, getActiveAudio, selectStrength, setEnabled, dispose };
   page.__babelHelperAudioEnhancementBridge = facade;
   window.addEventListener('message', listener);
+  window.addEventListener('babel-helper:native-session-change', handleNativeSessionChange, true);
   window.addEventListener('babel-helper-bridge-teardown', teardown);
 }
 

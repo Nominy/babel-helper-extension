@@ -163,13 +163,26 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     }
 
     const settings = options || {};
-    if (!preview.timeRangeRequest && settings.allowAsync !== false) {
+    if (!preview.timeRangeRequest && !preview.failureReason && settings.allowAsync !== false) {
       void refreshPreviewTimeRange(preview);
     }
 
     return null;
   }
 
+
+  function rejectCutPreview(preview, reason) {
+    preview.failureReason = reason || 'selection-target-unavailable';
+    preview.timeRange = null;
+    if (helper.state.cutPreview === preview) updatePreviewElement();
+    return false;
+  }
+
+  function isPreviewHostCurrent(preview) {
+    return preview.container?.isConnected && preview.host?.isConnected &&
+      api.site.getWaveformHostFromContainer(preview.container) === preview.host &&
+      preview.host.getAttribute(api.loop.SELECTION_LOOP_HOST_ATTR) === preview.hostMarker;
+  }
 
   async function refreshPreviewTimeRange(preview, options) {
     if (!preview || helper.state.cutPreview !== preview) {
@@ -181,22 +194,32 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       return preview.timeRangeRequest;
     }
 
-    const hostMarker =
-      preview.hostMarker ||
-      api.loop.ensureSelectionHostMarker(preview.container);
-    if (!hostMarker) {
-      preview.timeRange = null;
+    if (!isPreviewHostCurrent(preview) || !preview.isCurrentTask?.()) {
+      rejectCutPreview(preview, 'stale-selection-source');
       return null;
     }
-
-    preview.hostMarker = hostMarker;
+    if (preview.failureReason) return null;
+    if (!preview.selectionTarget && preview.targetRequest) {
+      await preview.targetRequest;
+      return refreshPreviewTimeRange(preview, options);
+    }
+    const hostMarker = preview.hostMarker;
+    const captureTarget = !preview.targetRequest;
     const requestLeftPx = preview.leftPx;
     const requestRightPx = preview.rightPx;
     const request = api.site.callSelectionBridge('selection-time-range', {
       hostMarker,
       leftPx: requestLeftPx,
-      rightPx: requestRightPx
+      rightPx: requestRightPx,
+      captureTarget,
+      selectionTarget: preview.selectionTarget
     }).then((result) => {
+      if (captureTarget && result?.ok && result.selectionTarget) preview.selectionTarget = result.selectionTarget;
+      if (!result?.ok || !result.selectionTarget || !isPreviewHostCurrent(preview) || !preview.isCurrentTask?.()) {
+        preview.timeRangeRequest = null;
+        rejectCutPreview(preview, result?.reason || 'stale-selection-source');
+        return null;
+      }
       if (preview.timeRangeRequest !== request) {
         return getPreviewTimeRange(preview, { allowAsync: false });
       }
@@ -211,10 +234,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       ) {
         // Always prefer the bridge result — it uses Wavesurfer's native
         // pixelsPerSecond which is exact, unlike DOM-snapshot interpolation.
-        preview.timeRange = {
-          startSeconds: result.startSeconds,
-          endSeconds: result.endSeconds
-        };
+        preview.timeRange = result;
       } else if (
         preview.leftPx !== requestLeftPx ||
         preview.rightPx !== requestRightPx
@@ -233,6 +253,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     });
 
     preview.timeRangeRequest = request;
+    if (captureTarget) preview.targetRequest = request;
     return request;
   }
 
@@ -251,78 +272,6 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   }
 
 
-  function getSelectionPlaybackTarget(preview) {
-    const entry = api.site.getWaveformEntryForContainer(preview && preview.container);
-    const wavesurfer =
-      entry && typeof entry === 'object' && entry.wavesurfer ? entry.wavesurfer : null;
-    if (
-      wavesurfer &&
-      typeof wavesurfer.getCurrentTime === 'function' &&
-      typeof wavesurfer.setTime === 'function'
-    ) {
-      return {
-        kind: 'wavesurfer',
-        getCurrentTime() {
-          const time = Number(wavesurfer.getCurrentTime());
-          return Number.isFinite(time) ? time : null;
-        },
-        setTime(seconds) {
-          wavesurfer.setTime(seconds);
-        },
-        play() {
-          if (typeof wavesurfer.play === 'function') {
-            return wavesurfer.play();
-          }
-          return null;
-        },
-        playRange(startSeconds, endSeconds) {
-          if (typeof wavesurfer.play === 'function') {
-            return wavesurfer.play(startSeconds, endSeconds);
-          }
-          wavesurfer.setTime(startSeconds);
-          if (typeof wavesurfer.play === 'function') {
-            return wavesurfer.play();
-          }
-          return null;
-        },
-        isPaused() {
-          if (typeof wavesurfer.isPlaying === 'function') {
-            return !wavesurfer.isPlaying();
-          }
-          if (wavesurfer.media && 'paused' in wavesurfer.media) {
-            return Boolean(wavesurfer.media.paused);
-          }
-          return false;
-        }
-      };
-    }
-
-    const audio = api.site.getSelectionAudioElement();
-    if (!(audio instanceof HTMLMediaElement)) {
-      return null;
-    }
-
-    return {
-      kind: 'audio',
-      getCurrentTime() {
-        const time = Number(audio.currentTime);
-        return Number.isFinite(time) ? time : null;
-      },
-      setTime(seconds) {
-        audio.currentTime = seconds;
-      },
-      play() {
-        return typeof audio.play === 'function' ? audio.play() : null;
-      },
-      playRange(startSeconds) {
-        audio.currentTime = startSeconds;
-        return typeof audio.play === 'function' ? audio.play() : null;
-      },
-      isPaused() {
-        return Boolean(audio.paused);
-      }
-    };
-  }
 
 
   function updatePreviewElement() {
@@ -338,14 +287,16 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     const safetyMargin = getPreviewCommitSafetySeconds(preview);
     const requiredDuration = CUT_PREVIEW_MIN_SECONDS + safetyMargin;
     const label = preview.element.querySelector('[data-babel-helper-cut-label]');
-    const tooShort = Number.isFinite(duration) && duration < requiredDuration;
+    const tooShort = Boolean(preview.failureReason) || Number.isFinite(duration) && duration < requiredDuration;
     preview.element.style.background = tooShort
       ? 'rgba(239, 68, 68, 0.18)'
       : 'rgba(14, 165, 233, 0.16)';
     preview.element.style.borderColor = tooShort ? 'rgba(220, 38, 38, 0.95)' : 'rgba(2, 132, 199, 0.95)';
 
     if (label instanceof HTMLElement) {
-      const labelText = Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
+      const labelText = preview.failureReason
+        ? 'Cut unavailable: ' + preview.failureReason + '. Create a new selection.'
+        : Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
       label.textContent = labelText;
       label.style.display = labelText ? 'block' : 'none';
       label.dataset.tone = tooShort ? 'danger' : 'neutral';
@@ -514,6 +465,10 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       element: preview,
       zoomSignature,
       hostMarker,
+      host: api.site.getWaveformHostFromContainer(draft.container),
+      selectionTarget: null,
+      targetRequest: null,
+      failureReason: '',
       isCurrentTask: captureL0TaskGuard({ includeAudioVariant: true }),
       timeRange: null,
       timeRangeRequest: null,
@@ -867,33 +822,6 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   }
 
 
-  function getSnapshotSignature(snapshot) {
-    if (!snapshot || !Array.isArray(snapshot.bounds)) {
-      return '';
-    }
-
-    return snapshot.bounds
-      .map((entry) => {
-        const left = Math.round(entry.leftPx * 10) / 10;
-        const right = Math.round(entry.rightPx * 10) / 10;
-        return left + ':' + right;
-      })
-      .join('|');
-  }
-
-
-  async function waitForRegionRefresh(container, previousSignature) {
-    const updated = await helper.waitFor(() => {
-      const snapshot = api.site.collectRegionSnapshot(container);
-      if (!snapshot) {
-        return null;
-      }
-
-      return getSnapshotSignature(snapshot) !== previousSignature ? snapshot : null;
-    }, 900, 40);
-
-    return updated || api.site.collectRegionSnapshot(container);
-  }
 
 
   function collectOverlapPlan(snapshot, cutLeftPx, cutRightPx) {
@@ -946,288 +874,107 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   }
 
 
-  function findReconciliationTargets(snapshot, cutLeftPx, cutRightPx, options) {
-    const settings = options || {};
-    const includePrevious = settings.includePrevious !== false;
-    const includeNext = settings.includeNext !== false;
-    const containerRect =
-      snapshot && snapshot.containerRect
-        ? snapshot.containerRect
-        : settings.containerRect || null;
-
-    if (!containerRect) {
-      return null;
-    }
-
-    const bounds = snapshot && Array.isArray(snapshot.bounds) ? snapshot.bounds : [];
-    let previous = null;
-    let next = null;
-
-    if (includePrevious) {
-      for (const entry of bounds) {
-        if (entry.leftPx >= cutLeftPx - 1) {
-          continue;
-        }
-
-        if (!previous || entry.rightPx > previous.rightPx) {
-          previous = entry;
-        }
-      }
-    }
-
-    if (includeNext) {
-      for (const entry of bounds) {
-        if (entry.rightPx <= cutRightPx + 1) {
-          continue;
-        }
-
-        next = entry;
-        break;
-      }
-    }
-
-    return {
-      containerRect,
-      previous,
-      next
-    };
-  }
 
 
   // A preview belongs to its mounted task, even while native callbacks settle.
   helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
-    if (!preview || helper.state.cutCommitPending || !preview.isCurrentTask?.()) {
-      return false;
+    if (!preview || helper.state.cutCommitPending) return false;
+    if (!preview.isCurrentTask?.() || !isPreviewHostCurrent(preview)) {
+      return rejectCutPreview(preview, 'stale-selection-source');
     }
-
-    const isCurrentTask = preview.isCurrentTask;
+    if (preview.failureReason) return false;
     helper.stopSelectionLoop();
-
-    const settings = options || {};
-    const useSmartSplit = Boolean(settings.smartSplit);
-
-    if (cancelCutPreviewIfZoomChanged()) {
-      return false;
-    }
-
-    helper.state.cutCommitPending = true;
-    let timeRange;
-    try {
-      timeRange = await ensurePreviewTimeRange(preview);
-    } finally {
-      helper.state.cutCommitPending = false;
-    }
-    if (!isCurrentTask() || helper.state.cutPreview !== preview) return false;
-    const duration =
-      timeRange &&
-        Number.isFinite(timeRange.startSeconds) &&
-        Number.isFinite(timeRange.endSeconds) &&
-        timeRange.endSeconds > timeRange.startSeconds
-        ? timeRange.endSeconds - timeRange.startSeconds
-        : null;
-    const safetyMargin = getPreviewCommitSafetySeconds(preview);
-    const requiredDuration = CUT_PREVIEW_MIN_SECONDS + safetyMargin;
-    if (!Number.isFinite(duration) || duration < requiredDuration) {
-      return false;
-    }
-
-    const commitPlan = {
-      container: preview.container,
-      containerRect:
-        preview.container instanceof HTMLElement
-          ? preview.container.getBoundingClientRect()
-          : preview.containerRect,
-      leftPx: preview.leftPx,
-      rightPx: preview.rightPx
-    };
-
-    const containerRect = commitPlan.containerRect;
-    if (!(commitPlan.container instanceof HTMLElement) || !commitPlan.container.isConnected || containerRect.width <= 0) {
-      return false;
-    }
-
-    const beforeSnapshot = api.site.collectRegionSnapshot(commitPlan.container);
-    const initialOverlapPlan = collectOverlapPlan(beforeSnapshot, commitPlan.leftPx, commitPlan.rightPx);
-    if (!beforeSnapshot || !initialOverlapPlan || !initialOverlapPlan.overlapping.length) {
-      return false;
-    }
-    const speakerKey = api.site.getSpeakerKeyForContainer(commitPlan.container);
-
-    const smartSplitPlan =
-      initialOverlapPlan.splitRequired &&
-        initialOverlapPlan.overlapping.length === 1 &&
-        initialOverlapPlan.splitRegion
-        ? api.split.buildSmartSplitPlanForRegion(
-          initialOverlapPlan.splitRegion,
-          (commitPlan.leftPx + commitPlan.rightPx) / 2,
-          commitPlan.container
-        )
-        : null;
-    if (initialOverlapPlan.splitRequired && !smartSplitPlan) return false;
-
+    if (cancelCutPreviewIfZoomChanged()) return false;
+    const isCurrentTarget = () => helper.state.cutPreview === preview &&
+      preview.isCurrentTask() && isPreviewHostCurrent(preview);
     const previewElement = preview.element instanceof HTMLElement ? preview.element : null;
-    const originalOpacity = previewElement ? previewElement.style.opacity : '';
-    if (previewElement) {
-      previewElement.style.pointerEvents = 'none';
-      previewElement.style.opacity = '0.72';
-    }
-
+    const originalOpacity = previewElement?.style.opacity;
     helper.state.cutCommitPending = true;
-    let nativeSplit = null;
-
     try {
-      if (initialOverlapPlan.splitRequired) {
-        if (!smartSplitPlan.sourceRow.isConnected) return false;
-        const textParts = useSmartSplit ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
-        const rowIdentity = helper.getRowIdentity(smartSplitPlan.sourceRow);
-        if (!rowIdentity?.annotationId) return false;
-        nativeSplit = await helper.splitSegmentAtTime({
-          annotationId: rowIdentity.annotationId,
-          rowIdentity,
-          speakerKey,
+      // Never commit a cached conversion: the page bridge must revalidate the
+      // captured host, recording and audio source and return that lane's turns.
+      if (preview.targetRequest) await preview.targetRequest;
+      const timeRange = await refreshPreviewTimeRange(preview, { force: true });
+      if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
+      if (!timeRange) return false;
+      const duration = timeRange.endSeconds - timeRange.startSeconds;
+      if (duration < CUT_PREVIEW_MIN_SECONDS + getPreviewCommitSafetySeconds(preview)) return false;
+      const selectionTarget = preview.selectionTarget;
+      if (!selectionTarget?.processedRecordingId || !Array.isArray(timeRange.bounds)) {
+        return rejectCutPreview(preview, 'selection-target-unavailable');
+      }
+      if (timeRange.bounds.some(entry => entry.processedRecordingId !== selectionTarget.processedRecordingId ||
+          !entry.annotationId || !Number.isFinite(entry.leftPx) || !Number.isFinite(entry.rightPx))) {
+        return rejectCutPreview(preview, 'invalid-selection-regions');
+      }
+      const plan = collectOverlapPlan(timeRange, preview.leftPx, preview.rightPx);
+      if (!plan?.overlapping.length) return rejectCutPreview(preview, 'no-overlapping-segments');
+      const smartSplitPlan = plan.splitRequired && plan.overlapping.length === 1
+        ? api.split.buildSmartSplitPlanForRegion(plan.splitRegion,
+          (preview.leftPx + preview.rightPx) / 2, preview.container, selectionTarget)
+        : null;
+      if (plan.splitRequired && !smartSplitPlan) return rejectCutPreview(preview, 'ambiguous-selection-segment');
+      const targetOptions = {
+        selectionTarget,
+        processedRecordingId: selectionTarget.processedRecordingId,
+        expectedReviewActionId: selectionTarget.reviewActionId
+      };
+      if (previewElement) {
+        previewElement.style.pointerEvents = 'none';
+        previewElement.style.opacity = '0.72';
+      }
+      let nativeSplit = null;
+      if (plan.splitRequired) {
+        if (!isCurrentTarget() || !smartSplitPlan.sourceRow.isConnected) {
+          return rejectCutPreview(preview, 'stale-selection-source');
+        }
+        const textParts = options?.smartSplit ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
+        const result = await helper.splitSegmentAtTime({
+          ...targetOptions,
+          annotationId: plan.splitRegion.annotationId,
           startSeconds: smartSplitPlan.sourceRange.startSeconds,
           endSeconds: smartSplitPlan.sourceRange.endSeconds,
           splitSeconds: timeRange.startSeconds,
           sourceText: smartSplitPlan.sourceText,
-          ...(textParts ? { texts: [textParts.firstText, textParts.secondText] } : {}),
-          attempts: 1
+          ...(textParts ? { texts: [textParts.firstText, textParts.secondText] } : {})
         });
-        if (!isCurrentTask() || !nativeSplit?.ok) return false;
+        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-split-failed');
+        nativeSplit = result.verification;
+        if (!nativeSplit?.leftAnnotationId || !nativeSplit?.rightAnnotationId) {
+          return rejectCutPreview(preview, 'missing-native-split-identities');
+        }
       }
-
-      const deleteTargets = initialOverlapPlan.toDelete.slice();
-      for (const entry of deleteTargets) {
-        if (!isCurrentTask()) return false;
-        const deleted = await api.site.deleteRegionByTimeLabels(entry.startText, entry.endText, {
-          speakerKey: api.site.getSpeakerKeyForContainer(commitPlan.container)
+      for (const entry of plan.toDelete) {
+        if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
+        const result = await helper.deleteSegmentWithNativeAction({
+          ...targetOptions, annotationId: entry.annotationId,
+          startSeconds: entry.startSeconds, endSeconds: entry.endSeconds
         });
-        if (!deleted) {
-          return false;
-        }
-        await helper.sleep(80);
+        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-delete-failed');
       }
-
-      const shouldTrimPrevious = Boolean(initialOverlapPlan.trimLeft || initialOverlapPlan.splitRequired);
-      const shouldTrimNext = Boolean(initialOverlapPlan.trimRight || initialOverlapPlan.splitRequired);
-
-      const refreshedSnapshot =
-        initialOverlapPlan.splitRequired || deleteTargets.length
-          ? await waitForRegionRefresh(
-            commitPlan.container,
-            getSnapshotSignature(beforeSnapshot)
-          )
-          : api.site.collectRegionSnapshot(commitPlan.container);
-
-      const overlapPlan = collectOverlapPlan(refreshedSnapshot, commitPlan.leftPx, commitPlan.rightPx);
-      if (
-        (shouldTrimPrevious || shouldTrimNext) &&
-        (!overlapPlan || !refreshedSnapshot)
-      ) {
-        return false;
+      const boundaries = [
+        { annotationId: nativeSplit?.leftAnnotationId || plan.trimLeft?.annotationId,
+          startSeconds: nativeSplit ? nativeSplit.leftStartSeconds : plan.trimLeft?.startSeconds,
+          endSeconds: nativeSplit ? nativeSplit.leftEndSeconds : plan.trimLeft?.endSeconds,
+          side: 'right', targetSeconds: timeRange.startSeconds },
+        { annotationId: nativeSplit?.rightAnnotationId || plan.trimRight?.annotationId,
+          startSeconds: nativeSplit ? nativeSplit.rightStartSeconds : plan.trimRight?.startSeconds,
+          endSeconds: nativeSplit ? nativeSplit.rightEndSeconds : plan.trimRight?.endSeconds,
+          side: 'left', targetSeconds: timeRange.endSeconds }
+      ];
+      for (const boundary of boundaries) {
+        if (!boundary.annotationId) continue;
+        if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
+        const result = await helper.setSegmentBoundaryTime({ ...targetOptions, ...boundary });
+        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-trim-failed');
       }
-
-      const liveSnapshot = findReconciliationTargets(
-        refreshedSnapshot,
-        commitPlan.leftPx,
-        commitPlan.rightPx,
-        {
-          includePrevious: shouldTrimPrevious,
-          includeNext: shouldTrimNext,
-          containerRect: refreshedSnapshot
-            ? refreshedSnapshot.containerRect
-            : commitPlan.container.getBoundingClientRect()
-        }
-      );
-
-      if (!liveSnapshot || !liveSnapshot.containerRect) {
-        return false;
-      }
-
-      if ((shouldTrimPrevious && !liveSnapshot.previous) || (shouldTrimNext && !liveSnapshot.next)) {
-        if (!initialOverlapPlan.splitRequired) {
-          return false;
-        }
-      }
-
-      const previousTrimLabels =
-        nativeSplit
-          ? { startText: nativeSplit.leftStartText, endText: nativeSplit.leftEndText }
-          : liveSnapshot.previous
-            ? {
-              startText: liveSnapshot.previous.startText,
-              endText: liveSnapshot.previous.endText
-            }
-            : null;
-      const nextTrimLabels =
-        nativeSplit
-          ? { startText: nativeSplit.rightStartText, endText: nativeSplit.rightEndText }
-          : liveSnapshot.next
-            ? {
-              startText: liveSnapshot.next.startText,
-              endText: liveSnapshot.next.endText
-            }
-            : null;
-
-      if (shouldTrimPrevious && !previousTrimLabels) {
-        return false;
-      }
-
-      if (shouldTrimNext && !nextTrimLabels) {
-        return false;
-      }
-
-      if (shouldTrimPrevious) {
-        if (!isCurrentTask()) return false;
-        if (typeof helper.setSegmentBoundaryTime !== 'function') {
-          return false;
-        }
-
-        const movedPrevious = await helper.setSegmentBoundaryTime({
-          side: 'right',
-          ...(nativeSplit ? { annotationId: nativeSplit.leftAnnotationId } : {}),
-          startText: previousTrimLabels.startText,
-          endText: previousTrimLabels.endText,
-          speakerKey,
-          targetSeconds: timeRange.startSeconds,
-          attempts: 2,
-          retryDelayMs: 80
-        });
-        if (!movedPrevious || !movedPrevious.ok) {
-          return false;
-        }
-
-        await helper.sleep(48);
-      }
-
-      if (shouldTrimNext) {
-        if (!isCurrentTask()) return false;
-        if (typeof helper.setSegmentBoundaryTime !== 'function') {
-          return false;
-        }
-
-        const movedNext = await helper.setSegmentBoundaryTime({
-          side: 'left',
-          ...(nativeSplit ? { annotationId: nativeSplit.rightAnnotationId } : {}),
-          startText: nextTrimLabels.startText,
-          endText: nextTrimLabels.endText,
-          speakerKey,
-          targetSeconds: timeRange.endSeconds,
-          attempts: 2,
-          retryDelayMs: 80
-        });
-        if (!movedNext || !movedNext.ok) {
-          return false;
-        }
-      }
-
-      if (!isCurrentTask()) return false;
+      if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
       helper.clearCutPreview();
       return true;
     } finally {
       helper.state.cutCommitPending = false;
-      const currentPreview = helper.state.cutPreview;
-      if (currentPreview && currentPreview.element === previewElement && previewElement) {
+      if (helper.state.cutPreview === preview && previewElement) {
         previewElement.style.pointerEvents = 'auto';
         previewElement.style.opacity = originalOpacity;
       }
@@ -1620,7 +1367,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     helper.state.nativeTimelineDoubleClickBlockerBound = false;
   };
 
-  return { ensurePreviewTimeRange, getSelectionPlaybackTarget, getPreviewTimeRange, getTimelineLaneFromEvent, CUT_PREVIEW_ATTR };
+  return { ensurePreviewTimeRange, getPreviewTimeRange, getTimelineLaneFromEvent, CUT_PREVIEW_ATTR };
 }
 
 export function createTimelineSelectionFeature(): FeatureModule {

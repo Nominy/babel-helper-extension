@@ -42,21 +42,36 @@ the turn's beginning or interrupt running playback. Explicit playback buttons,
 timeline navigation and Alt-click word seeking remain available. Disable this
 feature in Helper settings to restore Babel's native click-to-start behavior;
 changes apply without reloading.
+The hook covers both native mouse-down selection (`onSelect`) and editing focus
+(`onActivate`). Only their synchronous incidental seek is suppressed; native
+selection/highlighting and explicit seek/play handlers remain intact.
 
 **Tag Dropdown Keyboard Navigation** is enabled by default. In the native style
 tag dropdown opened by selecting words, Up/Down cycles options and Enter applies
 the highlighted tag through Babel's native editor. The selection and native undo
 are preserved; Escape, mouse selection and ordinary search input stay native.
 
-Playback admission and row-identity checks read current native metadata without
-serializing the transcript on every update. Concurrent playback-state requests
-share only the in-flight read; playback clocks are never time-cached. Each cursor
-frame shares one fresh row/time pass across off-lane projections and reuses its
-active text sample for rendering, including gaps and overlapping turns. Cursor
-updates retain fresh caret geometry, reaction-time compensation and word-boundary
-behavior. Hidden tabs suspend row/cursor timers and resample on return; owned audio
-source switches suspend the cursor timer until their published ready state. Visible
-paused playback and native task/history changes retain bounded fallback checks.
+Native WaveSurfer notifications drive playback tracking; there is no independent
+row/cursor polling loop. Clock-only updates are coalesced to 66ms using incoming
+events, while play, pause, seek and source changes are immediate. Each cursor frame
+shares one fresh row/time collection across active-lane and off-lane lookup.
+Empty gaps are normal results, not reasons to rebuild the cache or retry searches.
+Playback clocks remain live; concurrent explicit command reads share only their
+in-flight request. Recording metadata does not trigger full transcript snapshots.
+Hidden tabs and owned source switches suspend drawing until native visibility or
+ready notifications, without a watchdog timer.
+
+Native commits and navigation events drive task/permission admission, enhancement
+ownership, diff refresh and mutation verification. The shared commit hook preserves
+the actual React root value and restores only its own property descriptor.
+Unsupported hooks stop the affected automation with a visible error; they never
+switch to polling or timed bootstrap retries. Explicit operation deadlines report
+failure, and mutations are not automatically replayed after missing responses.
+UI elapsed-time ticks and input debounces are not native-state polling.
+
+Native zoom synchronization waits for the affected lane's actual decoded-ready
+event instead of calling `zoom()` on unloaded audio. The latest native zoom intent
+wins; subscriptions and method ownership are released on destruction or teardown.
 
 The magnifier follows live native region boundaries during a drag rather than
 waiting for committed annotation timestamps. Final timestamps and undo still use
@@ -65,6 +80,8 @@ the native release/commit workflow.
 Custom-linter diagnostics bind to the committed annotation/lint-state owner,
 without depending on incidental controller memo storage. Issue cards reconcile
 after native lint updates; existing native issues and disabled rules are preserved.
+Initial lint publication waits for native commit/session notifications rather than
+retrying on a timer; an unsupported mounted lint owner is reported visibly.
 Highlight observation runs only while a transcript row is hovered. Publishing
 already-merged diagnostics does not run the same rules again; ordinary playback
 DOM updates outside a hovered row do not schedule document-wide highlight passes.
@@ -122,6 +139,47 @@ Word timing retains Original and one latest nonzero-strength timing set for the 
 
 **Alt+Shift+S** checks existing current-task word clocks before contacting the timing broker. Verified same-clock pair timestamps can guide text allocation at another strength while silence detection continues to use the selected waveform. If timing arrives during pending broker admission, it is consumed immediately and that admission is cancelled; task/source changes end the wait. Verified in the native editor with genuine deployed timestamps at 50% strength: timing preparation took about 2ms, no broker connection was made, and the full trim/merge/timestamp-based text allocation completed. Missing or foreign-task timestamps do not bypass provider/ownership checks.
 
+## Native merge and replacement rules
+
+**Merge Across Gaps** is enabled by default. Babel currently disables merging
+same-speaker neighbors when their gap exceeds two seconds, even for intermediate
+turns. Helper removes only that gap restriction in native menus and merge
+commands. First/last boundaries, speaker identity, locked segments, readonly
+tasks, pending-text checks and stale-task protection remain enforced. A merge
+uses Babel's annotation writer and history, preserving other speakers and native
+Undo. Disabling the feature restores the original gap restriction.
+Native callback ownership is resolved by exact identity across React's current
+and alternate render pair: a memoized panel can retain the previous callback.
+Annotation-array identity, native history ownership and writer checks still apply.
+
+Click Helper's **Chrome toolbar icon** to open **Advanced replacement**. Settings
+remain available through Chrome's extension options and the popup's **Settings**
+link. No separate in-editor button, replacement shortcut or FAR installation is
+needed. The **Replacement Rules** feature is enabled by default.
+
+**Add rule**, **Edit**, **Delete**, enable/disable and **Up/Down** manage an ordered
+list saved in extension-local storage. Rules support literal or regex matching,
+case sensitivity and Unicode whole-word matching. An empty replacement deletes
+matches. Regex replacements support `$0`/`$&`, numbered/named captures and `$$`;
+dollar signs in literal replacements remain literal.
+
+**Run** applies one enabled rule; **Run all** applies all enabled rules in saved
+order to native transcript content across every speaker, including hidden turns.
+Raw tags are intentionally replaceable, so rules such as `[стук]` → `[смех]` work.
+The focused native edit is committed through Babel's normal blur handler before
+mutation; pending text or an active composition cannot be overwritten.
+
+Each run uses one native annotation/history command and remains natively undoable.
+**Recover latest run** survives popup close/reopen and restores that run's original
+text only while its affected output and transcript structure still match.
+Intervening affected edits, task changes and native Undo invalidate recovery;
+unrelated edits are preserved. Recovery is itself one undoable native command.
+No-op runs do not add history or discard valid recovery.
+
+Rules run only on explicit user commands, never automatically. The popup binds
+the active tab and native task session; failures are shown without retries,
+polling, generic DOM synchronization or guessing another native writer.
+
 ## Configurable shortcuts
 
 Open the extension settings and select **Shortcuts** to open its dedicated submenu. Helper action shortcuts retain their original defaults until changed. Record a replacement, add an alternative, clear an action to disable its shortcut, or restore individual/all defaults. Changes save automatically and apply to open dashboard sessions; shortcut help and appearance hints use the saved bindings.
@@ -134,6 +192,10 @@ Timeline previews own **S** (smart text allocation) and **Shift+S** (native text
 duplication) only outside text editing. Creating or grabbing an Alt-drag preview
 focuses that preview without scrolling; clicking back into turn text keeps `s`
 and `S` as ordinary typing, even while a preview is visible.
+The preview's native recording owns every split, boundary trim and covered-turn
+deletion. Overlapping turns on the other lane remain unchanged, regardless of the
+selected text row. A replaced/disconnected host or changed audio source rejects
+the command with an explicit preview error instead of guessing another target.
 
 Light manual check: Alt-drag a valid interval inside a writable turn, press S,
 and confirm the resulting turn times and text. Undo the existing boundary-trim

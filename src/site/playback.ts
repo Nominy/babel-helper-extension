@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
+import { readNativeSessionState } from './editor-control';
 
 export function createPlaybackSiteApi(helper: any) {
   const PLAYBACK_BRIDGE_REQUEST_EVENT = 'babel-helper-playback-request';
@@ -7,7 +9,7 @@ export function createPlaybackSiteApi(helper: any) {
 
   const PLAYBACK_BRIDGE_SCRIPT_PATH = 'dist/content/playback-bridge.js';
 
-  const PLAYBACK_BRIDGE_TIMEOUT_MS = 500;
+  const PLAYBACK_BRIDGE_TIMEOUT_MS = 750;
 
   const PLAYBACK_SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2];
 
@@ -76,14 +78,15 @@ export function createPlaybackSiteApi(helper: any) {
 
 
   async function callPlaybackBridge(operation, payload) {
-    // Commands invalidate sharing, never queue behind a polling read.
+    // Commands invalidate concurrent reads; command clocks are never cached.
     if (operation !== 'state') pendingStateRead = null;
     const href = window.location.href;
-    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const reviewActionId = readNativeSessionState()?.reviewActionId;
+    if (!reviewActionId) return null;
     const lifecycleRevision = helper.state?.sessionLifecycleRevision;
     const ready = await injectPlaybackBridge();
     if (!ready || window.location.href !== href ||
-        reviewActionId !== (document.documentElement?.getAttribute('data-babel-review-action-id') || '') ||
+        reviewActionId !== readNativeSessionState()?.reviewActionId ||
         lifecycleRevision !== helper.state?.sessionLifecycleRevision) {
       return null;
     }
@@ -103,7 +106,7 @@ export function createPlaybackSiteApi(helper: any) {
         window.clearTimeout(timeoutId);
         if (operation !== 'state') pendingStateRead = null;
         const current = window.location.href === href &&
-          reviewActionId === (document.documentElement?.getAttribute('data-babel-review-action-id') || '') &&
+          reviewActionId === readNativeSessionState()?.reviewActionId &&
           lifecycleRevision === helper.state?.sessionLifecycleRevision;
         resolve(current ? result || null : null);
       };
@@ -139,10 +142,84 @@ export function createPlaybackSiteApi(helper: any) {
     return { ok: false, reason: 'playback-unavailable', paused: null, waveCount: 0 };
   }
 
+  helper.reportPlaybackFailure = function reportPlaybackFailure(result) {
+    helper.analytics?.record?.('playback:subscription-failed', { reason: result?.reason, message: result?.message });
+    showNativeAutomationFailure('Playback', result?.message || result?.reason || 'Native playback failed');
+  };
+
+  helper.subscribePlayback = function subscribePlayback(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Playback listener must be a function');
+    const subscriptionId = 'playback-subscription-' + (++playbackBridgeRequestId);
+    const href = window.location.href;
+    const lifecycleRevision = helper.state?.sessionLifecycleRevision;
+    const admission = helper.state?.nativeSessionAdmission;
+    const session = readNativeSessionState();
+    if (!admission || admission.href !== href || admission.lifecycleRevision !== lifecycleRevision ||
+        admission.reviewActionId !== session?.reviewActionId || session.readOnly !== false) {
+      throw new Error('Native playback subscription requires a current interactive session admission');
+    }
+    const reviewActionId = admission.reviewActionId;
+    let disposed = false;
+    let sourceRevision = -1;
+    const current = () => {
+      if (disposed || window.location.href !== href ||
+          admission !== helper.state?.nativeSessionAdmission ||
+          lifecycleRevision !== helper.state?.sessionLifecycleRevision) return false;
+      const live = readNativeSessionState();
+      return live?.reviewActionId === reviewActionId && live.readOnly === false;
+    };
+    const unsubscribeNative = () => window.dispatchEvent(new CustomEvent(PLAYBACK_BRIDGE_REQUEST_EVENT, {
+      detail: { id: 'playback-release-' + (++playbackBridgeRequestId), operation: 'unsubscribe', payload: { subscriptionId } }
+    }));
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      window.removeEventListener('babel-helper-playback-sample', receive, true);
+      window.removeEventListener('babel-helper-bridge-teardown', dispose, true);
+      unsubscribeNative();
+    };
+    const fail = result => {
+      if (!current()) { dispose(); return; }
+      const failure = { ...result, ok: false, fatal: true, paused: null };
+      dispose();
+      helper.reportPlaybackFailure(failure);
+      listener(failure);
+    };
+    const receive = event => {
+      const detail = event.detail;
+      if (detail?.subscriptionId !== subscriptionId) return;
+      if (!current()) { dispose(); return; }
+      if (detail.href !== href || detail.lifecycleRevision !== lifecycleRevision) return;
+      const sample = detail.sample;
+      if (sample?.reviewActionId !== reviewActionId || !Number.isFinite(sample?.sourceRevision) ||
+          sample.sourceRevision < sourceRevision) return;
+      sourceRevision = sample.sourceRevision;
+      if (sample.fatal) { fail(sample); return; }
+      if (sample.ok && (!Array.isArray(sample.recordingTracks) || !sample.recordingTracks.length ||
+          sample.recordingTracks.some(track => typeof track?.id !== 'string' || !track.id ||
+            typeof track.label !== 'string'))) {
+        fail({ reason: 'native-playback-recording-metadata-unavailable' });
+        return;
+      }
+      if (document.hidden) return;
+      listener(sample);
+    };
+    window.addEventListener('babel-helper-playback-sample', receive, true);
+    window.addEventListener('babel-helper-bridge-teardown', dispose, true);
+    void callPlaybackBridge('subscribe', { subscriptionId, href, lifecycleRevision }).then(result => {
+      if (disposed) { unsubscribeNative(); return; }
+      if (!current()) { dispose(); return; }
+      if (!result?.ok) fail(result || { reason: 'native-playback-subscription-unavailable' });
+    }, error => fail({ reason: 'native-playback-subscription-failed', message: String(error) }));
+    return dispose;
+  };
 
   helper.setPlaybackPaused = function setPlaybackPaused(paused) {
-    return callPlaybackBridge('set-paused', { paused: Boolean(paused) })
-      .then(result => result || unavailablePlaybackState());
+    return callPlaybackBridge('set-paused', { paused: Boolean(paused) }).then(result => {
+      const state = result || unavailablePlaybackState();
+      if (!state.ok) helper.reportPlaybackFailure(state);
+      return state;
+    });
   };
 
 
@@ -156,7 +233,7 @@ export function createPlaybackSiteApi(helper: any) {
 
   helper.getPlaybackState = function getPlaybackState() {
     const href = window.location.href;
-    const reviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id') || '';
+    const reviewActionId = readNativeSessionState()?.reviewActionId;
     const revision = helper.state?.sessionLifecycleRevision;
     if (pendingStateRead?.href === href && pendingStateRead.reviewActionId === reviewActionId &&
         pendingStateRead.revision === revision) return pendingStateRead.promise;

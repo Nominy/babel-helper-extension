@@ -19,6 +19,7 @@ import { createCustomLinterRules } from "./linter/rules";
 import { getUnnecessaryYoMatches, fixUnnecessaryYo } from "./linter/yo-orthography";
 import { acquireFeedbackDraftGate, findBabelEditorFiber, readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
 import { readNativeTurn, replaceNativeTurn, TRANSCRIPT_ROW_SELECTOR, TRANSCRIPT_EDITOR_SELECTOR } from '../../content/native-transcript';
+import { showNativeAutomationFailure } from '../../ui/native-automation-failure';
 
 export function initLinterBridge() {
   if (window.__babelHelperLinterBridge) {
@@ -89,8 +90,6 @@ export function initLinterBridge() {
   const NATIVE_LINT_RENDER_SYNC_DELAY_MS = 50;
   const HIGHLIGHTED_WORD_CLEARANCE_STORAGE_KEY =
     "babel-helper-highlighted-word-clearances:v1";
-  const AUTO_LINT_MAX_ATTEMPTS = 20;
-  const AUTO_LINT_RETRY_DELAY_MS = 100;
   const ROW_EDITOR_SELECTOR = TRANSCRIPT_EDITOR_SELECTOR;
   const UNICODE_DOUBLE_QUOTE_PATTERN =
     /[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2039\u203A\u275D\u275E\u300C\u300D\u300E\u300F\u301D\u301E\u301F\uFF02]/gu;
@@ -105,8 +104,7 @@ export function initLinterBridge() {
   let upstreamFetch = fallbackFetch;
   let forwardingFetch = 0;
   let enabled = false;
-  let autoLintAttemptCount = 0;
-  let autoLintTimer = 0;
+  let initialNativeLintQueued = false;
   let fetchPatchInstalled = false;
   let highlightObserver = null;
   let highlightTimer = 0;
@@ -116,8 +114,6 @@ export function initLinterBridge() {
   let nativeLintStateTimer = 0;
   let nativeLintStateObserver = null;
   const nativeLintDispatchPatches = new Map();
-  let textareaVisibilityObserver = null;
-  let textareaMountObserver = null;
   const autoLintTriggeredRoutes = new Set();
   const clearedHighlightedWordKeys = new Set();
   let highlightedWordClearancesLoaded = false;
@@ -2738,6 +2734,13 @@ export function initLinterBridge() {
     }
   }
 
+  function stopNativeLintAutomation(error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    setBuiltInEnabled(false);
+    console.error('[Babel Helper] Custom linter automation stopped:', reason);
+    showNativeAutomationFailure('Custom linter', reason);
+  }
+
   function syncNativeLintState(reason) {
     if (!isPageLinterEnabled()) {
       return false;
@@ -2753,6 +2756,9 @@ export function initLinterBridge() {
         route: getRouteKey(),
         syncedAt: Date.now(),
       };
+      if (document.querySelector('[data-transcript-scroll]')) {
+        stopNativeLintAutomation(new Error('The committed native lint state could not be bound'));
+      }
       return false;
     }
 
@@ -4059,33 +4065,6 @@ export function initLinterBridge() {
 
 
 
-  function isElementVisible(element) {
-    if (!(element instanceof HTMLElement)) {
-      return false;
-    }
-
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }
-
-
-  function stopTextareaVisibilityObservers() {
-    if (
-      textareaVisibilityObserver &&
-      typeof textareaVisibilityObserver.disconnect === "function"
-    ) {
-      textareaVisibilityObserver.disconnect();
-    }
-    if (
-      textareaMountObserver &&
-      typeof textareaMountObserver.disconnect === "function"
-    ) {
-      textareaMountObserver.disconnect();
-    }
-
-    textareaVisibilityObserver = null;
-    textareaMountObserver = null;
-  }
 
   function nodeTouchesTranscriptRows(node) {
     if (!(node instanceof Element)) {
@@ -4161,162 +4140,45 @@ export function initLinterBridge() {
     }
   }
 
-  function handleVisibleTextarea(routeKey, reason) {
-    if (!isPageLinterEnabled()) {
-      return;
-    }
-
-    const activeRouteKey = getRouteKey();
-    if (
-      !activeRouteKey ||
-      activeRouteKey !== routeKey ||
-      autoLintTriggeredRoutes.has(activeRouteKey)
-    ) {
-      return;
-    }
-
-    stopTextareaVisibilityObservers();
-    scheduleInitialNativeLintTrigger(reason);
-  }
-
-  function observeTextareaCandidate(candidate, routeKey, reason) {
-    if (
-      !(candidate instanceof HTMLElement) ||
-      !candidate.matches(ROW_EDITOR_SELECTOR) ||
-      !textareaVisibilityObserver
-    ) {
-      return;
-    }
-
-    if (isElementVisible(candidate)) {
-      handleVisibleTextarea(routeKey, reason);
-      return;
-    }
-
-    textareaVisibilityObserver.observe(candidate);
-  }
-
-  function startTextareaVisibilityObserver(reason) {
-    if (!enabled || typeof IntersectionObserver !== "function") {
-      return;
-    }
-
-    const routeKey = getRouteKey();
-    if (!routeKey || autoLintTriggeredRoutes.has(routeKey)) {
-      return;
-    }
-
-    stopTextareaVisibilityObservers();
-
-    textareaVisibilityObserver = new IntersectionObserver((entries) => {
-      if (
-        !entries.some(
-          (entry) => entry.isIntersecting || entry.intersectionRatio > 0,
-        )
-      ) {
-        return;
-      }
-
-      handleVisibleTextarea(routeKey, reason);
-    });
-
-    for (const textarea of document.querySelectorAll(ROW_EDITOR_SELECTOR)) {
-      observeTextareaCandidate(textarea, routeKey, reason);
-      if (!textareaVisibilityObserver) {
-        return;
-      }
-    }
-
-    if (
-      !(document.body instanceof HTMLElement) ||
-      typeof MutationObserver !== "function"
-    ) {
-      return;
-    }
-
-    textareaMountObserver = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) {
-            continue;
-          }
-
-          if (node.matches?.(ROW_EDITOR_SELECTOR)) {
-            observeTextareaCandidate(node, routeKey, reason);
-          }
-
-          for (const textarea of node.querySelectorAll?.(
-            ROW_EDITOR_SELECTOR,
-          ) || []) {
-            observeTextareaCandidate(textarea, routeKey, reason);
-            if (!textareaVisibilityObserver) {
-              return;
-            }
-          }
-        }
-      }
-    });
-
-    textareaMountObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
 
 
 
   function scheduleInitialNativeLintTrigger(reason) {
-    if (!isPageLinterEnabled()) {
-      return;
-    }
-
+    if (!isPageLinterEnabled() || initialNativeLintQueued) return;
     const routeKey = getRouteKey();
-    if (!routeKey || autoLintTriggeredRoutes.has(routeKey)) {
-      return;
-    }
-
-    if (autoLintTimer) {
-      window.clearTimeout(autoLintTimer);
-      autoLintTimer = 0;
-    }
-    stopTextareaVisibilityObservers();
-
-    const attempt = () => {
-      autoLintTimer = 0;
-      if (
-        !isPageLinterEnabled() ||
-        getRouteKey() !== routeKey ||
-        autoLintTriggeredRoutes.has(routeKey)
-      ) {
-        return;
+    if (!routeKey || autoLintTriggeredRoutes.has(routeKey)) return;
+    initialNativeLintQueued = true;
+    queueMicrotask(() => {
+      initialNativeLintQueued = false;
+      if (!isPageLinterEnabled() || getRouteKey() !== routeKey ||
+          autoLintTriggeredRoutes.has(routeKey)) return;
+      try {
+        const synced = syncNativeLintState("initial-native-lint");
+        debugState.autoLint = {
+          changed: synced && debugState.nativeLint.dispatched,
+          reason: synced ? "native-lint-state-synchronized" :
+            debugState.nativeLint?.reason || "native-react-hooks-not-found",
+          route: routeKey,
+          source: reason,
+        };
+        if (synced) autoLintTriggeredRoutes.add(routeKey);
+      } catch (error) {
+        stopNativeLintAutomation(error);
       }
+    });
+  }
 
-      autoLintAttemptCount += 1;
-      // Babel lints locally. Synchronize its real issue state without fabricating
-      // text edits, undo entries, selection changes, or focus/blur events.
-      const synced = syncNativeLintState("initial-native-lint");
-      debugState.autoLint = {
-        changed: synced && debugState.nativeLint.dispatched,
-        reason: synced
-          ? "native-lint-state-synchronized"
-          : debugState.nativeLint?.reason || "native-react-hooks-not-found",
-        route: routeKey,
-        attempts: autoLintAttemptCount,
-        source: reason,
-      };
+  function handleNativeLinterCommit() {
+    scheduleInitialNativeLintTrigger('native-editor-commit');
+  }
 
-      if (synced) {
-        autoLintTriggeredRoutes.add(routeKey);
-        return;
-      }
-
-      if (autoLintAttemptCount < AUTO_LINT_MAX_ATTEMPTS) {
-        autoLintTimer = window.setTimeout(attempt, AUTO_LINT_RETRY_DELAY_MS);
-      }
-    };
-
-    autoLintAttemptCount = 0;
-    autoLintTimer = window.setTimeout(attempt, AUTO_LINT_RETRY_DELAY_MS);
+  function handleNativeLinterSession(event) {
+    if (typeof event.detail !== 'string') return;
+    let status;
+    try { status = JSON.parse(event.detail); } catch { return; }
+    if (status?.href !== window.location.href || status.status !== 'ready') return;
+    autoLintTriggeredRoutes.delete(getRouteKey());
+    scheduleInitialNativeLintTrigger('native-session-ready');
   }
 
   function notifyRouteChange(source) {
@@ -4326,9 +4188,7 @@ export function initLinterBridge() {
     }
 
     currentRouteKey = nextRouteKey;
-    startTextareaVisibilityObserver(`${source}-textarea-visible`);
     scheduleInitialNativeLintTrigger(source);
-    scheduleNativeLintStateSync(source);
   }
 
   function patchHistoryMethod(methodName) {
@@ -4710,21 +4570,14 @@ export function initLinterBridge() {
 
   function setBuiltInEnabled(nextEnabled) {
     enabled = Boolean(nextEnabled);
-    if (!enabled && autoLintTimer) {
-      window.clearTimeout(autoLintTimer);
-      autoLintTimer = 0;
-    }
     if (!enabled) {
       clearNativeHelperIssues();
-      stopTextareaVisibilityObservers();
       stopNativeLintStateObserver();
       stopHighlightObserver();
     }
     if (enabled) {
       startNativeLintStateObserver();
-      startTextareaVisibilityObserver("toggle-enable-textarea-visible");
       scheduleInitialNativeLintTrigger("toggle-enable");
-      scheduleNativeLintStateSync("toggle-enable");
     }
   }
 
@@ -4766,11 +4619,6 @@ export function initLinterBridge() {
     }
     nativeLintDispatchPatches.clear();
     feedbackDraftGate.dispose();
-    if (autoLintTimer) {
-      window.clearTimeout(autoLintTimer);
-      autoLintTimer = 0;
-    }
-    stopTextareaVisibilityObservers();
     stopNativeLintStateObserver();
     stopHighlightObserver();
     restoreHistoryMethod("pushState");
@@ -4795,6 +4643,8 @@ export function initLinterBridge() {
     window.removeEventListener("pointerout", handleHighlightPointerOut, true);
     window.removeEventListener("click", handleHighlightClick, true);
     window.removeEventListener("popstate", handlePopState, true);
+    window.removeEventListener('babel-helper:native-editor-commit', handleNativeLinterCommit);
+    window.removeEventListener('babel-helper:native-session-change', handleNativeLinterSession);
     window.removeEventListener(TEARDOWN_EVENT, dispose, true);
     const serviceDisposer = pageLinterServiceDisposer;
     pageLinterServiceDisposer = null;
@@ -4818,12 +4668,12 @@ export function initLinterBridge() {
   patchHistoryMethod("pushState");
   patchHistoryMethod("replaceState");
   window.addEventListener("popstate", handlePopState, true);
+  window.addEventListener('babel-helper:native-editor-commit', handleNativeLinterCommit);
+  window.addEventListener('babel-helper:native-session-change', handleNativeLinterSession);
   window.addEventListener(TEARDOWN_EVENT, dispose, true);
 
   startNativeLintStateObserver();
-  startTextareaVisibilityObserver("boot-textarea-visible");
   scheduleInitialNativeLintTrigger("boot");
-  scheduleNativeLintStateSync("boot");
 
   // ---------------------------------------------------------------------------
   // Auto-fix functions

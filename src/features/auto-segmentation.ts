@@ -270,9 +270,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         endText: plan.current.endText,
         startSeconds: plan.current.startSeconds,
         endSeconds: plan.current.endSeconds,
-        speakerKey: plan.current.speakerKey,
-        attempts: 2,
-        retryDelayMs: 80
+        speakerKey: plan.current.speakerKey
       });
 
       if (result && result.ok) {
@@ -570,9 +568,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           endText: silent.entry.endText,
           startSeconds: silent.startSeconds,
           endSeconds: silent.endSeconds,
-          speakerKey: silent.speakerKey,
-          attempts: 2,
-          retryDelayMs: 80
+          speakerKey: silent.speakerKey
         });
         if (deleteResult && deleteResult.ok) {
           deleteCount += 1;

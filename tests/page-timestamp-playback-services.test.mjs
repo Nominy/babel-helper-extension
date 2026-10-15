@@ -43,14 +43,14 @@ class FakeShadowRoot {}
 
 function installPageGlobals(services) {
   const pageWindow = new EventTarget();
-  const pageDocument = {
+  const pageDocument = Object.assign(new EventTarget(), {
     querySelector() {
       return null;
     },
     querySelectorAll() {
       return [];
     }
-  };
+  });
 
   Object.assign(pageWindow, {
     BabelMods: { unsafe: { services } },
@@ -59,6 +59,7 @@ function installPageGlobals(services) {
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     setTimeout,
     clearTimeout,
+    performance,
     window: pageWindow
   });
   Object.assign(globalThis, {
@@ -288,6 +289,7 @@ function installNativeTranscriptModel(pageWindow, initial = []) {
     panel.memoizedProps.annotations = state.annotations;
     panel.memoizedProps.readOnly = state.readOnly;
     transcript.memoizedProps.turns = state.annotations;
+    root.stateNode.current = root;
   }
   return { state, tracks, panel, transcript, workbench, root, main, history, commit };
 }
@@ -385,127 +387,75 @@ function rowHelper(getRows) {
   };
 }
 
-test('timestamp retries mutate the replacement React row, never a stale identity or another speaker', async (t) => {
+test('timestamp mutations report a native row failure once without retargeting replacements', async t => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/features/timestamp-edit-feature.ts', 'timestamp-row-retry'
-  );
-  const cases = [
-    {
-      method: 'setSegmentBoundaryTime',
-      options: { targetSeconds: 18 },
-      operation: 'set-boundary-time',
-      backend: 'page-react-row-time-change',
-      apply(row) { row.endSeconds = 18; },
-      verify(row) { assert.equal(row.endSeconds, 18); }
-    },
-    {
-      method: 'splitSegmentAtTime',
-      options: { splitSeconds: 14 },
-      operation: 'split-segment-at-time',
-      backend: 'page-react-split-annotation',
-      apply(row) { row.segments = [[10.5, 14], [14, 20.5]]; },
-      verify(row) { assert.deepEqual(row.segments, [[10.5, 14], [14, 20.5]]); }
-    },
-    {
-      method: 'mergeSegmentWithNativeAction',
-      options: { direction: 'below' },
-      operation: 'merge-segment',
-      backend: 'page-react-row-action',
-      apply(row) { row.text += ' next'; },
-      verify(row) { assert.equal(row.text, 'current next'); }
-    },
-    {
-      method: 'deleteSegmentWithNativeAction',
-      options: {},
-      operation: 'delete-segment',
-      backend: 'page-react-row-action',
-      apply(row) { row.deleted = true; },
-      verify(row) { assert.equal(row.deleted, true); }
-    }
-  ];
-  for (const scenario of cases) {
-    await t.test(scenario.operation, async (t) => {
+    'src/features/timestamp-edit-feature.ts', 'timestamp-one-shot-row');
+  for (const [method, options, backend] of [
+    ['setSegmentBoundaryTime', { targetSeconds: 18 }, 'page-react-row-time-change'],
+    ['splitSegmentAtTime', { splitSeconds: 14 }, 'page-react-split-annotation'],
+    ['mergeSegmentWithNativeAction', { direction: 'below' }, 'page-react-row-action'],
+    ['deleteSegmentWithNativeAction', {}, 'page-react-row-action']
+  ]) {
+    await t.test(method, async t => {
       const stale = mutationRow('old', 'speaker-a', '00:10', '00:20');
       const replacement = mutationRow('new', 'speaker-a', '00:10.5', '00:20.5');
       const decoy = mutationRow('other-speaker', 'speaker-b', '00:10', '00:20');
       let rows = [decoy, stale];
-      let attempts = 0;
-      installTimestampMutationHarness(t, ({ operation, payload }) => {
-        if (operation !== scenario.operation) return { ok: false };
-        attempts += 1;
-        if (attempts === 1) {
-          rows = [decoy, replacement];
-          return { ok: false, reason: 'react-row-replaced' };
-        }
-        const target = rows.find(
-          (row) => row.annotationId === payload.annotationId
-        );
-        if (target !== replacement) return { ok: false, reason: 'stale-row' };
-        scenario.apply(target);
-        return { ok: true };
+      let requests = 0;
+      installTimestampMutationHarness(t, ({ payload }) => {
+        requests++;
+        assert.equal(payload.annotationId, 'old');
+        rows = [decoy, replacement];
+        return { ok: false, reason: 'react-row-replaced' };
       });
       const helper = rowHelper(() => rows);
-      helper.state = { sessionLifecycleRevision: 1 };
-      helper.sleep = async () => { helper.state.sessionLifecycleRevision += 1; };
+      helper.sleep = () => assert.fail('A rejected native mutation must never retry');
       registerTimestampEditService(helper);
-      const result = await helper[scenario.method]({
-        rowIdentity: { annotationId: 'old' },
-        speakerKey: 'speaker-a',
-        startText: '00:10',
-        endText: '00:20',
-        startSeconds: 10,
-        endSeconds: 20,
-        ...scenario.options
+      const result = await helper[method]({
+        rowIdentity: { annotationId: 'old' }, speakerKey: 'speaker-a',
+        startText: '00:10', endText: '00:20', startSeconds: 10, endSeconds: 20, ...options
       });
-      assert.equal(result.ok, true);
-      assert.equal(result.attempts, 2);
-      assert.equal(result.backend, scenario.backend);
-      scenario.verify(replacement);
-      assert.equal(stale.text, 'current');
-      assert.equal(decoy.text, 'current');
-      assert.equal(stale.endSeconds, undefined);
-      assert.equal(decoy.deleted, undefined);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'react-row-replaced');
+      assert.equal(result.backend, backend);
+      assert.equal(requests, 1);
+      assert.deepEqual([stale, replacement, decoy].map(row => row.text), ['current', 'current', 'current']);
     });
   }
 });
 
-test('timestamp retry exhaustion stops at the cap and success preserves the page backend', async (t) => {
+test('timestamp invalid responses fail once and a separate command preserves the page backend', async t => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/features/timestamp-edit-feature.ts', 'timestamp-retry-exhaustion'
-  );
+    'src/features/timestamp-edit-feature.ts', 'timestamp-invalid-response');
   let requests = 0;
   let succeeds = false;
   installTimestampMutationHarness(t, () => {
-    requests += 1;
+    requests++;
     return succeeds ? { ok: true, backend: 'custom-page-backend' } : null;
   });
   const helper = rowHelper(() => []);
   registerTimestampEditService(helper);
-  const result = await helper.deleteSegmentWithNativeAction({
-    annotationId: 'missing', attempts: 100
-  });
-  assert.deepEqual(result, {
-    ok: false, attempts: 4, backend: 'page-react-row-action', verification: null
-  });
-  assert.equal(requests, 4);
+  const result = await helper.deleteSegmentWithNativeAction({ annotationId: 'missing' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'invalid-bridge-response');
+  assert.equal(requests, 1);
   succeeds = true;
-  const recovered = await helper.deleteSegmentWithNativeAction({ annotationId: 'present' });
-  assert.equal(recovered.ok, true);
-  assert.equal(recovered.attempts, 1);
-  assert.equal(recovered.backend, 'custom-page-backend');
-  assert.equal(requests, 5);
+  const next = await helper.deleteSegmentWithNativeAction({ annotationId: 'present' });
+  assert.equal(next.ok, true);
+  assert.equal(next.backend, 'custom-page-backend');
+  assert.equal(requests, 2);
 });
 
 test('native timestamp mutations stop at awaited boundaries only for a confirmed task change', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
-    'src/features/timestamp-edit-feature.ts', 'timestamp-task-retry'
+    'src/features/timestamp-edit-feature.ts', 'timestamp-task-boundaries'
   );
   const changes = {
     'a different review action': { reviewActionId: 'task-two', stale: true },
     'a lost publication': { reviewActionId: '', stale: false }
   };
   for (const [change, { reviewActionId, stale }] of Object.entries(changes)) {
-    for (const boundary of ['bridge response', 'retry delay', 'bridge load']) {
+    for (const boundary of ['bridge response', 'bridge load']) {
       await t.test(`${boundary} with ${change}`, async (t) => {
         let announcePause;
         let resume;
@@ -515,22 +465,16 @@ test('native timestamp mutations stop at awaited boundaries only for a confirmed
         let requests = 0;
         const task = installTimestampMutationHarness(t, async () => {
           requests += 1;
-          if (requests === 1 && boundary !== 'bridge load') {
-            if (boundary === 'bridge response') {
-              announcePause();
-              await resumed;
-            }
-            return { ok: false };
+          if (boundary === 'bridge response') {
+            announcePause();
+            await resumed;
+            return { ok: false, reason: 'native-rejected' };
           }
           rows.push('created annotation');
           return { ok: true, annotationId: 'created' };
         });
         const helper = rowHelper(() => []);
         helper.state = { sessionLifecycleRevision: 1 };
-        helper.sleep = async () => {
-          announcePause();
-          await resumed;
-        };
         let bridgeScript;
         if (boundary === 'bridge load') {
           delete window.__babelHelperTimestampBridge;
@@ -571,16 +515,17 @@ test('native timestamp mutations stop at awaited boundaries only for a confirmed
           assert.deepEqual(rows, ['new task row']);
           assert.equal(requests, boundary === 'bridge load' ? 0 : 1);
         } else {
-          assert.equal(result.ok, true);
-          assert.deepEqual(rows, ['old task row', 'created annotation']);
-          assert.equal(requests, boundary === 'bridge load' ? 1 : 2);
+          assert.equal(result.ok, boundary === 'bridge load');
+          if (boundary === 'bridge response') assert.equal(result.reason, 'native-rejected');
+          assert.deepEqual(rows, boundary === 'bridge load' ? ['old task row', 'created annotation'] : ['old task row']);
+          assert.equal(requests, 1);
         }
       });
     }
   }
 });
 
-test('invalid timestamp mutations never reach the page or schedule a retry', async (t) => {
+test('invalid timestamp mutations never reach the page', async (t) => {
   const { registerTimestampEditService } = await importBundledTs(
     'src/features/timestamp-edit-feature.ts', 'timestamp-invalid-input'
   );
@@ -747,9 +692,11 @@ test('pending transcript snapshot rejects further typing and navigation without 
   assert.equal(bridge.snapshotTranscript().rows[0].text, 'First pending edit');
   const changed = bridge.flushTranscript();
   editor.children[0].children[0].text = 'Further user typing';
+  model.commit();
   assert.equal((await changed).reason, 'stale-transcript');
   const navigated = bridge.deleteSegment({ annotationId: original.id });
   model.workbench.memoizedProps.reviewActionId = 'new-task';
+  model.commit();
   assert.equal((await navigated).reason, 'stale-task');
   assert.deepEqual(model.state.mutations, []);
   assert.equal(model.state.annotations[0], original);
@@ -839,7 +786,7 @@ test('isolated timestamp commands forward opaque guards and never retry a same-d
     ['undoTranscriptWithNativeBridge', {}]
   ]) {
     const count = seen.length;
-    const result = await helper[method]({ annotationId: 'annotation', attempts: 4,
+    const result = await helper[method]({ annotationId: 'annotation',
       expectedReviewActionId: 'task-one', expectedHistoryRevision: 1, expectedHistoryToken: 'owned-command', ...values });
     assert.equal(result.reason, 'history-conflict', method);
     assert.equal(seen.length, count + 1, 'a history identity conflict is not a retryable row remount');
@@ -1022,19 +969,32 @@ test('native asynchronous play reads current clocks and cancels on task or sourc
   const pageWindow = installPageGlobals(createServiceRegistry());
   const model = installNativeTranscriptModel(pageWindow);
   let toggles = 0;
-  const createWave = () => ({
-    time: 2, playing: false,
-    getCurrentTime() { return this.time; }, getDuration() { return 12; },
-    getPlaybackRate() { return 1; }, isPlaying() { return this.playing; }
-  });
+  const createWave = () => {
+    const events = new Map();
+    const media = new EventTarget();
+    return {
+      time: 2, playing: false,
+      getCurrentTime() { return this.time; }, getDuration() { return 12; },
+      getPlaybackRate() { return 1; }, isPlaying() { return this.playing; },
+      getMediaElement() { return media; },
+      on(name, callback) {
+        if (!events.has(name)) events.set(name, new Set());
+        events.get(name).add(callback);
+        return () => this.un(name, callback);
+      },
+      un(name, callback) { events.get(name)?.delete(callback); },
+      emit(name) { for (const listener of events.get(name) || []) listener(); }
+    };
+  };
   const registry = { recording: { wavesurfer: createWave() } };
   model.workbench.memoizedState.next = { memoizedState: { current: registry } };
   model.panel.memoizedProps.onSeekToAnnotation = () => {};
   model.panel.memoizedProps.onPlayPause = () => { toggles++; };
   await importBundledTs('src/content/playback-bridge.ts', 'pending-play-bridge');
   t.after(() => pageWindow.__babelHelperPlaybackBridge?.dispose());
-  let resume;
-  pageWindow.setTimeout = callback => { resume = callback; return 1; };
+  const deadlines = new Map();
+  pageWindow.setTimeout = (callback, delay) => { assert.equal(delay, 500); deadlines.set(1, callback); return 1; };
+  pageWindow.clearTimeout = id => deadlines.delete(id);
   for (const transition of ['playing', 'source', 'task']) {
     registry.recording.wavesurfer = createWave();
     model.workbench.memoizedProps.reviewActionId = 'review-action-live';
@@ -1045,7 +1005,8 @@ test('native asynchronous play reads current clocks and cancels on task or sourc
     if (transition === 'task') model.workbench.memoizedProps.reviewActionId = 'new-task';
     registry.recording.wavesurfer.playing = true;
     registry.recording.wavesurfer.time = 4;
-    resume();
+    registry.recording.wavesurfer.emit('play');
+    model.root.stateNode.current = model.root;
     const result = await pending;
     assert.equal(toggles, 1, 'a delayed play must never toggle a replacement source');
     if (transition === 'playing') {
@@ -1053,7 +1014,214 @@ test('native asynchronous play reads current clocks and cancels on task or sourc
       assert.equal(result.currentTime, 4);
     } else {
       assert.equal(result.ok, false);
-      assert.equal(result.reason, transition === 'task' ? 'stale-task' : 'playback-unavailable');
+      assert.equal(result.reason, transition === 'task' ? 'stale-task' : 'playback-replaced');
+    }
+    assert.equal(deadlines.size, 0);
+  }
+});
+
+test('selection mutations retain the captured recording and annotation without resolving selected rows', async t => {
+  const { registerTimestampEditService } = await importBundledTs(
+    'src/features/timestamp-edit-feature.ts', 'selection-mutation-client');
+  const selectionTarget = { hostMarker: 'preview', token: 'capture', processedRecordingId: 'recording-b',
+    reviewActionId: 'review-action-live' };
+  const payloads = [];
+  installTimestampMutationHarness(t, request => { payloads.push(request); return { ok: true }; });
+  const helper = rowHelper(() => { assert.fail('A bound preview must not guess another transcript row'); });
+  registerTimestampEditService(helper);
+  for (const [method, options] of [
+    ['splitSegmentAtTime', { splitSeconds: 3, sourceText: 'raw [смех] text', texts: ['raw ', '[смех] text'] }],
+    ['setSegmentBoundaryTime', { side: 'left', targetSeconds: 4 }],
+    ['deleteSegmentWithNativeAction', {}]
+  ]) {
+    const result = await helper[method]({ selectionTarget, processedRecordingId: 'recording-b',
+      annotationId: 'exact-turn', startSeconds: 1, endSeconds: 5, ...options });
+    assert.equal(result.ok, true);
+    assert.deepEqual(payloads.at(-1).payload.selectionTarget, selectionTarget);
+    assert.equal(payloads.at(-1).payload.processedRecordingId, 'recording-b');
+    assert.equal(payloads.at(-1).payload.annotationId, 'exact-turn');
+  }
+});
+
+test('native selection targets bind one host and recording and reject source changes before every cut mutation', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'selection-source-guards');
+  const originals = ['recording-a', 'recording-b'].map((processedRecordingId, index) => ({
+    id: `overlap-${index}`, type: 'transcription', processedRecordingId,
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: `Lane ${index} [смех] text`, metadata: { index }
+  }));
+  const model = installNativeTranscriptModel(pageWindow, originals);
+  model.tracks.forEach(track => { track.label = 'Same label'; });
+  const markerAttribute = 'data-babel-helper-selection-loop-host';
+  const hosts = model.tracks.map((track, index) => Object.assign(new FakeHTMLElement(), {
+    isConnected: true, marker: `preview-${index}`, getRootNode: () => pageWindow.document,
+    getAttribute(name) { return name === markerAttribute ? this.marker : null; },
+    contains(element) { return element === this; },
+    __reactFiber$selection: { memoizedProps: { track }, return: model.workbench }
+  }));
+  const makeWave = (host, index) => ({
+    container: host, options: { minPxPerSec: 100, url: `lane-${index}.wav` },
+    getCurrentTime() { return 0; }, getDuration() { return 12; },
+    setOptions(options) { Object.assign(this.options, options); }
+  });
+  const registry = Object.fromEntries(model.tracks.map((track, index) =>
+    [track.id, { wavesurfer: makeWave(hosts[index], index) }]));
+  model.workbench.memoizedState.next = { memoizedState: { current: registry } };
+  const originalQuery = pageWindow.document.querySelectorAll;
+  pageWindow.document.querySelectorAll = selector => selector === `[${markerAttribute}]`
+    ? hosts.filter(host => host.isConnected) : originalQuery(selector);
+  pageWindow.document.querySelector = selector =>
+    hosts.find(host => host.isConnected && selector === `[${markerAttribute}="${host.marker}"]`) || null;
+  await importBundledTs('src/site/page-waveforms.ts', 'selection-native-magnifier');
+  const services = pageWindow.BabelMods.unsafe.services;
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const capture = () => services.invoke('page.magnifier', 'measureSelectionTimeRange',
+    'preview-1', 200, 340, { captureTarget: true });
+  const measured = capture();
+  assert.equal(measured.ok, true);
+  assert.equal(measured.selectionTarget.processedRecordingId, 'recording-b');
+  assert.deepEqual(measured.bounds.map(turn => turn.annotationId), ['overlap-1']);
+  const target = { selectionTarget: measured.selectionTarget, processedRecordingId: 'recording-b' };
+  assert.equal((await bridge.splitSegmentAtTime({ ...target, annotationId: 'overlap-0', splitSeconds: 3 })).reason, 'row-not-found');
+  const split = await bridge.splitSegmentAtTime({ ...target, annotationId: 'overlap-1', splitSeconds: 3,
+    sourceText: originals[1].content, texts: ['Lane 1 ', '[смех] text'] });
+  assert.equal(split.ok, true);
+  assert.equal(model.state.annotations.find(turn => turn.id === originals[0].id), originals[0]);
+  assert.deepEqual(model.state.annotations.filter(turn => turn.processedRecordingId === 'recording-b')
+    .map(turn => turn.content), ['Lane 1 ', '[смех] text']);
+  const undo = await bridge.undoTranscript({ expectedHistoryRevision: split.historyRevision,
+    expectedHistoryToken: split.historyToken });
+  assert.equal(undo.ok, true);
+  assert.deepEqual(model.state.annotations, originals);
+  model.state.mutations.length = 0;
+  for (const [method, options] of [
+    ['splitSegmentAtTime', { splitSeconds: 3 }],
+    ['setBoundaryTime', { side: 'left', targetSeconds: 2 }],
+    ['deleteSegment', {}]
+  ]) {
+    for (const change of ['recording', 'wave', 'source', 'disconnected', 'ambiguous']) {
+      hosts[1].isConnected = true;
+      hosts[0].marker = 'preview-0';
+      hosts[1].__reactFiber$selection.memoizedProps.track = model.tracks[1];
+      registry['recording-b'].wavesurfer = makeWave(hosts[1], 1);
+      const selectionTarget = capture().selectionTarget;
+      assert.ok(selectionTarget);
+      const pending = bridge[method]({ selectionTarget, processedRecordingId: 'recording-b',
+        annotationId: 'overlap-1', startSeconds: 1, endSeconds: 5, ...options });
+      queueMicrotask(() => {
+        if (change === 'recording') hosts[1].__reactFiber$selection.memoizedProps.track = model.tracks[0];
+        if (change === 'wave') registry['recording-b'].wavesurfer = makeWave(hosts[1], 1);
+        if (change === 'source') registry['recording-b'].wavesurfer.options.url = 'replaced.wav';
+        if (change === 'disconnected') hosts[1].isConnected = false;
+        if (change === 'ambiguous') hosts[0].marker = 'preview-1';
+      });
+      const result = await pending;
+      assert.equal(result.ok, false, `${method}: ${change}`);
+      assert.match(result.reason, /^(stale-selection-source|missing-selection-host|ambiguous-selection-host)$/);
+      assert.deepEqual(model.state.annotations, originals);
+      assert.deepEqual(model.state.mutations, []);
     }
   }
+});
+
+test('timestamp commit verification uses one deadline and releases its owned subscription on commit and teardown', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'timestamp-commit-notifications');
+  const original = { id: 'pending-commit', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Committed text' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const editor = { children: [{ children: [{ text: 'Pending raw [смех] text' }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} },
+    child: { memoizedProps: { editor } } };
+  const delays = [];
+  pageWindow.setTimeout = (callback, delay) => { delays.push(delay); return setTimeout(callback, delay); };
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  let completed = false;
+  const pending = bridge.flushTranscript().then(result => { completed = true; return result; });
+  assert.equal(typeof Object.getOwnPropertyDescriptor(model.root.stateNode, 'current').set, 'function');
+  assert.equal(delays.length, 1);
+  assert.ok(delays[0] > 0 && delays[0] <= 1600);
+  model.state.annotations = [{ ...original, content: editor.children[0].children[0].text }];
+  model.panel.memoizedProps.annotations = model.state.annotations;
+  model.transcript.memoizedProps.turns = model.state.annotations;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false, 'an unannounced props write is not a native commit notification');
+  model.commit();
+  assert.equal((await pending).ok, true);
+  assert.equal(delays.length, 1, 'commit verification must not schedule polling ticks');
+  assert.equal(Object.getOwnPropertyDescriptor(model.root.stateNode, 'current').value, model.root);
+  editor.children[0].children[0].text = 'Another pending edit';
+  const cancelled = bridge.deleteSegment({ annotationId: original.id });
+  assert.equal(delays.length, 2);
+  pageWindow.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
+  assert.equal((await cancelled).reason, 'bridge-disposed');
+  assert.equal(Object.getOwnPropertyDescriptor(model.root.stateNode, 'current').value, model.root);
+  assert.deepEqual(model.state.mutations, []);
+  assert.equal(model.state.annotations[0].content, 'Pending raw [смех] text');
+});
+
+test('timestamp subscription failure is explicit and preserves a native command receipt without replay', async t => {
+  const pageWindow = await loadTimestampBridge(t, 'timestamp-unavailable-commit-hook');
+  const original = { id: 'subscription-failure', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 5, content: 'Source text' };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const editor = { children: [{ children: [{ text: 'Pending edit' }] }], apply() {}, insertData() {} };
+  model.transcript.child = { memoizedProps: { turn: original, handlers: {} },
+    child: { memoizedProps: { editor } } };
+  Object.defineProperty(model.root.stateNode, 'current', { writable: false });
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const blocked = await bridge.deleteSegment({ annotationId: original.id });
+  assert.equal(blocked.reason, 'native-commit-subscription-failed');
+  assert.equal(blocked.historyRevision, 0);
+  assert.deepEqual(model.state.mutations, []);
+  model.transcript.child = null;
+  let invocations = 0;
+  let pendingAnnotations = model.state.annotations;
+  model.panel.memoizedProps.onChangeAnnotationTime = (id, range) => {
+    invocations++;
+    // Native history can commit before React publishes the changed annotation.
+    const previous = pendingAnnotations;
+    const next = previous.map(turn => turn.id === id ? { ...turn, endTimeInSeconds: range.end } : turn);
+    model.history.executeAndPush({ do() { pendingAnnotations = next; }, undo() { pendingAnnotations = previous; } });
+  };
+  const result = await bridge.setBoundaryTime({ annotationId: original.id, targetSeconds: 4 });
+  assert.equal(result.reason, 'native-commit-subscription-failed');
+  assert.equal(result.previousHistoryRevision, 0);
+  assert.equal(result.historyRevision, 1);
+  assert.notEqual(result.historyToken, result.previousHistoryToken);
+  assert.equal(result.historyToken, bridge.snapshotTranscript().historyToken);
+  assert.equal(invocations, 1);
+  assert.equal(model.state.annotations[0], original);
+  assert.equal(pendingAnnotations[0].endTimeInSeconds, 4);
+});
+
+test('timestamp missing responses and bridge teardown fail explicitly without replaying requests', async t => {
+  const { registerTimestampEditService } = await importBundledTs(
+    'src/features/timestamp-edit-feature.ts', 'timestamp-missing-response');
+  let requests = 0;
+  let started = Promise.withResolvers();
+  let reply = Promise.withResolvers();
+  installTimestampMutationHarness(t, () => {
+    requests++;
+    started.resolve();
+    return reply.promise;
+  });
+  const helper = rowHelper(() => []);
+  helper.sleep = () => assert.fail('A missing native response must not trigger a retry');
+  registerTimestampEditService(helper);
+  const timeout = await helper.deleteSegmentWithNativeAction({ annotationId: 'exact-turn' });
+  assert.equal(timeout.reason, 'bridge-response-timeout');
+  assert.equal(requests, 1);
+  started = Promise.withResolvers();
+  reply = Promise.withResolvers();
+  const pending = helper.deleteSegmentWithNativeAction({ annotationId: 'exact-turn' });
+  await started.promise;
+  window.dispatchEvent(new FakeCustomEvent('babel-helper-bridge-teardown'));
+  const receipt = { ok: false, reason: 'bridge-disposed', previousHistoryRevision: 0, historyRevision: 1,
+    previousHistoryToken: 'before', historyToken: 'owned-native-command' };
+  reply.resolve(receipt);
+  const cancelled = await pending;
+  assert.equal(cancelled.reason, 'bridge-disposed');
+  assert.deepEqual(cancelled.verification, receipt);
+  assert.equal(cancelled.historyToken, receipt.historyToken);
+  assert.equal(requests, 2, 'only the two explicit caller commands were dispatched');
 });

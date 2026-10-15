@@ -164,6 +164,40 @@ test('Escape executes focused/unfocused pause/restore states with proportional f
   expect((await textSelection(editor))[0]).toBe(0);
 });
 
+test('native playback crosses an empty gap and restores into the next segment', async ({ page, babel }, testInfo) => {
+  const { action } = await babel.state();
+  await babel.reset('baseline', { action: { annotations: action.annotations.map((turn, index) => ({
+    ...turn,
+    startTimeInSeconds: [0.5, 2.6, 6, 8][index],
+    endTimeInSeconds: [1.2, 4.5, 7, 9][index]
+  })) } });
+  await ready(page);
+  const before = await rows(page);
+  const first = page.locator(TEXT).nth(0);
+  const next = page.locator(TEXT).nth(1);
+  const ghost = page.locator('[data-babel-helper-ghost-cursor]');
+  await seek(page, 0.8);
+  await selectText(first, 0);
+  await page.keyboard.press('Escape');
+  await expect.poll(async () => (await audio(page))[0].currentTime).toBeGreaterThan(1.5);
+  await expect(ghost).toBeVisible();
+  const firstBox = await first.boundingBox();
+  const gapBox = await ghost.boundingBox();
+  expect(gapBox.y).toBeGreaterThanOrEqual(firstBox.y);
+  expect(gapBox.y + gapBox.height).toBeLessThanOrEqual(firstBox.y + firstBox.height + 1);
+  await expect.poll(async () => {
+    const marker = await ghost.boundingBox();
+    const target = await next.boundingBox();
+    return marker && target && marker.y >= target.y && marker.y < target.y + target.height;
+  }).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(next).toBeFocused();
+  await expect.poll(async () => (await audio(page))[0].playing).toBe(false);
+  expect(await rows(page)).toEqual(before);
+  await expect(page.locator('[id^="babel-helper-native-failure-"]')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('native-gap-transition.png') });
+});
+
 test('stopping playback seeks to the ghost cursor inside an oversized wrapped row', async ({ page, babel }) => {
   const { action } = await babel.state();
   await babel.reset('baseline', {
@@ -243,6 +277,10 @@ test('L loops an Alt-drag audio selection and cancelling releases the loop witho
   await expect(page.locator(PREVIEW)).toBeVisible();
   await page.keyboard.press('KeyL');
   await expect.poll(async () => (await audio(page))[0].playing).toBe(true);
+  await expect.poll(async () => (await audio(page))[0].currentTime).toBeGreaterThan(1.8);
+  await expect.poll(async () => (await audio(page))[0].currentTime, { intervals: [30] }).toBeLessThan(1.1);
+  await page.keyboard.press('Shift+Digit1');
+  await expect.poll(async () => (await audio(page)).map(track => track.playbackRate)).toEqual([1.5, 1.5]);
   await expect.poll(async () => (await audio(page))[0].currentTime).toBeGreaterThan(1.8);
   await expect.poll(async () => (await audio(page))[0].currentTime, { intervals: [30] }).toBeLessThan(1.1);
   expect(await rows(page)).toEqual(before);

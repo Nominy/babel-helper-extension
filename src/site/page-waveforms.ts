@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { readAudioEnhancementState, readBabelPlaybackBindings, readBabelTrackBindings, readBabelTranscriptBindings, sleep } from '@nominy/babel-babel-runtime';
+import { AUDIO_ENHANCEMENT_STATE_EVENT, readAudioEnhancementState, readBabelPlaybackBindings, readBabelTrackBindings, readBabelTranscriptBindings, sleep, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
 
 export function initMagnifierBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -25,6 +25,7 @@ export function initMagnifierBridge() {
   const LOOP_HOST_ATTR = 'data-babel-helper-selection-loop-host';
   const instances = new Map();
   const loops = new Map();
+  const selectionTargets = new WeakMap();
   const MAX_CANDIDATES = 12;
   const WAVEFORM_SCALE_SELECTOR = '[role="slider"][data-orientation="vertical"]';
   const WAVEFORM_SCALE_PATCH_ATTR = 'data-babel-helper-waveform-scale-max';
@@ -796,7 +797,47 @@ export function initMagnifierBridge() {
     return Number.isFinite(optionValue) && optionValue > 0 ? optionValue : 0;
   }
 
-  function measureSelectionTimeRange(hostMarker, leftPx, rightPx) {
+  function resolveSelectionHost(hostMarker) {
+    if (typeof hostMarker !== 'string' || !hostMarker) return { ok: false, reason: 'missing-selection-host' };
+    const hosts = Array.from(document.querySelectorAll('[' + LOOP_HOST_ATTR + ']'))
+      .filter(host => host.getAttribute(LOOP_HOST_ATTR) === hostMarker && host.isConnected);
+    if (hosts.length !== 1) return { ok: false, reason: hosts.length ? 'ambiguous-selection-host' : 'missing-selection-host' };
+    const host = hosts[0];
+    const binding = readBabelTranscriptBindings();
+    const processedRecordingId = getTrackIdFromTrack(getTrackPropsForHost(host)?.track);
+    if (!binding || !processedRecordingId ||
+        binding.tracks.filter(track => track.id === processedRecordingId).length !== 1) {
+      return { ok: false, reason: 'missing-selection-recording' };
+    }
+    const waves = (readBabelPlaybackBindings()?.waves || []).filter(wave => {
+      const container = getCandidateContainer(wave);
+      return (container === host || container?.getRootNode?.().host === host) && isUsableWaveCandidate(wave, host);
+    });
+    if (waves.length !== 1) return { ok: false, reason: waves.length ? 'ambiguous-selection-wave' : 'missing-selection-wave' };
+    const wave = waves[0];
+    const media = safe(() => wave.getMediaElement(), null);
+    return { ok: true, host, wave, binding, processedRecordingId,
+      source: media?.currentSrc || media?.src || wave.options?.url || '',
+      audioVariantKey: readAudioEnhancementState()?.variantKey || '' };
+  }
+
+  function validateSelectionTarget(target) {
+    const resolved = resolveSelectionHost(target?.hostMarker);
+    if (!resolved.ok) return resolved;
+    const captured = selectionTargets.get(resolved.host);
+    if (!captured || captured.token !== target?.token ||
+        captured.processedRecordingId !== target?.processedRecordingId ||
+        captured.reviewActionId !== target?.reviewActionId ||
+        resolved.processedRecordingId !== captured.processedRecordingId ||
+        resolved.binding.reviewActionId !== captured.reviewActionId ||
+        resolved.wave !== captured.wave || resolved.source !== captured.source ||
+        resolved.audioVariantKey !== captured.audioVariantKey) {
+      return { ok: false, reason: 'stale-selection-source' };
+    }
+    return { ok: true, processedRecordingId: captured.processedRecordingId, reviewActionId: captured.reviewActionId };
+  }
+
+  function measureSelectionTimeRange(hostMarker, leftPx, rightPx, options) {
     const host = findLoopHostElement(hostMarker) || findHostElement(hostMarker);
     if (!(host instanceof HTMLElement)) {
       return {
@@ -813,6 +854,25 @@ export function initMagnifierBridge() {
         ok: false,
         reason: 'missing-wave'
       };
+    }
+
+    let selectionTarget = null;
+    let laneBinding = null;
+    if (options?.captureTarget || options?.selectionTarget) {
+      const resolved = resolveSelectionHost(hostMarker);
+      if (!resolved.ok) return resolved;
+      if (resolved.host !== host || resolved.wave !== wave) return { ok: false, reason: 'ambiguous-selection-wave' };
+      if (options.captureTarget) {
+        selectionTarget = { hostMarker, token: crypto.randomUUID(),
+          processedRecordingId: resolved.processedRecordingId, reviewActionId: resolved.binding.reviewActionId };
+        selectionTargets.set(host, { ...selectionTarget, wave, source: resolved.source, audioVariantKey: resolved.audioVariantKey });
+      } else {
+        selectionTarget = options.selectionTarget;
+        if (selectionTarget.hostMarker !== hostMarker) return { ok: false, reason: 'stale-selection-source' };
+        const valid = validateSelectionTarget(selectionTarget);
+        if (!valid.ok) return valid;
+      }
+      laneBinding = resolved.binding;
     }
 
     const startPx = Number(leftPx);
@@ -848,6 +908,12 @@ export function initMagnifierBridge() {
 
     return {
       ok: true,
+      ...(selectionTarget ? { selectionTarget, bounds: laneBinding.annotations
+        .filter(turn => turn.type === 'transcription' && turn.processedRecordingId === selectionTarget.processedRecordingId)
+        .map(turn => ({ annotationId: turn.id, processedRecordingId: turn.processedRecordingId,
+          startSeconds: turn.startTimeInSeconds, endSeconds: turn.endTimeInSeconds,
+          leftPx: turn.startTimeInSeconds * pixelsPerSecond, rightPx: turn.endTimeInSeconds * pixelsPerSecond }))
+        .sort((left, right) => left.leftPx - right.leftPx) } : {}),
       startSeconds: clamp(startSeconds, 0, duration > 0 ? duration : startSeconds),
       endSeconds: clamp(endSeconds, 0, duration > 0 ? duration : endSeconds),
       pixelsPerSecond
@@ -3800,28 +3866,25 @@ export function initMagnifierBridge() {
     };
   }
 
-  function playWaveRange(wave, start, end) {
-    if (!wave || typeof wave.play !== 'function') {
-      return;
-    }
 
-    try {
-      const result = wave.play(start, end);
-      if (result && typeof result.catch === 'function') {
-        result.catch(() => {});
-      }
-    } catch (error) {
-      // Ignore playback exceptions; caller will surface a bridge failure if needed.
-    }
-  }
-
-  function stopLoop(hostMarker) {
+  function stopLoop(hostMarker, reason = 'stopped', message = '') {
     const loop = loops.get(hostMarker);
-    if (loop && loop.timer) {
-      clearInterval(loop.timer);
-    }
+    if (!loop) return { ok: true };
     loops.delete(hostMarker);
-    return { ok: true };
+    const errors = [];
+    for (const unsubscribe of loop.subscriptions.splice(0)) {
+      try { unsubscribe(); } catch (error) { errors.push(String(error)); }
+    }
+    if (reason === 'user-pause' || reason === 'loop-playback-failed') {
+      for (const wave of loop.waves) {
+        try { wave.pause(); } catch (error) { errors.push(String(error)); }
+      }
+    }
+    window.dispatchEvent(new CustomEvent('babel-helper-selection-loop-state', {
+      detail: { hostMarker, reason: errors.length ? 'loop-cleanup-failed' : reason,
+        message: errors.length ? errors.join('; ') : message }
+    }));
+    return errors.length ? { ok: false, reason: 'loop-cleanup-failed', message: errors.join('; ') } : { ok: true };
   }
 
   function getZoomSliderElement() {
@@ -4449,88 +4512,157 @@ export function initMagnifierBridge() {
     };
   }
 
-  function startLoop(hostMarker, start, end) {
+  async function startLoop(hostMarker, start, end) {
     const reviewActionId = readBabelPlaybackBindings()?.reviewActionId;
     if (!reviewActionId) return { ok: false, reason: 'missing-task' };
     const audioVariantKey = readAudioEnhancementState()?.variantKey || '';
+    const rateCorrectionIntent = Symbol.for('babel-helper-native-rate-correction');
     const startSeconds = Number(start);
     const endSeconds = Number(end);
     if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
       return { ok: false, reason: 'invalid-range' };
     }
-
     const resolved = getLoopWaveSet(hostMarker);
-    if (!resolved) {
-      return { ok: false, reason: 'missing-wave' };
-    }
-
-    stopLoop(hostMarker);
-
+    if (!resolved) return { ok: false, reason: 'missing-wave' };
+    const previous = stopLoop(hostMarker);
+    if (!previous.ok) return previous;
     const loop = {
-      hostMarker,
-      wave: resolved.wave,
-      waves: resolved.waves,
-      startSeconds,
-      endSeconds,
-      lastTime: Number(safe(() => resolved.wave.getCurrentTime(), startSeconds)) || startSeconds,
-      internalSeekUntil: 0,
-      timer: null
+      hostMarker, host: resolved.host, wave: resolved.wave, waves: resolved.waves,
+      startSeconds, endSeconds, subscriptions: [], expectedSeeks: new Map(),
+      restarting: false, internalTransport: false
     };
-
-    for (const wave of loop.waves) {
-      playWaveRange(wave, loop.startSeconds, loop.endSeconds);
-    }
-    loop.lastTime = loop.startSeconds;
-
-    loop.timer = setInterval(() => {
-      if (readBabelPlaybackBindings()?.reviewActionId !== reviewActionId) {
-        stopLoop(hostMarker);
-        return;
-      }
-      if (loops.get(hostMarker) !== loop) {
-        return;
-      }
-      if ((readAudioEnhancementState()?.variantKey || '') !== audioVariantKey) {
-        stopLoop(hostMarker);
-        return;
-      }
-
-      const currentTime = Number(safe(() => loop.wave.getCurrentTime(), NaN));
-      if (!Number.isFinite(currentTime)) {
-        return;
-      }
-
-      const now = Date.now();
-      const delta = currentTime - loop.lastTime;
-      if (now > loop.internalSeekUntil) {
-        if (currentTime < loop.startSeconds - 0.08 || currentTime > loop.endSeconds + 0.08) {
-          stopLoop(hostMarker);
+    const active = () => loops.get(hostMarker) === loop;
+    const cancel = (reason, message = '') => {
+      if (active()) stopLoop(hostMarker, reason, message);
+    };
+    const fail = (error) => {
+      if (active()) stopLoop(hostMarker, 'loop-playback-failed', String(error?.message || error));
+    };
+    const validate = () => {
+      if (!active()) return;
+      try {
+        if (readBabelPlaybackBindings()?.reviewActionId !== reviewActionId) {
+          cancel('task-changed');
           return;
         }
-
-        if (delta < -0.08 || delta > 0.35) {
-          stopLoop(hostMarker);
+        if ((readAudioEnhancementState()?.variantKey || '') !== audioVariantKey) {
+          cancel('source-changed');
           return;
         }
+        const current = getLoopWaveSet(hostMarker);
+        if (!loop.host.isConnected || !current || current.host !== loop.host ||
+            current.wave !== loop.wave || current.waves.length !== loop.waves.length ||
+            current.waves.some((wave) => !loop.waves.includes(wave))) cancel('membership-changed');
+      } catch (error) {
+        cancel('loop-validation-failed', String(error?.message || error));
       }
-
-      if (currentTime >= loop.endSeconds - 0.03) {
-        loop.internalSeekUntil = now + 220;
-        for (const wave of loop.waves) {
-          playWaveRange(wave, loop.startSeconds, loop.endSeconds);
-        }
-        loop.lastTime = loop.startSeconds;
-        return;
+    };
+    const restart = async () => {
+      if (!active() || loop.restarting) return;
+      loop.restarting = true;
+      try {
+        // Invoke both native transports in the same turn, then await both.
+        loop.internalTransport = true;
+        const plays = loop.waves.map((wave) => {
+          loop.expectedSeeks.set(wave, startSeconds);
+          // Native range-end playback emits pause; own the end boundary here
+          // so a real user pause always cancels instead of replaying a toggle.
+          try {
+            const play = wave.play(startSeconds);
+            // WebAudioPlayer emits all seeking/reactive callbacks inline and
+            // never emits seeked. HTMLMediaElement keeps seeking true until
+            // its asynchronous seeked event; retain ownership until then.
+            if (!wave.getMediaElement().seeking) loop.expectedSeeks.delete(wave);
+            return Promise.resolve(play);
+          } catch (error) { return Promise.reject(error); }
+        });
+        loop.internalTransport = false;
+        await Promise.all(plays);
+      } finally {
+        loop.internalTransport = false;
+        loop.restarting = false;
       }
-
-      loop.lastTime = currentTime;
-    }, 40);
-
+    };
+    const wrap = () => {
+      if (active() && !loop.restarting) void restart().catch(fail);
+    };
     loops.set(hostMarker, loop);
-
-    return {
-      ok: true
-    };
+    try {
+      for (const wave of loop.waves) {
+        if (typeof wave.on !== 'function' || typeof wave.un !== 'function' ||
+            typeof wave.play !== 'function' || typeof wave.pause !== 'function' ||
+            typeof wave.getCurrentTime !== 'function' || typeof wave.getMediaElement !== 'function' ||
+            typeof wave.getDuration !== 'function') throw new Error('Native loop events unavailable');
+        const duration = Number(wave.getDuration());
+        if (!Number.isFinite(duration) || endSeconds > duration) throw new Error('Loop exceeds native audio duration');
+        const media = wave.getMediaElement();
+        if (!media || typeof media.addEventListener !== 'function' ||
+            typeof media.removeEventListener !== 'function') throw new Error('Native loop media events unavailable');
+        const onSourceChange = () => cancel('source-changed');
+        const onSeeked = () => loop.expectedSeeks.delete(wave);
+        media.addEventListener('seeked', onSeeked);
+        media.addEventListener('emptied', onSourceChange);
+        media.addEventListener('loadstart', onSourceChange);
+        loop.subscriptions.push(() => {
+          media.removeEventListener('emptied', onSourceChange);
+          media.removeEventListener('loadstart', onSourceChange);
+          media.removeEventListener('seeked', onSeeked);
+        });
+        const on = (event, listener) => {
+          // Register cleanup before subscribing, including subscriptions that throw.
+          loop.subscriptions.push(() => wave.un(event, listener));
+          const off = wave.on(event, listener);
+          if (typeof off !== 'function') throw new Error('Native loop unsubscribe unavailable: ' + event);
+          loop.subscriptions[loop.subscriptions.length - 1] = off;
+        };
+        const ownsRateCorrection = () => {
+          const time = wave[rateCorrectionIntent];
+          if (!Number.isFinite(time)) return false;
+          // Only installNativeSpeedFix's scoped corrective command owns this
+          // seek. Preserve its native events for other playback consumers.
+          if (media.seeking) loop.expectedSeeks.set(wave, time);
+          return true;
+        };
+        on('timeupdate', (time) => {
+          if (!active() || loop.internalTransport || loop.restarting || ownsRateCorrection() || media.seeking) return;
+          if (!loop.host.isConnected) { cancel('membership-changed'); return; }
+          if (!Number.isFinite(time)) { fail(new Error('Native loop time unavailable')); return; }
+          if (time >= endSeconds) wrap();
+        });
+        on('finish', wrap);
+        on('seeking', () => {
+          // Native reactive state emits stale and duplicate seeking values
+          // while play(start) sets currentTime. Own the operation, not a
+          // single event or an arbitrary wall-clock grace period.
+          if (!active() || loop.internalTransport || ownsRateCorrection()) return;
+          const expected = loop.expectedSeeks.get(wave);
+          if (expected !== undefined && media.seeking &&
+              Math.abs(wave.getCurrentTime() - expected) < 0.001) return;
+          cancel('user-seek');
+        });
+        on('interaction', () => cancel('user-seek'));
+        on('pause', () => {
+          if (!active() || loop.internalTransport) return;
+          // At the physical media end WaveSurfer emits pause before finish.
+          // Defer only to that native finish event, never to a timer.
+          if (wave.getCurrentTime() >= wave.getDuration()) return;
+          cancel('user-pause');
+        });
+        on('destroy', () => cancel('waveform-destroyed'));
+        on('load', () => cancel('source-changed'));
+        on('error', (error) => fail(error));
+      }
+      loop.subscriptions.push(subscribeBabelEditorCommits(validate));
+      window.addEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, validate);
+      loop.subscriptions.push(() => window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, validate));
+      validate();
+      if (!active()) return { ok: false, reason: 'loop-invalidated' };
+      await restart();
+      return active() ? { ok: true } : { ok: false, reason: 'loop-cancelled' };
+    } catch (error) {
+      fail(error);
+      return { ok: false, reason: 'loop-playback-failed', message: String(error?.message || error) };
+    }
   }
 
   const magnifierService = {
@@ -4539,6 +4671,7 @@ export function initMagnifierBridge() {
     destroyLens,
     startLoop,
     measureSelectionTimeRange,
+    validateSelectionTarget,
     findTrimTargets,
     findSegmentSilenceRuns,
     findNearestSpeechIsland,
@@ -4632,14 +4765,11 @@ export function initMagnifierBridge() {
     }
 
     if (operation === 'loop-start') {
-      respond(
-        id,
-        invokeMagnifierService(
-          'startLoop',
-          payload.hostMarker,
-          payload.startSeconds,
-          payload.endSeconds
-        )
+      Promise.resolve().then(() => invokeMagnifierService(
+        'startLoop', payload.hostMarker, payload.startSeconds, payload.endSeconds
+      )).then(
+        (result) => respond(id, result),
+        (error) => respond(id, { ok: false, reason: 'loop-playback-failed', message: String(error) })
       );
       return;
     }
@@ -4651,7 +4781,8 @@ export function initMagnifierBridge() {
           'measureSelectionTimeRange',
           payload.hostMarker,
           payload.leftPx,
-          payload.rightPx
+          payload.rightPx,
+          { captureTarget: payload.captureTarget, selectionTarget: payload.selectionTarget }
         )
       );
       return;
@@ -4872,7 +5003,7 @@ export function initMagnifierBridge() {
       destroyLens(id);
     }
     for (const hostMarker of Array.from(loops.keys())) {
-      stopLoop(hostMarker);
+      stopLoop(hostMarker, 'bridge-disposed');
     }
     for (const record of Array.from(promptSessions.values())) {
       destroyPromptSessionRecord(record);

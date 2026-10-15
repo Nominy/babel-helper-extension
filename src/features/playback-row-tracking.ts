@@ -4,8 +4,8 @@ import { getEditorControlFromTarget } from '../site/editor-control';
 
 export function registerPlaybackRowTracking(helper: any) {
   const isFeatureEnabled = (key) => helper.isFeatureEnabled?.(key) ?? true;
+  let unsubscribePlayback = null;
   let trackingGeneration = 0;
-  let playbackSyncRequested = false;
   function handleRowFocusIn(event) {
     if (!helper.runtime.isSessionInteractive()) {
       return;
@@ -171,66 +171,17 @@ export function registerPlaybackRowTracking(helper: any) {
     });
   }
 
-  function clearPlaybackRowSyncTimer() {
-    if (helper.state.playbackRowSyncTimer != null) {
-      window.clearTimeout(helper.state.playbackRowSyncTimer);
-      helper.state.playbackRowSyncTimer = null;
-    }
-  }
-
-  function handlePlaybackVisibilityChange() {
-    clearPlaybackRowSyncTimer();
-    playbackSyncRequested = !document.hidden && helper.state.playbackRowSyncInFlight;
-    if (!document.hidden) schedulePlaybackRowSync();
-  }
-
-  function getPlaybackSyncDelay(result) {
-    if (!helper.runtime.isSessionInteractive()) {
-      return 2000;
-    }
-    if (result && result.playback && result.playback.paused === false) {
-      return 250;
-    }
-    return 1250;
-  }
-
-  function schedulePlaybackRowSync(delay = 0) {
-    if (
-      !helper.state.rowTrackingBound ||
-      document.hidden ||
-      helper.state.playbackRowSyncInFlight ||
-      typeof helper.syncCurrentRowToPlayback !== 'function'
-    ) {
+  function handlePlaybackSample(playback) {
+    if (!helper.state.rowTrackingBound || document.hidden) return;
+    if (playback?.fatal) {
+      unsubscribePlayback?.();
+      unsubscribePlayback = null;
+      helper.stopGhostCursor?.();
       return;
     }
-
-    clearPlaybackRowSyncTimer();
-    const generation = trackingGeneration;
-    helper.state.playbackRowSyncTimer = window.setTimeout(() => {
-      helper.state.playbackRowSyncTimer = null;
-      if (generation !== trackingGeneration || !helper.state.rowTrackingBound || document.hidden) return;
-      if (
-        helper.state.playbackRowSyncInFlight ||
-        typeof helper.syncCurrentRowToPlayback !== 'function'
-      ) {
-        return;
-      }
-
-      helper.state.playbackRowSyncInFlight = true;
-      helper.perf?.count?.('playback.sync.tick');
-      let nextDelay = 1250;
-      void helper.syncCurrentRowToPlayback()
-        .then((result) => {
-          if (generation !== trackingGeneration) return;
-          nextDelay = getPlaybackSyncDelay(result);
-        })
-        .finally(() => {
-          if (generation !== trackingGeneration) return;
-          helper.state.playbackRowSyncInFlight = false;
-          schedulePlaybackRowSync(playbackSyncRequested ? 0 : nextDelay);
-          playbackSyncRequested = false;
-        });
-    }, delay);
+    if (!helper.runtime.isSessionInteractive()) return;
+    helper.perf?.count?.('playback.sync.tick');
+    helper.syncCurrentRowToPlayback?.(playback);
   }
 
   helper.bindRowTracking = function bindRowTracking() {
@@ -246,16 +197,24 @@ export function registerPlaybackRowTracking(helper: any) {
     document.addEventListener('mousedown', handleTimestampWordSeekClick, true);
     document.addEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.addEventListener('click', handleTimestampWordSeekClick, true);
-    document.addEventListener('visibilitychange', handlePlaybackVisibilityChange);
     helper.state.rowTrackingBound = true;
-    trackingGeneration += 1;
-    schedulePlaybackRowSync();
+    const generation = ++trackingGeneration;
+    try {
+      if (typeof helper.subscribePlayback !== 'function') throw new Error('Native playback subscription is unavailable');
+      unsubscribePlayback = helper.subscribePlayback(sample => {
+        if (generation === trackingGeneration) handlePlaybackSample(sample);
+      });
+    } catch (error) {
+      helper.reportPlaybackFailure?.({ reason: 'native-playback-subscription-failed', message: String(error) });
+      helper.stopGhostCursor?.();
+    }
     helper.perf?.count?.('row-tracking.bound');
   };
 
   helper.unbindRowTracking = function unbindRowTracking() {
     trackingGeneration += 1;
-    playbackSyncRequested = false;
+    unsubscribePlayback?.();
+    unsubscribePlayback = null;
     helper.stopGhostCursor?.();
     helper.state.ghostCursorLaneLock = null;
     helper.cancelSpeakerWorkflow?.();
@@ -277,9 +236,6 @@ export function registerPlaybackRowTracking(helper: any) {
     document.removeEventListener('mousedown', handleTimestampWordSeekClick, true);
     document.removeEventListener('mouseup', handleTimestampWordSeekClick, true);
     document.removeEventListener('click', handleTimestampWordSeekClick, true);
-    document.removeEventListener('visibilitychange', handlePlaybackVisibilityChange);
-    clearPlaybackRowSyncTimer();
-    helper.state.playbackRowSyncInFlight = false;
     helper.state.lastPlaybackRow = null;
     helper.state.lastPlaybackRowIdentity = null;
     helper.state.rowTrackingBound = false;

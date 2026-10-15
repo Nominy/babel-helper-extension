@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { findBabelEditorFiber, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
+import { findBabelEditorFiber, subscribeBabelEditorCommits, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
 import { BABEL_EDITOR_CONTRACT_VERSION } from '../core/babel-editor-contract';
 import {
   findNativeDescendant, findNativeTurnFiber, readNativeTurn, readNativeSlateSelection, replaceNativeTurn, selectNativeSlate, nativeDomPointOffset,
@@ -7,6 +7,20 @@ import {
 } from './native-transcript';
 import { SEGMENT_CLICK_SEEK_ATTRIBUTE } from '../features/native-segment-click-seek-feature';
 import { handleNativeTagDropdownKeydown } from './native-tag-dropdown-keyboard';
+import { installNativeMergePolicy } from './native-merge-policy';
+import {
+  getNativeReplacementStatus, runNativeReplacementRules, recoverNativeReplacementRules,
+  invalidateNativeReplacementSession, installNativeReplacementTracking
+} from './native-find-replace';
+import { NATIVE_COMPATIBILITY_CHANGE_EVENT, NATIVE_MERGE_GAPS_ATTRIBUTE, NATIVE_FIND_REPLACE_ATTRIBUTE } from '../core/native-compatibility';
+import { showNativeAutomationFailure } from '../ui/native-automation-failure';
+
+const REPLACEMENT_METHODS = {
+  'native-replacement-status': 'getNativeReplacementStatus',
+  'run-native-replacement-rules': 'runNativeReplacementRules',
+  'recover-native-replacement-rules': 'recoverNativeReplacementRules'
+};
+const NATIVE_ACTIVATION_KEYS = ['onActivate', 'onSelect'];
 
 export function initRecoveredEditorBridge() {
   const TEARDOWN_EVENT = 'babel-helper-bridge-teardown';
@@ -21,15 +35,184 @@ export function initRecoveredEditorBridge() {
   let extendedDiffPatch = null;
   let extendedDiffFetchPatch = null;
   const extendedDiffQueryRecords = new Map();
+  let extendedDiffEditorFiber = null;
+  let extendedDiffEditorGeneration = 0;
   let nativeActivationPatch = null;
   if (existingBridge && typeof existingBridge.dispose === 'function') {
     existingBridge.dispose();
   }
 
+  const SESSION_EVENT = 'babel-helper:native-session-change';
+  const SESSION_ATTRIBUTE = 'data-babel-helper-native-session';
+  const ROUTE_EVENT = 'babel-helper:native-route-change';
+  const SESSION_GENERATION = Symbol.for('babel-helper.native-session-generation');
+  let sessionRoot = null;
+  let sessionSurface = null;
+  let sessionUnsubscribe = null;
+  let sessionGeneration = Number(window[SESSION_GENERATION]) || 0;
+  let sessionInitialized = false;
+  let sessionError = '';
+  let publishedSession = '';
+  const historyPatches = [];
+  let mergePolicy = null;
+  let replacementTracking = null;
+  let mergePolicyFailed = false;
+  let replacementTrackingFailed = false;
+
+  function retireNativeCompatibility() {
+    const merge = mergePolicy, stopTracking = replacementTracking;
+    mergePolicy = null;
+    replacementTracking = null;
+    merge?.dispose();
+    stopTracking?.();
+    invalidateNativeReplacementSession();
+  }
+
+  function compatibilityFailure(feature, error) {
+    if (disposed) return;
+    if (feature === 'Merge across gaps') {
+      const previous = mergePolicy;
+      mergePolicy = null;
+      mergePolicyFailed = true;
+      previous?.dispose();
+    } else {
+      const stopTracking = replacementTracking;
+      replacementTracking = null;
+      replacementTrackingFailed = true;
+      stopTracking?.();
+      invalidateNativeReplacementSession();
+    }
+    console.error(`[Babel Helper] ${feature} stopped:`, error);
+    showNativeAutomationFailure(feature, error instanceof Error ? error.message : String(error));
+  }
+
+  function reconcileNativeCompatibility() {
+    if (disposed) return;
+    const canBind = !sessionError && sessionUnsubscribe && readBabelSessionState();
+    const mergeEnabled = document.documentElement.getAttribute(NATIVE_MERGE_GAPS_ATTRIBUTE) === 'true';
+    const replaceEnabled = document.documentElement.getAttribute(NATIVE_FIND_REPLACE_ATTRIBUTE) === 'true';
+    if (!mergeEnabled) {
+      const previous = mergePolicy; mergePolicy = null;
+      previous?.dispose(); mergePolicyFailed = false;
+    } else if (canBind && !mergePolicyFailed) {
+      try {
+        if (mergePolicy) mergePolicy.reconcile();
+        else {
+          const policy = installNativeMergePolicy({
+            isEnabled: () => document.documentElement.getAttribute(NATIVE_MERGE_GAPS_ATTRIBUTE) === 'true',
+            onFailure: error => { if (mergePolicy === policy) compatibilityFailure('Merge across gaps', error); }
+          });
+          mergePolicy = policy;
+        }
+      } catch (error) { compatibilityFailure('Merge across gaps', error); }
+    }
+    if (!replaceEnabled) {
+      const stopTracking = replacementTracking; replacementTracking = null;
+      stopTracking?.(); replacementTrackingFailed = false;
+      invalidateNativeReplacementSession();
+    } else if (canBind && !replacementTrackingFailed && !replacementTracking) {
+      try { replacementTracking = installNativeReplacementTracking(); }
+      catch (error) { compatibilityFailure('Replacement rules', error); }
+    }
+  }
+
+  function handleNativeMergeInteraction(event) {
+    if (disposed || !mergePolicy) return;
+    try { mergePolicy.handleInteraction(event); }
+    catch (error) { compatibilityFailure('Merge across gaps', error); }
+  }
+
+  function publishSession() {
+    if (disposed) return;
+    const state = !sessionError && sessionUnsubscribe ? readBabelSessionState() : null;
+    const payload = JSON.stringify({
+      href: window.location.href, generation: sessionGeneration,
+      reviewActionId: state?.reviewActionId || '', readOnly: state?.readOnly ?? null,
+      status: sessionError ? 'error' : state ? 'ready' : 'unmounted', error: sessionError
+    });
+    if (payload === publishedSession) return;
+    retireNativeCompatibility();
+    mergePolicyFailed = false;
+    replacementTrackingFailed = false;
+    publishedSession = payload;
+    document.documentElement.setAttribute(SESSION_ATTRIBUTE, payload);
+    reconcileNativeCompatibility();
+    window.dispatchEvent(new CustomEvent(SESSION_EVENT, { detail: payload }));
+  }
+
+  function publishEditorCommit() {
+    window.dispatchEvent(new CustomEvent('babel-helper:native-editor-commit', {
+      detail: JSON.stringify({ href: window.location.href, generation: sessionGeneration })
+    }));
+  }
+
+  function reconcileNativeSession() {
+    if (disposed) return;
+    const surface = document.querySelector('[data-transcript-scroll]');
+    const root = surface ? getRootFiber()?.stateNode : null;
+    if (sessionInitialized && surface === sessionSurface && root === sessionRoot) {
+      publishSession();
+      return;
+    }
+    sessionUnsubscribe?.();
+    sessionInitialized = true;
+    sessionUnsubscribe = null;
+    sessionRoot = root;
+    sessionSurface = surface;
+    sessionError = '';
+    const generation = ++sessionGeneration;
+    window[SESSION_GENERATION] = generation;
+    if (surface) {
+      try {
+        sessionUnsubscribe = subscribeBabelEditorCommits(() => {
+          if (disposed || generation !== sessionGeneration) return;
+          reconcileNativeSession();
+          if (!disposed && generation === sessionGeneration) publishEditorCommit();
+        });
+        if (!readBabelSessionState()) throw new Error('Native editor committed session metadata is unavailable.');
+      } catch (error) {
+        sessionUnsubscribe?.();
+        sessionUnsubscribe = null;
+        sessionError = error instanceof Error ? error.message : String(error);
+        console.error('[babel-helper] Native session automation stopped:', sessionError);
+      }
+    }
+    publishSession();
+    publishEditorCommit();
+  }
+
+  function publishRoute() {
+    if (disposed) return;
+    window.dispatchEvent(new CustomEvent(ROUTE_EVENT, { detail: window.location.href }));
+    reconcileNativeSession();
+  }
+
+  // These wrappers live in MAIN, where the application actually calls history.
+  // Navigation API is preferred; the owned wrappers cover browsers without it.
+  if (!window.navigation?.addEventListener) {
+    for (const name of ['pushState', 'replaceState']) {
+      const original = window.history[name];
+      const wrapped = function (...args) {
+        const result = original.apply(this, args);
+        publishRoute();
+        return result;
+      };
+      window.history[name] = wrapped;
+      historyPatches.push({ name, original, wrapped });
+    }
+  }
+  const sessionMountObserver = new MutationObserver(() => reconcileNativeSession());
+  sessionMountObserver.observe(document.documentElement, { childList: true, subtree: true });
+  window.navigation?.addEventListener('currententrychange', publishRoute);
+  window.addEventListener('popstate', publishRoute, true);
+  window.addEventListener('hashchange', publishRoute, true);
+
   function restoreNativeActivation() {
-    const patch = nativeActivationPatch;
-    if (patch && patch.handlers.onActivate === patch.wrapped) {
-      patch.handlers.onActivate = patch.original;
+    const owner = nativeActivationPatch;
+    if (owner) {
+      for (const patch of owner.patches) {
+        if (owner.handlers[patch.key] === patch.wrapped) owner.handlers[patch.key] = patch.original;
+      }
     }
     nativeActivationPatch = null;
   }
@@ -43,39 +226,47 @@ export function initRecoveredEditorBridge() {
     if (!target?.closest(TRANSCRIPT_ROW_SELECTOR)) return;
     const binding = readBabelTranscriptBindings();
     const handlers = binding?.transcript?.handlers;
-    if (!handlers || typeof handlers.onActivate !== 'function') return;
-    if (nativeActivationPatch?.handlers === handlers && handlers.onActivate === nativeActivationPatch.wrapped) return;
+    if (!handlers || !NATIVE_ACTIVATION_KEYS.some(key => typeof handlers[key] === 'function')) return;
+    if (nativeActivationPatch?.handlers === handlers && NATIVE_ACTIVATION_KEYS.every(key =>
+      typeof handlers[key] !== 'function' ||
+      nativeActivationPatch.patches.some(patch => patch.key === key && handlers[key] === patch.wrapped))) return;
     restoreNativeActivation();
-    const original = handlers.onActivate;
     const reviewActionId = binding.reviewActionId;
-    const wrapped = function (...args) {
-      if (disposed || document.documentElement.getAttribute(SEGMENT_CLICK_SEEK_ATTRIBUTE) !== 'true') {
-        return original.apply(this, args);
-      }
-      const playback = readBabelPlaybackBindings();
-      if (playback?.reviewActionId !== reviewActionId) return original.apply(this, args);
-      const patches = [];
-      try {
-        for (const wave of playback.waves) {
-          if (typeof wave.seekTo !== 'function') continue;
-          const descriptor = Object.getOwnPropertyDescriptor(wave, 'seekTo');
-          const blockedSeek = () => {};
-          wave.seekTo = blockedSeek;
-          patches.push({ wave, descriptor, blockedSeek });
+    const owner = { handlers, patches: [] };
+    nativeActivationPatch = owner;
+    for (const key of NATIVE_ACTIVATION_KEYS) {
+      const original = handlers[key];
+      if (typeof original !== 'function') continue;
+      const wrapped = function (...args) {
+        if (disposed || document.documentElement.getAttribute(SEGMENT_CLICK_SEEK_ATTRIBUTE) !== 'true') {
+          return original.apply(this, args);
         }
-        // Native activation still selects/highlights the turn. Only its
-        // synchronous incidental seek is suppressed, never seeked back afterward.
-        return original.apply(this, args);
-      } finally {
-        for (const { wave, descriptor, blockedSeek } of patches) {
-          if (wave.seekTo !== blockedSeek) continue;
-          if (descriptor) Object.defineProperty(wave, 'seekTo', descriptor);
-          else delete wave.seekTo;
+        const playback = readBabelPlaybackBindings();
+        if (playback?.reviewActionId !== reviewActionId) return original.apply(this, args);
+        const patches = [];
+        try {
+          for (const wave of playback.waves) {
+            if (typeof wave.seekTo !== 'function') continue;
+            const descriptor = Object.getOwnPropertyDescriptor(wave, 'seekTo');
+            const blockedSeek = () => {};
+            wave.seekTo = blockedSeek;
+            patches.push({ wave, descriptor, blockedSeek });
+          }
+          // Babel separates text mouse-down selection (onSelect) from editing
+          // focus (onActivate). Preserve both, suppressing only their incidental
+          // synchronous seek; onSeek/onPlay/onPlayFrom remain native.
+          return original.apply(this, args);
+        } finally {
+          for (const { wave, descriptor, blockedSeek } of patches) {
+            if (wave.seekTo !== blockedSeek) continue;
+            if (descriptor) Object.defineProperty(wave, 'seekTo', descriptor);
+            else delete wave.seekTo;
+          }
         }
-      }
-    };
-    handlers.onActivate = wrapped;
-    nativeActivationPatch = { handlers, original, wrapped };
+      };
+      handlers[key] = wrapped;
+      owner.patches.push({ key, original, wrapped });
+    }
   }
 
   function respond(id, result) {
@@ -136,6 +327,53 @@ export function initRecoveredEditorBridge() {
     );
   }
 
+  function readExtendedDiffEditorGeneration() {
+    const editor = findBabelEditorFiber();
+    if (editor !== extendedDiffEditorFiber && editor?.alternate !== extendedDiffEditorFiber) {
+      extendedDiffEditorFiber = editor;
+      extendedDiffEditorGeneration++;
+    }
+    return extendedDiffEditorGeneration;
+  }
+
+  function readExtendedDiffState() {
+    const binding = readBabelTranscriptBindings();
+    const base = { routeKey: getRouteKey(), generation: sessionGeneration,
+      editorGeneration: readExtendedDiffEditorGeneration(), reviewActionId: binding?.reviewActionId || '' };
+    if (sessionError) return { ...base, ok: false, reason: sessionError };
+    if (!binding) return { ...base, ok: true, status: 'unmounted' };
+    const toolbar = getTranscriptionDiffToolbarProps();
+    if (!toolbar) return { ...base, ok: false, reason: 'transcription-diff-toolbar-not-found' };
+    const selectedCompareActionId = getString(toolbar.selectedCompareActionId);
+    const state = {
+      ...base, ok: true, selectedCompareActionId, isDiffMode: toolbar.isDiffMode === true,
+      availableReviewActions: toolbar.availableReviewActions.map(({ id, level }) => ({ id, level }))
+    };
+    if (!state.isDiffMode) return { ...state, status: 'disabled' };
+    // Recovered 36978 passes isLoadingActions here; diff readiness belongs to its QueryObserver.
+    if (toolbar.isLoading) return { ...state, status: 'loading' };
+    if (!selectedCompareActionId) return { ...state, ok: false, reason: 'compare-action-not-found' };
+    const observer = findCurrentTranscriptionDiffObserver({ id: selectedCompareActionId });
+    if (!observer) return { ...state, ok: false, reason: 'transcription-diff-query-not-found' };
+    const result = observer.getCurrentResult();
+    if (result?.isError || result?.status === 'error') {
+      return { ...state, ok: false, reason: result.error?.message || 'transcription-diff-query-failed' };
+    }
+    const query = observer.getCurrentQuery();
+    const data = result?.data;
+    if (!matchesCurrentTranscriptionDiffResult(data, { id: selectedCompareActionId }, binding.reviewActionId)) {
+      if (result?.isPending || result?.isLoading || result?.isFetching || result?.status === 'pending') {
+        return { ...state, status: 'loading' };
+      }
+      return { ...state, ok: false, reason: 'transcription-diff-query-data-unavailable' };
+    }
+    const record = extendedDiffQueryRecords.get(query);
+    const fetched = isCurrentExtendedDiffPatch(extendedDiffPatch)
+      ? readFetchedDiffOriginal(data, extendedDiffPatch) : null;
+    const payload = fetched || (record?.applied === data ? record.original : data);
+    return { ...state, status: 'ready', payload };
+  }
+
   function matchesCurrentTranscriptionDiffResult(data, action, reviewActionId = readBabelTranscriptBindings()?.reviewActionId) {
     if (!data || !Array.isArray(data.speakerDiffs) || !reviewActionId || !action?.id) return false;
     return (data.referenceReviewActionId === action.id && data.currentReviewActionId === reviewActionId) ||
@@ -173,7 +411,8 @@ export function initRecoveredEditorBridge() {
         if (typeof memoizedState?.getCurrentResult === 'function' &&
             typeof memoizedState.getCurrentQuery === 'function' &&
             typeof memoizedState.refetch === 'function' &&
-            matchesCurrentTranscriptionDiffResult(memoizedState.getCurrentResult()?.data, action)) {
+            (matchesCurrentTranscriptionDiffResult(memoizedState.getCurrentResult()?.data, action) ||
+              matchesTranscriptionDiffQuery(memoizedState.options?.queryKey || memoizedState.getCurrentQuery()?.queryKey, action))) {
           return memoizedState;
         }
 
@@ -192,14 +431,15 @@ export function initRecoveredEditorBridge() {
     return findCurrentTranscriptionDiffObserver(action)?.getCurrentResult() || null;
   }
 
-  function scheduleCurrentTranscriptionDiffRepaint(action) {
-    const patch = extendedDiffPatch;
-    const operation = patch?.operation;
-    window.setTimeout(() => {
-      if (!isCurrentExtendedDiffPatch(patch) || patch.operation !== operation) return;
-      patchCurrentDiffResult(action, patch);
-    }, 50);
-    return true;
+  function matchesTranscriptionDiffQuery(key, action) {
+    if (!Array.isArray(key) || !action?.id) return false;
+    const [path, options] = key;
+    if (!Array.isArray(path) || path.join('.') !== 'transcriptions.getTranscriptionDiff') return false;
+    const input = options?.input;
+    const reviewActionId = readBabelTranscriptBindings()?.reviewActionId;
+    return Boolean(reviewActionId && input &&
+      ((input.referenceReviewActionId === reviewActionId && input.currentReviewActionId === action.id) ||
+       (input.currentReviewActionId === reviewActionId && input.referenceReviewActionId === action.id)));
   }
 
   function getRouteKey() {
@@ -393,8 +633,12 @@ export function initRecoveredEditorBridge() {
 
       if (Array.isArray(value.speakerDiffs) && (!patch ||
           matchesCurrentTranscriptionDiffResult(value, { id: patch.lastAppliedActionId }, patch.reviewActionId))) {
-        if (patch) patch.originalPayloads.set(diffPayloadKey(value), structuredClone(value));
-        patched = patchTranscriptionDiffPayload(value, textMode, patch?.reviewActionId) || patched;
+        const original = patch ? structuredClone(value) : null;
+        const changed = patchTranscriptionDiffPayload(value, textMode, patch?.reviewActionId);
+        if (patch && changed) {
+          patch.fetchedDiffPayloads.set(diffPayloadKey(value), { original, projected: JSON.stringify(value) });
+        }
+        patched = changed || patched;
       }
 
       if (Array.isArray(value)) {
@@ -514,6 +758,14 @@ export function initRecoveredEditorBridge() {
     return `${payload.referenceReviewActionId}:${payload.currentReviewActionId}`;
   }
 
+  function readFetchedDiffOriginal(data, patch) {
+    if (!data) return null;
+    const fetched = patch.fetchedDiffPayloads.get(diffPayloadKey(data));
+    // A fetched projection may be structurally shared with an older query root.
+    // Its action IDs alone cannot establish ownership of a later cache-only edit.
+    return fetched && JSON.stringify(data) === fetched.projected ? fetched.original : null;
+  }
+
   function patchCurrentDiffResult(action, patch) {
     const observer = findCurrentTranscriptionDiffObserver(action);
     const query = observer?.getCurrentQuery();
@@ -521,13 +773,15 @@ export function initRecoveredEditorBridge() {
     const data = query.state?.data;
     if (!matchesCurrentTranscriptionDiffResult(data, action, patch.reviewActionId)) return false;
     const previous = extendedDiffQueryRecords.get(query);
-    const original = patch.originalPayloads.get(diffPayloadKey(data)) ||
-      (previous?.applied === data ? previous.original : data);
+    const key = diffPayloadKey(data);
+    const fetched = readFetchedDiffOriginal(data, patch);
+    const original = fetched || (previous?.applied === data ? previous.original : data);
     const projected = structuredClone(original);
     if (!patchTranscriptionDiffPayload(projected, patch.textMode, patch.reviewActionId)) return false;
     // Never mutate a memoized prop/cache value: both React and Query's structural sharing
     // must observe a new diff root to rebuild the native per-turn/deleted-turn maps.
     const applied = query.setData(projected, { manual: true });
+    if (fetched) patch.fetchedDiffPayloads.delete(key);
     extendedDiffQueryRecords.set(query, { original, applied });
     return true;
   }
@@ -537,12 +791,13 @@ export function initRecoveredEditorBridge() {
       const observer = findCurrentTranscriptionDiffObserver({ id: patch.lastAppliedActionId });
       const query = observer?.getCurrentQuery();
       if (query && !extendedDiffQueryRecords.has(query)) {
-        const original = patch.originalPayloads.get(diffPayloadKey(query.state.data));
+        const original = readFetchedDiffOriginal(query.state?.data, patch);
         if (original) extendedDiffQueryRecords.set(query, { original });
       }
       for (const [query, record] of extendedDiffQueryRecords) {
-        const original = patch.originalPayloads.get(diffPayloadKey(record.original)) || record.original;
-        query.setData(original, { manual: true });
+        const data = query.state?.data;
+        const original = readFetchedDiffOriginal(data, patch) || (record.applied === data ? record.original : null);
+        if (original) query.setData(original, { manual: true });
       }
     }
     extendedDiffQueryRecords.clear();
@@ -788,11 +1043,11 @@ export function initRecoveredEditorBridge() {
     if (!request?.id) return;
     if (request.operation === 'session') {
       if (event.target !== document.documentElement) return;
-      const binding = readBabelSessionState();
+      const binding = !sessionError && sessionUnsubscribe ? readBabelSessionState() : null;
       const ok = Boolean(binding && typeof binding.reviewActionId === 'string' && binding.reviewActionId.length > 0);
       document.documentElement.setAttribute('data-babel-helper-editor-result', JSON.stringify({
         id: request.id, ok, reviewActionId: ok ? binding.reviewActionId : '',
-        readOnly: ok ? binding.readOnly : true, routeKey: getRouteKey()
+        readOnly: ok ? binding.readOnly : true, routeKey: getRouteKey(), error: sessionError
       }));
       return;
     }
@@ -996,6 +1251,10 @@ export function initRecoveredEditorBridge() {
 
   function applyExtendedDiffState(payload) {
     if (payload?.routeKey && payload.routeKey !== getRouteKey()) return { ok: false, reason: 'stale-task' };
+    if ((payload?.nativeSessionGeneration != null && payload.nativeSessionGeneration !== sessionGeneration) ||
+        (payload?.editorGeneration != null && payload.editorGeneration !== readExtendedDiffEditorGeneration())) {
+      return { ok: false, reason: 'stale-task' };
+    }
     const toolbarProps = getTranscriptionDiffToolbarProps();
     const reviewActionId = readBabelTranscriptBindings()?.reviewActionId;
     if (!reviewActionId) return { ok: false, reason: 'transcription-task-not-found' };
@@ -1031,7 +1290,7 @@ export function initRecoveredEditorBridge() {
         routeKey,
         reviewActionId,
         editorFiber: findBabelEditorFiber(),
-        originalPayloads: new Map(),
+        fetchedDiffPayloads: new Map(),
         previousIsDiffMode: currentIsDiffMode,
         previousSelectedCompareActionId: currentSelectedCompareActionId,
         syntheticExtendedDiffActionId: ensuredAction.syntheticExtendedDiffActionId,
@@ -1049,7 +1308,6 @@ export function initRecoveredEditorBridge() {
       extendedDiffPatch.lastAppliedActionId = action.id;
       extendedDiffPatch.textMode = textMode;
     }
-    extendedDiffPatch.operation = {};
 
     const fetchPatchInstalled = installExtendedDiffFetchPatch();
     const patchedCurrentDiffResult = patchCurrentDiffResult(action, extendedDiffPatch);
@@ -1057,16 +1315,15 @@ export function initRecoveredEditorBridge() {
     // and can reselect an old action after a newer mode/task request.
     if (!currentIsDiffMode) toolbarProps.onToggleDiffMode(true);
     if (currentSelectedCompareActionId !== action.id) toolbarProps.onSelectCompareAction(action.id);
-    const repaintScheduled = scheduleCurrentTranscriptionDiffRepaint(action);
 
     return {
-      ok: true,
+      ok: patchedCurrentDiffResult,
+      ...(!patchedCurrentDiffResult ? { reason: 'transcription-diff-query-data-unavailable' } : {}),
       actionId: action.id,
       compareLevel: getNumber(action.level),
       syntheticActionInserted: Boolean(ensuredAction.syntheticExtendedDiffActionId),
       fetchPatchInstalled,
       patchedCurrentDiffResult,
-      repaintScheduled,
       textMode,
       previousIsDiffMode: extendedDiffPatch.previousIsDiffMode,
       previousSelectedCompareActionId: extendedDiffPatch.previousSelectedCompareActionId
@@ -1143,8 +1400,12 @@ export function initRecoveredEditorBridge() {
 
   const rawImplementation = {
     getEditorSnapshot,
+    readExtendedDiffState,
     applyExtendedDiffState,
     clearExtendedDiffState,
+    getNativeReplacementStatus,
+    runNativeReplacementRules,
+    recoverNativeReplacementRules,
     getTranscriptionDiffToolbarProps,
     findCurrentTranscriptionDiffQueryResult,
     patchTranscriptionDiffPayload,
@@ -1152,8 +1413,12 @@ export function initRecoveredEditorBridge() {
   };
   const implementation = {
     getEditorSnapshot,
+    readExtendedDiffState,
     applyExtendedDiffState,
     clearExtendedDiffState,
+    getNativeReplacementStatus,
+    runNativeReplacementRules,
+    recoverNativeReplacementRules,
     raw: rawImplementation
   };
 
@@ -1201,12 +1466,25 @@ export function initRecoveredEditorBridge() {
     if (!id) {
       return;
     }
+    if (Object.hasOwn(REPLACEMENT_METHODS, detail.operation)) {
+      try {
+        respond(id, invokeService(REPLACEMENT_METHODS[detail.operation], detail.payload));
+      } catch (error) {
+        respond(id, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
 
     if (detail.operation === 'snapshot') {
       respond(id, {
         ok: true,
         snapshot: invokeService('getEditorSnapshot')
       });
+      return;
+    }
+
+    if (detail.operation === 'read-extended-diff-state') {
+      respond(id, invokeService('readExtendedDiffState'));
       return;
     }
 
@@ -1229,6 +1507,20 @@ export function initRecoveredEditorBridge() {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    retireNativeCompatibility();
+    sessionGeneration++;
+    sessionUnsubscribe?.();
+    sessionUnsubscribe = null;
+    sessionMountObserver.disconnect();
+    window.navigation?.removeEventListener('currententrychange', publishRoute);
+    window.removeEventListener('popstate', publishRoute, true);
+    window.removeEventListener('hashchange', publishRoute, true);
+    for (const { name, original, wrapped } of historyPatches) {
+      if (window.history[name] === wrapped) window.history[name] = original;
+    }
+    if (document.documentElement.getAttribute(SESSION_ATTRIBUTE) === publishedSession) {
+      document.documentElement.removeAttribute(SESSION_ATTRIBUTE);
+    }
     clearExtendedDiffState();
     restoreNativeActivation();
     if (serviceProviderHandle && typeof serviceProviderHandle.dispose === 'function') {
@@ -1242,6 +1534,10 @@ export function initRecoveredEditorBridge() {
     window.removeEventListener('mousedown', handleNativeActivationCapture, true);
     window.removeEventListener('focusin', handleNativeActivationCapture, true);
     window.removeEventListener('keydown', handleNativeTagDropdownKeydown, true);
+    window.removeEventListener(NATIVE_COMPATIBILITY_CHANGE_EVENT, reconcileNativeCompatibility);
+    window.removeEventListener('pointerdown', handleNativeMergeInteraction, true);
+    window.removeEventListener('keydown', handleNativeMergeInteraction, true);
+    window.removeEventListener('click', handleNativeMergeInteraction, true);
     delete window.__babelHelperRecoveredEditorBridge;
   }
 
@@ -1252,14 +1548,20 @@ export function initRecoveredEditorBridge() {
   window.addEventListener('mousedown', handleNativeActivationCapture, true);
   window.addEventListener('focusin', handleNativeActivationCapture, true);
   window.addEventListener('keydown', handleNativeTagDropdownKeydown, true);
+  window.addEventListener(NATIVE_COMPATIBILITY_CHANGE_EVENT, reconcileNativeCompatibility);
+  window.addEventListener('pointerdown', handleNativeMergeInteraction, true);
+  window.addEventListener('keydown', handleNativeMergeInteraction, true);
+  window.addEventListener('click', handleNativeMergeInteraction, true);
 
   window.__babelHelperRecoveredEditorBridge = {
     getEditorSnapshot: (...args) => invokeService('getEditorSnapshot', ...args),
+    readExtendedDiffState: (...args) => invokeService('readExtendedDiffState', ...args),
     applyExtendedDiffState: (...args) => invokeService('applyExtendedDiffState', ...args),
     clearExtendedDiffState: (...args) => invokeService('clearExtendedDiffState', ...args),
     implementation: rawImplementation,
     dispose
   };
+  reconcileNativeSession();
 }
 
 initRecoveredEditorBridge();

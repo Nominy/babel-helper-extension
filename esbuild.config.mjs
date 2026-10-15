@@ -125,6 +125,11 @@ const tasks = [
   },
   {
     ...shared,
+    entryPoints: ['src/popup/popup.ts'],
+    outfile: 'dist/popup/popup.js'
+  },
+  {
+    ...shared,
     entryPoints: ['src/options/options.ts'],
     outfile: 'dist/options/options.js'
   }

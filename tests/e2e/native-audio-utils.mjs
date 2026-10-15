@@ -9,6 +9,11 @@ export async function selectedAudioReady(page) {
     const native = window.__BABEL_E2E__.snapshot();
     const raw = document.documentElement.getAttribute('data-babel-audio-enhancement');
     const selected = raw ? JSON.parse(raw) : null;
+    if (selected?.status === 'error' && (!selected.taskId || selected.taskId === native.reviewActionId)) {
+      throw new Error(selected.message || 'Native enhancement failed');
+    }
+    const failure = document.querySelector('[id^="babel-helper-native-failure-"]');
+    if (failure) throw new Error(failure.textContent || 'Native Helper automation stopped');
     return Boolean(native.audio.ready && native.audio.tracks.length === 2 &&
       native.audio.tracks.every(track => track.decoded && track.decodedLength > 0) &&
       selected?.taskId === native.reviewActionId && selected.status === 'ready' &&

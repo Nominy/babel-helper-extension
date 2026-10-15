@@ -2,8 +2,9 @@
 import { matchesShortcut } from '../core/shortcuts';
 import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
 import { computeL0TimedCharacterOffset, computeL0TimestampAtCharacterOffset } from '../services/l0-word-timing-alignment';
-import { buildL0TimingBaseTaskId, buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
+import { buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import { AUDIO_ENHANCEMENT_STATE_EVENT, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
+import { readNativeSessionState } from '../site/editor-control';
 import type { RowModules } from '../services/row-service';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
@@ -16,11 +17,11 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   let cursorGeneration = 0;
   let sourceContext = readAudioEnhancementState();
   let activeTaskGuard: (() => boolean) | null = null;
-  let activeReviewActionId = '';
-  let releasePendingTick: (() => void) | null = null;
-  let updateTickSchedule: ((immediate?: boolean) => void) | null = null;
+  let unsubscribePlayback: (() => void) | null = null;
   let renderedRow: HTMLElement | null = null;
   let renderedTop: number | null = null;
+  let recordingTracks = [];
+  let recordingIds = new Set();
 
   function invalidatePlaybackContext() {
     playbackGeneration += 1;
@@ -31,7 +32,6 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       projection.playbackTime = null;
     }
     if (helper.state.ghostCursorElement) helper.state.ghostCursorElement.style.display = 'none';
-    releasePendingTick?.();
   }
 
   function refreshPlaybackContext() {
@@ -49,9 +49,23 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
   function isSourceSwitching() {
     refreshPlaybackContext();
-    const taskId = document.documentElement?.getAttribute('data-babel-review-action-id')?.trim() ||
-      activeReviewActionId || sourceContext?.taskId || buildL0TimingBaseTaskId(window.location);
-    return sourceContext?.taskId === taskId && sourceContext.status === 'switching';
+    const taskId = readNativeSessionState()?.reviewActionId;
+    return Boolean(taskId && sourceContext?.taskId === taskId && sourceContext.status === 'switching');
+  }
+
+  function captureNativeTaskGuard(): () => boolean {
+    const session = readNativeSessionState();
+    const reviewActionId = session?.reviewActionId;
+    const routeKey = session?.routeKey;
+    const href = window.location.href;
+    const revision = helper.state.sessionLifecycleRevision;
+    return () => {
+      const current = readNativeSessionState();
+      return Boolean(reviewActionId && current?.reviewActionId === reviewActionId &&
+        current.readOnly === false && current.routeKey === routeKey && window.location.href === href &&
+        revision === helper.state.sessionLifecycleRevision &&
+        (!helper.runtime?.isSessionInteractive || helper.runtime.isSessionInteractive()));
+    };
   }
 
   function capturePlaybackGuard(): () => boolean {
@@ -60,7 +74,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     const generation = playbackGeneration;
     const cursor = cursorGeneration;
     const revision = helper.state.sessionLifecycleRevision;
-    const taskGuard = captureL0TaskGuard();
+    const taskGuard = captureNativeTaskGuard();
     return () => {
       refreshPlaybackContext();
       return generation === playbackGeneration && cursor === cursorGeneration &&
@@ -76,7 +90,10 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       return;
     }
     refreshPlaybackContext();
-    updateTickSchedule?.(event?.type === 'visibilitychange');
+    if (document.hidden || isSourceSwitching()) {
+      cursorGeneration += 1;
+      if (helper.state.ghostCursorElement) helper.state.ghostCursorElement.style.display = 'none';
+    }
   }
 
 
@@ -114,8 +131,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   // Gated behind proportionalCursorRestore.
   // ---------------------------------------------------------------------------
 
-  const GHOST_CURSOR_INTERVAL_MS = 66;
-  // ~15 fps
+  const GHOST_CURSOR_TRANSITION_MS = 66;
   const GHOST_CURSOR_ATTR = 'data-babel-helper-ghost-cursor';
 
 
@@ -261,9 +277,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     // a narrow bar at fractional left/top positions.
     el.style.left = '0px';
     el.style.top = '0px';
-    // Finish within one sample, preserving the relative motion presets without
-    // perpetually retargeting a 220ms animation every 66ms.
-    el.style.transition = `transform ${appearance.transitionMs / 220 * GHOST_CURSOR_INTERVAL_MS}ms linear`;
+    // Keep native-event updates responsive while preserving motion presets.
+    el.style.transition = `transform ${appearance.transitionMs / 220 * GHOST_CURSOR_TRANSITION_MS}ms linear`;
     el.style.willChange = 'transform, background-position';
     if (clamped) {
       el.style.background = 'rgba(156, 163, 175, 0.6)';
@@ -308,17 +323,14 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     renderedTop = null;
     window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
     document.removeEventListener('visibilitychange', onSourceChange);
-    updateTickSchedule = null;
-    releasePendingTick = null;
+    unsubscribePlayback?.();
+    unsubscribePlayback = null;
     if (discardPlayback) {
       activeTaskGuard = null;
-      activeReviewActionId = '';
+      recordingTracks = [];
+      recordingIds.clear();
     }
     const wasActive = Boolean(helper.state.ghostCursorElement);
-    if (helper.state.ghostCursorIntervalId != null) {
-      clearInterval(helper.state.ghostCursorIntervalId);
-      helper.state.ghostCursorIntervalId = null;
-    }
     if (helper.state.ghostCursorElement) {
       try {
         if (helper.state.ghostCursorElement.parentNode) {
@@ -420,6 +432,10 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
   function rememberGhostCursorPlaybackState(playback) {
     if (isSourceSwitching()) return;
+    if (Array.isArray(playback?.recordingTracks) && playback.recordingTracks !== recordingTracks) {
+      recordingTracks = playback.recordingTracks;
+      recordingIds = new Set(recordingTracks.map(track => track.id));
+    }
     helper.state.ghostCursorPlaybackTime =
       playback && typeof playback.currentTime === 'number' && Number.isFinite(playback.currentTime)
         ? playback.currentTime
@@ -433,36 +449,22 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
   function getCurrentGhostCursorPlaybackSnapshot() {
     if (isSourceSwitching() || helper.state.speakerSwitchPending) {
-      return { ok: false, currentTime: null, paused: true };
+      return { ok: false, currentTime: null, paused: null };
     }
     const rememberedTime = helper.state.ghostCursorPlaybackTime;
     if (typeof rememberedTime === 'number' && Number.isFinite(rememberedTime)) {
       return {
         ok: true,
         currentTime: rememberedTime,
-        paused: helper.state.ghostCursorPlaybackPaused === true
+        paused: helper.state.ghostCursorPlaybackPaused
       };
     }
 
-    const localPlayback = api.playback.unavailablePlaybackState();
-    if (
-      localPlayback &&
-      localPlayback.ok &&
-      typeof localPlayback.currentTime === 'number' &&
-      Number.isFinite(localPlayback.currentTime)
-    ) {
-      rememberGhostCursorPlaybackState(localPlayback);
-      return {
-        ok: true,
-        currentTime: localPlayback.currentTime,
-        paused: typeof localPlayback.paused === 'boolean' ? localPlayback.paused : false
-      };
-    }
 
     return {
       ok: false,
       currentTime: null,
-      paused: true
+      paused: null
     };
   }
 
@@ -498,7 +500,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     if (!normalized) {
       return '';
     }
-    const track = helper.getEditorSnapshot?.()?.tracks?.find((entry) =>
+    const track = recordingTracks.find((entry) =>
       entry.id === label || api.speaker.normalizeSpeakerLabel(entry.label) === normalized);
     if (track?.id) return track.id;
 
@@ -525,15 +527,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function getGhostCursorToggleSpeakerKeys() {
-    const tracks = helper.getEditorSnapshot?.()?.tracks;
-    if (Array.isArray(tracks) && tracks.length) {
-      return [...new Set(tracks.map((track) => track.id).filter(Boolean))];
-    }
-    return [...new Set(api.time.getRowTimeEntries()
-      .map((cached) => api.time.resolveRowTimeEntry(cached))
-      .filter(Boolean)
-      .map((entry) => api.time.getRowSpeakerKeySafe(entry.row))
-      .filter(Boolean))];
+    return [...recordingIds];
   }
 
 
@@ -653,11 +647,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   function findGhostCursorProjectionEntryByPlaybackTime(currentTime, speakerKey) {
-    let entry = api.time.findRowEntryByPlaybackTime(currentTime, { speakerKey });
-    if (!entry) {
-      entry = api.time.findLatestRowEntryBeforePlaybackTime(currentTime, { speakerKey });
-    }
-    return entry;
+    const entries = api.time.getRowTimeEntries();
+    return api.time.findRowEntryByPlaybackTime(currentTime, { speakerKey }, entries) ||
+      api.time.findLatestRowEntryBeforePlaybackTime(currentTime, { speakerKey }, entries);
   }
 
 
@@ -698,22 +690,18 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey) {
-    const tracks = helper.getEditorSnapshot?.()?.tracks;
-    const allowedSpeakers = Array.isArray(tracks) && tracks.length
-      ? new Set(tracks.map((track) => track.id).filter(Boolean))
-      : null;
-    if (allowedSpeakers && (allowedSpeakers.size === 0 ||
-        (allowedSpeakers.size === 1 && allowedSpeakers.has(activeSpeakerKey)))) return;
-    const previousRow = api.time.getLastPlaybackRow();
+  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey, entries) {
+    if (recordingIds.size === 0 ||
+        (recordingIds.size === 1 && recordingIds.has(activeSpeakerKey))) return;
+    const previousRow = api.time.getLastPlaybackRow(entries);
     const entriesBySpeaker = new Map();
-    // One fresh collection per frame, not one full signature scan per lane
-    // followed by two more scans whenever that lane is between turns.
-    for (const entry of api.time.getRowTimeEntries()) {
+    // Active-row selection and every lane projection share this frame's
+    // current row identities/times, including when all lanes are between turns.
+    for (const entry of entries) {
       if (entry.startSeconds > currentTime) break;
       if (!(entry.row instanceof HTMLElement) || !entry.row.isConnected) continue;
       const speakerKey = entry.identity?.speakerKey || api.time.getRowSpeakerKeySafe(entry.row);
-      if (!speakerKey || speakerKey === activeSpeakerKey || (allowedSpeakers && !allowedSpeakers.has(speakerKey))) continue;
+      if (!speakerKey || speakerKey === activeSpeakerKey || !recordingIds.has(speakerKey)) continue;
       const chosen = entriesBySpeaker.get(speakerKey);
       const active = currentTime < entry.endSeconds;
       const chosenActive = chosen && currentTime < chosen.endSeconds;
@@ -796,6 +784,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     helper.state.ghostCursorRow = projection.row;
     helper.state.ghostCursorRowIdentity = helper.getRowIdentity(projection.row);
     helper.state.ghostCursorOffset = offset;
+    // Tab selects a rendered lane independently of the primary playback lane.
+    // Publish that projection, never the internal row used to advance timing.
+    if (!helper.getActiveRowEditor()) helper.setCurrentRow(projection.row);
     return true;
   }
 
@@ -828,9 +819,9 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function findGhostCursorEntryByPlaybackTime(playbackTime) {
+  function findGhostCursorEntryByPlaybackTime(playbackTime, entries) {
     const lock = getGhostCursorLaneLock();
-    if (lock && !api.time.hasRowsForSpeakerKey(lock.speakerKey)) {
+    if (lock && !api.time.hasRowsForSpeakerKey(lock.speakerKey, entries)) {
       helper.state.ghostCursorLaneLock = null;
     }
 
@@ -838,13 +829,13 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     if (activeLock) {
       const lockedEntry = api.time.findRowEntryByPlaybackTime(playbackTime, {
         speakerKey: activeLock.speakerKey
-      });
+      }, entries);
       if (lockedEntry) {
         return lockedEntry;
       }
     }
 
-    const nextActiveEntry = api.time.findRowEntryByPlaybackTime(playbackTime);
+    const nextActiveEntry = api.time.findRowEntryByPlaybackTime(playbackTime, null, entries);
     if (nextActiveEntry) {
       setGhostCursorLaneLock(nextActiveEntry.row, 'auto');
       return nextActiveEntry;
@@ -854,8 +845,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       (activeLock &&
         api.time.findLatestRowEntryBeforePlaybackTime(playbackTime, {
           speakerKey: activeLock.speakerKey
-        })) ||
-      api.time.findLatestRowEntryBeforePlaybackTime(playbackTime);
+        }, entries)) ||
+      api.time.findLatestRowEntryBeforePlaybackTime(playbackTime, null, entries);
 
     return danglingEntry || null;
   }
@@ -890,14 +881,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     helper.state.ghostCursorProjectionSource = 'auto';
     helper.state.ghostCursorLaneProjections = {};
     refreshPlaybackContext();
-    const taskGuard = captureL0TaskGuard();
-    activeReviewActionId = document.documentElement?.getAttribute('data-babel-review-action-id')?.trim() ||
-      sourceContext?.taskId || '';
-    const startingTaskId = activeReviewActionId;
-    activeTaskGuard = () => {
-      const currentSourceTask = readAudioEnhancementState()?.taskId;
-      return taskGuard() && (!startingTaskId || !currentSourceTask || currentSourceTask === startingTaskId);
-    };
+    activeTaskGuard = captureNativeTaskGuard();
     window.addEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
     document.addEventListener('visibilitychange', onSourceChange);
 
@@ -908,21 +892,22 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
     // Initial hide until first position is computed
     el.style.display = 'none';
-    let pendingTick: object | null = null;
-    releasePendingTick = () => { pendingTick = null; };
 
-    async function tick() {
+    function tick(playback) {
+      if (helper.state.ghostCursorElement !== el) return;
       if (!helper.config.features.proportionalCursorRestore) {
         stopGhostCursor(true);
         return;
       }
-      if (document.hidden || pendingTick) {
+      if (playback?.fatal) {
+        stopGhostCursor(true);
+        return;
+      }
+      if (document.hidden) {
         return;
       }
 
-      const flight = {};
       const isCurrentPlayback = capturePlaybackGuard();
-      pendingTick = flight;
 
       // Bail if state was cleaned up or row disconnected
       try {
@@ -938,11 +923,6 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           return;
         }
 
-        const playback =
-          typeof helper.getPlaybackState === 'function'
-            ? await helper.getPlaybackState()
-            : api.playback.unavailablePlaybackState();
-        if (!helper.config.features.proportionalCursorRestore) stopGhostCursor(true);
         if (document.hidden || !isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
         const previousTime = helper.state.ghostCursorPlaybackTime;
         const rewound = Number.isFinite(previousTime) && Number.isFinite(playback?.currentTime) &&
@@ -966,8 +946,17 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
         }
 
         const currentTime = playback.currentTime;
+        const rowTimeEntries = api.time.getRowTimeEntries();
+        const playbackEntry = api.time.findRowEntryByPlaybackTime(currentTime, undefined, rowTimeEntries);
+        if (playbackEntry) api.time.rememberPlaybackRow(playbackEntry.row);
 
-        const connectedRow = api.time.resolveConnectedRow(trackedRow, trackedIdentity);
+        const trackedEntry = rowTimeEntries.find((entry) =>
+          entry.row === trackedRow && helper.rowMatchesIdentity(entry.row, trackedIdentity)) ||
+          (trackedIdentity?.annotationId && rowTimeEntries.find((entry) =>
+            entry.identity?.annotationId === trackedIdentity.annotationId &&
+            helper.rowMatchesIdentity(entry.row, trackedIdentity))) ||
+          rowTimeEntries.find((entry) => helper.rowMatchesIdentity(entry.row, trackedIdentity));
+        const connectedRow = trackedEntry?.row;
         if (connectedRow instanceof HTMLElement && connectedRow.isConnected) {
           if (connectedRow !== trackedRow) {
             const remembered = helper.state.lastBlur;
@@ -975,7 +964,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
             trackedRow = connectedRow;
             trackedIdentity = helper.getRowIdentity(connectedRow);
           }
-          trackedTimeRange = api.time.getRowTimeRange(trackedRow) || trackedTimeRange;
+          trackedTimeRange = trackedEntry;
         }
 
         // Dynamic row tracking: if playback time exits the tracked row's
@@ -984,15 +973,19 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
         const laneLock = getGhostCursorLaneLock();
         const trackedSpeakerKey = api.time.getRowSpeakerKeySafe(trackedRow);
         if (
-          !trackedRow.isConnected ||
+          !trackedEntry ||
           currentTime < trackedTimeRange.startSeconds ||
           currentTime >= trackedTimeRange.endSeconds ||
           (laneLock && laneLock.speakerKey && trackedSpeakerKey && laneLock.speakerKey !== trackedSpeakerKey)
         ) {
-          const nextEntry = findGhostCursorEntryByPlaybackTime(currentTime);
-          const newRow = nextEntry ? nextEntry.row : null;
-          if (newRow && newRow !== trackedRow) {
-            const newRange = nextEntry || api.time.getRowTimeRange(newRow);
+          const nextEntry = findGhostCursorEntryByPlaybackTime(currentTime, rowTimeEntries);
+          if (!nextEntry) {
+            el.style.display = 'none';
+            return;
+          }
+          const newRow = nextEntry.row;
+          if (newRow !== trackedRow) {
+            const newRange = nextEntry;
             if (newRange) {
               const prevRowId = helper.getRowIdentity(trackedRow)?.annotationId ?? null;
               trackedRow = newRow;
@@ -1023,7 +1016,6 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
                 remembered.row = newRow;
                 remembered.selectionStart = 0;
                 remembered.selectionEnd = 0;
-                helper.setCurrentRow(newRow);
               }
             }
           }
@@ -1062,7 +1054,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           return;
         }
 
-        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, api.time.getRowSpeakerKeySafe(trackedRow));
+        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, api.time.getRowSpeakerKeySafe(trackedRow), rowTimeEntries);
         const activeProjection = rememberGhostCursorProjection(trackedRow, result.offset, {
           source: 'active',
           cursorBaseline: result.offset,
@@ -1076,32 +1068,20 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           el.style.display = 'none';
         }
       } catch (error) {
-        // A rejected read owns only the source/cursor that issued it, just as
-        // a successful read does. Retired players cannot tear down a newer one.
+        // A retired subscription cannot tear down a replacement cursor.
         if (!isCurrentPlayback() || helper.state.ghostCursorElement !== el) return;
         stopGhostCursor(true);
-        throw error;
-      } finally {
-        if (pendingTick === flight) pendingTick = null;
+        helper.reportPlaybackFailure?.({ reason: 'native-playback-update-failed', message: String(error) });
       }
     }
 
-    updateTickSchedule = (immediate = false) => {
-      if (document.hidden || isSourceSwitching()) {
-        if (helper.state.ghostCursorIntervalId != null) {
-          clearInterval(helper.state.ghostCursorIntervalId);
-          helper.state.ghostCursorIntervalId = null;
-          // An already requested sample cannot redraw after visibility resumes.
-          cursorGeneration += 1;
-        }
-        el.style.display = 'none';
-        return;
-      }
-      if (helper.state.ghostCursorIntervalId != null) return;
-      helper.state.ghostCursorIntervalId = setInterval(() => { void tick(); }, GHOST_CURSOR_INTERVAL_MS);
-      if (immediate) void tick();
-    };
-    updateTickSchedule(true);
+    try {
+      if (typeof helper.subscribePlayback !== 'function') throw new Error('Native playback subscription is unavailable');
+      unsubscribePlayback = helper.subscribePlayback(tick);
+    } catch (error) {
+      stopGhostCursor(true);
+      helper.reportPlaybackFailure?.({ reason: 'native-playback-subscription-failed', message: String(error) });
+    }
 
     if (helper.analytics) {
       const rowId = helper.getRowIdentity(row)?.annotationId ?? null;

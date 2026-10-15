@@ -64,8 +64,7 @@ export function readNativeSessionState(documentRef: Document = document): Native
   if (!state || typeof state.reviewActionId !== 'string' || !state.reviewActionId ||
       typeof state.readOnly !== 'boolean' ||
       state.routeKey !== `${documentRef.location?.pathname || ''}${documentRef.location?.search || ''}`) return null;
-  const publishedTaskId = root.getAttribute('data-babel-review-action-id') || '';
-  return !publishedTaskId || publishedTaskId === state.reviewActionId ? state : null;
+  return state;
 }
 
 export type EditorReplacementOptions = {

@@ -133,13 +133,6 @@ export function createHelperKernel() {
       return Boolean(helper.settings?.features?.[featureKey]);
     },
     runtime: {
-      clearRuntimeTimer() {
-        const timer = helper.state.routeRefreshTimer;
-        if (timer) {
-          window.clearTimeout(timer);
-        }
-        helper.state.routeRefreshTimer = 0;
-      },
       scheduleRouteRefresh() {
         return false;
       },

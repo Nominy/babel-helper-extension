@@ -1,5 +1,7 @@
 import { test, expect } from '@nominy/babel-extension-e2e/test';
 import { rows as nativeRows } from '@nominy/babel-extension-e2e/native-helpers';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
 import { transcriptSelector as TEXT, readRows as rows, fillText } from './helper-editing-utils.mjs';
 import { selectedAudioReady, fitNativeTimeline as fit } from './native-audio-utils.mjs';
@@ -36,9 +38,9 @@ async function pointAt(page, seconds, lane = 0, duration = 12) {
   return point;
 }
 
-async function preview(page, start, end) {
-  const from = await pointAt(page, start);
-  const to = await pointAt(page, end);
+async function preview(page, start, end, lane = 0) {
+  const from = await pointAt(page, start, lane);
+  const to = await pointAt(page, end, lane);
   await page.keyboard.down('Alt');
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
@@ -56,6 +58,25 @@ async function mergedLaneFixture(babel) {
   await babel.reset('baseline', { action: { annotations: [{ ...lane[0], startTimeInSeconds: 0.3, endTimeInSeconds: 5.2, content: lane.map((row) => row.content).join(' ') }, ...others] } });
 }
 
+async function annotations(page) {
+  return page.evaluate(() => window.__BABEL_E2E__.snapshot().annotations
+    .slice().sort((left, right) => left.id.localeCompare(right.id)));
+}
+
+let nativeRuntimeBundle;
+async function historyDepth(page) {
+  nativeRuntimeBundle ??= build({
+    entryPoints: [fileURLToPath(import.meta.resolve('@nominy/babel-babel-runtime'))],
+    bundle: true, write: false, format: 'iife', globalName: 'TimelineNativeRuntime'
+  }).then(result => result.outputFiles[0].text);
+  return page.evaluate(source => {
+    const runtime = new Function(`${source}; return TimelineNativeRuntime;`)();
+    const history = runtime.readBabelTranscriptBindings()?.history;
+    if (!history) throw new Error('Native undo history is unavailable');
+    return history.undoStack.length;
+  }, await nativeRuntimeBundle);
+}
+
 async function media(page) {
   return page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.tracks.map((track) => ({
     time: track.currentTime, duration: track.duration, paused: !track.playing
@@ -69,6 +90,9 @@ export const featureScenarios = {
     'Alt-drag cut handles resize, short cuts refuse, Escape cancels, and zoom cancels stale geometry',
     'S cuts a real region, preserves text once, and native merge restores one row',
     'Shift+S keeps native duplicated text while cutting, and a fully covered region is deleted',
+    'S cuts only overlapping lane 1 and leaves the other native recording exact',
+    'S cuts only overlapping lane 2 and leaves the other native recording exact',
+    'S trims boundaries and deletes covered turns only in its overlapping lane',
     'read-only timeline rejects every mutating Helper gesture'
   ],
   waveformScaleUnlock: ['waveform scale exceeds 20x, persists, and remains patched after native editing'],
@@ -234,6 +258,85 @@ test('Shift+S keeps native duplicated text while cutting, and a fully covered re
   await page.keyboard.press('Shift+KeyS');
   await expect(page.locator(TEXT)).toHaveCount(3);
   expect(await rows(page)).toEqual(before.slice(1));
+});
+
+for (const laneIndex of [0, 1]) {
+  test(`S cuts only overlapping lane ${laneIndex + 1} and leaves the other native recording exact`, async ({ page, babel }) => {
+    const { action } = await babel.state();
+    const recordingIds = ['speaker-1', 'speaker-2'];
+    const turns = recordingIds.map(processedRecordingId => {
+      const lane = action.annotations.filter(turn => turn.processedRecordingId === processedRecordingId);
+      return { ...lane[0], startTimeInSeconds: 0.3, endTimeInSeconds: 8.8,
+        content: lane.map(turn => turn.content).join(' ') };
+    });
+    await babel.reset('baseline', { action: { annotations: turns } });
+    await ready(page, 2);
+    await fit(page);
+    const before = await annotations(page);
+    const targetId = recordingIds[laneIndex], otherId = recordingIds[1 - laneIndex];
+    const source = before.find(turn => turn.processedRecordingId === targetId);
+    const untouched = before.filter(turn => turn.processedRecordingId === otherId);
+    // A selected transcript row in the other lane must never redirect the cut.
+    await page.locator(`section[data-annotation-id="${untouched[0].id}"]`).locator(TEXT).click();
+    const historyBefore = await historyDepth(page);
+    await preview(page, 2, 3.4, laneIndex);
+    await page.keyboard.press('KeyS');
+    await expect(page.locator(PREVIEW)).toHaveCount(0);
+    await expect(page.locator(TEXT)).toHaveCount(3);
+    const after = await annotations(page);
+    expect(after.filter(turn => turn.processedRecordingId === otherId)).toEqual(untouched);
+    const cut = after.filter(turn => turn.processedRecordingId === targetId)
+      .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds);
+    expect(cut).toHaveLength(2);
+    expect(cut.map(turn => turn.content).join(' ').replace(/\s+/g, ' ').trim()).toBe(source.content);
+    expect(Math.abs(cut[0].endTimeInSeconds - 2)).toBeLessThan(TOLERANCE);
+    expect(Math.abs(cut[1].startTimeInSeconds - 3.4)).toBeLessThan(TOLERANCE);
+    expect(cut[0].startTimeInSeconds).toBe(source.startTimeInSeconds);
+    expect(cut[1].endTimeInSeconds).toBe(source.endTimeInSeconds);
+    const historyAfter = await historyDepth(page);
+    expect(historyAfter - historyBefore).toBeGreaterThan(0);
+    expect(historyAfter - historyBefore).toBeLessThanOrEqual(3);
+    await page.locator(ZOOM).focus();
+    for (let revision = historyAfter; revision > historyBefore; revision--) {
+      await page.keyboard.press('Control+KeyZ');
+      await expect.poll(() => historyDepth(page)).toBe(revision - 1);
+    }
+    await expect.poll(() => annotations(page)).toEqual(before);
+  });
+}
+
+test('S trims boundaries and deletes covered turns only in its overlapping lane', async ({ page, babel }) => {
+  const { action } = await babel.state();
+  const turns = ['speaker-1', 'speaker-2'].flatMap(processedRecordingId => {
+    const source = action.annotations.find(turn => turn.processedRecordingId === processedRecordingId);
+    return [[0.3, 2.7], [3, 4.5], [4.8, 7.5]].map(([startTimeInSeconds, endTimeInSeconds], index) => ({
+      ...source, id: `${source.id}-overlap-${index}`, content: `${source.content} ${index}`,
+      startTimeInSeconds, endTimeInSeconds
+    }));
+  });
+  await babel.reset('baseline', { action: { annotations: turns } });
+  await ready(page, 6);
+  await fit(page);
+  const before = await annotations(page);
+  await preview(page, 1.5, 6, 1);
+  await page.keyboard.press('KeyS');
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
+  await expect(page.locator(TEXT)).toHaveCount(5);
+  const after = await annotations(page);
+  expect(after.filter(turn => turn.processedRecordingId === 'speaker-1'))
+    .toEqual(before.filter(turn => turn.processedRecordingId === 'speaker-1'));
+  const originalLane = before.filter(turn => turn.processedRecordingId === 'speaker-2')
+    .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds);
+  const cut = after.filter(turn => turn.processedRecordingId === 'speaker-2')
+    .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds);
+  expect(cut).toHaveLength(2);
+  expect(cut.map(turn => turn.id)).toEqual([originalLane[0].id, originalLane[2].id]);
+  expect(Math.abs(cut[0].endTimeInSeconds - 1.5)).toBeLessThan(TOLERANCE);
+  expect(Math.abs(cut[1].startTimeInSeconds - 6)).toBeLessThan(TOLERANCE);
+  expect(cut[0].content).toBe(originalLane[0].content);
+  expect(cut[1].content).toBe(originalLane[2].content);
+  expect(cut[0].startTimeInSeconds).toBe(originalLane[0].startTimeInSeconds);
+  expect(cut[1].endTimeInSeconds).toBe(originalLane[2].endTimeInSeconds);
 });
 
 test('waveform scale exceeds 20x, persists, and remains patched after native editing', async ({ page, babel }) => {
