@@ -12,10 +12,15 @@ async function loadBoot() {
       builder.onResolve({ filter: /^\.\.\/(core\/kernel|features\/custom-linter)$/ }, args => ({
         path: args.path, namespace: 'entry-boundary'
       }));
+      builder.onResolve({ filter: /^@nominy\/babel-extension-frontend$/ }, () => ({
+        path: 'frontend', namespace: 'entry-boundary'
+      }));
       builder.onLoad({ filter: /.*/, namespace: 'entry-boundary' }, args => ({
         contents: args.path.endsWith('/kernel')
           ? 'export function createHelperKernel() { window.probe.calls.push("new-kernel"); return window.probe.nextKernel; }'
-          : 'export function preloadCustomLinterBridge() { window.probe.calls.push("preload"); return Promise.resolve(); } export function bootstrapCustomLinterBridge() { window.probe.calls.push("bootstrap"); }',
+          : args.path === 'frontend'
+            ? 'export function themeRoot() {} export function applyComponent() {}'
+            : 'export function preloadCustomLinterBridge() { window.probe.calls.push("preload"); return Promise.resolve(true); } export function bootstrapCustomLinterBridge() { window.probe.calls.push("bootstrap"); return true; }',
         loader: 'js'
       }));
     } }]
@@ -42,12 +47,23 @@ async function bootFixture() {
     nativeListenerAlive = false;
     calls.push('bridge-teardown');
   });
-  const document = { querySelectorAll() {
-    calls.push('find-old-scripts');
-    return [{ remove() { calls.push('remove-old-script'); } }];
-  } };
+  const notices = [];
+  class NoticeElement extends EventTarget {
+    style = {}; dataset = {}; attributes = {}; children = [];
+    setAttribute(name, value) { this.attributes[name] = value; }
+    append(...children) { this.children.push(...children); }
+  }
+  const document = {
+    getElementById: id => notices.find(node => node.id === id),
+    createElement: () => new NoticeElement(),
+    body: { appendChild(node) { notices.push(node); } },
+    querySelectorAll() {
+      calls.push('find-old-scripts');
+      return [{ remove() { calls.push('remove-old-script'); } }];
+    }
+  };
   new Function('window', 'document', 'CustomEvent', await loadBoot())(window, document, CustomEvent);
-  return { window, oldKernel, nextKernel, calls, retries, drain, listenerAlive: () => nativeListenerAlive };
+  return { window, oldKernel, nextKernel, calls, retries, drain, notices, listenerAlive: () => nativeListenerAlive };
 }
 
 test('entry waits for correlated native restoration drain before teardown or replacement injection', async () => {
@@ -74,6 +90,8 @@ test('entry retains the prior owner and listeners when its stop rejects', async 
   assert.deepEqual(fixture.calls, ['stop:kernel-replaced']);
   assert.equal(fixture.listenerAlive(), true);
   assert.equal(fixture.window.__babelHelperKernel, fixture.oldKernel);
-  assert.equal(fixture.retries.length, 1, 'failure reaches the existing boot retry path instead of falling through');
-  assert.equal(fixture.retries[0].delay, 1000);
+  assert.equal(fixture.retries.length, 0, 'failed native cleanup must not start another kernel over the retained owner');
+  assert.equal(fixture.notices.length, 1);
+  assert.equal(fixture.notices[0].attributes.role, 'alert');
+  assert.match(fixture.notices[0].children[1].textContent, /Native Original restoration remains unavailable/);
 });
