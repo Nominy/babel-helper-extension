@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { createNativeSource } from './fixtures/native-source.mjs';
 
 async function load(entry) {
   const result = await build({
@@ -311,12 +312,10 @@ test('clock event bursts have a 66ms event-only cadence and ordinary commits pub
 });
 
 const editorContract = createNativeRenderFactories({}).find(entry => entry.id === 59327);
-const nativeEditorSource = editorContract.originals.find(source => source.includes('class tV {'));
+const nativeEditorSource = editorContract.originals[1];
 
 function boundedPlaybackFixture(f, source) {
-  const start = source.indexOf('let { getTracksRef: t11, tracks: n11, getTimelineIntervals:');
-  assert.notEqual(start, -1, 'The current native transport hook must be available');
-  const transport = source.slice(start, source.indexOf('let { getTracksRef: t11, playRegionOnce:', start));
+  const native = createNativeSource(source);
   const waves = [f.wave, wave()];
   for (const player of waves) {
     player.play = () => { player.paused = false; player.emit('play'); };
@@ -325,21 +324,15 @@ function boundedPlaybackFixture(f, source) {
   }
   const scope = {
     p3: Object.fromEntries(waves.map((player, index) => [index, { wavesurfer: player }])),
-    k3: { current: null }, g3: { current: false }, h2: { current: false },
+    k3: { current: null }, g2: { current: false }, h2: { current: false },
     window: f.window, performance: { now: () => f.now }
   };
   // Execute the actual native callback bodies in their transport closure, both
   // before and after Helper's factory transformation.
-  for (const name of ['S3', 'j2', 'N3', 'T3', 'I2', 'A2', 'E2', 'D2', 'M2', 'P2', 'L3']) {
-    const marker = `${name} = (0, a.useCallback)(`;
-    const offset = transport.indexOf(marker);
-    assert.notEqual(offset, -1, `Current transport callback ${name} must exist`);
-    const end = transport.indexOf('}, [', offset + marker.length);
-    assert.notEqual(end, -1);
-    scope[name] = new Function(...Object.keys(scope),
-      `return (${transport.slice(offset + marker.length, end + 1)});`)(...Object.values(scope));
+  for (const name of ['S3', 'j3', 'N2', 'T3', 'I2', 'A2', 'E2', 'D2', 'M2', 'L2', 'P3']) {
+    scope[name] = native.callback(name, scope, 'seekAllTracksToTime');
   }
-  return { waves, scope, playRegion: scope.M2, seek: scope.N3, toggle: scope.E2, cancel: scope.S3 };
+  return { waves, scope, playRegion: scope.M2, seek: scope.N2, toggle: scope.E2, cancel: scope.S3 };
 }
 
 for (const [variant, source] of [['native', nativeEditorSource], ['optimized', editorContract.factory.toString()]]) {

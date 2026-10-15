@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { build, transform } from 'esbuild';
+import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { defaultSnapshotDir } from '@nominy/babel-extension-e2e/recreation-snapshot';
+import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { createNativeSource } from './fixtures/native-source.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
@@ -898,22 +899,7 @@ test('native seek preserves the exact partially-playing lane subset while synchr
   const { createServiceRegistry } = await importBundledTs('src/mod-platform/service-registry.ts', 'partial-play-seek-registry');
   const pageWindow = installPageGlobals(createServiceRegistry());
   const model = installNativeTranscriptModel(pageWindow);
-  const sourceModule = await importBundledTs(path.relative(repoRoot,
-    path.join(defaultSnapshotDir, 'app/src/recovered/generated/moduleSources.ts')), 'native-seek-source');
-  const nativeSource = (await transform(`(${sourceModule.recoveredModuleSources[sourceModule.recoveredEditorModuleId]})`,
-    { loader: 'js', minify: false })).code;
-  const transportStart = nativeSource.indexOf('let { getTracksRef: t11, tracks: n11, getTimelineIntervals:');
-  const transportEnd = nativeSource.indexOf('let { getTracksRef: t11, playRegionOnce:', transportStart);
-  assert.ok(transportStart >= 0 && transportEnd > transportStart);
-  const transportSource = nativeSource.slice(transportStart, transportEnd);
-  function callback(name, scope, source = nativeSource) {
-    const marker = `${name} = (0, a.useCallback)(`;
-    const start = source.indexOf(marker);
-    const end = source.indexOf('}, [', start + marker.length);
-    assert.notEqual(start, -1, `Captured native ${name} callback must be present`);
-    assert.notEqual(end, -1);
-    return new Function(...Object.keys(scope), `return (${source.slice(start + marker.length, end + 1)});`)(...Object.values(scope));
-  }
+  const native = createNativeSource(createNativeRenderFactories({}).find(entry => entry.id === 59327).originals[1]);
   const seekCalls = [];
   const waves = [false, true].map((paused, index) => ({
     paused, time: 3.25,
@@ -927,12 +913,12 @@ test('native seek preserves the exact partially-playing lane subset while synchr
   const seekSyncRef = { current: false };
   let boundedCancellations = 0;
   const boundedCleanup = { current: () => { boundedCancellations++; } };
-  const cancelBounded = callback('S3', { k3: boundedCleanup }, transportSource);
-  const seekClocks = callback('j2', { g3: seekSyncRef, p3: registry }, transportSource);
-  const nativeSeek = callback('N3', { S3: cancelBounded, j2: seekClocks }, transportSource);
-  model.panel.memoizedProps.onSeekToAnnotation = callback('ri2', {
+  const cancelBounded = native.callback('S3', { k3: boundedCleanup }, 'seekAllTracksToTime');
+  const seekClocks = native.callback('j3', { g2: seekSyncRef, p3: registry }, 'seekAllTracksToTime');
+  const nativeSeek = native.callback('N2', { S3: cancelBounded, j3: seekClocks }, 'seekAllTracksToTime');
+  model.panel.memoizedProps.onSeekToAnnotation = native.callback('ra2', {
     tb2: { seekAllTracksToTime: nativeSeek },
-    eR2() { assert.fail('Pure clock seek must preserve the active annotation'); }
+    eA2() { assert.fail('Pure clock seek must preserve the active annotation'); }
   });
   model.panel.memoizedProps.onPlayPause = () => assert.fail('Pure seek must not toggle the transport');
   model.workbench.memoizedState.next = { memoizedState: { current: registry } };

@@ -63,6 +63,8 @@ function harness({ status = 'ready', observeFailure = false, read, fetch: fetchO
   };
   const window = new EventTarget();
   window.location = new URL('https://babel.test/transcription/task?reviewActionId=task');
+  let reloads = 0;
+  window.location.reload = () => { reloads++; };
   window.setTimeout = window.setInterval = () => { throw new Error('Diff automation must not schedule timer retries'); };
   const observers = [], performanceObservers = [], calls = [], fetches = [];
   class MutationObserver {
@@ -97,6 +99,7 @@ function harness({ status = 'ready', observeFailure = false, read, fetch: fetchO
     window, document, toggle, helper, observers, performanceObservers, calls, fetches,
     get native() { return native; }, set native(value) { native = value; },
     get reads() { return reads; }, get clears() { return clears; },
+    get reloads() { return reloads; },
     event(name = 'babel-helper:native-editor-commit') { window.dispatchEvent(new Event(name)); },
     mutation(target = toggle, type = 'attributes') { observers[0].emit([{ target, type, addedNodes: [], removedNodes: [] }]); },
     debug() { return JSON.parse(root.dataset.bhExtendedDiffDebug || 'null'); },
@@ -167,10 +170,28 @@ test('unsupported native readiness and observer failures remain actionable witho
     const failure = h.document.getElementById('babel-helper-native-failure-Extended-diff-view');
     assert.ok(failure);
     assert.equal(failure.getAttribute('role'), 'alert');
-    assert.equal(failure.children.at(-1).textContent, 'Reload Babel');
+    const action = name => failure.querySelectorAll('button')
+      .find(button => name.test(button.getAttribute('aria-label') || button.textContent));
+    const reload = action(/reload/i);
+    assert.ok(reload, 'the failure exposes an accessible reload action');
+    reload.dispatchEvent(new Event('click'));
+    assert.equal(h.reloads, 1);
     const reads = h.reads; h.event(); h.mutation(); await h.settle();
     assert.equal(h.reads, reads);
     assert.equal(h.observers[0].connected, false);
+    assert.equal(h.document.getElementById(failure.id), failure, 'failure events do not replace the alert');
+    const dismiss = action(/dismiss/i);
+    assert.ok(dismiss, 'the failure exposes an accessible dismiss action');
+    dismiss.dispatchEvent(new Event('click'));
+    assert.equal(h.document.getElementById(failure.id), null, 'dismiss removes the alert');
+    h.native.status = 'ready';
+    h.event(); h.mutation(); await h.settle();
+    assert.equal(h.document.getElementById(failure.id), null, 'events do not restore a dismissed failure');
+    assert.equal(h.reloads, 1, 'dismiss does not reload the page');
+    assert.equal(h.reads, reads, 'dismiss does not restart failed automation');
+    assert.equal(h.observers[0].connected, false);
+    assert.equal(h.calls.length, 0, 'failed automation never applies a projection');
+    assert.equal(h.fetches.length, 0, 'failed automation never falls back to network requests');
     h.helper.unbindExtendedDiffView();
   }
 });

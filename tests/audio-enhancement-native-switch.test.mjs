@@ -4,24 +4,13 @@ import { build } from 'esbuild';
 import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
 import { AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_PROTOCOL_VERSION, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 import { AudioWorkerFixture } from './fixtures/audio-enhancement-worker.mjs';
+import { createNativeSource } from './fixtures/native-source.mjs';
 
-const recoveredEditor = createNativeRenderFactories({}).find(entry => entry.id === 59327)
-  .originals.find(source => source.includes('class tV {'));
-assert.ok(recoveredEditor, 'The current native editor oracle must be available');
-const createNativeHistory = new Function('ib',
-  recoveredEditor.slice(recoveredEditor.indexOf('function iR('), recoveredEditor.indexOf('function iM(')) +
-  recoveredEditor.slice(recoveredEditor.indexOf('function ob('), recoveredEditor.indexOf('let ow =')) +
-  '; return ob;'
+const nativeEditor = createNativeSource(createNativeRenderFactories({}).find(entry => entry.id === 59327).originals[1]);
+const createNativeHistory = new Function('aw',
+  ['aD', 'aM', 'ow'].map(name => nativeEditor.declaration(name)).join('\n') +
+  '; return ow;'
 )({ xv: { isText: node => typeof node.text === 'string' } });
-
-function nativeCallback(name, scope) {
-  const marker = `${name} = (0, a.useCallback)(`;
-  const start = recoveredEditor.indexOf(marker);
-  assert.notEqual(start, -1, `Recovered native callback ${name} must exist`);
-  const end = recoveredEditor.indexOf('}, [', start + marker.length);
-  assert.notEqual(end, -1);
-  return new Function(...Object.keys(scope), `return (${recoveredEditor.slice(start + marker.length, end + 1)});`)(...Object.values(scope));
-}
 
 class NativeElementFixture extends EventTarget {
   constructor(region) { super(); this.region = region; this.style = {}; this.isConnected = true; }
@@ -84,25 +73,25 @@ class NativeEditorFixture {
     this.initial = structuredClone(this.annotations.current);
     // Execute the recovered annotation command, not an imitation split or event echo.
     this.commands = [];
-    this.splitAnnotation = nativeCallback('Q3', {
-      x3: this.annotations, crypto,
-      D2: command => { this.commands.push(command); command.do(); },
-      C2: update => {
+    this.splitAnnotation = nativeEditor.callback('Z3', {
+      x2: this.annotations, crypto,
+      R2: command => { this.commands.push(command); command.do(); },
+      C3: update => {
         this.annotations.current = update(this.annotations.current);
         this.writes += 1;
         this.rebuild(this.annotations.current);
       }
-    });
+    }, 'splitAnnotation');
   }
   select(trackId, regionId) { this.selected = { ...this.selected, [trackId]: { activeRegionId: regionId } }; this.selectionHook.memoizedState = this.selected; }
   register(wave, region) {
     const refs = { [region.id]: { start: {}, end: {}, text: {}, label: { style: {} } } };
-    const bind = nativeCallback('n72', {
+    const bind = nativeEditor.callback('n72', {
       nB2: null, et2: { current: () => ({ region: '#ccc', regionBorder: '#999' }) },
       ey2: () => {}, ex2: { refs: { current: refs } },
-      tb2: {}, eR2: (id, selected) => this.select(id, selected), nl2: { current: new Set() },
+      tb2: {}, eA2: (id, selected) => this.select(id, selected), nl2: { current: new Set() },
       b2: 'transcription', U2: false, tA2: false,
-      nC2: this.splitAnnotation, nh2: { current: false }, af: { SHORT: 1 }, setTimeout,
+      nC2: this.splitAnnotation, nh2: { current: false }, ib: { SHORT: 1 }, setTimeout,
       MouseEvent: NativeMouseEventFixture
     });
     bind({ id: wave.id }, region, false);
@@ -998,9 +987,14 @@ test(`real native split and paired selection remain correct with ${scenario.name
       const retired = facade;
       const nextSources = Promise.withResolvers();
       onSources = nextSources.resolve;
+      const sourcesCount = messages.filter(message => message.type === 'sources-ready').length;
       bridge.initAudioEnhancementBridge('chrome-extension://helper/dist/content/audio-enhancement-worker.js');
       facade = window.__babelHelperAudioEnhancementBridge;
       await facade.setEnabled(true);
+      assert.equal(facade.getState().status, 'idle');
+      assert.equal(messages.filter(message => message.type === 'sources-ready').length, sourcesCount,
+        'A replacement bridge does not generate automatically');
+      await facade.generate();
       await nextSources.promise;
       const nextState = attributes.get('data-babel-audio-enhancement');
       const nextRevision = window.__babelHelperAudioEnhancementRevision;

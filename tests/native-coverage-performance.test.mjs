@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { createNativeSource } from './fixtures/native-source.mjs';
 
 // Execute the checked-in current store itself as the oracle, not a second coverage implementation.
 const factories = createNativeRenderFactories({});
-const source = factories.find(entry => entry.id === 59327).originals.find(text => text.includes('class tV {'));
-assert.ok(source, 'checked-in current native coverage contract must be available');
-const nativeCoverage = source.slice(source.indexOf('let tB = "tx-listen-coverage"'), source.indexOf('function tZ('));
+const source = createNativeSource(factories.find(entry => entry.id === 59327).originals[1]);
+const nativeCoverage = ['tF', 'tU', 'tW', 'tG', 'tK', 'tH', 'tV', 'tZ']
+  .map(name => source.declaration(name)).join('\n');
 const backendSource = factories.find(entry => entry.id === 99407).originals.find(text => text.includes('class C extends s {'));
 assert.ok(backendSource, 'checked-in current WebAudio backend contract must be available');
 const NativeBackend = new Function(
@@ -83,7 +84,7 @@ function fixture(t, { duration = 30, ids = ['a'], segments = {}, nativeBackend =
     localStorage: { getItem: key => storage.get(key) || null, setItem(key, value) { storage.set(key, value); writes.push(JSON.parse(value)); } }
   });
   f.environment = environment;
-  const Store = new Function('localStorage', 'performance', `${nativeCoverage}; return tV;`)(environment.localStorage, environment.performance);
+  const Store = new Function('localStorage', 'performance', `${nativeCoverage}; return tZ;`)(environment.localStorage, environment.performance);
   const store = new Store();
   store.load('task-a'); store.setDuration(duration); store.setSpeakerSegments(segments);
   f.store = store;
