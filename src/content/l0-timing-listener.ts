@@ -5,6 +5,7 @@ import type {
   L0WordTimingToken,
   L0WordTimingTrack
 } from '../services/l0-word-timing-alignment';
+import { freezePublishedL0TimingIndex } from '../services/l0-word-timing-alignment';
 import { buildCurrentL0TimingTaskId } from '../services/l0-timing-identity';
 
 export { buildL0TimingTaskId } from '../services/l0-timing-identity';
@@ -91,7 +92,7 @@ export function parseL0TimingUpdate(value: unknown): L0TimingIndex | null {
     lanes.add(laneKey);
     tracks.push(track);
   }
-  return { taskId: message.taskId.trim(), tracks };
+  return freezePublishedL0TimingIndex({ taskId: message.taskId.trim(), tracks });
 }
 
 function timingIdentity(taskId: string): { scopeId: string; baseTaskId: string; variantKey: string } | null {
@@ -158,7 +159,11 @@ export function getCurrentL0TimingIndex(
   return selectTimingIndex(state, buildCurrentL0TimingTaskId(helper, suppliedLocation));
 }
 
-/** Playback pins can share the bridge-verified clock; ASR/draft/segmentation lookup remains source-specific. */
+/**
+ * Verified clock view for playback and exact-boundary text allocation (including
+ * smart split). ASR/inference lookup remains source-specific via getCurrentL0TimingIndex.
+ * Reusing a paired clock never publishes donor tokens as selected-source inference.
+ */
 export function getCurrentL0PlaybackTimingIndex(
   state: TimingState,
   helper: TimingIdentityHelper,
@@ -166,19 +171,22 @@ export function getCurrentL0PlaybackTimingIndex(
 ): L0TimingIndex | null {
   const taskId = buildCurrentL0TimingTaskId(helper, suppliedLocation);
   const own = selectTimingIndex(state, taskId);
-  if (own) return own;
   const audio = readAudioEnhancementState();
+  const sourceIdentity = timingIdentity(taskId);
+  if (audio && audio.taskId === sourceIdentity?.baseTaskId &&
+      (audio.status === 'switching' ||
+       audio.desiredStrength !== audio.strength && audio.status !== 'error')) return null;
+  if (own) return own;
   const cache = state.l0TimingCache;
   if (!audio?.pairedVariantKey || audio.status !== 'ready' || !cache) return null;
-  const sourceIdentity = timingIdentity(taskId);
   if (sourceIdentity?.baseTaskId !== audio.taskId) return null;
   const donor = cache.enhanced && cache.enhancedPairKey === audio.pairedVariantKey
     ? cache.enhanced : audio.strength > 0 ? cache.original : null;
   if (!donor) return null;
-  // A playback-only view maps the same word clocks to the selected lane identity.
+  // A clock-only view maps the same word clocks to the selected lane identity.
   // It never publishes or stores these pins as newly inferred timing for that source.
   if (cache.playback?.taskId !== taskId || cache.playback.tracks !== donor.tracks) {
-    cache.playback = { taskId, tracks: donor.tracks };
+    cache.playback = Object.freeze({ taskId, tracks: donor.tracks });
   }
   return cache.playback;
 }
@@ -249,7 +257,7 @@ export function registerL0TimingListener(
       const selected = timingIdentity(expectedTaskId);
       // Startup Original inference remains valid if Generate or a mix switch
       // finishes first. Retain its real source identity, even during processing;
-      // only the playback lookup may share clocks after pair verification.
+      // only the clock lookup may share timings after pair verification.
       if (!incoming || incoming.variantKey || incoming.scopeId !== selected?.scopeId || !state.l0TimingCache) return;
       state.l0TimingCache.original = update;
       delete state.l0TimingCache.playback;

@@ -6,6 +6,7 @@ const bundled = await build({
   stdin: { contents: `
     export * from './src/site/editor-control';
     export * from './src/site/rows';
+    export * from './src/site/row-time';
     export * from './src/hooks/selected-number-to-skaz';
     export * from './src/features/text-move-feature';
     export * from './src/features/selected-number-feature';
@@ -60,11 +61,47 @@ function harness(t) {
   const installed = new Map();
   const cleanup = [];
   const install = (key, value) => {
-    installed.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    if (!installed.has(key)) installed.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
   };
   const rows = [];
-  const doc = { location: { href: 'https://babel.test/transcription/job' }, activeElement: null, querySelectorAll: () => rows };
+  const doc = { location: { href: 'https://babel.test/transcription/job' }, activeElement: null,
+    querySelectorAll: () => rows.filter(row => row.isConnected) };
+  const listeners = new Map(), observers = [], batches = [];
+  const windowRef = {
+    addEventListener(name, listener) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(listener);
+    },
+    removeEventListener(name, listener) { listeners.get(name)?.delete(listener); },
+    dispatchEvent(event) { for (const listener of listeners.get(event.type) || []) listener(event); }
+  };
+  let annotationRevision = 1;
+  const root = new ElementFixture('html');
+  root.ownerDocument = doc;
+  doc.documentElement = root;
+  const publication = () => ({ href: doc.location.href, generation: 1, annotationRevision,
+    reviewActionId: rows[0]?.state.reviewActionId || '', readOnly: rows[0]?.state.readOnly ?? false,
+    activeIds: rows.filter(row => row.state.isActive).map(row => row.state.annotationId),
+    editingId: rows.find(row => row.state.isEditing)?.state.annotationId ?? null });
+  root.dispatchEvent = event => {
+    const request = JSON.parse(event.detail);
+    batches.push(request);
+    const identities = rows.map(({ state }) => ({
+      annotationId: state.annotationId, reviewActionId: state.reviewActionId, processedRecordingId: state.processedRecordingId,
+      trackLabel: state.trackLabel, startSeconds: state.startSeconds, endSeconds: state.endSeconds
+    }));
+    root.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+      id: request.id, ok: true, ...publication(), identities
+    }));
+  };
+  install('window', windowRef);
+  install('MutationObserver', class {
+    constructor(callback) { this.callback = callback; this.records = []; observers.push(this); }
+    observe() {}
+    takeRecords() { return this.records.splice(0); }
+    disconnect() { this.disconnected = true; this.records = []; }
+  });
   install('HTMLElement', ElementFixture);
   install('Element', ElementFixture);
   install('HTMLInputElement', TextInputFixture);
@@ -115,7 +152,17 @@ function harness(t) {
     rows.push(row);
     return row;
   }
-  return { doc, rows, turn, install, cleanup };
+  return { doc, rows, turn, install, cleanup, batches, observers, listeners,
+    commit(changed = true) {
+      if (changed) annotationRevision++;
+      windowRef.dispatchEvent({ type: 'babel-helper:native-editor-commit', detail: JSON.stringify(publication()) });
+    },
+    membership(addedNodes = [], removedNodes = []) {
+      for (const observer of observers) if (!observer.disconnected) {
+        observer.records.push({ type: 'childList', addedNodes, removedNodes });
+      }
+    }
+  };
 }
 
 test('native control follows static-to-Slate replacement without losing raw tag offsets or direction', (t) => {
@@ -162,8 +209,70 @@ test('native row service includes readonly turns and reads exact committed times
   assert.equal(helper.focusRow(row), false);
   const oldIdentity = helper.getRowIdentity(row);
   row.state.reviewActionId = 'replacement-task';
+  h.commit();
   assert.equal(helper.rowMatchesIdentity(row, oldIdentity), false);
   assert.equal(helper.findRowByIdentity(oldIdentity), null);
+});
+
+test('committed row cache batches identities, retains steady playback indexes, and separates active selection', t => {
+  const h = harness(t), first = h.turn('one'), second = h.turn('two', { lane: 'speaker-two' });
+  Object.assign(second.state, { startSeconds: 4, endSeconds: 7 });
+  const counts = new Map();
+  const helper = { state: {}, perf: { count(name) { counts.set(name, (counts.get(name) || 0) + 1); } } };
+  const modules = {};
+  modules.rows = api.createRowSiteApi(helper, modules);
+  modules.time = api.createRowTimeApi(helper);
+  h.cleanup.push(() => helper.disposeRowIndex());
+  const entries = modules.time.getRowTimeEntries();
+  for (let index = 0; index < 50; index++) {
+    assert.equal(modules.time.getRowTimeEntries(), entries);
+    assert.equal(modules.time.findRowEntryByPlaybackTime(5).row, second);
+    assert.equal(modules.time.findLatestRowEntryBeforePlaybackTime(8).row, second);
+  }
+  assert.equal(h.batches.length, 1);
+  assert.equal(first.calls.length + second.calls.length, 0, 'no per-row bridge requests');
+  assert.equal(counts.get('row.scan'), 1);
+  first.state.isActive = true;
+  h.commit(false);
+  assert.equal(helper.findActiveRowByReactState(), first);
+  assert.equal(helper.getRowIdentity(first).isActive, true);
+  assert.equal(modules.time.getRowTimeEntries(), entries, 'caret/active changes do not replace timing indexes');
+  Object.assign(first.state, { startSeconds: 8, endSeconds: 10 });
+  h.commit();
+  assert.equal(modules.time.findRowEntryByPlaybackTime(9).row, first);
+  assert.equal(modules.time.findRowEntryByPlaybackTime(2), null);
+  assert.equal(modules.time.resolveRowTimeEntry(entries[0]).startSeconds, 8, 'retained entries resolve current timing');
+  assert.equal(h.batches.length, 2);
+});
+
+test('row cache observes filters and same-task remounts synchronously and never authorizes a stale task edit', t => {
+  const h = harness(t), first = h.turn('one'), second = h.turn('two', { lane: 'speaker-two' });
+  const helper = { state: {} }, modules = {};
+  modules.rows = api.createRowSiteApi(helper, modules);
+  modules.time = api.createRowTimeApi(helper);
+  h.cleanup.push(() => helper.disposeRowIndex());
+  const identity = helper.getRowIdentity(first), control = helper.getRowEditor(first);
+  modules.time.rememberPlaybackRow(first);
+  first.isConnected = false;
+  h.membership([], [first]);
+  assert.deepEqual(helper.getTranscriptRows(), [second], 'takeRecords closes observer delivery gap');
+  assert.equal(modules.time.getRowTimeEntry(first, identity), null);
+  const replacement = h.turn('one', { id: identity.annotationId });
+  h.membership([replacement]);
+  assert.equal(modules.time.getRowTimeEntry(first, identity).row, replacement);
+  assert.equal(modules.time.findRowEntryByPlaybackTime(2).row, replacement, 'overlap keeps remounted playback owner');
+  const connectedControl = helper.getRowEditor(replacement);
+  replacement.state.reviewActionId = second.state.reviewActionId = first.state.reviewActionId = 'task-two';
+  h.commit();
+  assert.equal(helper.findRowByIdentity(identity), null);
+  assert.equal(modules.time.getRowTimeEntry(replacement, identity), null);
+  assert.equal(control.replaceValue('stale'), false);
+  assert.equal(connectedControl.replaceValue('stale connected edit'), false);
+  assert.equal(replacement.state.text, 'one', 'cached presentation cannot authorize a new task');
+  helper.disposeRowIndex();
+  assert.ok(h.observers.every(observer => observer.disconnected));
+  assert.ok([...h.listeners.values()].every(listeners => listeners.size === 0));
+  assert.equal(helper.getRowIdentity(replacement).reviewActionId, 'task-two', 'next active session starts a fresh bounded index');
 });
 
 test('focus restoration centers only the native transcript viewport and retains a backward range', (t) => {

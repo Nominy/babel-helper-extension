@@ -4,13 +4,13 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 
 import { transcriptSelector as TEXT, readRows as rows, fillText } from './helper-editing-utils.mjs';
-import { selectedAudioReady, fitNativeTimeline as fit } from './native-audio-utils.mjs';
+import { fitNativeTimeline as fit } from './native-audio-utils.mjs';
 const HOST = '[data-babel-helper-minimap-host]';
 const PREVIEW = '[data-babel-helper-cut-preview]';
 const ZOOM = '[role="slider"][data-orientation="horizontal"][aria-valuemin="10"][aria-valuemax="2000"]';
 const TOLERANCE = 0.12; // Native timestamp quantization and pointer placement.
 
-test.use({ extensions: ['helper', 'gold'] });
+test.use({ extensions: ['helper'] });
 
 
 async function ready(page, count = 4) {
@@ -23,7 +23,7 @@ async function ready(page, count = 4) {
     await expect(canvas).toHaveAttribute('width', /^[1-9]\d*$/);
   }
   await expect(page.locator(ZOOM)).toBeVisible();
-  await selectedAudioReady(page);
+  await expect.poll(() => page.evaluate(() => window.__BABEL_E2E__.snapshot().audio.ready)).toBe(true);
 }
 
 
@@ -49,6 +49,33 @@ async function preview(page, start, end, lane = 0) {
   await page.keyboard.up('Alt');
   await expect(page.locator(PREVIEW)).toBeVisible();
   await expect(page.locator(`${PREVIEW} [data-babel-helper-cut-label]`)).toHaveText(/\d+\.\d+s/);
+}
+
+async function publishFixtureWordTimings(page) {
+  await page.evaluate(() => new Promise(resolve => {
+    const snapshot = window.__BABEL_E2E__.snapshot();
+    const tracks = new Map();
+    for (const turn of snapshot.annotations) {
+      if (turn.type !== 'transcription') continue;
+      if (!tracks.has(turn.processedRecordingId)) tracks.set(turn.processedRecordingId, []);
+      const words = turn.content.trim().split(/\s+/).filter(Boolean);
+      const duration = turn.endTimeInSeconds - turn.startTimeInSeconds;
+      tracks.get(turn.processedRecordingId).push(...words.map((text, index) => ({
+        id: `${turn.id}:${index}`, text,
+        startSeconds: turn.startTimeInSeconds + duration * index / words.length,
+        endSeconds: turn.startTimeInSeconds + duration * (index + 0.8) / words.length
+      })));
+    }
+    const taskId = JSON.stringify({ version: 1, baseTaskId: snapshot.reviewActionId, stableLaneIds: [] });
+    const received = event => {
+      if (event.source !== window || event.data?.type !== 'babel-gold-drafting:l0-timing-update' || event.data.taskId !== taskId) return;
+      window.removeEventListener('message', received);
+      resolve();
+    };
+    window.addEventListener('message', received);
+    window.postMessage({ type: 'babel-gold-drafting:l0-timing-update', version: 1, taskId,
+      tracks: [...tracks].map(([lane, tokens]) => ({ lane, tokens })) }, window.location.origin);
+  }));
 }
 
 async function mergedLaneFixture(babel) {
@@ -209,6 +236,7 @@ test('S cuts a real region, preserves text once, and native merge restores one r
   await ready(page, 3);
   await fit(page);
   const before = await rows(page);
+  await publishFixtureWordTimings(page);
   await preview(page, 2, 3.3);
   await page.keyboard.press('KeyS');
   await expect(page.locator(TEXT)).toHaveCount(4);
@@ -234,6 +262,22 @@ test('S cuts a real region, preserves text once, and native merge restores one r
     .filter(annotation => annotation.processedRecordingId === 'speaker-1')
     .sort((left, right) => left.startTimeInSeconds - right.startTimeInSeconds)
     .map(annotation => annotation.content))).toEqual(split.slice(0, 2).map(row => row.text));
+});
+
+test('S refuses missing word timing without changing native history and admits an explicit retry', async ({ page, babel }) => {
+  await mergedLaneFixture(babel);
+  await ready(page, 3);
+  await fit(page);
+  const before = await annotations(page), historyBefore = await historyDepth(page);
+  await preview(page, 2, 3.3);
+  await page.keyboard.press('KeyS');
+  await expect(page.locator(`${PREVIEW} [data-babel-helper-cut-label]`)).toContainText('Word timing boundary unavailable');
+  expect(await annotations(page)).toEqual(before);
+  expect(await historyDepth(page)).toBe(historyBefore);
+  await publishFixtureWordTimings(page);
+  await page.keyboard.press('KeyS');
+  await expect(page.locator(PREVIEW)).toHaveCount(0);
+  await expect(page.locator(TEXT)).toHaveCount(4);
 });
 
 test('Shift+S keeps native duplicated text while cutting, and a fully covered region is deleted', async ({ page, babel }) => {
@@ -276,6 +320,7 @@ for (const laneIndex of [0, 1]) {
     const targetId = recordingIds[laneIndex], otherId = recordingIds[1 - laneIndex];
     const source = before.find(turn => turn.processedRecordingId === targetId);
     const untouched = before.filter(turn => turn.processedRecordingId === otherId);
+    await publishFixtureWordTimings(page);
     // A selected transcript row in the other lane must never redirect the cut.
     await page.locator(`section[data-annotation-id="${untouched[0].id}"]`).locator(TEXT).click();
     const historyBefore = await historyDepth(page);

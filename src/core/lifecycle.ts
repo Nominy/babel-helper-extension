@@ -293,6 +293,7 @@ export function registerLifecycle(helper: any) {
     if (typeof helper.unbindRowTracking === 'function') {
       helper.unbindRowTracking();
     }
+    helper.disposeRowIndex?.();
 
     if (typeof helper.resetCutState === 'function') {
       helper.resetCutState();

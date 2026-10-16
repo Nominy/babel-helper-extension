@@ -217,10 +217,10 @@ export function registerTimestampEditService(helper: any) {
   }
 
   async function callTimestampBridge(operation, payload, isCurrentTask) {
-    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task' };
+    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task', commandInvoked: false };
     const ready = await injectTimestampBridge();
-    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task' };
-    if (!ready) return { ok: false, reason: 'bridge-unavailable' };
+    if (isCurrentTask && !isCurrentTask()) return { ok: false, reason: 'stale-task', commandInvoked: false };
+    if (!ready) return { ok: false, reason: 'bridge-unavailable', commandInvoked: false };
     const { promise, resolve } = Promise.withResolvers();
     const id = 'timestamp-request-' + ++bridgeRequestId;
     let settled = false;
@@ -252,7 +252,7 @@ export function registerTimestampEditService(helper: any) {
 
   async function invokeTimestampMutation(operation, backend, buildPayload) {
     const isCurrentTask = captureL0TaskGuard();
-    if (!isCurrentTask()) return { ok: false, reason: 'stale-task', backend, verification: null };
+    if (!isCurrentTask()) return { ok: false, reason: 'stale-task', commandInvoked: false, backend, verification: null };
     const result = await callTimestampBridge(operation, buildPayload(), isCurrentTask);
     return {
       ...result,

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { findBabelEditorFiber, subscribeBabelEditorCommits, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity, readBabelClassicInput, flushBabelClassicInputs } from '@nominy/babel-babel-runtime';
+import { findBabelEditorFiber, subscribeBabelEditorCommits, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity, createBabelRowIdentityIndex, readBabelClassicInput, flushBabelClassicInputs } from '@nominy/babel-babel-runtime';
 import { BABEL_EDITOR_CONTRACT_VERSION } from '../core/babel-editor-contract';
 import {
   findNativeDescendant, findNativeTurnFiber, readNativeTurn, readNativeSlateSelection, replaceNativeTurn, replaceClassicTurns, selectNativeSlate, nativeDomPointOffset,
@@ -56,9 +56,7 @@ export function initRecoveredEditorBridge() {
   let sessionError = '';
   let publishedSession = null;
   let publishedSessionPayload = '';
-  let publishedCommit = '';
-  let publishedCommitHref = '';
-  let publishedCommitGeneration = -1;
+  const rowIdentityIndex = createBabelRowIdentityIndex();
   let sessionMountQueued = false;
   let sessionMountSeeds = [];
   const SESSION_MOUNT_SELECTOR = 'main, [data-transcript-scroll]';
@@ -167,13 +165,12 @@ export function initRecoveredEditorBridge() {
     window.dispatchEvent(new CustomEvent(SESSION_EVENT, { detail: payload }));
   }
 
-  function publishEditorCommit() {
-    if (publishedCommitHref !== window.location.href || publishedCommitGeneration !== sessionGeneration) {
-      publishedCommitHref = window.location.href;
-      publishedCommitGeneration = sessionGeneration;
-      publishedCommit = JSON.stringify({ href: publishedCommitHref, generation: sessionGeneration });
-    }
-    window.dispatchEvent(new CustomEvent('babel-helper:native-editor-commit', { detail: publishedCommit }));
+  function publishEditorCommit(committed = false) {
+    const rows = !sessionError && sessionUnsubscribe ? rowIdentityIndex.reconcile(committed) : null;
+    const publication = { href: window.location.href, generation: sessionGeneration,
+      reviewActionId: rows?.reviewActionId || '', annotationRevision: rows?.revision ?? null,
+      readOnly: rows?.readOnly ?? true, activeIds: rows?.activeIds || [], editingId: rows?.editingId ?? null };
+    window.dispatchEvent(new CustomEvent('babel-helper:native-editor-commit', { detail: JSON.stringify(publication) }));
   }
 
   function reconcileNativeSession(mountChanged = false) {
@@ -203,7 +200,7 @@ export function initRecoveredEditorBridge() {
         sessionUnsubscribe = subscribeBabelEditorCommits(() => {
           if (disposed || generation !== sessionGeneration) return;
           reconcileNativeSession();
-          if (!disposed && generation === sessionGeneration) publishEditorCommit();
+          if (!disposed && generation === sessionGeneration) publishEditorCommit(true);
         });
         state = readBabelSessionState();
         if (!state) throw new Error('Native editor committed session metadata is unavailable.');
@@ -1129,6 +1126,15 @@ export function initRecoveredEditorBridge() {
     let request;
     try { request = typeof event.detail === 'string' ? JSON.parse(event.detail) : event.detail; } catch { return; }
     if (!request?.id) return;
+    if (request.operation === 'identities') {
+      if (event.target !== document.documentElement) return;
+      const rows = !sessionError && sessionUnsubscribe ? rowIdentityIndex.reconcile() : null;
+      document.documentElement.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+        id: request.id, ok: Boolean(rows), href: window.location.href, generation: sessionGeneration,
+        annotationRevision: rows?.revision ?? null, ...rows
+      }));
+      return;
+    }
     if (request.operation === 'session') {
       if (event.target !== document.documentElement) return;
       const binding = !sessionError && sessionUnsubscribe ? readBabelSessionState() : null;
@@ -1141,6 +1147,16 @@ export function initRecoveredEditorBridge() {
     }
     const responseRow = event.target instanceof Element ? event.target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
     if (!responseRow) return;
+    // Identity is presentation metadata, not a Classic input read. In
+    // particular it must never flush pending text or serialize a selection.
+    if (request.operation === 'identity') {
+      const annotationId = responseRow.getAttribute('data-annotation-id');
+      const identity = annotationId === request.annotationId ? readBabelTurnIdentity(annotationId) : null;
+      const ok = Boolean(identity && (!request.reviewActionId || request.reviewActionId === identity.reviewActionId) &&
+        (request.processedRecordingId === undefined || request.processedRecordingId === identity.processedRecordingId));
+      responseRow.setAttribute('data-babel-helper-editor-result', JSON.stringify({ ...identity, id: request.id, ok }));
+      return;
+    }
     if (responseRow.getAttribute('data-babel-classic-row') === 'true') {
       const annotationId = responseRow.getAttribute('data-annotation-id');
       let owned = readBabelClassicInput(annotationId);
@@ -1149,7 +1165,7 @@ export function initRecoveredEditorBridge() {
         (!request.reviewActionId || request.reviewActionId === identity.reviewActionId) &&
         (request.processedRecordingId === undefined || request.processedRecordingId === identity.processedRecordingId));
       const operation = request.operation;
-      const read = ['read', 'identity', 'caretRect', 'offsetAtPoint'].includes(operation);
+      const read = ['read', 'caretRect', 'offsetAtPoint'].includes(operation);
       if (!read && owned?.readOnly) ok = false;
       let rect = null, offset = null, reason = ok ? undefined : 'stale-or-read-only-classic-input';
       try {
@@ -1169,7 +1185,7 @@ export function initRecoveredEditorBridge() {
           else if (operation === 'pageSelection') ok = input.page(request.direction, request.extend === true);
           else if (operation === 'caretRect') { rect = input.rects(start)[0] || null; ok = Boolean(rect); }
           else if (operation === 'offsetAtPoint') { offset = input.offsetAtPoint(request.x, request.y); ok = offset !== null; }
-          else if (!['read', 'identity', 'syncSelection'].includes(operation)) ok = false;
+          else if (!['read', 'syncSelection'].includes(operation)) ok = false;
         }
       } catch (error) {
         ok = false;
@@ -1185,15 +1201,6 @@ export function initRecoveredEditorBridge() {
         direction: offset === null ? latest?.direction ?? 'none' : 'none', readOnly: owned?.readOnly ?? true,
         ...(rect ? { rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height,
           bottom: rect.bottom, right: rect.right } } : {})
-      }));
-      return;
-    }
-    if (request.operation === 'identity') {
-      const annotationId = responseRow.getAttribute('data-annotation-id');
-      const identity = annotationId === request.annotationId ? readBabelTurnIdentity(annotationId) : null;
-      const ok = Boolean(identity && (!request.reviewActionId || request.reviewActionId === identity.reviewActionId));
-      responseRow.setAttribute('data-babel-helper-editor-result', JSON.stringify({
-        ...identity, id: request.id, ok
       }));
       return;
     }
@@ -1664,6 +1671,7 @@ export function initRecoveredEditorBridge() {
     sessionGeneration++;
     sessionUnsubscribe?.();
     sessionUnsubscribe = null;
+    rowIdentityIndex.dispose();
     sessionMountObserver.disconnect();
     sessionMountQueued = false;
     sessionMountSeeds = [];

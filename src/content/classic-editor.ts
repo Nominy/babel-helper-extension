@@ -4,6 +4,21 @@ import { createClassicControls } from './classic-controls';
 import { createClassicRuntime, createClassicViewBoundary, classicAutocomplete, classicOrderedRows, assertClassicTranscript } from '../classic/runtime';
 
 const objectLike = value => value !== null && (typeof value === 'object' || typeof value === 'function');
+const emptyIssues = Object.freeze([]);
+function sameCollection(left, right) {
+  if (left === right) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+    return true;
+  }
+  if (left instanceof Set && right instanceof Set) {
+    if (left.size !== right.size) return false;
+    for (const value of left) if (!right.has(value)) return false;
+    return true;
+  }
+  return false;
+}
 function facade(namespace, overrides) {
   const result = Object.create(Object.getPrototypeOf(namespace));
   for (const key of Reflect.ownKeys(namespace)) {
@@ -63,11 +78,16 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     });
     return runtime;
   }
+  function useStableCollection(value) {
+    const previous = React.useRef(value);
+    if (!sameCollection(previous.current, value)) previous.current = value;
+    return previous.current;
+  }
   function ClassicRowHost({ turn, handlers, readOnly, index, issueIndex }) {
     const context = React.useContext(Context), transcript = context.transcriptProps, panel = context.panelProps;
     const actions = transcript.renderActions(turn), actionProps = actions?.props;
     const owner = React.useRef(null);
-    owner.current = { context, turn, handlers, readOnly };
+    React.useLayoutEffect(() => { owner.current = { context, turn, handlers, readOnly }; });
     React.useLayoutEffect(() => () => { owner.current = null; }, []);
     const owned = () => {
       const state = owner.current;
@@ -93,14 +113,22 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     if (!annotation) return fail('Classic row is absent from the authoritative panel annotations');
     const track = context.trackById.get(turn.processedRecordingId);
     if (!track?.colors && !panel.trackColorsMap?.[turn.processedRecordingId]) return fail('Classic row has no current track colors');
-    const warnings = issueIndex.get(turn.id)?.warnings ?? [], errors = issueIndex.get(turn.id)?.errors ?? [];
+    const warnings = issueIndex.get(turn.id)?.warnings ?? emptyIssues, errors = issueIndex.get(turn.id)?.errors ?? emptyIssues;
     const seek = handlers.onSeek;
     if (typeof seek !== 'function') return fail('Classic requires the current annotation seek handler');
+    const regionRowRef = panel.regionRowRefs(turn.id);
+    const colors = panel.trackColorsMap[turn.processedRecordingId] ?? track.colors;
+    const lowConfidenceIndices = useStableCollection(transcript.lowConfidence.getLowConfidenceIndices(turn.id));
+    const acknowledgedIndices = useStableCollection(transcript.lowConfidence.getAcknowledgedIndices(turn.id));
+    const reviewer = panel.showReviewers ? panel.getReviewerForAnnotation?.(turn.startTimeInSeconds ?? 0) : undefined;
+    // Keep the captured subtree/context stable on unrelated playback commits.
+    // Event callbacks resolve the latest committed owner, not this render snapshot.
+    return React.useMemo(() => {
     const rowContext = { ...context, annotation: turn, annotationId: turn.id };
     const rowProps = {
       annotation: turn, index, isActive: transcript.activeIds.has(turn.id), isPlaying: Boolean(panel.playingState[turn.processedRecordingId]),
-      colors: panel.trackColorsMap[turn.processedRecordingId] ?? track.colors, tracks: panel.tracks,
-      regionRowRef: panel.regionRowRefs(turn.id), onSeek: seek,
+      colors, tracks: panel.tracks,
+      regionRowRef, onSeek: seek,
       onLabelChange: mutation('onChangeText'), onTrackChange: mutation('onChangeSpeaker'), onTimeChange: mutation('onChangeTime'),
       onDelete: action('onDelete'), onMergeAbove: action('onMergeAbove'), onMergeBelow: action('onMergeBelow'),
       canMergeAbove: !readOnly && Boolean(actionProps?.canMergeAbove), canMergeBelow: !readOnly && Boolean(actionProps?.canMergeBelow),
@@ -111,7 +139,7 @@ export function createClassicEditorAdapter(report, nativeRequire) {
       onToggleAssertion: mutation('onConfirmWarnings'), onAnswerSignalPrompt: mutation('onAnswerPrompt'),
       onJumpToAnnotation: handlers.onJumpTo,
       resolveJumpTarget: id => {
-        const target = panel.annotations.find(annotation => annotation.id === id);
+        const target = owner.current?.context.annotationById.get(id);
         if (!target) return null;
         const seconds = target.startTimeInSeconds;
         return { timeLabel: seconds == null ? '--:--' : `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toFixed(2).padStart(5, '0')}`, preview: String(target.content ?? '').slice(0, 80) };
@@ -122,10 +150,10 @@ export function createClassicEditorAdapter(report, nativeRequire) {
         return mutation('onChangeText')(id, runtime.applyLintFix(state.turn.content, edits));
       },
       diffMode: Boolean(transcript.diffMap), annotationDiffMap: transcript.diffMap,
-      lowConfidenceIndices: transcript.lowConfidence.getLowConfidenceIndices(turn.id), acknowledgedIndices: transcript.lowConfidence.getAcknowledgedIndices(turn.id),
+      lowConfidenceIndices, acknowledgedIndices,
       onAcknowledgeWord: mutation('onKeepWord'), onClearLowConfidence: mutation('onClearLowConfidence', 'panel'),
       projectId: context.workbenchProps.projectId, settingsProjectId: context.workbenchProps.settingsProjectId,
-      showReviewers: panel.showReviewers, reviewer: panel.showReviewers ? panel.getReviewerForAnnotation?.(turn.startTimeInSeconds ?? 0) : undefined,
+      showReviewers: panel.showReviewers, reviewer,
       reviewerColorMap: panel.reviewerColorMap, isTtsProject: panel.isTtsProject,
       ttsTranscriptWords: transcript.machineWords, onSeekToTime: time => {
         if (typeof handlers.onPlayFrom !== 'function') return fail('Classic TTS requires the current word playback handler');
@@ -134,6 +162,15 @@ export function createClassicEditorAdapter(report, nativeRequire) {
       classicAutocomplete: context.autocomplete, classicActions: actions
     };
     return jsx.jsx(Context.Provider, { value: rowContext, children: jsx.jsx(runtime.view.Row, rowProps) });
+    }, [turn, handlers, readOnly, index, transcript.activeIds.has(turn.id),
+      transcript.editingId === turn.id, Boolean(panel.playingState[turn.processedRecordingId]),
+      colors, panel.tracks, regionRowRef, Boolean(actions), Boolean(actionProps?.canMergeAbove),
+      Boolean(actionProps?.canMergeBelow), transcript.isRTL, transcript.hideTimestamps, transcript.lockSegments,
+      errors, warnings, transcript.lintVersion, panel.assertedWarningKeys, panel.answeredPromptKeys,
+      Boolean(transcript.diffMap), transcript.diffMap?.get(turn.id), lowConfidenceIndices, acknowledgedIndices,
+      context.workbenchProps.projectId, context.workbenchProps.settingsProjectId, panel.showReviewers,
+      reviewer, panel.reviewerColorMap, panel.isTtsProject, transcript.machineWords, context.autocomplete,
+      context.reviewActionId, context.taskOwner, context.flushSync]);
   }
   function ClassicTranscriptHost(props) {
     ready();
@@ -144,14 +181,23 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     const annotationById = React.useMemo(() => new Map(parent.panelProps.annotations.map(annotation => [annotation.id, annotation])), [parent.panelProps.annotations]);
     const trackById = React.useMemo(() => new Map(parent.panelProps.tracks.map(track => [track.id, track])), [parent.panelProps.tracks]);
     const context = { ...parent, transcriptProps: props, autocomplete, annotationById, trackById, flushSync: ReactDOM.flushSync };
+    const issues = React.useRef(new Map());
     const issueIndex = React.useMemo(() => {
       const map = new Map();
       for (const issue of props.lintIssues) {
         if (!map.has(issue.annotationId)) map.set(issue.annotationId, { errors: [], warnings: [] });
         map.get(issue.annotationId)[issue.severity === 'error' ? 'errors' : 'warnings'].push(issue);
       }
+      for (const [id, group] of map) {
+        const previous = issues.current.get(id);
+        if (previous && sameCollection(previous.errors, group.errors)) group.errors = previous.errors;
+        if (previous && sameCollection(previous.warnings, group.warnings)) group.warnings = previous.warnings;
+      }
+      issues.current = map;
       return map;
-    }, [props.lintIssues]);
+    }, [parent.panelProps.linterErrors, parent.panelProps.lintWarnings, props.lintVersion,
+      parent.panelProps.assertedWarningKeys, parent.panelProps.answeredPromptKeys,
+      Array.isArray(parent.panelProps.linterErrors) && Array.isArray(parent.panelProps.lintWarnings) ? null : props.lintIssues]);
     const ordered = React.useMemo(() => classicOrderedRows(props.turns, props.ghosts), [props.turns, props.ghosts]);
     const table = runtime.view.Table, panel = parent.panelProps;
     const headers = props.hideTimestamps ? [] : ['ID', 'Speaker', 'Start (mm:ss)', 'End (mm:ss)'];

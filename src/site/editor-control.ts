@@ -33,8 +33,20 @@ export type NativeSessionState = {
   routeKey: string;
 };
 
+export type NativeRowIdentityIndex = {
+  ok: boolean;
+  href: string;
+  generation: number;
+  annotationRevision: number;
+  reviewActionId: string;
+  readOnly: boolean;
+  identities: Omit<NativeTurnIdentity, 'ok' | 'readOnly' | 'isActive' | 'isEditing'>[];
+  activeIds: string[];
+  editingId: string | null;
+};
+
 function request<T = NativeEditorState>(row: HTMLElement, operation: string, payload: Record<string, unknown> = {}): T | null {
-  if (!row.isConnected || (operation === 'session'
+  if (!row.isConnected || (operation === 'session' || operation === 'identities'
     ? row !== row.ownerDocument.documentElement
     : !row.matches(BABEL_TRANSCRIPT_ROW_SELECTOR))) return null;
   const id = `editor-control-${++requestId}`;
@@ -56,6 +68,14 @@ export function readTurnState(row: HTMLElement): NativeEditorState | null {
 
 export function readTurnIdentity(row: HTMLElement): NativeTurnIdentity | null {
   return request<NativeTurnIdentity>(row, 'identity');
+}
+
+/** One synchronous bridge roundtrip per committed row revision, not per row. */
+export function readNativeRowIdentityIndex(documentRef: Document = document): NativeRowIdentityIndex | null {
+  const root = documentRef.documentElement;
+  if (!(root instanceof HTMLElement)) return null;
+  const result = request<NativeRowIdentityIndex>(root, 'identities');
+  return result?.href === documentRef.location?.href && Array.isArray(result.identities) ? result : null;
 }
 
 export function readNativeSessionState(documentRef: Document = document): NativeSessionState | null {

@@ -173,15 +173,17 @@ function floorWordBoundary(text: string, index: number, minIndex: number, maxInd
 }
 
 export function splitAutoSegmentTextAtFloorOffset(text: string, offset: number) {
-  const source = normalizeAutoSegmentText(text);
+  // Timing offsets refer to the captured raw string, including its whitespace.
+  const source = typeof text === 'string' ? text : '';
   const boundary = floorWordBoundary(source, offset, 0, source.length);
-  const firstText = normalizeAutoSegmentText(source.slice(0, boundary));
-  const secondText = normalizeAutoSegmentText(source.slice(boundary));
+  const firstText = source.slice(0, boundary).trim();
+  const secondText = source.slice(boundary).trim();
+  const splitCount = firstText ? firstText.split(/\s+/).length : 0;
   return {
     firstText,
     secondText,
-    splitCount: firstText ? firstText.split(/\s+/).length : 0,
-    wordCount: source ? source.split(/\s+/).length : 0,
+    splitCount,
+    wordCount: splitCount + (secondText ? secondText.split(/\s+/).length : 0),
     source: 'ghost-cursor-timing'
   };
 }

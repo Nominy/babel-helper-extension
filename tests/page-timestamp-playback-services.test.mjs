@@ -1222,3 +1222,377 @@ test('timestamp missing responses and bridge teardown fail explicitly without re
   assert.equal(cancelled.historyToken, receipt.historyToken);
   assert.equal(requests, 2, 'only the two explicit caller commands were dispatched');
 });
+
+async function nativeCutHarness(t, label) {
+  const pageWindow = await loadTimestampBridge(t, label);
+  const original = { id: 'cut-source', type: 'transcription', processedRecordingId: 'recording-a',
+    startTimeInSeconds: 1, endTimeInSeconds: 8, content: 'alpha beta gamma', metadata: { preserve: true } };
+  const model = installNativeTranscriptModel(pageWindow, [original]);
+  const bridge = pageWindow.__babelHelperTimestampBridge;
+  const [{ registerTimelineSelection }, { registerTimestampEditService }] = await Promise.all([
+    importBundledTs('src/features/timeline-selection-feature.ts', `${label}-selection`),
+    importBundledTs('src/features/timestamp-edit-feature.ts', `${label}-adapter`)
+  ]);
+  const selectionTarget = { hostMarker: 'preview', processedRecordingId: 'recording-a',
+    reviewActionId: 'review-action-live', token: 'captured-selection' };
+  const control = { current: true, sourceText: original.content,
+    textParts: { firstText: 'alpha ', secondText: 'beta gamma' } };
+  pageWindow.document.documentElement = {
+    getAttribute: name => name === 'data-babel-review-action-id' ? model.workbench.memoizedProps.reviewActionId : null
+  };
+  pageWindow.BabelMods.unsafe.services.provide('page.magnifier', {
+    validateSelectionTarget: target => control.current && target.token === selectionTarget.token
+      ? { ok: true, processedRecordingId: target.processedRecordingId, reviewActionId: target.reviewActionId }
+      : { ok: false, reason: 'stale-selection-source' }
+  }, { owner: 'test:native-cut-selection' });
+  control.measure = () => ({ ok: true, selectionTarget, startSeconds: 2, endSeconds: 4,
+    bounds: bridge.snapshotTranscript().rows.map(row => ({
+      ...row, leftPx: row.startSeconds * 100, rightPx: row.endSeconds * 100
+    })) });
+  const host = { isConnected: true, getAttribute: () => 'preview' };
+  const helper = { ...rowHelper(() => assert.fail('A cut must never retarget by a nearby row')),
+    state: {}, config: { hotkeysHelpRows: [] }, stopSelectionLoop() {} };
+  registerTimelineSelection(helper, {
+    site: { isFeatureEnabled: () => false, getWaveformHostFromContainer: () => host,
+      callSelectionBridge: async () => control.measure() },
+    loop: { SELECTION_LOOP_HOST_ATTR: 'selection-host' },
+    split: {
+      buildSmartSplitPlanForRegion: () => ({
+        sourceRow: { isConnected: true }, sourceRange: { startSeconds: 1, endSeconds: 8 },
+        sourceText: control.sourceText
+      }),
+      getSmartSplitTextParts: () => control.textParts
+    }
+  });
+  registerTimestampEditService(helper);
+  const calls = [];
+  for (const method of ['splitSegmentAtTime', 'deleteSegmentWithNativeAction',
+    'setSegmentBoundaryTime', 'undoTranscriptWithNativeBridge']) {
+    const invoke = helper[method];
+    helper[method] = async payload => {
+      const call = { method, payload };
+      calls.push(call);
+      call.result = await invoke(payload);
+      return call.result;
+    };
+  }
+  const preview = { host, hostMarker: 'preview', selectionTarget, leftPx: 200, rightPx: 400,
+    container: { isConnected: true }, isCurrentTask: () => control.current };
+  helper.state.cutPreview = preview;
+  return { pageWindow, original, model, bridge, helper, preview, control, calls };
+}
+
+test('S refuses unavailable timing before mutation and an explicit Shift+S retry remains native', async t => {
+  const h = await nativeCutHarness(t, 'cut-timing-admission');
+  h.control.textParts = null;
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  assert.equal(h.preview.failureReason, 'timing-boundary-unavailable');
+  assert.equal(h.helper.state.cutPreview, h.preview);
+  assert.equal(h.helper.state.cutCommitPending, false);
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.model.state.annotations, [h.original]);
+  assert.equal(await h.helper.commitCutPreview(), true);
+  assert.equal(h.helper.state.cutPreview, null);
+  assert.equal(h.calls[0].payload.texts, undefined, 'native mode deliberately duplicates native source text');
+  assert.deepEqual(h.model.state.annotations.map(turn => turn.content), [h.original.content, h.original.content]);
+  assert.deepEqual(h.model.state.annotations.map(turn => [turn.startTimeInSeconds, turn.endTimeInSeconds]),
+    [[1, 2], [4, 8]]);
+  for (let index = 1; index < h.calls.length; index++) {
+    assert.equal(h.calls[index].payload.expectedHistoryRevision, h.calls[index - 1].result.historyRevision);
+    assert.equal(h.calls[index].payload.expectedHistoryToken, h.calls[index - 1].result.historyToken);
+  }
+});
+
+test('an explicit S retry admits newly available timing without clearing the preview manually', async t => {
+  const h = await nativeCutHarness(t, 'cut-timing-retry');
+  h.control.textParts = null;
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  h.control.textParts = { firstText: 'alpha ', secondText: 'beta gamma' };
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), true);
+  assert.deepEqual(h.model.state.annotations.map(turn => turn.content), ['alpha ', 'beta gamma']);
+});
+
+test('native cut rolls back the exact owned suffix when either trim fails after mutation', async t => {
+  for (const failedTrim of [1, 2]) await t.test(`trim ${failedTrim}`, async t => {
+    const h = await nativeCutHarness(t, `cut-trim-failure-${failedTrim}`);
+    const change = h.model.panel.memoizedProps.onChangeAnnotationTime;
+    let trims = 0;
+    h.model.panel.memoizedProps.onChangeAnnotationTime = (id, range) => {
+      change(id, range);
+      if (++trims === failedTrim) throw new Error('native trim failed after pushing its command');
+    };
+    assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+    assert.equal(h.preview.failureReason, 'apply-threw');
+    assert.equal(h.preview.failureDetails.partial, false);
+    assert.equal(h.helper.state.cutPreview, h.preview);
+    assert.equal(h.model.state.annotations[0], h.original);
+    assert.equal(h.model.history.undoStack.length, 0);
+    const writes = h.calls.filter(call => call.method !== 'undoTranscriptWithNativeBridge');
+    const undos = h.calls.filter(call => call.method === 'undoTranscriptWithNativeBridge');
+    assert.equal(writes.length, 1 + failedTrim);
+    assert.equal(undos.length, writes.length);
+    assert.equal(writes.at(-1).result.ok, false);
+    assert.equal(writes.at(-1).result.commandInvoked, true, 'failure still carries its actual owned command');
+    undos.forEach((call, index) => {
+      const receipt = writes[writes.length - index - 1].result;
+      assert.equal(call.payload.expectedHistoryToken, receipt.historyToken);
+      assert.equal(call.result.historyToken, receipt.previousHistoryToken);
+    });
+  });
+});
+
+test('native cut rollback preserves the user typing command committed before split', async t => {
+  const h = await nativeCutHarness(t, 'cut-typing-baseline');
+  const raw = '  alpha beta gamma [смех] ';
+  h.control.sourceText = raw;
+  h.control.textParts = { firstText: '  alpha ', secondText: 'beta gamma [смех] ' };
+  const editor = { children: [{ children: [{ text: raw }] }], apply() {}, insertData() {} };
+  h.model.transcript.child = { memoizedProps: { turn: h.original, handlers: {} }, child: { memoizedProps: { editor } } };
+  const requested = Promise.withResolvers();
+  h.pageWindow.addEventListener('babel-helper-timestamp-request', event => {
+    if (event.detail.operation === 'split-segment-at-time') requested.resolve();
+  });
+  h.model.panel.memoizedProps.onChangeAnnotationTime = undefined;
+  const pending = h.helper.commitCutPreview({ smartSplit: true });
+  await requested.promise;
+  const committed = { ...h.original, content: raw };
+  const typing = { do() { h.model.state.annotations = [committed]; h.model.commit(); },
+    undo() { h.model.state.annotations = [h.original]; h.model.commit(); } };
+  h.model.history.executeAndPush(typing);
+  assert.equal(await pending, false);
+  assert.equal(h.model.state.annotations[0], committed);
+  assert.deepEqual(h.model.history.undoStack, [typing]);
+  assert.equal(h.calls[0].result.previousHistoryRevision, 1);
+  assert.equal(h.calls.filter(call => call.method === 'undoTranscriptWithNativeBridge').length, 1);
+  assert.equal(editor.children[0].children[0].text, raw);
+  assert.equal(h.preview.failureDetails.partial, false);
+});
+
+test('native cut never undoes newer commands or a same-depth history fork', async t => {
+  for (const fork of [false, true]) await t.test(fork ? 'same-depth fork' : 'newer edit', async t => {
+    const h = await nativeCutHarness(t, `cut-history-interference-${fork}`);
+    const split = h.helper.splitSegmentAtTime;
+    let manual;
+    h.helper.splitSegmentAtTime = async payload => {
+      const result = await split(payload);
+      if (fork) h.model.history.undo();
+      const before = h.model.state.annotations;
+      manual = before.map(turn => ({ ...turn, content: 'Newer manual text' }));
+      h.model.history.executeAndPush({ do() { h.model.state.annotations = manual; h.model.commit(); },
+        undo() { h.model.state.annotations = before; h.model.commit(); } });
+      return result;
+    };
+    assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+    assert.equal(h.preview.failureReason, 'partial-cut');
+    assert.equal(h.preview.failureDetails.rollbackReason, 'history-conflict');
+    assert.equal(h.model.state.annotations, manual);
+    assert.equal(h.model.history.undoStack.length, fork ? 1 : 2);
+    assert.deepEqual(h.model.state.mutations, ['split']);
+    const undo = h.calls.find(call => call.method === 'undoTranscriptWithNativeBridge');
+    assert.equal(undo.result.commandInvoked, false, 'guard refusal is not a rollback receipt');
+    const count = h.calls.length;
+    assert.equal(await h.helper.commitCutPreview(), false, 'partial cuts are never retried');
+    assert.equal(h.calls.length, count);
+  });
+});
+
+test('pending local typing after split blocks further trim and safe rollback without flushing the draft', async t => {
+  const h = await nativeCutHarness(t, 'cut-pending-draft');
+  const split = h.helper.splitSegmentAtTime;
+  const editor = { children: [{ children: [{ text: 'Preserve this uncommitted draft' }] }],
+    apply() {}, insertData() {} };
+  h.helper.splitSegmentAtTime = async payload => {
+    const result = await split(payload);
+    h.model.transcript.child = { memoizedProps: { turn: h.model.state.annotations[0], handlers: {} },
+      child: { memoizedProps: { editor } } };
+    return result;
+  };
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  assert.equal(h.preview.failureReason, 'partial-cut');
+  assert.equal(h.preview.failureDetails.rollbackReason, 'history-conflict');
+  assert.equal(h.model.history.undoStack.length, 1);
+  assert.equal(editor.children[0].children[0].text, 'Preserve this uncommitted draft');
+  assert.deepEqual(h.model.state.annotations.map(turn => turn.content), ['alpha ', 'beta gamma']);
+  assert.deepEqual(h.model.state.mutations, ['split']);
+});
+
+test('a changed task or audio source after split stops mutation and reports partial state without undo', async t => {
+  for (const change of ['task', 'source']) await t.test(change, async t => {
+    const h = await nativeCutHarness(t, `cut-stale-${change}`);
+    const split = h.helper.splitSegmentAtTime;
+    h.helper.splitSegmentAtTime = async payload => {
+      const result = await split(payload);
+      if (change === 'task') h.model.workbench.memoizedProps.reviewActionId = 'new-task';
+      h.control.current = false;
+      return result;
+    };
+    assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+    assert.equal(h.preview.failureReason, 'partial-cut');
+    assert.equal(h.helper.state.cutCommitFailure.reviewActionId, 'review-action-live');
+    assert.equal(h.helper.state.cutCommitFailure.rollbackReason, 'stale-selection-source');
+    assert.deepEqual(h.calls.map(call => call.method), ['splitSegmentAtTime']);
+    assert.equal(h.model.history.undoStack.length, 1);
+  });
+});
+
+test('malformed native split results never reach trim and roll back their actual split receipt', async t => {
+  const defects = ['duplicate-ids', 'source-id', 'missing-half', 'source-retained', 'wrong-recording',
+    'wrong-text', 'wrong-outer-start', 'wrong-outer-end', 'invalid-inner-range'];
+  for (const defect of defects) await t.test(defect, async t => {
+    const h = await nativeCutHarness(t, `cut-malformed-${defect}`);
+    const controller = h.model.workbench.memoizedState.memoizedState[0];
+    const split = controller.split;
+    controller.split = (...args) => {
+      const ids = split(...args);
+      const [left, right] = h.model.state.annotations;
+      if (defect === 'duplicate-ids') return [ids[0], ids[0]];
+      if (defect === 'source-id') return [h.original.id, ids[1]];
+      if (defect === 'missing-half') h.model.state.annotations = [left];
+      if (defect === 'source-retained') h.model.state.annotations = [h.original, left, right];
+      if (defect === 'wrong-recording') h.model.state.annotations = [{ ...left, processedRecordingId: 'recording-b' }, right];
+      if (defect === 'wrong-text') h.model.state.annotations = [left, { ...right, content: 'Dropped source words' }];
+      if (defect === 'wrong-outer-start') h.model.state.annotations = [{ ...left, startTimeInSeconds: 0 }, right];
+      if (defect === 'wrong-outer-end') h.model.state.annotations = [left, { ...right, endTimeInSeconds: 9 }];
+      if (defect === 'invalid-inner-range') h.model.state.annotations = [{ ...left, endTimeInSeconds: 0.5 }, right];
+      h.model.commit();
+      return ids;
+    };
+    assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+    assert.match(h.preview.failureReason, /^split-(rejected|postcondition-failed)$/);
+    assert.deepEqual(h.calls.map(call => call.method), ['splitSegmentAtTime', 'undoTranscriptWithNativeBridge']);
+    assert.equal(h.calls[0].result.commandInvoked, true);
+    assert.equal(h.model.state.annotations[0], h.original);
+    assert.equal(h.model.history.undoStack.length, 0);
+  });
+});
+
+test('in-flight preview movement cannot combine cached times with current geometry', async t => {
+  const h = await nativeCutHarness(t, 'cut-coherent-preview');
+  const measured = h.control.measure();
+  const requested = Promise.withResolvers(), response = Promise.withResolvers();
+  h.control.measure = () => { requested.resolve(); return response.promise; };
+  const pending = h.helper.commitCutPreview({ smartSplit: true });
+  await requested.promise;
+  h.preview.leftPx = 300;
+  h.preview.rightPx = 500;
+  h.preview.timeRange = measured;
+  response.resolve(measured);
+  assert.equal(await pending, false);
+  assert.equal(h.preview.failureReason, 'selection-moved');
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.model.state.annotations, [h.original]);
+});
+
+test('an invoked cut command without exactly one new history entry remains explicitly partial', async t => {
+  for (const mode of ['untracked', 'extra-command']) await t.test(mode, async t => {
+    const h = await nativeCutHarness(t, `cut-unprovable-receipt-${mode}`);
+    const controller = h.model.workbench.memoizedState.memoizedState[0];
+    const split = controller.split;
+    controller.split = (...args) => {
+      const execute = h.model.history.executeAndPush;
+      try {
+        if (mode === 'untracked') h.model.history.executeAndPush = command => command.do();
+        split(...args);
+      } finally {
+        h.model.history.executeAndPush = execute;
+      }
+      if (mode === 'extra-command') {
+        const before = h.model.state.annotations;
+        const after = before.map(turn => ({ ...turn, metadata: { unknownCommand: true } }));
+        h.model.history.executeAndPush({ do() { h.model.state.annotations = after; h.model.commit(); },
+          undo() { h.model.state.annotations = before; h.model.commit(); } });
+      }
+      throw new Error('native split failed after an unprovable history change');
+    };
+    assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+    assert.equal(h.preview.failureReason, 'partial-cut');
+    assert.equal(h.preview.failureDetails.reason, 'apply-threw');
+    assert.equal(h.preview.failureDetails.rollbackReason, 'native-command-receipt-unavailable');
+    assert.deepEqual(h.calls.map(call => call.method), ['splitSegmentAtTime']);
+    assert.equal(h.model.state.annotations.length, 2);
+    assert.equal(h.model.history.undoStack.length, mode === 'untracked' ? 0 : 2);
+  });
+});
+
+test('unrelated pending text blocks the first cut command after source flush without consuming the draft', async t => {
+  const h = await nativeCutHarness(t, 'cut-unrelated-pending');
+  const other = { ...h.original, id: 'other-lane', processedRecordingId: 'recording-b', content: 'Saved other text' };
+  h.model.state.annotations = [h.original, other];
+  h.model.commit();
+  const editor = { children: [{ children: [{ text: 'Uncommitted other text' }] }], apply() {}, insertData() {} };
+  h.model.transcript.child = { memoizedProps: { turn: other, handlers: {} }, child: { memoizedProps: { editor } } };
+  const measure = h.control.measure;
+  h.control.measure = () => {
+    const range = measure();
+    range.bounds = range.bounds.filter(row => row.processedRecordingId === 'recording-a');
+    return range;
+  };
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  assert.equal(h.preview.failureReason, 'history-conflict');
+  assert.equal(h.preview.failureDetails.partial, false);
+  assert.equal(h.calls[0].result.commandInvoked, false);
+  assert.deepEqual(h.model.state.mutations, []);
+  assert.equal(h.model.history.undoStack.length, 0);
+  assert.equal(editor.children[0].children[0].text, 'Uncommitted other text');
+});
+
+test('cut rollback stops before the next owned undo when a newer edit arrives during rollback', async t => {
+  const h = await nativeCutHarness(t, 'cut-rollback-interference');
+  const change = h.model.panel.memoizedProps.onChangeAnnotationTime;
+  let trims = 0;
+  h.model.panel.memoizedProps.onChangeAnnotationTime = (id, range) => {
+    change(id, range);
+    if (++trims === 2) throw new Error('second trim failed after mutation');
+  };
+  const undo = h.helper.undoTranscriptWithNativeBridge;
+  let manual;
+  h.helper.undoTranscriptWithNativeBridge = async payload => {
+    const result = await undo(payload);
+    if (result.ok) {
+      const before = h.model.state.annotations;
+      manual = before.map(turn => ({ ...turn, content: 'Typing during rollback' }));
+      h.model.history.executeAndPush({ do() { h.model.state.annotations = manual; h.model.commit(); },
+        undo() { h.model.state.annotations = before; h.model.commit(); } });
+    }
+    return result;
+  };
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  assert.equal(h.preview.failureReason, 'partial-cut');
+  assert.equal(h.preview.failureDetails.rollbackReason, 'history-conflict');
+  const undos = h.calls.filter(call => call.method === 'undoTranscriptWithNativeBridge');
+  assert.equal(undos.length, 2);
+  assert.equal(undos[0].result.commandInvoked, true);
+  assert.equal(undos[1].result.commandInvoked, false);
+  assert.equal(h.model.state.annotations, manual);
+  assert.equal(h.model.history.undoStack.length, 3);
+});
+
+test('multi-turn cut chains deletes and trims and restores the same native objects on later failure', async t => {
+  const h = await nativeCutHarness(t, 'cut-delete-trim-chain');
+  const originals = [
+    { ...h.original, id: 'left-turn', endTimeInSeconds: 3 },
+    { ...h.original, id: 'inside-turn', startTimeInSeconds: 3.5, endTimeInSeconds: 4 },
+    { ...h.original, id: 'right-turn', startTimeInSeconds: 4.5 }
+  ];
+  h.model.state.annotations = originals;
+  h.model.commit();
+  h.preview.rightPx = 600;
+  const measure = h.control.measure;
+  h.control.measure = () => ({ ...measure(), endSeconds: 6 });
+  const change = h.model.panel.memoizedProps.onChangeAnnotationTime;
+  h.model.panel.memoizedProps.onChangeAnnotationTime = (id, range) => {
+    change(id, range);
+    if (id === 'right-turn') throw new Error('last trim failed');
+  };
+  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
+  assert.equal(h.preview.failureDetails.partial, false);
+  assert.equal(h.model.state.annotations, originals);
+  assert.equal(h.model.history.undoStack.length, 0);
+  assert.deepEqual(h.calls.map(call => call.method), [
+    'deleteSegmentWithNativeAction', 'setSegmentBoundaryTime', 'setSegmentBoundaryTime',
+    'undoTranscriptWithNativeBridge', 'undoTranscriptWithNativeBridge', 'undoTranscriptWithNativeBridge'
+  ]);
+  for (let index = 1; index < 3; index++) {
+    assert.equal(h.calls[index].payload.expectedHistoryToken, h.calls[index - 1].result.historyToken);
+  }
+});

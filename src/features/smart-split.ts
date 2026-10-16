@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { splitAutoSegmentTextAtFloorOffset } from './auto-segmentation/text-allocation';
-import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
-import { computeL0CompletedWordCharacterOffset } from '../services/l0-word-timing-alignment';
+import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
+import { computeL0CutBoundaryCharacterOffset } from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import type { TimelineModules } from '../services/timeline-selection-service';
 import { replaceClassicEditorValues } from '../site/editor-control';
@@ -29,49 +29,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
 
-  function getSmartSplitCursorTextOffset(row) {
-    const ghostTarget =
-      typeof helper.getGhostCursorTarget === 'function'
-        ? helper.getGhostCursorTarget()
-        : null;
-    const activeEditor =
-      typeof helper.getActiveRowEditor === 'function'
-        ? helper.getActiveRowEditor()
-        : null;
-    const activeRow = activeEditor?.row || null;
-    const remembered = helper.state.lastBlur;
-    const currentRow =
-      typeof helper.getCurrentRow === 'function' ? helper.getCurrentRow() : null;
-    const candidates = [
-      ghostTarget,
-      {
-        row: activeRow,
-        offset:
-          Boolean(activeEditor)
-            ? activeEditor.selectionStart
-            : null
-      },
-      {
-        row: remembered && remembered.row,
-        offset: remembered && remembered.selectionStart
-      },
-      {
-        row: currentRow,
-        offset: helper.state.cursorBaseline
-      }
-    ];
-    for (const candidate of candidates) {
-      if (
-        candidate &&
-        candidate.row === row &&
-        Number.isFinite(candidate.offset) &&
-        candidate.offset > 0
-      ) {
-        return candidate.offset;
-      }
-    }
-    return null;
-  }
 
 
   function buildSmartSplitPlanForRow(row, splitSeconds, speakerKey) {
@@ -101,9 +58,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       : rows;
     const sourceSpeakerIndex = sameSpeakerRows.indexOf(row);
     const sourceText = helper.getRowTextValue(row);
-    if (!sourceText.trim()) {
-      return null;
-    }
 
     return {
       sourceRow: row,
@@ -112,7 +66,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       rowCount: rows.length,
       speakerKey: sourceSpeakerKey,
       sourceText,
-      ghostTextOffset: getSmartSplitCursorTextOffset(row),
       timingLaneAliases: api.segmentation.getL0TimingLaneAliases(row, sourceSpeakerKey),
       sourceRange: range,
       splitSeconds,
@@ -321,7 +274,11 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
   function getSmartSplitTextParts(plan) {
-    const timingIndex = getCurrentL0TimingIndex(helper.state, helper);
+    if (typeof plan?.sourceText !== 'string') return null;
+    if (!plan.sourceText.trim()) {
+      return { firstText: '', secondText: '', splitCount: 0, wordCount: 0, source: 'empty' };
+    }
+    const timingIndex = getCurrentL0PlaybackTimingIndex(helper.state, helper);
     const timingTrack = resolveL0TimingTrack(
       timingIndex,
       plan.timingLaneAliases || buildL0TimingLaneAliases({ speakerKey: plan.speakerKey })
@@ -334,7 +291,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       plan.splitSeconds > range.startSeconds &&
       plan.splitSeconds < range.endSeconds
     ) {
-      const completedOffset = computeL0CompletedWordCharacterOffset(
+      const completedOffset = computeL0CutBoundaryCharacterOffset(
         plan.sourceText,
         timingTrack.tokens,
         range,
@@ -350,17 +307,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
         };
       }
     }
-    if (
-      Number.isFinite(plan.ghostTextOffset) &&
-      plan.ghostTextOffset > 0 &&
-      plan.ghostTextOffset < plan.sourceText.length
-    ) {
-      return splitAutoSegmentTextAtFloorOffset(
-        plan.sourceText,
-        plan.ghostTextOffset
-      );
-    }
-    return { ...helper.splitTextByWordRatio(plan.sourceText, plan.ratio), source: 'word-ratio' };
+    return null;
   }
 
 
@@ -397,7 +344,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     }
 
     const parts = getSmartSplitTextParts(detected);
-    return parts.wordCount
+    return parts?.wordCount
       ? applySmartSplitTextParts(detected.leftRow, detected.rightRow, parts)
       : false;
   }
@@ -448,7 +395,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     }
 
     const parts = getSmartSplitTextParts(plan);
-    if (!parts.wordCount) {
+    if (!parts?.wordCount) {
       return false;
     }
 
@@ -546,7 +493,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       speakerKey,
       sourceText,
       timingLaneAliases: api.segmentation.getL0TimingLaneAliases(sourceRow, speakerKey),
-      ghostTextOffset: getSmartSplitCursorTextOffset(sourceRow),
       sourceRange,
       splitSeconds,
       pivotPx,

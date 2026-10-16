@@ -14,7 +14,7 @@ const { registerSpeakerWorkflow } = await loadEntry('src/features/speaker-workfl
 const { registerPlaybackRowTracking } = await loadEntry('src/features/playback-row-tracking.ts');
 const { buildCurrentL0TimingTaskId } = await loadEntry('src/services/l0-timing-identity.ts');
 const { createState } = await loadEntry('src/core/state-store.ts');
-const { getCurrentL0TimingIndex } = await loadEntry('src/content/l0-timing-listener.ts');
+const { getCurrentL0TimingIndex, parseL0TimingUpdate } = await loadEntry('src/content/l0-timing-listener.ts');
 const { registerAutoSegmentation } = await loadEntry('src/features/auto-segmentation.ts');
 const SOURCE_EVENT = 'babel-audio-enhancement-state';
 
@@ -235,7 +235,10 @@ function createHarness(t) {
       for (const listener of [...sourceListeners]) listener({ type: SOURCE_EVENT });
     },
     installTiming(tracks) {
-      helper.state.l0TimingIndex = { taskId: buildCurrentL0TimingTaskId(helper), tracks };
+      helper.state.l0TimingIndex = parseL0TimingUpdate({
+        type: 'babel-gold-drafting:l0-timing-update', version: 1,
+        taskId: buildCurrentL0TimingTaskId(helper), tracks
+      });
       helper.state.l0TimingPairKey = source.pairedVariantKey || null;
     },
     async tick() { for (const listener of [...playbackListeners]) listener(playbackSample()); await flush(); },
@@ -245,6 +248,7 @@ function createHarness(t) {
       const replacement = new RowFixture(row.identity.annotationId, row.identity.trackLabel.endsWith('1') ? 1 : 2);
       rows[rows.indexOf(row)] = replacement;
       body.appendChild(replacement);
+      helper.invalidateRowTimeCache();
       return replacement;
     }
   });
@@ -259,6 +263,126 @@ function createHarness(t) {
 }
 
 const words = (starts) => ['alpha', 'beta', 'gamma', 'delta'].map((text, index) => ({ id: text, text, startSeconds: starts[index], endSeconds: starts[index] + 1 }));
+
+test('published timing is prepared once per lane and reused by playback, backwards seeks and word clicks', async t => {
+  const h = createHarness(t);
+  h.installTiming([
+    { lane: 'stable-1', tokens: words([0, 6, 12, 18]) },
+    { lane: 'stable-2', tokens: words([0, 2, 4, 6]) }
+  ]);
+  await h.start();
+  const cache = h.api.cursor.timingAlignmentCache;
+  const prepared = cache.getStatistics();
+  assert.deepEqual(prepared, {
+    lanePreparations: 2, alignmentPreparations: 2, tokenVisits: 8, lanes: 2, rows: 2
+  });
+  for (const time of [3, 6, 9, 12, 14, 18, 19, 2]) {
+    h.playback.currentTime = time;
+    await h.tick();
+  }
+  assert.equal(h.helper.state.ghostCursorOffset, 5, 'a backwards seek retires the old floor');
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 12);
+  assert.deepEqual(cache.getStatistics(), prepared, 'neither ticks nor clicks repeat tokenization/LCS');
+
+  h.rows[0].editor.value = 'alpha newly beta gamma delta';
+  h.playback.currentTime = 12;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorOffset, 17, 'a real text edit remaps current anchors');
+  assert.equal(cache.getStatistics().alignmentPreparations, 3);
+  assert.equal(cache.getStatistics().tokenVisits, 8);
+
+  h.rows[0].identity.startSeconds = 13;
+  h.helper.invalidateRowTimeCache();
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 24), 18);
+  assert.equal(cache.getStatistics().alignmentPreparations, 4, 'in-place range edits rebuild row preparation');
+  const replacement = h.replaceRow(h.rows[0]);
+  h.playback.currentTime = 14;
+  await h.tick();
+  assert.equal(h.helper.getL0TimestampForRowOffset(replacement, 12), 12);
+  assert.equal(cache.getStatistics().lanePreparations, 2, 'remounts reuse the immutable lane lookup');
+  assert.equal(cache.getStatistics().rows, 2);
+
+  h.rows[1].remove();
+  h.helper.invalidateRowTimeCache();
+  await h.tick();
+  assert.equal(cache.getStatistics().rows, 1, 'filtered/disconnected row text and references are released');
+  h.playback.paused = true;
+  await h.tick();
+  assert.equal(cache.getStatistics().rows, 0);
+  assert.equal(cache.getStatistics().lanes, 0, 'cursor teardown releases the active timing revision');
+});
+
+test('ghost refreshes republished clocks and live arbitrary arrays without stale click or playback alignment', async t => {
+  const h = createHarness(t);
+  const tracks = [{ lane: 'stable-1', tokens: words([0, 6, 12, 18]) }];
+  h.installTiming(tracks);
+  await h.start();
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 12);
+  tracks[0].tokens[2].startSeconds = 9;
+  tracks[0].tokens[2].endSeconds = 10;
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 12,
+    'the published copy is not changed by producer mutation');
+  h.installTiming(tracks);
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 9);
+  h.playback.currentTime = 9;
+  await h.tick();
+  assert.equal(h.helper.state.ghostCursorOffset, 11);
+
+  h.helper.state.l0TimingIndex = { taskId: buildCurrentL0TimingTaskId(h.helper), tracks };
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 9);
+  tracks[0].tokens[2].startSeconds = 11;
+  tracks[0].tokens[2].endSeconds = 12;
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 11,
+    'unpublished object identity cannot conceal an in-place clock edit');
+  tracks[0].tokens = words([0, 1, 2, 3]);
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 12), 2);
+  assert.equal(h.api.cursor.timingAlignmentCache.getStatistics().rows, 0);
+});
+
+test('prepared no-anchor results keep the existing proportional ghost fallback', async t => {
+  const h = createHarness(t);
+  h.rows[0].editor.value = 'completely unmatched words';
+  h.helper.state.cursorBaseline = 0;
+  h.installTiming([{ lane: 'stable-1', tokens: words([0, 6, 12, 18]) }]);
+  h.playback.currentTime = 8;
+  await h.start();
+  const expected = h.api.cursor.computeRestoreOffset(
+    h.rows[0].editor.value, h.api.time.getRowTimeRange(h.rows[0]), 8, 1, 0);
+  assert.equal(h.helper.state.ghostCursorOffset, expected.offset);
+  assert.equal(h.helper.getL0TimestampForRowOffset(h.rows[0], 2), null);
+  const prepared = h.api.cursor.timingAlignmentCache.getStatistics();
+  await h.tick();
+  assert.deepEqual(h.api.cursor.timingAlignmentCache.getStatistics(), prepared);
+  assert.equal(h.helper.state.ghostCursorOffset, expected.offset);
+});
+
+test('cached word seeking follows published recording aliases and same-object row identity edits', t => {
+  const h = createHarness(t);
+  const row = h.rows[0];
+  Object.assign(row.identity, { processedRecordingId: '', speakerKey: 'Speaker 1', trackLabel: 'Speaker 1' });
+  h.installTiming([
+    { lane: 'recording-a', tokens: words([0, 6, 12, 18]) },
+    { lane: 'recording-b', tokens: words([0, 1, 2, 3]) }
+  ]);
+  h.root.setAttribute('data-babel-recording-lanes', JSON.stringify({
+    reviewActionId: 'task-one', tracks: [{ id: 'recording-a', label: 'Speaker 1' }]
+  }));
+  assert.equal(h.helper.getL0TimestampForRowOffset(row, 12), 12);
+  assert.equal(h.helper.getL0TimestampForRowOffset(row, 12), 12);
+  assert.equal(h.api.cursor.timingAlignmentCache.getStatistics().alignmentPreparations, 1);
+  h.root.setAttribute('data-babel-recording-lanes', JSON.stringify({
+    reviewActionId: 'task-one', tracks: [{ id: 'recording-b', label: 'Speaker 1' }]
+  }));
+  assert.equal(h.helper.getL0TimestampForRowOffset(row, 12), 2,
+    'a new verified lane publication invalidates the cached alias resolution');
+  row.identity.processedRecordingId = 'recording-a';
+  h.helper.invalidateRowTimeCache();
+  assert.equal(h.helper.getL0TimestampForRowOffset(row, 12), 12,
+    'the current stable row identity takes precedence over a display alias');
+  h.root.setAttribute('data-babel-review-action-id', 'task-two');
+  assert.equal(h.helper.getL0TimestampForRowOffset(row, 12), null);
+  assert.equal(h.api.cursor.timingAlignmentCache.getStatistics().lanes, 0);
+});
 
 test('ghost restore scrolls only the native viewport and has no outer fallback', t => {
   const h = createHarness(t);
@@ -666,6 +790,7 @@ test('native speaker filtering with equal row counts/ranges rebuilds the lane ca
   for (const lane of [1, 0, 1, 0]) {
     h.rows[1 - lane].remove();
     h.body.appendChild(h.rows[lane]);
+    h.helper.invalidateRowTimeCache();
     await h.tick();
     assert.equal(h.helper.state.ghostCursorRow, h.rows[lane]);
     assert.equal(h.helper.state.ghostCursorRow.isConnected, true);
@@ -970,7 +1095,7 @@ test('native subscription failure stops cursor automation without a timer fallba
   assert.equal(h.playbackCalls(), 0);
 });
 
-test('one foreground frame discovers all off-lane gaps once and reads active text once', async t => {
+test('steady frames use indexed off-lane gaps and read active text once', async t => {
   const h = createHarness(t);
   h.rows[1].identity.endSeconds = 2;
   const third = new RowFixture('annotation-three', 3);
@@ -987,7 +1112,7 @@ test('one foreground frame discovers all off-lane gaps once and reads active tex
   const getRows = h.helper.getTranscriptRows;
   h.helper.getTranscriptRows = () => { collections++; return getRows(); };
   await h.tick();
-  assert.equal(collections, 1, 'lane gaps share one fresh row/time signature pass');
+  assert.equal(collections, 0, 'unchanged lane gaps reuse the committed row/time index');
   assert.equal(textReads, 1, 'the renderer reuses text sampled earlier in this same frame');
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, h.rows[1]);
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-3'].row, third);
@@ -995,7 +1120,7 @@ test('one foreground frame discovers all off-lane gaps once and reads active tex
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-3'].offset, third.editor.value.length);
 });
 
-test('one-pass lane projection preserves overlapping playback preference and fresh remounts', async t => {
+test('indexed lane projection preserves overlapping playback preference and fresh remounts', async t => {
   const h = createHarness(t);
   const overlapping = new RowFixture('overlapping-two', 2);
   overlapping.identity.startSeconds = 1;
@@ -1013,13 +1138,14 @@ test('one-pass lane projection preserves overlapping playback preference and fre
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, h.rows[1],
     'a still-active turn wins over the remembered ended turn');
   h.rows[1].identity.endSeconds = 5;
+  h.helper.invalidateRowTimeCache();
   await h.tick();
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, overlapping,
     'gaps project the latest ending turn');
   const replacement = h.replaceRow(overlapping);
   await h.tick();
   assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, replacement,
-    'every frame sees replacements without a timed row cache');
+    'a committed remount is visible without a timer or transcript rescan');
 });
 
 test('published timing identity skips row discovery but still reads every task and source change', t => {
@@ -1038,7 +1164,7 @@ test('published timing identity skips row discovery but still reads every task a
   assert.equal(collections, 1, 'unpublished tasks retain the live row-identity fallback');
 });
 
-test('real ghost frames share one collection across active turns, all-lane gaps and the next boundary', async t => {
+test('ghost frames reuse one index across active turns, all-lane gaps and the next boundary', async t => {
   const h = createHarness(t);
   h.rows[0].identity.endSeconds = 2;
   h.rows[1].identity.endSeconds = 3;
@@ -1066,7 +1192,7 @@ test('real ghost frames share one collection across active turns, all-lane gaps 
     collections = rebuilds = 0;
     h.playback.currentTime = currentTime;
     await h.tick();
-    assert.equal(collections, 1, `one fresh collection at ${currentTime}, including active/lane/latest lookups`);
+    assert.equal(collections, 0, `no transcript collection at ${currentTime}, including active/lane/latest lookups`);
     assert.equal(rebuilds, 0, `a valid gap at ${currentTime} never forces a cache rebuild`);
     assert.equal(h.helper.state.ghostCursorRow, row, `the live turn wins immediately at ${currentTime}`);
     assert.notEqual(h.helper.state.ghostCursorElement.style.display, 'none');
@@ -1095,14 +1221,16 @@ test('gap frames observe in-place timing edits, same-identity remounts and rewin
   const frame = async (row, expectedRebuilds) => {
     collections = rebuilds = 0;
     await h.tick();
-    assert.equal(collections, 1);
+    assert.equal(collections, expectedRebuilds);
     assert.equal(rebuilds, expectedRebuilds, 'only changed row identities/times rebuild the collection');
     assert.equal(h.helper.state.ghostCursorRow, row);
   };
   await frame(h.rows[0], 0);
   next.identity.startSeconds = 4;
+  h.helper.invalidateRowTimeCache();
   await frame(next, 1);
   next.identity.startSeconds = 7;
+  h.helper.invalidateRowTimeCache();
   await frame(h.rows[0], 1);
   const previous = h.rows[0];
   const replacement = h.replaceRow(previous);
@@ -1135,6 +1263,7 @@ test('fresh row lookup preserves overlap preference and latest-end gaps after a 
   assert.equal(h.api.time.findRowEntryByPlaybackTime(4, { speakerKey: 'stable-1' }).row, replacement);
   assert.equal(h.api.time.findLatestRowEntryBeforePlaybackTime(7, { speakerKey: 'stable-1' }).row, replacement);
   h.rows.splice(h.rows.indexOf(replacement), 1);
+  h.helper.invalidateRowTimeCache();
   assert.equal(h.api.time.findRowEntryByPlaybackTime(4, { speakerKey: 'stable-1' }).row, h.rows[0],
     'a still-connected row excluded by the current filter cannot win through previous-row preference');
 });
@@ -1159,7 +1288,7 @@ test('ghost transport follows native task identity while Gold publication remain
   assert.equal(h.helper.state.ghostCursorPlaybackTime, 8);
 });
 
-test('active ghost and row subscriber share one collection and preserve global history with a lane lock', async t => {
+test('active ghost and row subscriber reuse one index and preserve global history with a lane lock', async t => {
   const h = createHarness(t);
   h.helper.getEditorSnapshot = () => assert.fail('native playback must not request a transcript snapshot');
   await h.start();
@@ -1169,14 +1298,14 @@ test('active ghost and row subscriber share one collection and preserve global h
   h.helper.getTranscriptRows = () => { collections++; return h.rows.filter(row => row.isConnected); };
   h.playback.currentTime = 7;
   await h.tick();
-  assert.equal(collections, 1, 'row subscriber must not repeat the ghost-owned collection');
+  assert.equal(collections, 0, 'neither subscriber rediscovers unchanged rows');
   assert.equal(h.helper.state.lastPlaybackRow, h.rows[0]);
   assert.equal(h.helper.toggleGhostCursorLane(), true);
   assert.equal(h.helper.state.currentRow, h.rows[1], 'Tab immediately publishes its rendered lane');
   collections = 0;
   h.playback.currentTime = 8;
   await h.tick();
-  assert.equal(collections, 1);
+  assert.equal(collections, 0);
   assert.equal(h.helper.state.currentRow, h.rows[1], 'manual native recording lane remains authoritative');
   assert.equal(h.helper.state.lastPlaybackRow, h.rows[0], 'global playback overlap preference is preserved');
   assert.equal(h.playbackCalls(), 0);

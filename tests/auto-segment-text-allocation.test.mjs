@@ -183,3 +183,24 @@ test('smart-split timing floors an in-progress word into the right segment', asy
     'longword end'
   ]);
 });
+
+test('split offsets stay in raw text coordinates despite leading whitespace', async () => {
+  const { splitAutoSegmentTextAtFloorOffset } = await loadAllocatorModule();
+  const text = '                    one two three four five six seven eight nine ten';
+  const parts = splitAutoSegmentTextAtFloorOffset(text, text.indexOf('three') + 'three'.length);
+  assert.equal(parts.firstText, 'one two three');
+  assert.equal(parts.secondText, 'four five six seven eight nine ten');
+  assert.equal(parts.splitCount, 3);
+  assert.equal(parts.wordCount, 10);
+});
+
+test('split trims only new edges and preserves tabs, line breaks and annotation spacing within each half', async () => {
+  const { splitAutoSegmentTextAtFloorOffset } = await loadAllocatorModule();
+  const text = ' \talpha\t\tbeta\n gamma {СКАЗ: два  слова}   delta  ';
+  const parts = splitAutoSegmentTextAtFloorOffset(text, text.indexOf('gamma'));
+  assert.equal(parts.firstText, 'alpha\t\tbeta');
+  assert.equal(parts.secondText, 'gamma {СКАЗ: два  слова}   delta');
+  assert.equal(splitAutoSegmentTextAtFloorOffset(text, 0).firstText, '');
+  assert.equal(splitAutoSegmentTextAtFloorOffset(text, text.length).firstText, text.trim());
+  assert.equal(splitAutoSegmentTextAtFloorOffset(' \n\t', 2).wordCount, 0);
+});

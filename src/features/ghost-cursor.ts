@@ -1,7 +1,12 @@
 // @ts-nocheck
 import { matchesShortcut } from '../core/shortcuts';
 import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
-import { computeL0TimedCharacterOffset, computeL0TimestampAtCharacterOffset } from '../services/l0-word-timing-alignment';
+import {
+  createL0TimingAlignmentCache,
+  isPublishedL0TimingIndex,
+  computePreparedL0TimedCharacterOffset,
+  computePreparedL0TimestampAtCharacterOffset
+} from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import { AUDIO_ENHANCEMENT_STATE_EVENT, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 import { readNativeSessionState } from '../site/editor-control';
@@ -22,9 +27,17 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   let renderedTop: number | null = null;
   let recordingTracks = [];
   let recordingIds = new Set();
+  const timingAlignmentCache = createL0TimingAlignmentCache();
+  let timingRowsIndex = null;
+  let timingRows = new WeakMap();
+  let timingRowEntries = null;
 
   function invalidatePlaybackContext() {
     playbackGeneration += 1;
+    timingAlignmentCache.clear();
+    timingRowsIndex = null;
+    timingRows = new WeakMap();
+    timingRowEntries = null;
     helper.state.ghostCursorPlaybackTime = null;
     helper.state.ghostCursorPlaybackPaused = null;
     for (const projection of Object.values(getGhostCursorLaneProjections())) {
@@ -181,25 +194,49 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function getL0TimingTrackForRow(row) {
-    if (isSourceSwitching()) return null;
-    const index = getCurrentL0PlaybackTimingIndex(helper.state, helper);
-    if (!index || !(row instanceof HTMLElement)) {
+  function getL0AlignmentForRow(text, row, timeRange, index = getCurrentL0PlaybackTimingIndex(helper.state, helper)) {
+    if (isSourceSwitching() || !index || !(row instanceof HTMLElement)) {
+      if (timingRowsIndex !== null) {
+        timingAlignmentCache.clear();
+        timingRowsIndex = null;
+        timingRows = new WeakMap();
+      }
       return null;
     }
-
+    if (timingRowsIndex !== index) {
+      timingAlignmentCache.clear();
+      timingRowsIndex = index;
+      timingRows = new WeakMap();
+    }
     const identity = helper.getRowIdentity(row) || {};
-    return resolveL0TimingTrack(
-      index,
-      buildL0TimingLaneAliases(identity, [api.time.getRowSpeakerKeySafe(row)])
-    );
+    const speakerKey = api.time.getRowSpeakerKeySafe(row);
+    const laneMetadata = document.documentElement?.getAttribute('data-babel-recording-lanes');
+    const published = isPublishedL0TimingIndex(index);
+    let cached = published ? timingRows.get(row) : null;
+    if (!cached || cached.processedRecordingId !== identity.processedRecordingId ||
+        cached.speakerKey !== identity.speakerKey || cached.trackLabel !== identity.trackLabel ||
+        cached.speakerLabel !== identity.speakerLabel || cached.lane !== identity.lane ||
+        cached.displaySpeaker !== speakerKey || cached.laneMetadata !== laneMetadata) {
+      cached = {
+        processedRecordingId: identity.processedRecordingId,
+        speakerKey: identity.speakerKey,
+        trackLabel: identity.trackLabel,
+        speakerLabel: identity.speakerLabel,
+        lane: identity.lane,
+        displaySpeaker: speakerKey,
+        laneMetadata,
+        track: resolveL0TimingTrack(index, buildL0TimingLaneAliases(identity, [speakerKey]))
+      };
+      if (published) timingRows.set(row, cached);
+    }
+    return cached.track ? timingAlignmentCache.get(index, cached.track, row, text, timeRange) : null;
   }
 
 
-  function computeGhostCursorOffset(text, row, timeRange, currentTime, blurTime, baseline) {
-    const track = getL0TimingTrackForRow(row);
-    if (track) {
-      const timedOffset = computeL0TimedCharacterOffset(text, track.tokens, timeRange, currentTime);
+  function computeGhostCursorOffset(text, row, timeRange, currentTime, blurTime, baseline, timingIndex) {
+    const alignment = getL0AlignmentForRow(text, row, timeRange, timingIndex);
+    if (alignment) {
+      const timedOffset = computePreparedL0TimedCharacterOffset(alignment, currentTime);
       if (timedOffset !== null) {
         const floor = typeof baseline === 'number' && baseline >= 0 ? Math.min(text.length, baseline) : 0;
         const final = Math.max(floor, timedOffset);
@@ -211,18 +248,11 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
 
   helper.getL0TimestampForRowOffset = function getL0TimestampForRowOffset(row, offset) {
-    const track = getL0TimingTrackForRow(row);
     const range = api.time.getRowTimeRange(row);
     const textarea = helper.getRowEditor(row);
-    if (!track || !range || !textarea) {
-      return null;
-    }
-    return computeL0TimestampAtCharacterOffset(
-      textarea.value || '',
-      track.tokens,
-      range,
-      offset
-    );
+    if (!range || !textarea) return null;
+    return computePreparedL0TimestampAtCharacterOffset(
+      getL0AlignmentForRow(textarea.value || '', row, range), offset);
   };
 
 
@@ -321,6 +351,10 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     cursorGeneration += 1;
     renderedRow = null;
     renderedTop = null;
+    timingAlignmentCache.clear();
+    timingRowsIndex = null;
+    timingRows = new WeakMap();
+    timingRowEntries = null;
     window.removeEventListener(AUDIO_ENHANCEMENT_STATE_EVENT, onSourceChange);
     document.removeEventListener('visibilitychange', onSourceChange);
     unsubscribePlayback?.();
@@ -653,7 +687,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function computeGhostCursorProjectionForEntry(entry, currentTime, blurTime) {
+  function computeGhostCursorProjectionForEntry(entry, currentTime, blurTime, timingIndex) {
     if (!entry || !(entry.row instanceof HTMLElement)) {
       return null;
     }
@@ -672,7 +706,8 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
       entry,
       currentTime,
       blurTime,
-      baseline
+      baseline,
+      timingIndex
     );
     if (!result) {
       return null;
@@ -690,28 +725,12 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
   }
 
 
-  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey, entries) {
-    if (recordingIds.size === 0 ||
-        (recordingIds.size === 1 && recordingIds.has(activeSpeakerKey))) return;
-    const previousRow = api.time.getLastPlaybackRow(entries);
-    const entriesBySpeaker = new Map();
-    // Active-row selection and every lane projection share this frame's
-    // current row identities/times, including when all lanes are between turns.
-    for (const entry of entries) {
-      if (entry.startSeconds > currentTime) break;
-      if (!(entry.row instanceof HTMLElement) || !entry.row.isConnected) continue;
-      const speakerKey = entry.identity?.speakerKey || api.time.getRowSpeakerKeySafe(entry.row);
-      if (!speakerKey || speakerKey === activeSpeakerKey || !recordingIds.has(speakerKey)) continue;
-      const chosen = entriesBySpeaker.get(speakerKey);
-      const active = currentTime < entry.endSeconds;
-      const chosenActive = chosen && currentTime < chosen.endSeconds;
-      if ((active && (!chosenActive || entry.row === previousRow)) ||
-          (!active && !chosenActive && (!chosen || entry.endSeconds >= chosen.endSeconds))) {
-        entriesBySpeaker.set(speakerKey, entry);
-      }
-    }
-    for (const entry of entriesBySpeaker.values()) {
-      computeGhostCursorProjectionForEntry(entry, currentTime, blurTime);
+  function updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, activeSpeakerKey, entries, timingIndex) {
+    for (const speakerKey of recordingIds) {
+      if (speakerKey === activeSpeakerKey) continue;
+      const entry = api.time.findRowEntryByPlaybackTime(currentTime, { speakerKey }, entries) ||
+        api.time.findLatestRowEntryBeforePlaybackTime(currentTime, { speakerKey }, entries);
+      if (entry) computeGhostCursorProjectionForEntry(entry, currentTime, blurTime, timingIndex);
     }
   }
 
@@ -950,15 +969,15 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
 
         const currentTime = playback.currentTime;
         const rowTimeEntries = api.time.getRowTimeEntries();
+        if (timingRowEntries !== rowTimeEntries) {
+          timingAlignmentCache.retainRows((row) => api.time.getRowTimeEntry(row)?.row === row);
+          timingRowEntries = rowTimeEntries;
+        }
+        const timingIndex = getCurrentL0PlaybackTimingIndex(helper.state, helper);
         const playbackEntry = api.time.findRowEntryByPlaybackTime(currentTime, undefined, rowTimeEntries);
         if (playbackEntry) api.time.rememberPlaybackRow(playbackEntry.row);
 
-        const trackedEntry = rowTimeEntries.find((entry) =>
-          entry.row === trackedRow && helper.rowMatchesIdentity(entry.row, trackedIdentity)) ||
-          (trackedIdentity?.annotationId && rowTimeEntries.find((entry) =>
-            entry.identity?.annotationId === trackedIdentity.annotationId &&
-            helper.rowMatchesIdentity(entry.row, trackedIdentity))) ||
-          rowTimeEntries.find((entry) => helper.rowMatchesIdentity(entry.row, trackedIdentity));
+        const trackedEntry = api.time.getRowTimeEntry(trackedRow, trackedIdentity);
         const connectedRow = trackedEntry?.row;
         if (connectedRow instanceof HTMLElement && connectedRow.isConnected) {
           if (connectedRow !== trackedRow) {
@@ -1050,14 +1069,15 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
           trackedTimeRange,
           currentTime,
           blurTime,
-          baseline
+          baseline,
+          timingIndex
         );
         if (result === null) {
           el.style.display = 'none';
           return;
         }
 
-        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, api.time.getRowSpeakerKeySafe(trackedRow), rowTimeEntries);
+        updateGhostCursorLaneProjectionsForPlayback(currentTime, blurTime, api.time.getRowSpeakerKeySafe(trackedRow), rowTimeEntries, timingIndex);
         const activeProjection = rememberGhostCursorProjection(trackedRow, result.offset, {
           source: 'active',
           cursorBaseline: result.offset,
@@ -1184,7 +1204,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     return rendered;
   };
 
-  return { setGhostCursorLaneLockForSpeaker, setGhostCursorLaneLockAuto, getGhostCursorTarget, stopGhostCursor, scrollToCaret, PROPORTIONAL_MIN_DELTA_SECONDS, computeRestoreOffset, startGhostCursor, capturePlaybackGuard, isSourceSwitching, invalidatePlaybackContext };
+  return { setGhostCursorLaneLockForSpeaker, setGhostCursorLaneLockAuto, getGhostCursorTarget, stopGhostCursor, scrollToCaret, PROPORTIONAL_MIN_DELTA_SECONDS, computeRestoreOffset, startGhostCursor, capturePlaybackGuard, isSourceSwitching, invalidatePlaybackContext, timingAlignmentCache };
 }
 
 export function registerGhostCursorInput(helper: any, hooks: EditorHooks, input: EditorInputState) {

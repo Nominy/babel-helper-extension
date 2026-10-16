@@ -18,6 +18,7 @@ async function loadEntry(entryPoint) {
 const alignment = await loadEntry('src/services/l0-word-timing-alignment.ts');
 const listener = await loadEntry('src/content/l0-timing-listener.ts');
 const identity = await loadEntry('src/services/l0-timing-identity.ts');
+const { registerSmartSplit } = await loadEntry('src/features/smart-split.ts');
 
 function token(id, text, startSeconds, endSeconds) {
   return { id, text, startSeconds, endSeconds };
@@ -82,7 +83,7 @@ test('completed-word floor excludes unmatched and in-progress words', () => {
     token('and', 'и', 2.4, 2.5),
     token('flour', 'мучного', 2.6, 3)
   ];
-  const offset = alignment.computeL0CompletedWordCharacterOffset(
+  const offset = alignment.computeL0CutBoundaryCharacterOffset(
     text,
     tokens,
     { startSeconds: 0, endSeconds: 3 },
@@ -90,6 +91,73 @@ test('completed-word floor excludes unmatched and in-progress words', () => {
   );
 
   assert.equal(text.slice(0, offset), 'я стараюсь не есть.');
+});
+
+test('cut admission requires consecutive unambiguous exact anchors, not distant LCS pins', () => {
+  const range = { startSeconds: 0, endSeconds: 30 };
+  const cut = (text, tokens, seconds = 15) =>
+    alignment.computeL0CutBoundaryCharacterOffset(text, tokens, range, seconds);
+  assert.equal(cut('one missing three', [token('one', 'one', 0, 1)]), null);
+  assert.equal(cut('one missing three', [token('one', 'one', 0, 1), token('three', 'three', 20, 21)]), null);
+  assert.equal(cut('one three', [token('one', 'one', 0, 1), token('other', 'other', 10, 11), token('three', 'three', 20, 21)]), null);
+  assert.equal(cut('one three', [token('one', 'one', 0, 1), token('other', '[noise]', 10, 11), token('three', 'three', 20, 21)]), null);
+  assert.equal(cut('go go stop', [token('go', 'go', 0, 1), token('stop', 'stop', 20, 21)]), null);
+  assert.equal(cut('go stop', [token('go1', 'go', 0, 1), token('go2', 'go', 10, 11), token('stop', 'stop', 20, 21)]), null);
+  assert.equal(cut('one three', [token('one', 'one', 0, 16), token('three', 'three', 14, 21)]), null);
+  assert.equal(cut('one three', [token('one', 'one', 0, 1), token('three', 'three', 20, 21)]), 3,
+    'a real long pause between adjacent exact words needs no arbitrary distance limit');
+  assert.equal(cut('go go stop', [token('go1', 'go', 0, 1), token('go2', 'go', 10, 11), token('stop', 'stop', 20, 21)]), 5,
+    'repeated words are admissible when their ordered matches are unique');
+});
+
+test('cut boundaries preserve whole tags and allow only defensible completed-word edges', () => {
+  const text = '  <тихо>one two</тихо> three  ';
+  const tokens = [token('one', 'one', 1, 2), token('two', 'two', 3, 4), token('three', 'three', 8, 9)];
+  const range = { startSeconds: 0, endSeconds: 10 };
+  const cut = seconds => alignment.computeL0CutBoundaryCharacterOffset(text, tokens, range, seconds);
+  assert.equal(cut(0.5), 0);
+  assert.equal(cut(1.5), 0);
+  assert.equal(text.slice(0, cut(3.5)), '  <тихо>one');
+  assert.equal(text.slice(0, cut(6)), '  <тихо>one two</тихо>');
+  assert.equal(cut(9.5), text.length);
+  assert.equal(alignment.computeL0CutBoundaryCharacterOffset('one,two', tokens.slice(0, 2), range, 2.5), null,
+    'a boundary not representable by the whitespace allocator must be refused');
+  assert.equal(alignment.computeL0CutBoundaryCharacterOffset('missing one', tokens.slice(0, 1), range, 0.5), null);
+  assert.equal(alignment.computeL0CutBoundaryCharacterOffset('one missing', tokens.slice(0, 1), range, 9.5), null);
+});
+
+test('S uses the cut clock, shares only verified pairs, and never guesses from ghost or ratio', t => {
+  const source = { version: 2, taskId: 'split-task', status: 'ready', strength: 0,
+    desiredStrength: 0, variantKey: '', revision: 1 };
+  installSourceDocument(t, source);
+  const helper = {
+    state: {},
+    getTranscriptRows: () => [],
+    splitTextByWordRatio() { assert.fail('duration ratio must not be used'); }
+  };
+  const split = registerSmartSplit(helper, {});
+  const originalId = identity.buildCurrentL0TimingTaskId(helper);
+  const words = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+  helper.state.l0TimingIndex = {
+    taskId: originalId,
+    tracks: [{ lane: 'Speaker 1', tokens: words.map((word, i) => token(word, word, i, i + 0.8)) }]
+  };
+  const plan = { sourceText: words.join(' '), speakerKey: 'Speaker 1',
+    sourceRange: { startSeconds: 0, endSeconds: 8 }, splitSeconds: 3, ghostTextOffset: 33, ratio: 0.9 };
+  assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
+  Object.assign(source, { strength: 50, desiredStrength: 50, variantKey: 'mix-50' });
+  assert.equal(split.getSmartSplitTextParts(plan), null, 'unverified enhancement cannot borrow Original');
+  source.pairedVariantKey = 'a'.repeat(64);
+  assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
+  assert.equal(listener.getCurrentL0TimingIndex(helper.state, helper), null,
+    'the shared cut clock must not become selected-source ASR');
+  Object.assign(source, { status: 'switching', desiredStrength: 60 });
+  assert.equal(split.getSmartSplitTextParts(plan), null);
+  Object.assign(source, { status: 'ready', strength: 60, desiredStrength: 60, variantKey: 'mix-60' });
+  assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
+  source.taskId = 'new-task';
+  assert.equal(split.getSmartSplitTextParts(plan), null, 'stale task clocks must not authorize a cut');
+  assert.equal(split.getSmartSplitTextParts({ ...plan, sourceText: '' }).source, 'empty');
 });
 
 test('character clicks resolve exact and interpolated playback timestamps', () => {
@@ -168,6 +236,125 @@ test('alignment re-tokenizes live edited text on every call', () => {
 
   assert.equal(alignment.computeL0TimedCharacterOffset('alpha beta', tokens, range, 4), 6);
   assert.equal(alignment.computeL0TimedCharacterOffset('alpha newly beta', tokens, range, 4), 12);
+});
+
+test('published preparation preserves repeated words, pauses, overlap and backward queries', () => {
+  const index = listener.parseL0TimingUpdate({
+    ...validUpdate(),
+    tracks: [{ lane: 'Speaker 1', tokens: [
+      token('last', 'stop', 12, 13),
+      token('first', 'go', 1, 2),
+      token('second', 'go', 8, 9),
+      token('overlap', 'noise', 0, 20)
+    ] }]
+  });
+  const cache = alignment.createL0TimingAlignmentCache();
+  const track = index.tracks[0];
+  const row = {};
+  const text = 'go go stop';
+  const range = { startSeconds: 0, endSeconds: 15 };
+  const prepared = cache.get(index, track, row, text, range);
+  for (const [time, offset] of [[1, 0], [2, 2], [8, 3], [9, 5], [12, 6], [13, 10], [5, 3], [1, 0]]) {
+    assert.equal(alignment.computePreparedL0TimedCharacterOffset(prepared, time), offset);
+    assert.equal(cache.get(index, track, row, text, range), prepared);
+  }
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(prepared, 1), 1);
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(prepared, 4), 8);
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(prepared, 7), 12);
+  for (const time of [-1, 0, 1.5, 4, 8.5, 10, 12.5, 15, 20]) {
+    assert.equal(alignment.computePreparedL0TimedCharacterOffset(prepared, time),
+      alignment.computeL0TimedCharacterOffset(text, track.tokens, range, time));
+  }
+  assert.deepEqual(cache.getStatistics(), {
+    lanePreparations: 1, alignmentPreparations: 1, tokenVisits: 4, lanes: 1, rows: 1
+  });
+});
+
+test('preparation refreshes edited text, mutable ranges and row remounts without rescanning the lane', () => {
+  const index = listener.parseL0TimingUpdate(validUpdate());
+  const track = index.tracks[0];
+  const cache = alignment.createL0TimingAlignmentCache();
+  const row = {};
+  const range = { startSeconds: 0, endSeconds: 6 };
+  const read = (text, key = row) => cache.get(index, track, key, text, range);
+  assert.equal(alignment.computePreparedL0TimedCharacterOffset(read('alpha beta'), 4), 6);
+  assert.equal(alignment.computePreparedL0TimedCharacterOffset(read('alpha newly beta'), 4), 12);
+  range.startSeconds = 4;
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read('alpha beta'), 7), 4);
+  const remounted = read('alpha beta', {});
+  assert.equal(alignment.computePreparedL0TimedCharacterOffset(remounted, 5), 10);
+  const missing = read('unmatched');
+  assert.equal(missing, null);
+  assert.equal(read('unmatched'), null, 'negative alignment results also remain prepared');
+  assert.deepEqual(cache.getStatistics(), {
+    lanePreparations: 1, alignmentPreparations: 5, tokenVisits: 2, lanes: 1, rows: 1
+  });
+  cache.clear();
+  assert.equal(cache.getStatistics().lanes, 0);
+  assert.equal(cache.getStatistics().rows, 0);
+  read('alpha beta');
+  assert.equal(cache.getStatistics().lanePreparations, 2);
+});
+
+test('listener owns immutable snapshots and republishes in-place producer edits as fresh revisions', () => {
+  const protocolWindow = createProtocolWindow();
+  const location = { pathname: '/label', search: '?id=owned-timing' };
+  const helper = { getTranscriptRows: () => [] };
+  const taskId = identity.buildCurrentL0TimingTaskId(helper, location);
+  const state = { l0TimingIndex: null };
+  const dispose = listener.registerL0TimingListener(state, helper, protocolWindow, location);
+  const update = validUpdate(taskId);
+  const cache = alignment.createL0TimingAlignmentCache();
+  const range = { startSeconds: 0, endSeconds: 10 };
+  const row = {};
+  const read = () => {
+    const index = listener.getCurrentL0PlaybackTimingIndex(state, helper, location);
+    return cache.get(index, index.tracks[0], row, 'alpha beta', range);
+  };
+  try {
+    protocolWindow.emit(update);
+    const original = state.l0TimingIndex;
+    assert.equal(alignment.isPublishedL0TimingIndex(original), true, 'ownership crosses separate bundles');
+    assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 7), 4);
+    update.tracks[0].tokens[1].startSeconds = 8;
+    update.tracks[0].tokens[1].endSeconds = 9;
+    assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 7), 4,
+      'producer mutation cannot silently edit the published revision');
+    assert.throws(() => { original.tracks[0].tokens[1].startSeconds = 8; }, TypeError);
+    assert.throws(() => { original.tracks[0].tokens.push(token('c', 'gamma', 9, 10)); }, TypeError);
+    assert.throws(() => { original.tracks[0].tokens = []; }, TypeError);
+    assert.throws(() => { original.tracks.push({ lane: 'new', tokens: [] }); }, TypeError);
+    protocolWindow.emit(update);
+    assert.notEqual(state.l0TimingIndex, original);
+    assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 7), 8);
+    assert.equal(cache.getStatistics().lanePreparations, 2);
+    assert.equal(cache.getStatistics().rows, 1, 'replacement releases the prior revision');
+  } finally {
+    dispose();
+    cache.clear();
+  }
+});
+
+test('unpublished timing stays live and cached playback never authorizes a destructive cut', () => {
+  const tokens = [token('one', 'one', 0, 1), token('three', 'three', 9, 10)];
+  const track = { lane: 'Speaker 1', tokens };
+  const index = { taskId: 'task', tracks: [track] };
+  const cache = alignment.createL0TimingAlignmentCache();
+  const range = { startSeconds: 0, endSeconds: 15 };
+  const text = 'one missing three';
+  const read = () => cache.get(index, track, 'row', text, range);
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 13), 9);
+  tokens[1].startSeconds = 12;
+  tokens[1].endSeconds = 13;
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 13), 12);
+  track.tokens = [token('one', 'one', 1, 2), token('three', 'three', 6, 7)];
+  assert.equal(alignment.computePreparedL0TimestampAtCharacterOffset(read(), 13), 6);
+  assert.equal(cache.getStatistics().rows, 0, 'arbitrary arrays never become immutable by observation');
+  assert.notEqual(alignment.computePreparedL0TimedCharacterOffset(read(), 4), null);
+  assert.equal(alignment.computeL0CutBoundaryCharacterOffset(text, track.tokens, range, 4), null,
+    'playback interpolation across an unmatched word is not cut evidence');
+  track.tokens.splice(1, 0, token('missing', 'missing', 3, 4));
+  assert.equal(alignment.computeL0CutBoundaryCharacterOffset(text, track.tokens, range, 5), 11);
 });
 
 test('canonical task identity uses stable helper lanes and rejects stale updates before replacement', () => {
@@ -714,7 +901,7 @@ test('missing anchors return null', () => {
     null
   );
   assert.equal(
-    alignment.computeL0CompletedWordCharacterOffset(
+    alignment.computeL0CutBoundaryCharacterOffset(
       'edited text',
       [token('unrelated', 'something', 1, 2)],
       { startSeconds: 0, endSeconds: 3 },

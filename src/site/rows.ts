@@ -1,13 +1,129 @@
 // @ts-nocheck
 import { BABEL_TRANSCRIPT_ROW_SELECTOR, isBabelActiveRowClassList } from '../core/babel-editor-contract';
-import { getEditorControl, getEditorControlFromTarget, readTurnState, readTurnIdentity } from './editor-control';
+import { getEditorControl, getEditorControlFromTarget, readTurnState, readNativeRowIdentityIndex } from './editor-control';
 import type { RowModules } from '../services/row-service';
 
 export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
-  helper.getTranscriptRows = function getTranscriptRows() {
+  let rows = [], byRow = new Map(), byAnnotation = new Map(), rowOrder = new Map();
+  let dirty = true, revision = 0, publication = null, activeIds = new Set();
+  let observer = null, observing = false;
+  const listeners = new Set();
+  const formatTime = seconds => Number.isFinite(seconds)
+    ? `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}` : '';
+
+  function invalidate() {
+    dirty = true;
+    revision++;
+    helper.invalidateRowTimeCache?.();
+    for (const listener of listeners) listener(revision);
+  }
+
+  function membershipChanged(mutations) {
+    for (const mutation of mutations) {
+      if (mutation.type === 'attributes') {
+        if (byRow.has(mutation.target) || mutation.target.matches(BABEL_TRANSCRIPT_ROW_SELECTOR)) return true;
+        continue;
+      }
+      for (const node of [...mutation.addedNodes, ...mutation.removedNodes]) {
+        if (node instanceof Element &&
+            (node.matches(BABEL_TRANSCRIPT_ROW_SELECTOR) || node.querySelector(BABEL_TRANSCRIPT_ROW_SELECTOR))) return true;
+      }
+    }
+    return false;
+  }
+
+  function onCommit(event) {
+    let next;
+    try { next = typeof event.detail === 'string' ? JSON.parse(event.detail) : event.detail; } catch { return; }
+    if (!next || next.href !== document.location.href) return;
+    const changed = !publication || next.generation !== publication.generation ||
+      next.reviewActionId !== publication.reviewActionId || next.annotationRevision !== publication.annotationRevision;
+    publication = next;
+    activeIds = new Set(next.activeIds || []);
+    if (changed) invalidate();
+  }
+
+  function onSessionChange() {
+    publication = null;
+    activeIds.clear();
+    rows = [];
+    byRow.clear();
+    byAnnotation.clear();
+    rowOrder.clear();
+    invalidate();
+  }
+
+  function observe() {
+    if (observing) return;
+    observing = true;
+    observer = new MutationObserver(mutations => {
+      if (membershipChanged(mutations)) invalidate();
+    });
+    observer.observe(document.documentElement, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['data-annotation-id', 'data-babel-classic-row']
+    });
+    window.addEventListener('babel-helper:native-editor-commit', onCommit);
+    window.addEventListener('babel-helper:native-session-change', onSessionChange);
+    window.addEventListener('babel-helper:native-route-change', onSessionChange);
+  }
+
+  function drainMembership() {
+    observe();
+    if (membershipChanged(observer.takeRecords())) invalidate();
+  }
+
+  function ensureIndex() {
+    drainMembership();
+    if (!dirty) return;
     helper.perf?.count?.('row.scan');
-    return Array.from(document.querySelectorAll(BABEL_TRANSCRIPT_ROW_SELECTOR));
+    rows = Array.from(document.querySelectorAll(BABEL_TRANSCRIPT_ROW_SELECTOR));
+    const snapshot = readNativeRowIdentityIndex();
+    publication = snapshot;
+    activeIds = new Set(snapshot?.activeIds || []);
+    byRow = new Map();
+    byAnnotation = new Map();
+    rowOrder = new Map(rows.map((row, index) => [row, index]));
+    const identities = new Map((snapshot?.identities || []).map(identity => [identity.annotationId, identity]));
+    for (const row of rows) {
+      const identity = identities.get(row.dataset.annotationId);
+      if (!identity) continue;
+      const speaker = row.querySelector('select[id^="speaker-"]');
+      const processedRecordingId = identity.processedRecordingId || speaker?.value || null;
+      const value = { ...identity, processedRecordingId,
+        trackLabel: identity.trackLabel || speaker?.selectedOptions?.[0]?.textContent?.trim() || '',
+        speakerKey: processedRecordingId || '', startText: formatTime(identity.startSeconds),
+        endText: formatTime(identity.endSeconds) };
+      byRow.set(row, value);
+      byAnnotation.set(identity.annotationId, row);
+    }
+    helper.perf?.count?.('row-index.rebuild');
+    dirty = false;
+  }
+
+  helper.getRowIndexRevision = function getRowIndexRevision() {
+    drainMembership();
+    return revision;
+  };
+  helper.subscribeRowIndexChanges = function subscribeRowIndexChanges(listener) {
+    observe();
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  helper.disposeRowIndex = function disposeRowIndex() {
+    observer?.disconnect();
+    observer = null;
+    observing = false;
+    window.removeEventListener('babel-helper:native-editor-commit', onCommit);
+    window.removeEventListener('babel-helper:native-session-change', onSessionChange);
+    window.removeEventListener('babel-helper:native-route-change', onSessionChange);
+    listeners.clear();
+    onSessionChange();
+  };
+
+  helper.getTranscriptRows = function getTranscriptRows() {
+    ensureIndex();
+    return rows;
   };
 
 
@@ -26,32 +142,15 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
 
 
+  // Cached identities describe presentation only. EditorControl requests still
+  // revalidate current task, source, permissions and native input ownership.
   helper.getRowIdentity = function getRowIdentity(row) {
-    if (!(row instanceof HTMLElement)) {
-      return null;
-    }
-
-    const annotationId = row.dataset.annotationId;
-    if (!annotationId) return null;
-    const snapshot = readTurnIdentity(row);
-    if (!snapshot) return null;
-    const speaker = row.querySelector('select[id^="speaker-"]');
-    const processedRecordingId = snapshot?.processedRecordingId || speaker?.value || null;
-    const formatTime = (seconds) => Number.isFinite(seconds)
-      ? `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}`
-      : '';
-    return {
-      annotationId,
-      reviewActionId: snapshot?.reviewActionId || '',
-      processedRecordingId,
-      trackLabel: snapshot?.trackLabel || snapshot?.speakerLabel || speaker?.selectedOptions?.[0]?.textContent?.trim() || '',
-      speakerKey: processedRecordingId || snapshot?.speakerKey || '',
-      isActive: snapshot.isActive ?? isBabelActiveRowClassList(row.classList),
-      startSeconds: snapshot?.startSeconds ?? null,
-      endSeconds: snapshot?.endSeconds ?? null,
-      startText: snapshot?.startText || formatTime(snapshot?.startSeconds),
-      endText: snapshot?.endText || formatTime(snapshot?.endSeconds)
-    };
+    if (!(row instanceof HTMLElement) || !row.isConnected) return null;
+    ensureIndex();
+    const identity = byRow.get(row);
+    if (!identity || identity.annotationId !== row.dataset.annotationId) return null;
+    return { ...identity, isActive: activeIds.has(identity.annotationId),
+      isEditing: publication?.editingId === identity.annotationId, readOnly: publication?.readOnly !== false };
   };
 
 
@@ -105,13 +204,13 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
 
   helper.findActiveRowByReactState = function findActiveRowByReactState() {
-    const rows = helper.getTranscriptRows();
-    return (
-      rows.find((row) => {
-        const identity = helper.getRowIdentity(row);
-        return Boolean(identity && identity.isActive);
-      }) || null
-    );
+    ensureIndex();
+    let first = null;
+    for (const id of activeIds) {
+      const row = byAnnotation.get(id);
+      if (row?.isConnected && (!first || rowOrder.get(row) < rowOrder.get(first))) first = row;
+    }
+    return first;
   };
 
 
@@ -129,36 +228,20 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
   };
 
 
-  function getActiveRowFromEditorSnapshot() {
-    if (typeof helper.findRowFromEditorSnapshot !== 'function') {
-      return null;
-    }
-
-    const snapshot = typeof helper.getEditorSnapshot === 'function'
-      ? helper.getEditorSnapshot()
-      : null;
-    if (!snapshot || typeof snapshot !== 'object') {
-      return null;
-    }
-
-    if (typeof snapshot.activeRowId === 'string' && snapshot.activeRowId) {
-      const activeRow = helper.findRowFromEditorSnapshot(snapshot.activeRowId);
-      if (activeRow instanceof HTMLElement) {
-        return activeRow;
+  function getActiveRowFromCommittedIndex() {
+    ensureIndex();
+    let first = null, firstStart = Infinity, firstOrder = Infinity;
+    for (const id of activeIds) {
+      const row = byAnnotation.get(id);
+      if (!row?.isConnected) continue;
+      const start = byRow.get(row)?.startSeconds ?? 0, order = rowOrder.get(row);
+      if (start < firstStart || start === firstStart && order < firstOrder) {
+        first = row;
+        firstStart = start;
+        firstOrder = order;
       }
     }
-
-    const activeSnapshot = Array.isArray(snapshot.rows)
-      ? snapshot.rows.find((row) => row && row.isActive)
-      : null;
-    if (activeSnapshot) {
-      const activeRow = helper.findRowFromEditorSnapshot(activeSnapshot);
-      if (activeRow instanceof HTMLElement) {
-        return activeRow;
-      }
-    }
-
-    return null;
+    return first;
   }
 
 
@@ -207,14 +290,8 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
 
     const rows = helper.getTranscriptRows();
     if (identity.annotationId) {
-      const byAnnotation = rows.find((row) => {
-        const rowIdentity = helper.getRowIdentity(row);
-        return rowIdentity && rowIdentity.annotationId === identity.annotationId &&
-          (!identity.reviewActionId || identity.reviewActionId === rowIdentity.reviewActionId);
-      });
-      if (byAnnotation) {
-        return byAnnotation;
-      }
+      const byId = byAnnotation.get(identity.annotationId);
+      if (byId && (!identity.reviewActionId || identity.reviewActionId === byRow.get(byId)?.reviewActionId)) return byId;
     }
 
     if (identity.startText && identity.endText) {
@@ -253,7 +330,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
       }
     }
 
-    const snapshotRow = getActiveRowFromEditorSnapshot();
+    const snapshotRow = getActiveRowFromCommittedIndex();
     if (snapshotRow) {
       helper.setCurrentRow(snapshotRow);
       return snapshotRow;
@@ -325,7 +402,7 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
       }
     }
 
-    const snapshotRow = getActiveRowFromEditorSnapshot();
+    const snapshotRow = getActiveRowFromCommittedIndex();
     if (snapshotRow) {
       helper.setCurrentRow(snapshotRow);
       return snapshotRow;
@@ -424,5 +501,5 @@ export function createRowSiteApi(helper: any, api: Pick<RowModules, 'time'>) {
     });
   };
 
-  return {};
+  return { dispose: helper.disposeRowIndex };
 }

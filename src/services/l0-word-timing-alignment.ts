@@ -9,12 +9,12 @@ export type L0WordTimingToken = {
 
 export type L0WordTimingTrack = {
   lane: string;
-  tokens: L0WordTimingToken[];
+  tokens: readonly L0WordTimingToken[];
 };
 
 export type L0TimingIndex = {
   taskId: string;
-  tracks: L0WordTimingTrack[];
+  tracks: readonly L0WordTimingTrack[];
 };
 
 export type TimedOffsetRange = {
@@ -41,6 +41,229 @@ type ControlPoint = {
   time: number;
   offset: number;
 };
+
+
+// Listener and consumers can be bundled separately. Only the listener's copied,
+// deeply frozen publication may use identity as a timing revision.
+const PUBLISHED_TOKENS = Symbol.for('babel-helper:published-l0-timing-tokens');
+
+export function freezePublishedL0TimingIndex(index: L0TimingIndex): L0TimingIndex {
+  for (const track of index.tracks) {
+    for (const token of track.tokens) Object.freeze(token);
+    Object.defineProperty(track.tokens, PUBLISHED_TOKENS, { value: true });
+    Object.freeze(track.tokens);
+    Object.freeze(track);
+  }
+  Object.defineProperty(index.tracks, PUBLISHED_TOKENS, { value: true });
+  Object.freeze(index.tracks);
+  return Object.freeze(index);
+}
+
+export function isPublishedL0TimingIndex(index: L0TimingIndex): boolean {
+  return Object.isFrozen(index) && Object.isFrozen(index.tracks) &&
+    (index.tracks as unknown as Record<symbol, unknown>)[PUBLISHED_TOKENS] === true;
+}
+
+type PreparedLane = {
+  words: TimedWord[];
+  maxEnds: number[];
+};
+
+export type PreparedL0TimingAlignment = {
+  textLength: number;
+  startSeconds: number;
+  endSeconds: number;
+  textWords: TextWord[];
+  startsByWord: Map<TextWord, number>;
+  playbackPoints: ControlPoint[];
+  seekPoints: ControlPoint[];
+};
+
+function lowerBound(length: number, before: (index: number) => boolean, start = 0): number {
+  let end = length;
+  while (start < end) {
+    const middle = (start + end) >>> 1;
+    if (before(middle)) start = middle + 1;
+    else end = middle;
+  }
+  return start;
+}
+
+function prepareLane(tokens: readonly L0WordTimingToken[]): PreparedLane {
+  const words = tokens
+    .map((token) => ({ ...token, normalized: normalizeL0TimingWord(token.text) }))
+    .filter((token) => token.normalized !== '')
+    .sort((left, right) => left.startSeconds - right.startSeconds || left.endSeconds - right.endSeconds);
+  let maxEnd = -Infinity;
+  const maxEnds = words.map((word) => (maxEnd = Math.max(maxEnd, word.endSeconds)));
+  return { words, maxEnds };
+}
+
+function wordsInRange(lane: PreparedLane, range: TimedOffsetRange): TimedWord[] {
+  const end = lowerBound(lane.words.length, (index) => lane.words[index].startSeconds < range.endSeconds);
+  const start = lowerBound(end, (index) => lane.maxEnds[index] <= range.startSeconds);
+  const words: TimedWord[] = [];
+  for (let index = start; index < end; index += 1) {
+    const word = lane.words[index];
+    if (word.endSeconds > range.startSeconds) words.push(word);
+  }
+  return words;
+}
+
+function prepareAlignment(
+  text: string,
+  timedWords: readonly TimedWord[],
+  range: TimedOffsetRange
+): PreparedL0TimingAlignment | null {
+  if (typeof text !== 'string' || !text ||
+      !Number.isFinite(range.startSeconds) || !Number.isFinite(range.endSeconds) ||
+      range.endSeconds <= range.startSeconds) return null;
+  const textWords = tokenizeL0TimingText(text);
+  const anchors = findL0TimingAnchors(textWords, timedWords);
+  if (!anchors.length) return null;
+  const playbackPoints: ControlPoint[] = [{ time: range.startSeconds, offset: 0 }];
+  // Published clocks share these points. Keep the legacy inverse mapping for
+  // arbitrary callers with reversed clocks without doubling normal preparation.
+  const seekPoints: ControlPoint[] = anchors.some(({ timedWord }) =>
+    timedWord.endSeconds < timedWord.startSeconds)
+    ? [{ time: range.startSeconds, offset: 0 }] : playbackPoints;
+  const startsByWord = new Map<TextWord, number>();
+  for (const anchor of anchors) {
+    const start = Math.max(range.startSeconds, Math.min(range.endSeconds, anchor.timedWord.startSeconds));
+    const end = Math.max(range.startSeconds, Math.min(range.endSeconds, anchor.timedWord.endSeconds));
+    startsByWord.set(anchor.textWord, start);
+    appendControlPoint(playbackPoints, start, anchor.textWord.start);
+    appendControlPoint(playbackPoints, Math.max(start, end), anchor.textWord.end);
+    if (seekPoints !== playbackPoints) {
+      appendControlPoint(seekPoints, start, anchor.textWord.start);
+      appendControlPoint(seekPoints, end, anchor.textWord.end);
+    }
+  }
+  appendControlPoint(playbackPoints, range.endSeconds, text.length);
+  if (seekPoints !== playbackPoints) appendControlPoint(seekPoints, range.endSeconds, text.length);
+  return { textLength: text.length, startSeconds: range.startSeconds, endSeconds: range.endSeconds,
+    textWords, startsByWord, playbackPoints, seekPoints };
+}
+
+/** Bounded to one active revision and the latest relevant row per lane. */
+export function createL0TimingAlignmentCache() {
+  type Entry = {
+    lane: PreparedLane;
+    rowKey: unknown;
+    hasRow: boolean;
+    text: string;
+    startSeconds: number;
+    endSeconds: number;
+    alignment: PreparedL0TimingAlignment | null;
+  };
+  let currentIndex: L0TimingIndex | null = null;
+  const entries = new Map<L0WordTimingTrack, Entry>();
+  const statistics = { lanePreparations: 0, alignmentPreparations: 0, tokenVisits: 0 };
+  return {
+    clear() {
+      currentIndex = null;
+      entries.clear();
+    },
+    retainRows(isRelevant: (rowKey: unknown) => boolean) {
+      for (const entry of entries.values()) {
+        if (entry.hasRow && !isRelevant(entry.rowKey)) {
+          entry.hasRow = false;
+          entry.rowKey = null;
+          entry.text = '';
+          entry.alignment = null;
+        }
+      }
+    },
+    getStatistics() {
+      let rows = 0;
+      for (const entry of entries.values()) if (entry.hasRow) rows += 1;
+      return { ...statistics, lanes: entries.size, rows };
+    },
+    get(index: L0TimingIndex, track: L0WordTimingTrack, rowKey: unknown, text: string, range: TimedOffsetRange) {
+      if (currentIndex !== index) {
+        entries.clear();
+        currentIndex = index;
+      }
+      let entry = entries.get(track);
+      if (entry?.hasRow && entry.rowKey === rowKey && entry.text === text &&
+          entry.startSeconds === range.startSeconds && entry.endSeconds === range.endSeconds) {
+        return entry.alignment;
+      }
+      const published = entry !== undefined || (isPublishedL0TimingIndex(index) && Object.isFrozen(track) &&
+        Object.isFrozen(track.tokens) &&
+        (track.tokens as unknown as Record<symbol, unknown>)[PUBLISHED_TOKENS] === true);
+      // Unpublished arrays remain live inputs, including in-place edits. They
+      // must never acquire an identity-based cache merely by being observed.
+      if (!published) {
+        entries.delete(track);
+        statistics.lanePreparations += 1;
+        statistics.tokenVisits += track.tokens.length;
+        statistics.alignmentPreparations += 1;
+        return prepareAlignment(text, getTimedWords(track.tokens, range), range);
+      }
+      if (!entry) {
+        statistics.lanePreparations += 1;
+        statistics.tokenVisits += track.tokens.length;
+        entry = { lane: prepareLane(track.tokens), rowKey, hasRow: true, text,
+          startSeconds: range.startSeconds, endSeconds: range.endSeconds, alignment: null };
+      }
+      statistics.alignmentPreparations += 1;
+      entry.hasRow = true;
+      entry.rowKey = rowKey;
+      entry.text = text;
+      entry.startSeconds = range.startSeconds;
+      entry.endSeconds = range.endSeconds;
+      entry.alignment = prepareAlignment(text, wordsInRange(entry.lane, range), range);
+      entries.set(track, entry);
+      return entry.alignment;
+    }
+  };
+}
+
+export function computePreparedL0TimestampAtCharacterOffset(
+  alignment: PreparedL0TimingAlignment | null,
+  characterOffset: number
+): number | null {
+  if (!alignment || !Number.isFinite(characterOffset)) return null;
+  const { textLength, textWords, startsByWord, seekPoints: points, endSeconds } = alignment;
+  const offset = Math.max(0, Math.min(textLength, Math.round(characterOffset)));
+  const wordIndex = lowerBound(textWords.length, (index) => textWords[index].end < offset);
+  const word = textWords[wordIndex];
+  if (word && offset >= word.start) {
+    const start = startsByWord.get(word);
+    if (start !== undefined) return start;
+  }
+  const index = lowerBound(points.length, (index) => points[index].offset < offset, 1);
+  if (index === points.length) return endSeconds;
+  const right = points[index];
+  const left = points[index - 1];
+  if (right.offset <= left.offset) return right.time;
+  const ratio = (offset - left.offset) / (right.offset - left.offset);
+  return left.time + ratio * (right.time - left.time);
+}
+
+export function computePreparedL0TimedCharacterOffset(
+  alignment: PreparedL0TimingAlignment | null,
+  playbackTime: number
+): number | null {
+  if (!alignment || !Number.isFinite(playbackTime)) return null;
+  const { textLength, playbackPoints: points, startSeconds, endSeconds } = alignment;
+  const time = Math.max(startSeconds, Math.min(endSeconds, playbackTime));
+  let index = 1;
+  let end = points.length;
+  while (index < end) {
+    const middle = (index + end) >>> 1;
+    if (points[middle].time < time) index = middle + 1;
+    else end = middle;
+  }
+  if (index === points.length) return textLength;
+  const right = points[index];
+  const left = points[index - 1];
+  if (right.time <= left.time) return Math.max(0, Math.min(textLength, right.offset));
+  const ratio = (time - left.time) / (right.time - left.time);
+  const offset = Math.round(left.offset + ratio * (right.offset - left.offset));
+  return Math.max(0, Math.min(textLength, offset));
+}
 
 export function normalizeL0TimingWord(value: string): string {
   if (typeof value !== 'string' || !value) return '';
@@ -116,47 +339,92 @@ export function findL0TimingAnchors(
   return anchors;
 }
 
-export function computeL0CompletedWordCharacterOffset(
+
+/**
+ * Admits a destructive cut only when every maximum exact-word alignment agrees
+ * on its adjacent anchors. Unlike playback interpolation, missing words cannot
+ * bridge a cut. Adjacent verified words may have an arbitrarily long real pause.
+ */
+export function computeL0CutBoundaryCharacterOffset(
   text: string,
   tokens: readonly L0WordTimingToken[],
   range: TimedOffsetRange,
-  playbackTime: number
+  cutSeconds: number
 ): number | null {
-  if (
-    typeof text !== 'string' ||
-    !text ||
-    !Number.isFinite(playbackTime) ||
-    !Number.isFinite(range.startSeconds) ||
-    !Number.isFinite(range.endSeconds) ||
-    range.endSeconds <= range.startSeconds
-  ) {
-    return null;
-  }
-  const anchors = findL0TimingAnchors(
-    tokenizeL0TimingText(text),
-    getTimedWords(tokens, range)
-  );
-  if (!anchors.length) {
-    return null;
-  }
-  let completedOffset: number | null = null;
-  for (const anchor of anchors) {
-    if (anchor.timedWord.endSeconds > playbackTime) {
-      break;
+  if (!text || !Number.isFinite(cutSeconds) ||
+      !Number.isFinite(range.startSeconds) || !Number.isFinite(range.endSeconds) ||
+      range.endSeconds <= range.startSeconds ||
+      cutSeconds < range.startSeconds || cutSeconds > range.endSeconds) return null;
+
+  const textTokens = tokenizeTranscriptText(text);
+  const textWords = textTokens.filter((token) => token.kind === 'word').map((token) => ({
+    normalized: token.text.toLocaleLowerCase().replace(/ё/g, 'е'),
+    start: token.start,
+    end: token.end
+  }));
+  // Keep unrecognized timed tokens: silently dropping one would invent adjacency.
+  const timedWords = tokens.filter((token) =>
+    token.startSeconds < range.endSeconds && token.endSeconds > range.startSeconds
+  ).map((token) => ({ ...token, normalized: normalizeL0TimingWord(token.text) }))
+    .sort((left, right) => left.startSeconds - right.startSeconds || left.endSeconds - right.endSeconds);
+  const n = textWords.length;
+  const m = timedWords.length;
+  if (!n || !m || timedWords.some((word, index) =>
+    !Number.isFinite(word.startSeconds) || !Number.isFinite(word.endSeconds) ||
+    word.endSeconds <= word.startSeconds ||
+    (index > 0 && timedWords[index - 1].endSeconds > word.startSeconds)
+  )) return null;
+
+  const before = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  const after = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < m; j += 1) {
+      before[i + 1][j + 1] = textWords[i].normalized === timedWords[j].normalized
+        ? before[i][j] + 1 : Math.max(before[i][j + 1], before[i + 1][j]);
     }
-    completedOffset = anchor.textWord.end;
   }
-  if (completedOffset === null) {
-    return 0;
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      after[i][j] = textWords[i].normalized === timedWords[j].normalized
+        ? after[i + 1][j + 1] + 1 : Math.max(after[i + 1][j], after[i][j + 1]);
+    }
   }
-  while (
-    completedOffset < text.length &&
-    !/\s/u.test(text[completedOffset]) &&
-    !/[\p{L}\p{N}]/u.test(text[completedOffset])
-  ) {
-    completedOffset += 1;
+  const best = before[n][m];
+  if (!best) return null;
+  const requiredTextAnchor = (j: number): number | null => {
+    let match: number | null = null;
+    for (let i = 0; i <= n; i += 1) {
+      // If an equally good alignment can omit this clock, it is not evidence.
+      if (before[i][j] + after[i][j + 1] === best) return null;
+      if (i < n && textWords[i].normalized === timedWords[j].normalized &&
+          before[i][j] + 1 + after[i + 1][j + 1] === best) {
+        if (match !== null) return null;
+        match = i;
+      }
+    }
+    return match;
+  };
+
+  // Inside a uniquely matched word, retain the completed-word convention:
+  // the active word belongs on the right, never split its characters.
+  const next = timedWords.findIndex((word) => word.endSeconds > cutSeconds);
+  const right = next === -1 ? m : next;
+  const leftText = right > 0 ? requiredTextAnchor(right - 1) : null;
+  const rightText = right < m ? requiredTextAnchor(right) : null;
+  if (right === 0) return rightText === 0 ? 0 : null;
+  if (right === m) return leftText === n - 1 ? text.length : null;
+  if (leftText === null || rightText !== leftText + 1) return null;
+
+  // The allocator floors to whitespace. Carry adjacent punctuation/whole tags
+  // with the completed word, but never cross another word or cut inside a tag.
+  let offset = textWords[leftText].end;
+  for (const token of textTokens) {
+    if (token.end <= offset) continue;
+    if (token.kind === 'space') return offset;
+    if (token.kind === 'word') return null;
+    offset = token.end;
   }
-  return completedOffset;
+  return offset;
 }
 
 export function computeL0TimestampAtCharacterOffset(
@@ -165,60 +433,9 @@ export function computeL0TimestampAtCharacterOffset(
   range: TimedOffsetRange,
   characterOffset: number
 ): number | null {
-  if (
-    typeof text !== 'string' ||
-    !text ||
-    !Number.isFinite(characterOffset) ||
-    !Number.isFinite(range.startSeconds) ||
-    !Number.isFinite(range.endSeconds) ||
-    range.endSeconds <= range.startSeconds
-  ) {
-    return null;
-  }
-  const textWords = tokenizeL0TimingText(text);
-  const anchors = findL0TimingAnchors(textWords, getTimedWords(tokens, range));
-  if (!anchors.length) {
-    return null;
-  }
-  const offset = Math.max(0, Math.min(text.length, Math.round(characterOffset)));
-  const clickedWord = textWords.find(
-    (word) => offset >= word.start && offset <= word.end
-  );
-  if (clickedWord) {
-    const exactAnchor = anchors.find((anchor) => anchor.textWord === clickedWord);
-    if (exactAnchor) {
-      return Math.max(
-        range.startSeconds,
-        Math.min(range.endSeconds, exactAnchor.timedWord.startSeconds)
-      );
-    }
-  }
-
-  const points: ControlPoint[] = [{ time: range.startSeconds, offset: 0 }];
-  for (const anchor of anchors) {
-    appendControlPoint(
-      points,
-      Math.max(range.startSeconds, Math.min(range.endSeconds, anchor.timedWord.startSeconds)),
-      anchor.textWord.start
-    );
-    appendControlPoint(
-      points,
-      Math.max(range.startSeconds, Math.min(range.endSeconds, anchor.timedWord.endSeconds)),
-      anchor.textWord.end
-    );
-  }
-  appendControlPoint(points, range.endSeconds, text.length);
-  for (let index = 1; index < points.length; index += 1) {
-    const right = points[index];
-    if (offset > right.offset) continue;
-    const left = points[index - 1];
-    if (right.offset <= left.offset) {
-      return right.time;
-    }
-    const ratio = (offset - left.offset) / (right.offset - left.offset);
-    return left.time + ratio * (right.time - left.time);
-  }
-  return range.endSeconds;
+  if (!Number.isFinite(characterOffset)) return null;
+  return computePreparedL0TimestampAtCharacterOffset(
+    prepareAlignment(text, getTimedWords(tokens, range), range), characterOffset);
 }
 
 function appendControlPoint(points: ControlPoint[], time: number, offset: number): void {
@@ -243,41 +460,7 @@ export function computeL0TimedCharacterOffset(
   range: TimedOffsetRange,
   playbackTime: number
 ): number | null {
-  if (
-    typeof text !== 'string' ||
-    text.length === 0 ||
-    !Number.isFinite(playbackTime) ||
-    !Number.isFinite(range.startSeconds) ||
-    !Number.isFinite(range.endSeconds) ||
-    range.endSeconds <= range.startSeconds
-  ) {
-    return null;
-  }
-
-  const textWords = tokenizeL0TimingText(text);
-  const timedWords = getTimedWords(tokens, range);
-  const anchors = findL0TimingAnchors(textWords, timedWords);
-  if (anchors.length === 0) return null;
-
-  const points: ControlPoint[] = [{ time: range.startSeconds, offset: 0 }];
-  for (const anchor of anchors) {
-    const start = Math.max(range.startSeconds, Math.min(range.endSeconds, anchor.timedWord.startSeconds));
-    const end = Math.max(start, Math.min(range.endSeconds, anchor.timedWord.endSeconds));
-    appendControlPoint(points, start, anchor.textWord.start);
-    appendControlPoint(points, end, anchor.textWord.end);
-  }
-  appendControlPoint(points, range.endSeconds, text.length);
-
-  const time = Math.max(range.startSeconds, Math.min(range.endSeconds, playbackTime));
-  for (let index = 1; index < points.length; index += 1) {
-    const right = points[index];
-    if (time > right.time) continue;
-    const left = points[index - 1];
-    if (right.time <= left.time) return Math.max(0, Math.min(text.length, right.offset));
-    const ratio = (time - left.time) / (right.time - left.time);
-    const offset = Math.round(left.offset + ratio * (right.offset - left.offset));
-    return Math.max(0, Math.min(text.length, offset));
-  }
-
-  return text.length;
+  if (!Number.isFinite(playbackTime)) return null;
+  return computePreparedL0TimedCharacterOffset(
+    prepareAlignment(text, getTimedWords(tokens, range), range), playbackTime);
 }

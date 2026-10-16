@@ -221,7 +221,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
         return null;
       }
       if (preview.timeRangeRequest !== request) {
-        return getPreviewTimeRange(preview, { allowAsync: false });
+        return null;
       }
 
       preview.timeRangeRequest = null;
@@ -239,8 +239,8 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
         preview.leftPx !== requestLeftPx ||
         preview.rightPx !== requestRightPx
       ) {
-        // Selection moved while the request was in-flight; keep any existing
-        // bridge result rather than clearing it (a fresh request will follow).
+        // A response belongs only to its captured pixels, never a newer drag.
+        return null;
       } else {
         preview.timeRange = null;
       }
@@ -294,9 +294,13 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     preview.element.style.borderColor = tooShort ? 'rgba(220, 38, 38, 0.95)' : 'rgba(2, 132, 199, 0.95)';
 
     if (label instanceof HTMLElement) {
-      const labelText = preview.failureReason
-        ? 'Cut unavailable: ' + preview.failureReason + '. Create a new selection.'
-        : Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
+      const labelText = preview.failureReason === 'partial-cut'
+        ? `Cut may be partially applied (${preview.failureDetails.reason}). Safe rollback stopped (${preview.failureDetails.rollbackReason}); inspect native history before continuing.`
+        : preview.failureReason === 'timing-boundary-unavailable'
+          ? 'Word timing boundary unavailable. Refresh current-task timing or use Shift+S for native text duplication.'
+          : preview.failureReason
+            ? 'Cut unavailable: ' + preview.failureReason + '. Create a new selection.'
+            : Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
       label.textContent = labelText;
       label.style.display = labelText ? 'block' : 'none';
       label.dataset.tone = tooShort ? 'danger' : 'neutral';
@@ -880,10 +884,15 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
     if (!preview || helper.state.cutCommitPending) return false;
+    if (preview.failureReason && preview.failureReason !== 'timing-boundary-unavailable') return false;
     if (!preview.isCurrentTask?.() || !isPreviewHostCurrent(preview)) {
       return rejectCutPreview(preview, 'stale-selection-source');
     }
-    if (preview.failureReason) return false;
+    if (preview.failureReason === 'timing-boundary-unavailable') {
+      // An explicit S/Shift+S retry must revalidate the source and conversion.
+      preview.failureReason = '';
+      preview.failureDetails = null;
+    }
     helper.stopSelectionLoop();
     if (cancelCutPreviewIfZoomChanged()) return false;
     const isCurrentTarget = () => helper.state.cutPreview === preview &&
@@ -891,31 +900,112 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     const previewElement = preview.element instanceof HTMLElement ? preview.element : null;
     const originalOpacity = previewElement?.style.opacity;
     helper.state.cutCommitPending = true;
+    helper.state.cutCommitFailure = null;
+    const ownedReceipts = [];
+    let targetOptions = null;
+    let uncertainMutation = false;
+    const fail = async reason => {
+      let rollbackReason = uncertainMutation ? 'native-command-receipt-unavailable' : '';
+      while (ownedReceipts.length && !rollbackReason) {
+        if (!isCurrentTarget()) {
+          rollbackReason = 'stale-selection-source';
+          break;
+        }
+        const receipt = ownedReceipts[ownedReceipts.length - 1];
+        let result;
+        try {
+          result = await helper.undoTranscriptWithNativeBridge({
+            ...targetOptions,
+            expectedHistoryRevision: receipt.historyRevision,
+            expectedHistoryToken: receipt.historyToken
+          });
+        } catch {
+          rollbackReason = 'native-undo-failed';
+          break;
+        }
+        const undo = result?.verification || result;
+        if (!result?.ok || undo?.commandInvoked !== true ||
+            undo.previousHistoryRevision !== receipt.historyRevision ||
+            undo.previousHistoryToken !== receipt.historyToken ||
+            undo.historyRevision !== receipt.previousHistoryRevision ||
+            undo.historyToken !== receipt.previousHistoryToken) {
+          rollbackReason = result?.reason || 'native-undo-receipt-mismatch';
+          break;
+        }
+        ownedReceipts.pop();
+      }
+      const partial = uncertainMutation || ownedReceipts.length > 0;
+      preview.failureDetails = { reason, partial, unconfirmed: uncertainMutation, rollbackReason };
+      helper.state.cutCommitFailure = { ...preview.failureDetails,
+        reviewActionId: targetOptions?.expectedReviewActionId };
+      return rejectCutPreview(preview, partial ? 'partial-cut' : reason);
+    };
+    const mutate = async (method, payload) => {
+      const previous = ownedReceipts[ownedReceipts.length - 1];
+      let result;
+      try {
+        result = await helper[method]({ ...targetOptions,
+          ...(previous ? { expectedHistoryRevision: previous.historyRevision,
+            expectedHistoryToken: previous.historyToken } : {}),
+          ...payload });
+      } catch {
+        uncertainMutation = true;
+        return { ok: false, reason: 'native-command-failed' };
+      }
+      const receipt = result?.verification || result;
+      if (receipt?.commandInvoked === false && !result?.ok) return result;
+      const validPrevious = Number.isInteger(receipt?.previousHistoryRevision) &&
+        receipt.previousHistoryRevision >= 0 && typeof receipt.previousHistoryToken === 'string' &&
+        receipt.previousHistoryToken && (!previous ||
+          receipt.previousHistoryRevision === previous.historyRevision &&
+          receipt.previousHistoryToken === previous.historyToken);
+      if (receipt?.commandInvoked === true && validPrevious) {
+        if (receipt.historyRevision === receipt.previousHistoryRevision + 1 &&
+            typeof receipt.historyToken === 'string' && receipt.historyToken &&
+            receipt.historyToken !== receipt.previousHistoryToken) {
+          // The first receipt starts after any pending user typing was flushed.
+          // Failed verification still owns this exact native history command.
+          ownedReceipts.push(receipt);
+          return result;
+        }
+      }
+      uncertainMutation = true;
+      return { ...result, ok: false, reason: result?.reason || 'native-command-receipt-unavailable' };
+    };
     try {
       // Never commit a cached conversion: the page bridge must revalidate the
       // captured host, recording and audio source and return that lane's turns.
       if (preview.targetRequest) await preview.targetRequest;
+      const leftPx = preview.leftPx, rightPx = preview.rightPx;
       const timeRange = await refreshPreviewTimeRange(preview, { force: true });
-      if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
+      if (!isCurrentTarget()) return await fail('stale-selection-source');
+      if (preview.leftPx !== leftPx || preview.rightPx !== rightPx) {
+        return await fail('selection-moved');
+      }
       if (!timeRange) return false;
       const duration = timeRange.endSeconds - timeRange.startSeconds;
       if (duration < CUT_PREVIEW_MIN_SECONDS + getPreviewCommitSafetySeconds(preview)) return false;
       const selectionTarget = preview.selectionTarget;
       if (!selectionTarget?.processedRecordingId || !Array.isArray(timeRange.bounds)) {
-        return rejectCutPreview(preview, 'selection-target-unavailable');
+        return await fail('selection-target-unavailable');
       }
       if (timeRange.bounds.some(entry => entry.processedRecordingId !== selectionTarget.processedRecordingId ||
           !entry.annotationId || !Number.isFinite(entry.leftPx) || !Number.isFinite(entry.rightPx))) {
-        return rejectCutPreview(preview, 'invalid-selection-regions');
+        return await fail('invalid-selection-regions');
       }
-      const plan = collectOverlapPlan(timeRange, preview.leftPx, preview.rightPx);
-      if (!plan?.overlapping.length) return rejectCutPreview(preview, 'no-overlapping-segments');
+      const plan = collectOverlapPlan(timeRange, leftPx, rightPx);
+      if (!plan?.overlapping.length) return await fail('no-overlapping-segments');
       const smartSplitPlan = plan.splitRequired && plan.overlapping.length === 1
         ? api.split.buildSmartSplitPlanForRegion(plan.splitRegion,
-          (preview.leftPx + preview.rightPx) / 2, preview.container, selectionTarget)
+          (leftPx + rightPx) / 2, preview.container, selectionTarget)
         : null;
-      if (plan.splitRequired && !smartSplitPlan) return rejectCutPreview(preview, 'ambiguous-selection-segment');
-      const targetOptions = {
+      if (plan.splitRequired && !smartSplitPlan) return await fail('ambiguous-selection-segment');
+      const textParts = plan.splitRequired && options?.smartSplit
+        ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
+      if (plan.splitRequired && options?.smartSplit && !textParts) {
+        return await fail('timing-boundary-unavailable');
+      }
+      targetOptions = {
         selectionTarget,
         processedRecordingId: selectionTarget.processedRecordingId,
         expectedReviewActionId: selectionTarget.reviewActionId
@@ -927,11 +1017,9 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       let nativeSplit = null;
       if (plan.splitRequired) {
         if (!isCurrentTarget() || !smartSplitPlan.sourceRow.isConnected) {
-          return rejectCutPreview(preview, 'stale-selection-source');
+          return await fail('stale-selection-source');
         }
-        const textParts = options?.smartSplit ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
-        const result = await helper.splitSegmentAtTime({
-          ...targetOptions,
+        const result = await mutate('splitSegmentAtTime', {
           annotationId: plan.splitRegion.annotationId,
           startSeconds: smartSplitPlan.sourceRange.startSeconds,
           endSeconds: smartSplitPlan.sourceRange.endSeconds,
@@ -939,19 +1027,22 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
           sourceText: smartSplitPlan.sourceText,
           ...(textParts ? { texts: [textParts.firstText, textParts.secondText] } : {})
         });
-        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-split-failed');
-        nativeSplit = result.verification;
-        if (!nativeSplit?.leftAnnotationId || !nativeSplit?.rightAnnotationId) {
-          return rejectCutPreview(preview, 'missing-native-split-identities');
+        if (!result?.ok) return await fail(result?.reason || 'native-split-failed');
+        nativeSplit = result.verification || result;
+        if (!nativeSplit?.leftAnnotationId || !nativeSplit?.rightAnnotationId ||
+            nativeSplit.leftAnnotationId === nativeSplit.rightAnnotationId ||
+            nativeSplit.leftAnnotationId === plan.splitRegion.annotationId ||
+            nativeSplit.rightAnnotationId === plan.splitRegion.annotationId) {
+          return await fail('invalid-native-split-identities');
         }
       }
       for (const entry of plan.toDelete) {
-        if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
-        const result = await helper.deleteSegmentWithNativeAction({
-          ...targetOptions, annotationId: entry.annotationId,
+        if (!isCurrentTarget()) return await fail('stale-selection-source');
+        const result = await mutate('deleteSegmentWithNativeAction', {
+          annotationId: entry.annotationId,
           startSeconds: entry.startSeconds, endSeconds: entry.endSeconds
         });
-        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-delete-failed');
+        if (!result?.ok) return await fail(result?.reason || 'native-delete-failed');
       }
       const boundaries = [
         { annotationId: nativeSplit?.leftAnnotationId || plan.trimLeft?.annotationId,
@@ -965,13 +1056,15 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       ];
       for (const boundary of boundaries) {
         if (!boundary.annotationId) continue;
-        if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
-        const result = await helper.setSegmentBoundaryTime({ ...targetOptions, ...boundary });
-        if (!result?.ok) return rejectCutPreview(preview, result?.reason || 'native-trim-failed');
+        if (!isCurrentTarget()) return await fail('stale-selection-source');
+        const result = await mutate('setSegmentBoundaryTime', boundary);
+        if (!result?.ok) return await fail(result?.reason || 'native-trim-failed');
       }
-      if (!isCurrentTarget()) return rejectCutPreview(preview, 'stale-selection-source');
+      if (!isCurrentTarget()) return await fail('stale-selection-source');
       helper.clearCutPreview();
       return true;
+    } catch {
+      return await fail('native-cut-failed');
     } finally {
       helper.state.cutCommitPending = false;
       if (helper.state.cutPreview === preview && previewElement) {

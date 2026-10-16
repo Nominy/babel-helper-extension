@@ -72,8 +72,11 @@ export function initTimestampBridge() {
     if (!binding) return { error: failure(context.backend, 'stale-task') };
     const selectionError = validateSelection(context, binding);
     if (selectionError) return { error: selectionError };
-    if (context.guarded && (!matchesExpectedHistory(binding, context.payload) ||
-        Object.keys(binding.pendingTextById || {}).length)) return { error: failure(context.backend, 'history-conflict') };
+    if ((context.guarded && !matchesExpectedHistory(binding, context.payload)) ||
+        ((context.guarded || context.payload?.selectionTarget !== undefined) &&
+          Object.keys(binding.pendingTextById || {}).length)) {
+      return { error: failure(context.backend, 'history-conflict') };
+    }
     const previousHistoryToken = historyToken(binding);
     if (!previousHistoryToken) return { error: failure(context.backend, 'history-unavailable') };
     const receipt = { previousHistoryRevision: binding.history.undoStack.length, previousHistoryToken,
@@ -142,7 +145,8 @@ export function initTimestampBridge() {
     const inspect = () => {
       const binding = current(context);
       if (!binding) return { error: failure(context.backend, 'stale-task') };
-      if (command && historyToken(binding) !== command.receipt.historyToken) {
+      if (command && (historyToken(binding) !== command.receipt.historyToken ||
+          Object.keys(binding.pendingTextById || {}).length)) {
         return { error: failure(context.backend, 'history-conflict') };
       }
       const value = (!command || binding.annotations !== command.annotationsBefore) && predicate(binding);
@@ -391,10 +395,31 @@ export function initTimestampBridge() {
     const command = invokeNativeCommand(context, latest => latest.controller.split(turn.id, time, texts));
     if (command.error) return command.error;
     const ids = command.value;
-    if (!Array.isArray(ids) || ids.length !== 2) return failure(backend, 'split-rejected');
-    const result = await settle(context, latest => ids.map(id => latest.annotations.find(item => item.id === id)).every(Boolean), command);
+    if (!Array.isArray(ids) || ids.length !== 2 ||
+        ids.some(id => typeof id !== 'string' || !id || binding.annotations.some(item => item.id === id)) ||
+        ids[0] === ids[1]) return failure(backend, 'split-rejected');
+    const result = await settle(context, latest => {
+      const left = latest.annotations.find(item => item.id === ids[0]);
+      const right = latest.annotations.find(item => item.id === ids[1]);
+      // Native owns the inner gap. Verify its identities and preserved outer
+      // bounds, not an inferred offset around the requested split time.
+      return { left, right, valid: Boolean(left && right &&
+        !latest.annotations.some(item => item.id === turn.id) &&
+        left.type === 'transcription' && right.type === 'transcription' &&
+        left.processedRecordingId === turn.processedRecordingId &&
+        right.processedRecordingId === turn.processedRecordingId &&
+        left.content === (texts ? texts[0] : currentTurn.content) &&
+        right.content === (texts ? texts[1] : currentTurn.content) &&
+        left.startTimeInSeconds === turn.startTimeInSeconds &&
+        right.endTimeInSeconds === turn.endTimeInSeconds &&
+        Number.isFinite(left.endTimeInSeconds) && Number.isFinite(right.startTimeInSeconds) &&
+        left.endTimeInSeconds > left.startTimeInSeconds && left.endTimeInSeconds <= time &&
+        right.startTimeInSeconds >= time && right.startTimeInSeconds < right.endTimeInSeconds) };
+    }, command);
     if (result.error) return result.error;
-    const [left, right] = ids.map(id => snapshotRow(result.binding.annotations.find(item => item.id === id), 0, result.binding));
+    if (!result.value.valid) return failure(backend, 'split-postcondition-failed');
+    const left = snapshotRow(result.value.left, 0, result.binding);
+    const right = snapshotRow(result.value.right, 0, result.binding);
     return { ok: true, backend, annotationId: turn.id, splitSeconds: time,
       leftAnnotationId: ids[0], rightAnnotationId: ids[1], leftStartText: left.startText, leftEndText: left.endText,
       rightStartText: right.startText, rightEndText: right.endText, leftStartSeconds: left.startSeconds,
@@ -443,7 +468,9 @@ export function initTimestampBridge() {
         // transaction receipt and must never become an authorized rollback.
         result = { ...result, ok: false, reason: 'history-conflict' };
       }
-      return { ...receipt, ...result };
+      // Observing a changed history while flushing is not ownership of that
+      // typing command. Only invokeNativeCommand can authorize its rollback.
+      return { ...receipt, ...result, commandInvoked: Boolean(execution.receipt) };
     };
   }
   const services = window.BabelMods?.unsafe?.services;

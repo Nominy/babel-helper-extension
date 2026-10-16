@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { registerBabelClassicInput, readBabelClassicInput, flushBabelClassicInputs,
   readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
-import { classicTextRects, classicOffsetAtPoint } from './classic-input-geometry';
+import { classicTextRects, classicOffsetAtPoint, releaseClassicInputGeometry } from './classic-input-geometry';
 import { showNativeAutomationFailure } from '../ui/native-automation-failure';
 
 export const CLASSIC_ROW_SELECTOR = '[data-babel-classic-row="true"][data-annotation-id]';
@@ -69,12 +69,19 @@ export function createClassicControls(React, useContext) {
       if (!row || !context?.reviewActionId || typeof context.flushSync !== 'function') {
         throw new Error('classic-input-native-context-unavailable');
       }
-      let composing = false, disposed = false, pendingSelection = null;
+      let composing = false, disposed = false, pendingSelection = null, geometryInput = null;
       const id = binding.annotation.id;
       row.setAttribute('data-babel-classic-row', 'true');
       row.setAttribute('data-annotation-id', id);
       const slate = () => slateBindings.get(row);
       const textarea = () => committed.current.binding.inputRef.current;
+      function ownGeometry(input) {
+        if (input !== geometryInput) {
+          if (geometryInput) releaseClassicInputGeometry(geometryInput);
+          geometryInput = input;
+        }
+        return input;
+      }
       function authorize(write = false) {
         if (disposed || released) return null;
         const owned = readBabelClassicInput(id, row.ownerDocument);
@@ -174,7 +181,7 @@ export function createClassicControls(React, useContext) {
         select,
         rects(start, end = start) {
           if (!authorize()) return [];
-          const input = textarea();
+          const input = ownGeometry(textarea());
           if (input) return classicTextRects(input, lease.read().text, start, end);
           const rich = slate();
           const startPoint = rich && slatePoint(rich.editor, start), endPoint = rich && slatePoint(rich.editor, end);
@@ -199,7 +206,7 @@ export function createClassicControls(React, useContext) {
         },
         offsetAtPoint(x, y) {
           if (!authorize()) return null;
-          const input = textarea();
+          const input = ownGeometry(textarea());
           if (input) return classicOffsetAtPoint(input, lease.read().text, x, y);
           const doc = row.ownerDocument, point = doc.caretPositionFromPoint?.(x, y);
           const range = point ? null : doc.caretRangeFromPoint?.(x, y);
@@ -244,7 +251,9 @@ export function createClassicControls(React, useContext) {
           return select(Math.min(state.start, length), Math.min(state.end, length), state.direction);
         },
         dispose() {
+          if (disposed) return;
           disposed = true;
+          ownGeometry(null);
           unregister();
           binding.cancel();
           row.removeEventListener('compositionstart', onCompositionStart, true);
@@ -275,13 +284,14 @@ export function createClassicControls(React, useContext) {
       row.addEventListener('focusin', onNativeFocus, true);
       row.addEventListener('focusout', onNativeBlur, true);
       const unregister = registerBabelClassicInput(row, lease);
-      leaseRef.current = { lease, committed, get pendingSelection() { return pendingSelection; }, clearSelection() { pendingSelection = null; } };
+      leaseRef.current = { lease, committed, ownGeometry, get pendingSelection() { return pendingSelection; }, clearSelection() { pendingSelection = null; } };
       leases.add(lease);
       return () => { lease.dispose(); leaseRef.current = null; };
     }, [context.reviewActionId, binding.annotation.id]);
     React.useLayoutEffect(() => {
       const input = binding.inputRef.current;
-      if (input) input.setAttribute('data-babel-classic-input', 'true');
+      leaseRef.current?.ownGeometry(input);
+      if (input && input.getAttribute('data-babel-classic-input') !== 'true') input.setAttribute('data-babel-classic-input', 'true');
       const pending = leaseRef.current?.pendingSelection;
       if (pending && input && input.value === pending.text) {
         input.setSelectionRange(pending.start, pending.end, pending.direction);

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { registerBabelClassicInput } from '../../shared/babel-extension-platform/packages/babel-babel-runtime/src/index.mjs';
 
 class TestEvent {
   constructor(type, init = {}) {
@@ -601,7 +602,7 @@ function nativeSessionTree(task = 'task-a') {
   surface.isConnected = true;
   surface.__reactFiber$test = editor;
   surface.matches = selector => selector.includes('[data-transcript-scroll]');
-  return { editor, root, host, transcript, seed: surface, surface };
+  return { editor, panel, root, host, transcript, seed: surface, surface };
 }
 
 test('native commit publisher observes unchanged DOM task/permission transitions and owns root replacement lifetime', async () => {
@@ -642,6 +643,56 @@ test('native commit publisher observes unchanged DOM task/permission transitions
   assert.equal(Object.getOwnPropertyDescriptor(tree.host, 'current').value, tree.root);
   assert.equal(document.documentElement.getAttribute('data-babel-helper-native-session'), null,
     'teardown removes the publication owned by this bridge');
+});
+
+test('Classic identity and batched row reads do not touch owned text or selection and commits publish semantic revisions', async t => {
+  const { window, document } = installPageEnvironment(), tree = nativeSessionTree();
+  const annotation = { id: 'classic-one', processedRecordingId: 'a', startTimeInSeconds: 1,
+    endTimeInSeconds: 4, content: 'Committed', type: 'transcription' };
+  tree.panel.memoizedProps.annotations = [annotation];
+  tree.panel.memoizedProps.tracks = [{ id: 'a', label: 'First' }];
+  tree.transcript.memoizedProps.turns = [annotation];
+  document.querySelector = () => tree.surface;
+  document.querySelectorAll = () => [tree.seed];
+  const commits = [];
+  window.addEventListener('babel-helper:native-editor-commit', event => commits.push(JSON.parse(event.detail)));
+  await importBundledBridge('src/content/recovered-editor-bridge.ts');
+  t.after(() => window.__babelHelperRecoveredEditorBridge?.dispose());
+  const row = new TestTableRow();
+  row.ownerDocument = document;
+  row.isConnected = true;
+  row.setAttribute('data-annotation-id', annotation.id);
+  row.setAttribute('data-babel-classic-row', 'true');
+  row.closest = () => row;
+  const handlers = tree.transcript.memoizedProps.handlers;
+  tree.transcript.child = { memoizedProps: { turn: annotation, handlers },
+    child: { memoizedProps: {}, stateNode: row } };
+  const release = registerBabelClassicInput(row, { annotation, reviewActionId: 'task-a', handlers,
+    readOnly: false, read() { assert.fail('Identity cannot read Classic pending text or selection'); } });
+  t.after(release);
+  const request = (target, operation) => {
+    window.dispatchEvent(new TestEvent('babel-helper:editor-control', { target,
+      detail: JSON.stringify({ id: operation, operation, annotationId: annotation.id }) }));
+    return JSON.parse(target.getAttribute('data-babel-helper-editor-result'));
+  };
+  const identity = request(row, 'identity');
+  assert.equal(identity.ok, true);
+  assert.equal(identity.startSeconds, 1);
+  for (const field of ['text', 'start', 'end', 'direction']) assert.equal(field in identity, false);
+  const initial = request(document.documentElement, 'identities');
+  assert.equal(initial.identities.length, 1);
+  tree.transcript.memoizedProps.activeIds = new Set([annotation.id]);
+  tree.transcript.memoizedProps.editingId = annotation.id;
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  assert.equal(commits.at(-1).annotationRevision, initial.annotationRevision);
+  assert.deepEqual(commits.at(-1).activeIds, [annotation.id]);
+  annotation.startTimeInSeconds = 2;
+  tree.host.current = tree.root;
+  await Promise.resolve();
+  const edited = request(document.documentElement, 'identities');
+  assert.ok(edited.annotationRevision > initial.annotationRevision);
+  assert.equal(edited.identities[0].startSeconds, 2);
 });
 
 test('native session publisher waits for DOM mount but reports an unsupported mounted hook explicitly', async () => {

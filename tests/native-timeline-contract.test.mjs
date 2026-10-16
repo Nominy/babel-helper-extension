@@ -66,6 +66,7 @@ test('middle-turn timing changes invalidate playback cache while lane filtering 
   const time = createRowTimeApi(helper);
   assert.equal(time.findRowEntryByPlaybackTime(5, { speakerKey: 'track-1' }), null);
   rows[1].identity.endSeconds = 6;
+  helper.invalidateRowTimeCache(); // Native commit invalidation is supplied by the row-site layer.
   assert.equal(time.findRowEntryByPlaybackTime(5, { speakerKey: 'track-1' }).row, rows[1]);
   assert.equal(time.findRowEntryByPlaybackTime(5, { speakerKey: 'track-2' }).row, rows[2]);
   assert.equal(time.findRowEntryByPlaybackTime(6, { speakerKey: 'track-1' }), null);
@@ -81,20 +82,20 @@ test('empty native tasks stay empty without a secondary DOM scan', t => {
   assert.equal(timeline.findRowByTimeRange(1, 2), null);
 });
 
-test('smart split takes raw caret offsets from EditorControl.row, not DOM ancestry', t => {
+test('smart split preserves raw native text and refuses unavailable clocks instead of caret guesses', t => {
   const row = new Section('one', 'track-1', 0, 10);
   const helper = harness(t, [row]);
   const editor = { row, element: {}, value: ' [смех] alpha beta ', selectionStart: 8, readOnly: false };
   helper.getRowTextValue = () => editor.value;
-  assert.equal(editor instanceof Section, false);
-  helper.getActiveRowEditor = () => editor;
+  helper.getActiveRowEditor = () => { assert.fail('caret state is not timing evidence'); };
+  helper.getGhostCursorTarget = () => { assert.fail('ghost state is not cut timing evidence'); };
   createRowTimeApi(helper);
   const split = registerSmartSplit(helper, {
     site: { getRowTimeRange: helper.getRowTimeRange, clamp: (value, min, max) => Math.max(min, Math.min(max, value)) },
     segmentation: { AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS: 0.01, getL0TimingLaneAliases: () => ({ stableId: 'track-1' }) }
   });
   const plan = split.buildSmartSplitPlanForRow(row, 5);
-  assert.equal(plan.ghostTextOffset, 8);
+  assert.equal(split.getSmartSplitTextParts(plan), null);
   assert.equal(plan.sourceText, editor.value, 'native split precondition retains exact unsaved raw text');
 });
 

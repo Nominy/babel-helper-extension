@@ -1236,6 +1236,9 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         timingWaitResult && timingWaitResult.ok
           ? timingWaitResult.timingIndex
           : null;
+      if (!timingIndex && helper.getTranscriptRows().some((row) => helper.getRowTextValue(row).trim())) {
+        return { ok: false, reason: 'timing-boundary-unavailable', splitCount: 0 };
+      }
       const useLegacyRedistribution = !timingIndex;
       if (useLegacyRedistribution) {
         updateAutoSegmentProgress({
@@ -1348,6 +1351,19 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       }
 
       const splitPlans = collectAutoSegmentSplitPlans(targets, silenceResults);
+      // Admit the entire batch before its first native split. Pre-trim/merge
+      // receipts remain explicit if a later boundary cannot be established.
+      for (const plan of splitPlans) {
+        const row = findCurrentAutoSegmentSplitRow(plan);
+        const draft = row instanceof HTMLElement
+          ? api.split.buildSmartSplitPlanForRow(row, plan.splitSeconds, plan.speakerKey) : null;
+        if (!draft || api.split.getSmartSplitTextParts(draft) === null) {
+          return {
+            ok: false, reason: 'timing-boundary-unavailable', splitCount: 0,
+            preTrim: preTrimResult, merge: mergeResult
+          };
+        }
+      }
       emitAutoSegmentDebug({
         phase: 'planned',
         ok: true,
@@ -1382,11 +1398,15 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         const rowIdentity = typeof helper.getRowIdentity === 'function' ? helper.getRowIdentity(row) : null;
         const smartSplitPlan = api.split.buildSmartSplitPlanForRow(row, plan.splitSeconds, plan.speakerKey);
         const textParts = smartSplitPlan ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
+        if (!textParts) {
+          return {
+            ok: false, reason: 'timing-boundary-unavailable', splitCount,
+            preTrim: preTrimResult, merge: mergeResult
+          };
+        }
         const splitResult = await helper.splitSegmentAtTime({
-          ...(textParts?.wordCount ? {
-            sourceText: smartSplitPlan.sourceText,
-            texts: [textParts.firstText, textParts.secondText]
-          } : {}),
+          sourceText: smartSplitPlan.sourceText,
+          texts: [textParts.firstText, textParts.secondText],
           annotationId: plan.annotationId,
           rowIdentity: rowIdentity || plan.rowIdentity || null,
           startText: labels ? labels.startText : '',
