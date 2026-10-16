@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { findBabelEditorFiber, readBabelTranscriptBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
-import { findNativeDescendant } from './native-transcript';
+import { findNativeDescendant, TRANSCRIPT_EDITOR_SELECTOR, TRANSCRIPT_ROW_SELECTOR } from './native-transcript';
 import { resolveNativeAnnotationTransaction } from './native-annotation-transaction';
 
 const gapHints = {
@@ -401,8 +401,8 @@ export function installNativeMergePolicy({ onFailure, isEnabled = () => true, re
     const target = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
     if (typeof target?.closest !== 'function') return;
     if (event.type === 'keydown' && event.key === 'Backspace') {
-      const editable = target.closest('[data-slate-editor="true"]');
-      const id = editable?.closest('section[data-annotation-id]')?.getAttribute('data-annotation-id');
+      const editable = target.closest(TRANSCRIPT_EDITOR_SELECTOR);
+      const id = editable?.closest(TRANSCRIPT_ROW_SELECTOR)?.getAttribute('data-annotation-id');
       if (id) {
         try { prepare(id, true); } catch (error) { onFailure(error); }
       }

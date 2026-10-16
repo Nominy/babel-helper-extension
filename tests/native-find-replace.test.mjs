@@ -11,14 +11,16 @@ const bundled = await build({
     build.onResolve({ filter: /\/native-annotation-transaction$/ }, () => ({ path: 'transaction', namespace: 'fixture' }));
     build.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: {
       runtime: `export const findBabelEditorFiber = () => globalThis.bulkFixture.root;
-        export const readBabelTranscriptBindings = () => globalThis.bulkFixture.binding;`,
+        export const readBabelTranscriptBindings = () => globalThis.bulkFixture.binding;
+        export const readBabelClassicInput = id => globalThis.bulkFixture.classic?.[id] || null;`,
       transcript: `export const findNativeDescendant = (root, predicate) => {
           if (!root) return null;
           return [root, ...(root.nodes || []), ...(root.fibers || [])].find(predicate) || null;
         };
         export const findNativeTurnFiber = id => globalThis.bulkFixture.turns[id] || null;
         export const getNativeSlateEditor = id => globalThis.bulkFixture.states[id]?.editor || null;
-        export const serializeNativeSlate = editor => editor.children[0].children.map(node => node.text ?? node.raw).join('');`,
+        export const serializeNativeSlate = editor => editor.children[0].children.map(node => node.text ?? node.raw).join('');
+        export const TRANSCRIPT_EDITOR_SELECTOR = '[data-slate-editor="true"], textarea[data-babel-classic-input="true"]';`,
       transaction: `export const resolveNativeAnnotationTransaction = () => {
         const f = globalThis.bulkFixture;
         if (f.unsupported) throw new Error('native-annotation-transaction-unsupported');
@@ -56,7 +58,7 @@ function fixture(t) {
   });
   const listeners = new Map();
   class NativeElement {
-    closest(selector) { return selector === '[data-slate-editor="true"]' ? this : null; }
+    closest(selector) { return selector.includes('[data-slate-editor="true"]') ? this : null; }
   }
   const f = { root: { fibers: [] }, enabled: true, writes: 0, commands: [], cleared: [], states: {}, turns: {},
     binding: { reviewActionId: 'task-one', readOnly: false, panel: { mode: 'transcription' }, transcript: {}, pendingTextById: {},
@@ -393,4 +395,19 @@ test('Recover rejects composition in an unaffected native segment before the tra
   assertNoMutation(f, () => recover(id));
   f.states.untouched.editor.isComposing = false;
   recover(id);
+});
+
+test('Classic pending text and composition cannot be silently replaced by committed model text', t => {
+  const f = fixture(t), id = sessionId();
+  const annotation = f.binding.annotations[0];
+  let text = annotation.content + ' pending', composing = false;
+  f.classic = { one: { readOnly: false, input: { read: () => ({ text, composing }) } } };
+  assertNoMutation(f, () => run(id));
+  text = annotation.content; composing = true;
+  assertNoMutation(f, () => run(id));
+  composing = false; f.classic.one.readOnly = true;
+  assertNoMutation(f, () => run(id));
+  f.classic.one.readOnly = false;
+  assert.equal(run(id).changedRows, 2);
+  assert.equal(f.commands.length, 1);
 });

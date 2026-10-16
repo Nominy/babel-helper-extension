@@ -110,10 +110,10 @@ function nativeLintFixture() {
   class Element {
     constructor(row = null) { this.row = row; }
     matches(selector) {
-      return (this === row && selector === rowSelector) ||
+      return (this === row && selector.split(',').some(part => part.trim() === rowSelector)) ||
         (this.tooltip === true && selector.includes('[role="tooltip"]'));
     }
-    closest(selector) { return selector === rowSelector ? this.row : null; }
+    closest(selector) { return selector.split(',').some(part => part.trim() === rowSelector) ? this.row : null; }
     contains(node) { return node === this || node.row === this || this === document.body; }
     getAttribute(name) { return name === 'data-annotation-id' && this.row ? 'turn' : null; }
     querySelector() { return null; }

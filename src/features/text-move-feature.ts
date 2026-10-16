@@ -3,6 +3,7 @@ import { matchesShortcut } from '../core/shortcuts';
 import type { FeatureModule } from '../core/types';
 import type { EditorHooks } from '../core/editor-hooks';
 import type { EditorInputState } from './editor-input';
+import { replaceClassicEditorValues } from '../site/editor-control';
 
 export function registerTextMove(helper: any) {
 
@@ -65,6 +66,10 @@ export function registerTextMove(helper: any) {
       return false;
     }
 
+    const classic = replaceClassicEditorValues([
+      { control: leftTextarea, text: parts.firstText }, { control: rightTextarea, text: parts.secondText }
+    ]);
+    if (classic !== null) return classic;
     const wroteLeft = helper.setEditableValue(leftTextarea, parts.firstText);
     const wroteRight = helper.setEditableValue(rightTextarea, parts.secondText);
     return Boolean(wroteLeft && wroteRight);
@@ -114,12 +119,11 @@ export function registerTextMove(helper: any) {
 
       const nextCurrentValue = currentValue.slice(splitIndex).replace(/^\s+/, '');
       const nextTargetValue = helper.joinSegmentText(targetValue, movedText);
-      if (!helper.setEditableValue(targetTextarea, nextTargetValue)) {
-        return false;
-      }
-      if (!helper.setEditableValue(textarea, nextCurrentValue)) {
-        return false;
-      }
+      const classic = replaceClassicEditorValues([
+        { control: targetTextarea, text: nextTargetValue }, { control: textarea, text: nextCurrentValue }
+      ]);
+      if (classic === false || (classic === null &&
+          (!helper.setEditableValue(targetTextarea, nextTargetValue) || !helper.setEditableValue(textarea, nextCurrentValue)))) return false;
 
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(0, 0);
@@ -144,12 +148,11 @@ export function registerTextMove(helper: any) {
 
     const nextCurrentValue = currentValue.slice(0, splitIndex).replace(/\s+$/, '');
     const nextTargetValue = helper.joinSegmentText(movedText, targetValue);
-    if (!helper.setEditableValue(textarea, nextCurrentValue)) {
-      return false;
-    }
-    if (!helper.setEditableValue(targetTextarea, nextTargetValue)) {
-      return false;
-    }
+    const classic = replaceClassicEditorValues([
+      { control: textarea, text: nextCurrentValue }, { control: targetTextarea, text: nextTargetValue }
+    ]);
+    if (classic === false || (classic === null &&
+        (!helper.setEditableValue(textarea, nextCurrentValue) || !helper.setEditableValue(targetTextarea, nextTargetValue)))) return false;
 
     const caret = nextCurrentValue.length;
     textarea.focus({ preventScroll: true });

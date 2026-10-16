@@ -1,6 +1,7 @@
 import { createEditorHooks } from '../core/editor-hooks';
 import { isTextControl } from '../hooks/selected-number-to-skaz';
 import { getEditorControlFromTarget } from '../site/editor-control';
+import { BABEL_ROW_EDITOR_SELECTOR } from '../core/babel-editor-contract';
 import { registerTimelineInput } from './timeline-selection-feature';
 import { registerPlaybackSpeedInput } from './playback-speed-hotkeys';
 import { registerGhostCursorInput } from './ghost-cursor';
@@ -102,7 +103,7 @@ export function createEditorInput(helper: any) {
         if ((event.key === 'PageDown' || event.key === 'PageUp') &&
             !event.altKey && !event.ctrlKey && !event.metaKey &&
             editor && editor.element === document.activeElement &&
-            editor.element?.matches('[data-slate-editor="true"]') &&
+            editor.element?.matches(BABEL_ROW_EDITOR_SELECTOR) &&
             editor.pageSelection(event.key === 'PageDown' ? 'down' : 'up', event.shiftKey)) {
           // Own only focused native paging: browser default reveals every
           // scroll ancestor, while this command moves the caret and transcript.
@@ -112,7 +113,7 @@ export function createEditorInput(helper: any) {
         }
         if (event.code === 'KeyA' && (event.ctrlKey !== event.metaKey) &&
             !event.altKey && !event.shiftKey && editor && editor.element === document.activeElement &&
-            editor.element?.matches('[data-slate-editor="true"]')) {
+            editor.element?.matches(BABEL_ROW_EDITOR_SELECTOR)) {
           // Select-all is an explicit native command, not a delayed DOM range
           // notification. Commit its known range before native render effects.
           if (editor.selectAll()) {
@@ -138,9 +139,10 @@ export function createEditorInput(helper: any) {
       if (composing || !helper.runtime.isSessionInteractive()) return;
       const active = document.activeElement;
       if (!(active instanceof HTMLElement) || !active.isConnected ||
-          !active.matches('[data-slate-editor="true"]')) return;
+          !active.matches(BABEL_ROW_EDITOR_SELECTOR)) return;
       const selection = document.getSelection();
-      if (!selection || !active.contains(selection.anchorNode) || !active.contains(selection.focusNode)) return;
+      if (!(active instanceof HTMLTextAreaElement) &&
+          (!selection || !active.contains(selection.anchorNode) || !active.contains(selection.focusNode))) return;
       // Native Slate throttles selectionchange. Its next render must not
       // overwrite a newer browser selection before keydown/beforeinput arrives.
       getEditorControlFromTarget(active)?.synchronizeSelection('selectionchange');

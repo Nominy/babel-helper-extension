@@ -2,6 +2,7 @@ import type { FeatureContext, FeatureModule } from '../core/types';
 import { NATIVE_COMPATIBILITY_CHANGE_EVENT, NATIVE_FIND_REPLACE_ATTRIBUTE } from '../core/native-compatibility';
 import { REPLACEMENT_MESSAGE_TYPE, parseReplacementRules } from '../core/replacement-rules';
 import type { NativeFindReplaceClient } from '../services/native-find-replace-client';
+import { BABEL_ROW_EDITOR_SELECTOR } from '../core/babel-editor-contract';
 
 interface ReplacementHelper extends NativeFindReplaceClient {
   state: { nativeSessionAdmission?: object | null };
@@ -36,7 +37,7 @@ export function createNativeFindReplaceFeature(): FeatureModule {
     const rules = message.operation === 'run'
       ? parseReplacementRules('rules' in message ? message.rules : undefined) : null;
     const admission = helper.state.nativeSessionAdmission;
-    const editor = document.activeElement?.closest<HTMLElement>('[data-slate-editor="true"]');
+    const editor = document.activeElement?.closest<HTMLElement>(BABEL_ROW_EDITOR_SELECTOR);
     // The Chrome popup need not blur the focused DOM element. Use Babel's own
     // blur handler, then let its queued React commit finish before the request.
     editor?.blur();

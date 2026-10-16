@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Babel Audio Workflow Helper",
-  "version": "1.0.292",
+  "version": "1.0.293",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmxsLRQOopVVeywQE+XrqSmAmAVKApBpWml8FbSQ8+67WUAAR2xSaV2s96Cw6VAJYlRjD6clnNIB9+CKFnK96AziVmdLbkJ6unwbkuTijKW0CPfwYWRBIQfgPexlWkhO4j2WsbMede1n2ZlA64A6+YtsToN3rJUcSdLOBu0MCT4SMpP4+PjU5Sr2TU9JI4wV+tgjzZ9VRpIyjsJ2A81GIPwYYTKX+goGuFwwgZP4NSYiMuL7t7ciZAuMN0CfByt+pjAlOYUn1BzDgv4y+RDClAmVmjDPemIMxxHzIfsMTK7QiKZlbHAQnkKXGUq7kPkwtjDX5I1UG2z/EgQ79062jFQIDAQAB",
   "description": "Workflow shortcuts and quick actions for the Babel Audio transcription dashboard.",
   "icons": {
@@ -10,8 +10,15 @@
     "128": "icons/icon128.png"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "scripting"
   ],
+  "host_permissions": [
+    "https://dashboard.babel.audio/*"
+  ],
+  "background": {
+    "service_worker": "dist/background/editor-mode.js"
+  },
   "action": {
     "default_title": "Babel Helper — Replacement rules",
     "default_popup": "popup.html",
@@ -62,7 +69,8 @@
         "dist/content/timestamp-bridge.js",
         "dist/content/linter-bridge.js",
         "dist/content/quick-region-autocomplete-bridge.js",
-        "dist/content/waveform-theme-bridge.js"
+        "dist/content/waveform-theme-bridge.js",
+        "dist/classic/*"
       ],
       "matches": [
         "https://dashboard.babel.audio/*"

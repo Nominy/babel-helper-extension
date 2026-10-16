@@ -6,6 +6,7 @@ import { hasL0SegmentBrokerCapability } from './segment-transcription/request';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
 import { parseTimeValue } from '../hooks/parsing';
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { replaceClassicEditorValues } from '../site/editor-control';
 
 export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules, 'site' | 'progress' | 'loop' | 'trim' | 'split'>) {
   // Native WaveSurfer line renderer (extracted module 99407):
@@ -760,6 +761,8 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
       };
     }
 
+    const classic = group.segments.some(segment => segment.row?.getAttribute('data-babel-classic-row') === 'true');
+    const classicChanges = [];
     let changedCount = 0;
     for (let index = 0; index < group.segments.length; index += 1) {
       const segment = group.segments[index];
@@ -778,10 +781,18 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         continue;
       }
 
+      if (classic) {
+        classicChanges.push({ control: editor, text: allocation.text });
+        continue;
+      }
       if (!helper.setEditableValue(editor, allocation.text)) {
         return { ok: false, reason: 'text-write-failed', changedCount };
       }
       changedCount += 1;
+    }
+    if (classicChanges.length) {
+      if (!replaceClassicEditorValues(classicChanges)) return { ok: false, reason: 'text-write-failed', changedCount: 0 };
+      changedCount = classicChanges.length;
     }
 
     return {

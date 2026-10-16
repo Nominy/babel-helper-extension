@@ -39,7 +39,10 @@ class ElementFixture {
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   removeAttribute(name) { this.attributes.delete(name); }
   matches(selector) {
-    return this.tagName === 'section' ? selector === 'section[data-annotation-id]' : Boolean(this.editor && selector.includes('data-slate-editor'));
+    return this.tagName === 'section' ? selector.includes('section[data-annotation-id]')
+      : this.tagName === 'tr' ? selector.includes('[data-babel-classic-row="true"]') &&
+        this.getAttribute('data-babel-classic-row') === 'true'
+      : Boolean(this.editor && selector.includes('data-slate-editor'));
   }
   closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) ?? null; }
   querySelector() { return this.nativeElement ?? null; }
@@ -92,6 +95,7 @@ function harness(t) {
       const request = JSON.parse(event.detail);
       row.calls.push(request);
       const ok = (!request.reviewActionId || request.reviewActionId === row.state.reviewActionId) &&
+        (request.processedRecordingId === undefined || request.processedRecordingId === row.state.processedRecordingId) &&
         (['read', 'identity', 'caretRect'].includes(request.operation) || !row.state.readOnly);
       if (ok && request.operation === 'replace') {
         row.state.text = request.text;
@@ -1021,4 +1025,21 @@ test('same-URL native task admission reaches playback consumers before onLoaded 
   h.helper.runtime.disposeLifecycle('test-dispose');
   assert.equal(h.helper.state.nativeSessionAdmission, null);
   assert.deepEqual(retired, ['task-one', 'task-two']);
+});
+
+test('marked Classic rows use native ownership, selection direction and recording guards', t => {
+  const h = harness(t), row = h.turn('classic draft');
+  row.tagName = 'tr';
+  assert.equal(api.getEditorControl(row), null, 'a random table row is not a native editor');
+  row.setAttribute('data-babel-classic-row', 'true');
+  row.nativeElement.tagName = 'textarea';
+  const input = api.getEditorControl(row);
+  assert.ok(input);
+  assert.equal(input.replaceValue('updated draft', { start: 2, end: 7, direction: 'backward' }), true);
+  assert.deepEqual([input.value, input.selectionStart, input.selectionEnd, input.selectionDirection],
+    ['updated draft', 2, 7, 'backward']);
+  assert.equal(row.calls.at(-1).processedRecordingId, 'speaker-one');
+  row.state.processedRecordingId = 'speaker-two';
+  assert.equal(input.replaceValue('stale lane'), false);
+  assert.equal(row.state.text, 'updated draft');
 });

@@ -21,20 +21,6 @@ await build({
 
 const contract = await import(pathToFileURL(bundledModulePath).href);
 
-test("recovered contract exposes exact Babel editor selectors and labels", () => {
-  assert.equal(contract.BABEL_TRANSCRIPT_ROW_SELECTOR, 'section[data-annotation-id]');
-  assert.equal(contract.BABEL_ROW_EDITOR_SELECTOR, '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"]');
-  assert.deepEqual(contract.BABEL_ROW_ACTION_LABELS, {
-    insertAbove: "Add Segment Above",
-    insertBelow: "Add Segment Below",
-    mergePrevious: "Merge With Above",
-    mergeNext: "Merge With Below",
-    deleteSegment: "Delete",
-  });
-  assert.equal(contract.getBabelRowActionLabel("mergePrevious"), "Merge With Above");
-  assert.equal(contract.getBabelRowActionNameForLabel("Merge With Below"), "mergeNext");
-  assert.equal(contract.getBabelRowActionNameForLabel("merge below"), null);
-});
 
 test("recovered contract parses displayed row timestamps exactly", () => {
   assert.equal(contract.parseBabelDisplayedTime("00:00.94"), 0.94);

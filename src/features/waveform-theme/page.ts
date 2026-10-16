@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { findBabelEditorFiber, readBabelPlaybackBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
+import { findBabelEditorFiber, readBabelPlaybackBindings, subscribeBabelEditorCommits, readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
+import { getActiveEditorMode } from '../../core/editor-mode';
 // Wavesurfer paints the waveform into a canvas and the regions plugin writes its colours as
 // inline styles inside a shadow root, so neither can be themed from a page stylesheet. This
 // page-world bridge reads the workbench's native WaveSurfer registry and drives only its
@@ -482,6 +483,19 @@ import { findBabelEditorFiber, readBabelPlaybackBindings, subscribeBabelEditorCo
       stamped.add(cell);
       if (row) stamped.add(row);
       stampElements(speakerCellStamps, [cell, row], {
+        [LANE_INDEX_ATTRIBUTE]: String(lane.laneIndex),
+        [LANE_SLOT_ATTRIBUTE]: String(lane.slotIndex),
+        [LANE_LABEL_ATTRIBUTE]: lane.label
+      });
+    }
+    if (getActiveEditorMode() === 'classic') for (const row of document.querySelectorAll('[data-babel-classic-row="true"][data-annotation-id]')) {
+      const identity = readBabelTurnIdentity(row.getAttribute('data-annotation-id'));
+      const lane = identity && laneByTrackId[identity.processedRecordingId];
+      if (!lane) continue;
+      const cell = row.querySelector('[data-babel-classic-speaker="true"]');
+      stamped.add(row);
+      if (cell) stamped.add(cell);
+      stampElements(speakerCellStamps, [row, cell], {
         [LANE_INDEX_ATTRIBUTE]: String(lane.laneIndex),
         [LANE_SLOT_ATTRIBUTE]: String(lane.slotIndex),
         [LANE_LABEL_ATTRIBUTE]: lane.label

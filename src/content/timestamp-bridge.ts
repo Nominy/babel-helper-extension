@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { readBabelTranscriptBindings, subscribeBabelEditorCommits } from '@nominy/babel-babel-runtime';
+import { readBabelTranscriptBindings, subscribeBabelEditorCommits, flushBabelClassicInputs } from '@nominy/babel-babel-runtime';
 import { parseTimeValue } from '../hooks/parsing';
 import { invokeNativeSameLaneMerge } from './native-merge-policy';
 
@@ -218,6 +218,7 @@ export function initTimestampBridge() {
     const expected = annotations.map(turn => ({
       id: turn.id, committedText: turn.content ?? '', text: context.binding.pendingTextById?.[turn.id] ?? turn.content ?? ''
     }));
+    if (!flushBabelClassicInputs()) return failure(context.backend, 'native-input-pending');
     let changed = false;
     const result = await settle(context, latest => {
       const byId = new Map(latest.annotations.map(turn => [turn.id, turn]));

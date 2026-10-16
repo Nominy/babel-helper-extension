@@ -3,7 +3,7 @@ import { BABEL_ROW_EDITOR_SELECTOR, BABEL_TRANSCRIPT_ROW_SELECTOR } from '../cor
 const REQUEST_EVENT = 'babel-helper:editor-control';
 const RESULT_ATTRIBUTE = 'data-babel-helper-editor-result';
 let requestId = 0;
-const controls = new WeakMap<HTMLElement, { control: EditorControl; reviewActionId: string }>();
+const controls = new WeakMap<HTMLElement, { control: EditorControl; reviewActionId: string; processedRecordingId: string | null }>();
 const EDITOR_CONTROL_BRAND = Symbol.for('babel-helper.native-editor-control');
 
 export type NativeEditorState = {
@@ -81,11 +81,13 @@ export class EditorControl {
   private readonly annotationId: string;
   private readonly routeKey: string;
   private readonly reviewActionId: string;
+  private readonly processedRecordingId: string | null;
 
   constructor(readonly row: HTMLElement, state: NativeTurnIdentity | null = readTurnIdentity(row)) {
     this.annotationId = row.dataset.annotationId || '';
     this.routeKey = row.ownerDocument.location?.href || '';
     this.reviewActionId = state?.reviewActionId || '';
+    this.processedRecordingId = state?.processedRecordingId ?? null;
   }
 
   get element(): HTMLElement | null {
@@ -96,7 +98,9 @@ export class EditorControl {
       (this.row.ownerDocument.location?.href || '') === this.routeKey;
   }
   private invoke(operation: string, payload: Record<string, unknown> = {}) {
-    return this.isConnected ? request(this.row, operation, { reviewActionId: this.reviewActionId, ...payload }) : null;
+    return this.isConnected ? request(this.row, operation, {
+      reviewActionId: this.reviewActionId, processedRecordingId: this.processedRecordingId, ...payload
+    }) : null;
   }
   get state(): NativeEditorState | null { return this.invoke('read'); }
   get value(): string { return this.state?.text ?? ''; }
@@ -147,13 +151,15 @@ export function isEditorControl(value: unknown): value is EditorControl {
 }
 
 export function getEditorControl(row: HTMLElement): EditorControl | null {
-  if (!row?.matches(BABEL_TRANSCRIPT_ROW_SELECTOR) || !row.querySelector(BABEL_ROW_EDITOR_SELECTOR)) return null;
+  if (!row?.matches(BABEL_TRANSCRIPT_ROW_SELECTOR) ||
+      (!row.querySelector(BABEL_ROW_EDITOR_SELECTOR) && row.getAttribute('data-babel-classic-row') !== 'true')) return null;
   const state = readTurnIdentity(row);
   if (!state || state.readOnly) return null;
   const cached = controls.get(row);
-  if (cached?.control.isConnected && cached.reviewActionId === state.reviewActionId) return cached.control;
+  if (cached?.control.isConnected && cached.reviewActionId === state.reviewActionId &&
+      cached.processedRecordingId === (state.processedRecordingId ?? null)) return cached.control;
   const control = new EditorControl(row, state);
-  controls.set(row, { control, reviewActionId: state.reviewActionId || '' });
+  controls.set(row, { control, reviewActionId: state.reviewActionId || '', processedRecordingId: state.processedRecordingId ?? null });
   return control;
 }
 
@@ -162,4 +168,20 @@ export function getEditorControlFromTarget(target: EventTarget | null): EditorCo
   const element = target.closest(BABEL_ROW_EDITOR_SELECTOR);
   const row = element?.closest<HTMLElement>(BABEL_TRANSCRIPT_ROW_SELECTOR);
   return row ? getEditorControl(row) : null;
+}
+
+/** null leaves modern callers on their existing path; Classic is one native transaction. */
+export function replaceClassicEditorValues(changes: readonly { control: EditorControl; text: string }[]): boolean | null {
+  if (!changes.some(change => change.control.row?.getAttribute('data-babel-classic-row') === 'true')) return null;
+  const sources = [];
+  let task = '';
+  for (const { control, text } of changes) {
+    if (!control.isConnected || control.row.getAttribute('data-babel-classic-row') !== 'true') return false;
+    const state = control.state;
+    if (!state || state.readOnly || !state.reviewActionId || (task && task !== state.reviewActionId)) return false;
+    task = state.reviewActionId;
+    sources.push({ annotationId: state.annotationId, processedRecordingId: state.processedRecordingId,
+      startSeconds: state.startSeconds, endSeconds: state.endSeconds, before: state.text, text });
+  }
+  return Boolean(request(changes[0].control.row, 'replaceMany', { reviewActionId: task, changes: sources }));
 }

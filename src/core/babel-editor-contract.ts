@@ -1,7 +1,7 @@
 export const BABEL_EDITOR_CONTRACT_VERSION = 'native-59327-2026-10-15';
 
-export const BABEL_TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id]';
-export const BABEL_ROW_EDITOR_SELECTOR = '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"]';
+export const BABEL_TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id], [data-babel-classic-row="true"][data-annotation-id]';
+export const BABEL_ROW_EDITOR_SELECTOR = '[role="textbox"][aria-label="Edit turn text"], [data-slate-editor="true"], textarea[data-babel-classic-input="true"]';
 
 export const BABEL_ACTIVE_ROW_CLASS_TOKENS = [
   'border-orange-300',

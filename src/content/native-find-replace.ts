@@ -1,8 +1,8 @@
 import {
-  findBabelEditorFiber, readBabelTranscriptBindings,
+  findBabelEditorFiber, readBabelTranscriptBindings, readBabelClassicInput,
   type BabelNativeAnnotation, type BabelNativeTranscriptBindings
 } from '@nominy/babel-babel-runtime';
-import { findNativeDescendant, findNativeTurnFiber, getNativeSlateEditor, serializeNativeSlate } from './native-transcript';
+import { findNativeDescendant, findNativeTurnFiber, getNativeSlateEditor, serializeNativeSlate, TRANSCRIPT_EDITOR_SELECTOR } from './native-transcript';
 import { resolveNativeAnnotationTransaction } from './native-annotation-transaction';
 import {
   compileReplacementRules, replaceTextWithRules,
@@ -10,7 +10,7 @@ import {
 } from '../core/replacement-rules';
 
 interface NativeRoot { alternate?: unknown }
-interface NativeFiber { stateNode?: unknown; memoizedProps?: { readOnly?: boolean; editor?: NativeSlateEditor } }
+interface NativeFiber { stateNode?: unknown; memoizedProps?: { readOnly?: boolean; editor?: NativeSlateEditor; 'data-babel-classic-row'?: string } }
 interface NativeSlateEditor {
   isComposing?: boolean;
   children: { children?: { text?: string; raw?: string }[] }[];
@@ -59,14 +59,14 @@ export function invalidateNativeReplacementSession(): void {
 export function installNativeReplacementTracking(): () => void {
   disposeTracking?.();
   const start = (event: Event) => {
-    const target = event.target instanceof Element ? event.target.closest('[data-slate-editor="true"]') : null;
+    const target = event.target instanceof Element ? event.target.closest(TRANSCRIPT_EDITOR_SELECTOR) : null;
     const root = findBabelEditorFiber();
     if (target && root && findNativeDescendant(root, (fiber: NativeFiber) => fiber.stateNode === target)) {
       composingTargets.add(target);
     }
   };
   const end = (event: Event) => {
-    const target = event.target instanceof Element ? event.target.closest('[data-slate-editor="true"]') : null;
+    const target = event.target instanceof Element ? event.target.closest(TRANSCRIPT_EDITOR_SELECTOR) : null;
     if (target) composingTargets.delete(target);
   };
   window.addEventListener('compositionstart', start, true);
@@ -133,6 +133,16 @@ function readSource(annotation: BabelNativeAnnotation, binding: BabelNativeTrans
   const model = annotation.content === null ? '' : annotation.content;
   if (typeof model !== 'string') throw new Error('native-find-replace-text-unavailable');
   const turn: NativeFiber | null = findNativeTurnFiber(annotation.id);
+  const classic = readBabelClassicInput(annotation.id);
+  if (classic) {
+    const state = classic.input.read();
+    if (classic.readOnly) throw new Error('native-find-replace-turn-read-only');
+    if (state.composing) throw new Error('native-find-replace-composition-active');
+    return { model, live: state.text, pending: state.text !== model, turn };
+  }
+  if (findNativeDescendant(turn, (fiber: NativeFiber) => fiber.memoizedProps?.['data-babel-classic-row'] === 'true')) {
+    throw new Error('native-find-replace-classic-input-unavailable');
+  }
   const editor: NativeSlateEditor | null = getNativeSlateEditor(annotation.id);
   if (editor?.isComposing === true) throw new Error('native-find-replace-composition-active');
   let slate = model;
@@ -153,7 +163,7 @@ function readSource(annotation: BabelNativeAnnotation, binding: BabelNativeTrans
 function requireCommittedSource(source: NativeSource): void {
   if (source.turn?.memoizedProps?.readOnly) throw new Error('native-find-replace-turn-read-only');
   if (source.pending || source.live !== source.model) throw new Error('native-find-replace-pending-text-requires-blur');
-  const active = document.activeElement?.closest('[data-slate-editor="true"]');
+  const active = document.activeElement?.closest(TRANSCRIPT_EDITOR_SELECTOR);
   if (active && source.turn && findNativeDescendant(source.turn, (fiber: NativeFiber) => fiber.stateNode === active)) {
     throw new Error('native-find-replace-pending-text-requires-blur');
   }

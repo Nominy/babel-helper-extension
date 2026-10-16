@@ -1,7 +1,7 @@
-import { readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
+import { readBabelTurnIdentity, readBabelClassicInput } from '@nominy/babel-babel-runtime';
 import { TAG_DROPDOWN_KEYBOARD_ATTRIBUTE } from '../features/native-tag-dropdown-keyboard-feature';
 import {
-  findNativeDescendant, findNativeTurnFiber, readNativeSlateSelection, TRANSCRIPT_ROW_SELECTOR
+  findNativeDescendant, findNativeTurnFiber, readNativeSlateSelection, TRANSCRIPT_ROW_SELECTOR, TRANSCRIPT_EDITOR_SELECTOR
 } from './native-transcript';
 
 interface WrapState {
@@ -102,12 +102,36 @@ export function handleNativeTagDropdownKeydown(event: KeyboardEvent): void {
       document.documentElement.getAttribute(TAG_DROPDOWN_KEYBOARD_ATTRIBUTE) !== 'true') return;
 
   const target = event.target instanceof Element ? event.target : null;
-  const editable = target?.closest('[data-slate-editor="true"]');
+  const editable = target?.closest(TRANSCRIPT_EDITOR_SELECTOR);
   const row = editable?.closest(TRANSCRIPT_ROW_SELECTOR);
   const annotationId = row?.getAttribute('data-annotation-id');
   if (!editable?.isConnected || !annotationId) return;
   const identity = readBabelTurnIdentity(annotationId);
   if (!identity || identity.readOnly) return;
+  const classic = readBabelClassicInput(annotationId);
+  if (classic) {
+    const picker = classic.input.autocomplete;
+    const state = picker?.state;
+    if (!picker || classic.readOnly || classic.input.read().composing || !state?.isOpen || !state.suggestions.length) return;
+    const options = state.suggestions;
+    if (event.key === 'Enter') {
+      const selected = options[state.highlightedIndex];
+      if (!selected || selected.type === 'group') return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      picker.selectSuggestion(state.highlightedIndex);
+    } else {
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      let index = state.highlightedIndex;
+      for (let count = 0; count < options.length; count++) {
+        index = (index + step + options.length) % options.length;
+        if (options[index].type !== 'group') break;
+      }
+      event.preventDefault(); event.stopImmediatePropagation();
+      picker.setHighlightedIndex(index);
+      // Captured nL owns selected-option scrolling in its highlight effect.
+    }
+    return;
+  }
 
   const turn = findNativeTurnFiber(annotationId);
   // Resolve only the committed editor owning this DOM target, never an old task's picker.

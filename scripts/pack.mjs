@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Build a Chrome Web Store–ready ZIP, or package existing bundles with --no-build.
- * Includes manifest.json, options.html, popup.html, icons, and dist JS/CSS (not source maps).
+ * Includes manifest.json, options.html, popup.html, icons, and dist JS/CSS/fonts (not source maps).
  */
 
 import { readFileSync } from 'node:fs';
@@ -37,7 +37,7 @@ await packExtension({
     }
 
     for (const entry of collectFiles(join(ROOT, 'dist'), 'dist')) {
-      if (entry.full.endsWith('.js') || entry.full.endsWith('.css')) {
+      if (/\.(?:js|css|woff2?|ttf|otf)$/.test(entry.full)) {
         files.push(entry);
       }
     }

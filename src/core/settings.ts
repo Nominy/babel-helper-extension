@@ -1,6 +1,9 @@
 import { FEATURE_REGISTRATIONS } from '../features/registry';
 import { DEFAULT_HIGHLIGHTED_WORDS, normalizeHighlightedWords } from './highlighted-words';
 import { normalizeShortcutSettings, type ShortcutSettings } from './shortcuts';
+import { normalizeEditorMode, SETTINGS_STORAGE_KEY, type EditorMode } from './editor-mode';
+
+export { SETTINGS_STORAGE_KEY } from './editor-mode';
 
 export type FeatureSettingKey = (typeof FEATURE_REGISTRATIONS)[number]['setting']['key'];
 export type FeatureSettings = Record<FeatureSettingKey, boolean>;
@@ -66,6 +69,7 @@ export interface WebsiteAppearanceSettings {
 }
 
 export interface ExtensionSettings {
+  editorMode: EditorMode;
   features: FeatureSettings;
   shortcuts: ShortcutSettings;
   highlightedWordsEnabled: boolean;
@@ -117,7 +121,6 @@ export interface FeatureSettingMeta {
   description: string;
 }
 
-export const SETTINGS_STORAGE_KEY = 'settings';
 export const CUSTOM_LINTER_DEFAULTS_VERSION = 1;
 
 const DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS = [
@@ -297,6 +300,7 @@ function buildFeatureMeta(): Record<FeatureSettingKey, FeatureSettingMeta> {
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = buildFeatureSettings();
 
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
+  editorMode: 'native',
   features: DEFAULT_FEATURE_SETTINGS,
   shortcuts: {},
   highlightedWordsEnabled: true,
@@ -974,6 +978,7 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
   }
 
   return {
+    editorMode: normalizeEditorMode(incoming.editorMode),
     features,
     shortcuts: normalizeShortcutSettings(incoming.shortcuts),
     highlightedWordsEnabled:

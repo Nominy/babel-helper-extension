@@ -41,7 +41,7 @@ function isTranscript(props) {
 }
 
 /** These facades belong to one executing native factory, never the shared modules. */
-export function createNativeEditorAdapter(report = () => {}) {
+export function createNativeEditorAdapter(report: (status: { boundary: string; state: string; reason?: string }) => void = () => {}) {
   const reported = new Set(), imports = new WeakMap(), components = new WeakMap(), editables = new WeakMap();
   const bridges = new WeakMap(), liveBridges = new Set();
   let React, scope = null, released = false;

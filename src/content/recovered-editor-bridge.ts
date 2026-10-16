@@ -1,9 +1,9 @@
 // @ts-nocheck
-import { findBabelEditorFiber, subscribeBabelEditorCommits, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity } from '@nominy/babel-babel-runtime';
+import { findBabelEditorFiber, subscribeBabelEditorCommits, readBabelTranscriptBindings, readBabelTrackBindings, readBabelPlaybackBindings, readBabelSessionState, readBabelTurnIdentity, readBabelClassicInput, flushBabelClassicInputs } from '@nominy/babel-babel-runtime';
 import { BABEL_EDITOR_CONTRACT_VERSION } from '../core/babel-editor-contract';
 import {
-  findNativeDescendant, findNativeTurnFiber, readNativeTurn, readNativeSlateSelection, replaceNativeTurn, selectNativeSlate, nativeDomPointOffset,
-  TRANSCRIPT_ROW_SELECTOR
+  findNativeDescendant, findNativeTurnFiber, readNativeTurn, readNativeSlateSelection, replaceNativeTurn, replaceClassicTurns, selectNativeSlate, nativeDomPointOffset,
+  TRANSCRIPT_ROW_SELECTOR, TRANSCRIPT_EDITOR_SELECTOR
 } from './native-transcript';
 import { SEGMENT_CLICK_SEEK_ATTRIBUTE } from '../features/native-segment-click-seek-feature';
 import { handleNativeTagDropdownKeydown } from './native-tag-dropdown-keyboard';
@@ -1141,6 +1141,53 @@ export function initRecoveredEditorBridge() {
     }
     const responseRow = event.target instanceof Element ? event.target.closest(TRANSCRIPT_ROW_SELECTOR) : null;
     if (!responseRow) return;
+    if (responseRow.getAttribute('data-babel-classic-row') === 'true') {
+      const annotationId = responseRow.getAttribute('data-annotation-id');
+      let owned = readBabelClassicInput(annotationId);
+      let identity = readBabelTurnIdentity(annotationId);
+      let ok = Boolean(owned && owned.row === responseRow && identity && annotationId === request.annotationId &&
+        (!request.reviewActionId || request.reviewActionId === identity.reviewActionId) &&
+        (request.processedRecordingId === undefined || request.processedRecordingId === identity.processedRecordingId));
+      const operation = request.operation;
+      const read = ['read', 'identity', 'caretRect', 'offsetAtPoint'].includes(operation);
+      if (!read && owned?.readOnly) ok = false;
+      let rect = null, offset = null, reason = ok ? undefined : 'stale-or-read-only-classic-input';
+      try {
+        if (ok && (operation === 'focus' || operation === 'replace' || (operation === 'select' && request.activateRow))) {
+          ok = flushBabelClassicInputs();
+          owned = readBabelClassicInput(annotationId);
+          ok = Boolean(ok && owned && owned.row === responseRow && !owned.readOnly);
+        }
+        if (ok) {
+          const input = owned.input, state = input.read();
+          const start = request.selectAll ? 0 : Number(request.start ?? state.start);
+          const end = request.selectAll ? state.text.length : Number(request.end ?? start);
+          if (operation === 'focus' || operation === 'select') {
+            ok = input.select(start, end, request.direction || 'none', operation === 'focus' || request.activateRow === true);
+          } else if (operation === 'replace') ok = input.replace(request.text, request);
+          else if (operation === 'replaceMany') ok = replaceClassicTurns(request);
+          else if (operation === 'pageSelection') ok = input.page(request.direction, request.extend === true);
+          else if (operation === 'caretRect') { rect = input.rects(start)[0] || null; ok = Boolean(rect); }
+          else if (operation === 'offsetAtPoint') { offset = input.offsetAtPoint(request.x, request.y); ok = offset !== null; }
+          else if (!['read', 'identity', 'syncSelection'].includes(operation)) ok = false;
+        }
+      } catch (error) {
+        ok = false;
+        reason = error instanceof Error ? error.message : String(error);
+        showNativeAutomationFailure('Classic native text editing', reason);
+      }
+      owned = readBabelClassicInput(annotationId);
+      identity = readBabelTurnIdentity(annotationId);
+      const latest = owned?.input.read();
+      responseRow.setAttribute('data-babel-helper-editor-result', JSON.stringify({
+        ...identity, id: request.id, ok: Boolean(ok && owned && identity), reason,
+        text: latest?.text ?? '', start: offset ?? latest?.start ?? 0, end: offset ?? latest?.end ?? 0,
+        direction: offset === null ? latest?.direction ?? 'none' : 'none', readOnly: owned?.readOnly ?? true,
+        ...(rect ? { rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+          bottom: rect.bottom, right: rect.right } } : {})
+      }));
+      return;
+    }
     if (request.operation === 'identity') {
       const annotationId = responseRow.getAttribute('data-annotation-id');
       const identity = annotationId === request.annotationId ? readBabelTurnIdentity(annotationId) : null;
@@ -1156,7 +1203,8 @@ export function initRecoveredEditorBridge() {
     const taskId = binding?.reviewActionId;
     let state = binding && readNativeTurn(annotationId, binding);
     let ok = Boolean(state && annotationId === request.annotationId &&
-      (!request.reviewActionId || request.reviewActionId === binding.reviewActionId));
+      (!request.reviewActionId || request.reviewActionId === binding.reviewActionId) &&
+      (request.processedRecordingId === undefined || request.processedRecordingId === (state.annotation.processedRecordingId ?? null)));
     let reason = ok ? undefined : 'stale-task';
     const operation = request.operation;
     const selectAll = operation === 'select' && request.selectAll === true;
@@ -1169,7 +1217,7 @@ export function initRecoveredEditorBridge() {
     if (ok && activating) {
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && focused.isConnected &&
-          focused.matches('[data-slate-editor="true"]') &&
+          focused.matches(TRANSCRIPT_EDITOR_SELECTOR) &&
           focused.closest(TRANSCRIPT_ROW_SELECTOR) !== row) {
         // Native activation can replace the other turn before browser default
         // blur. Flush/blur while that editor's native DOM mapping still exists.

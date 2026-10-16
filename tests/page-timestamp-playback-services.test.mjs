@@ -286,7 +286,7 @@ function installNativeTranscriptModel(pageWindow, initial = []) {
   workbench.return = root; panel.return = workbench; panel.child = transcript; transcript.return = panel;
   const main = new FakeHTMLElement();
   main.__reactFiber$native = workbench;
-  pageWindow.document.querySelectorAll = selector => selector === 'section[data-annotation-id]' ? state.rows : [main];
+  pageWindow.document.querySelectorAll = selector => selector.includes('section[data-annotation-id]') ? state.rows : [main];
   function commit() {
     panel.memoizedProps.annotations = state.annotations;
     panel.memoizedProps.readOnly = state.readOnly;

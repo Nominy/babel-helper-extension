@@ -13,6 +13,7 @@ import {
   loadExtensionSettings,
   saveExtensionSettings
 } from '../core/settings';
+import { confirmEditorModeRegistration, normalizeEditorMode, type EditorMode } from '../core/editor-mode';
 import { formatHighlightedWordsForTextarea, normalizeHighlightedWords } from '../core/highlighted-words';
 import {
   SHORTCUT_ACTIONS,
@@ -353,8 +354,10 @@ function applySettingsToInputs(
   ruleInputs: RuleInputMap | undefined,
   highlightedWordsInput: HTMLTextAreaElement | undefined,
   highlightedWordsEnabledInput: HTMLInputElement | undefined,
-  ghostCursorInputs: GhostCursorInputMap
+  ghostCursorInputs: GhostCursorInputMap,
+  editorModeInput: HTMLSelectElement
 ) {
+  editorModeInput.value = settings.editorMode;
   for (const key of FEATURE_KEYS) {
     inputs[key].checked = Boolean(settings.features[key]);
   }
@@ -386,7 +389,8 @@ function readSettingsFromInputs(
   highlightedWordsEnabledInput: HTMLInputElement,
   ghostCursorInputs: GhostCursorInputMap,
   websiteAppearance: ExtensionSettings['websiteAppearance'],
-  shortcuts: ShortcutSettings
+  shortcuts: ShortcutSettings,
+  editorMode: EditorMode
 ): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
@@ -394,6 +398,7 @@ function readSettingsFromInputs(
   }
 
   return {
+    editorMode,
     features,
     highlightedWordsEnabled: highlightedWordsEnabledInput.checked,
     highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value),
@@ -440,6 +445,7 @@ async function loadAnalyticsData(): Promise<unknown> {
 async function boot() {
   const featureList = requireElement<HTMLElement>('[data-role="feature-list"]');
   const statusElement = requireElement<HTMLElement>('[data-role="status"]');
+  const editorModeInput = requireElement<HTMLSelectElement>('[data-role="editor-mode"]');
   const resetButton = requireElement<HTMLButtonElement>('[data-role="reset"]');
   const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
   const highlightedWordsEnabledInput = requireElement<HTMLInputElement>('[data-role="highlighted-words-enabled"]');
@@ -482,16 +488,22 @@ async function boot() {
       ruleInputs,
       highlightedWordsInput,
       highlightedWordsEnabledInput,
-      ghostCursorInputs
+      ghostCursorInputs,
+      editorModeInput
     );
     refreshGhostCursorShare(settings.ghostCursor);
-    setStatus(statusElement, loaded ? 'Loaded' : 'Could not load settings.');
-  } catch {
-    setStatus(statusElement, 'Could not load settings.');
+    if (!loaded) throw new Error('Could not load settings.');
+    await confirmEditorModeRegistration(settings.editorMode);
+    setStatus(statusElement, 'Loaded. Editor mode is confirmed for your next dashboard refresh.');
+  } catch (error) {
+    setStatus(statusElement, error instanceof Error ? error.message : 'Could not load settings.');
   }
 
   let saveQueue = Promise.resolve();
-  const save = (websiteAppearanceOverride?: ExtensionSettings['websiteAppearance']) => {
+  const save = (
+    websiteAppearanceOverride?: ExtensionSettings['websiteAppearance'],
+    editorModeOverride?: EditorMode
+  ) => {
     const formSettings = readSettingsFromInputs(
       inputs,
       ruleInputs,
@@ -499,7 +511,8 @@ async function boot() {
       highlightedWordsEnabledInput,
       ghostCursorInputs,
       retainedWebsiteAppearance,
-      shortcutEditor.getSettings()
+      shortcutEditor.getSettings(),
+      normalizeEditorMode(editorModeInput.value)
     );
     const run = async () => {
       setStatus(statusElement, 'Saving...');
@@ -511,6 +524,7 @@ async function boot() {
         retainedWebsiteAppearance = websiteAppearanceOverride ?? latest.settings.websiteAppearance;
         const persisted = await saveExtensionSettings({
           ...formSettings,
+          editorMode: editorModeOverride ?? latest.settings.editorMode,
           websiteAppearance: retainedWebsiteAppearance
         });
         retainedWebsiteAppearance = persisted.websiteAppearance;
@@ -520,12 +534,18 @@ async function boot() {
           ruleInputs,
           highlightedWordsInput,
           highlightedWordsEnabledInput,
-          ghostCursorInputs
+          ghostCursorInputs,
+          editorModeInput
         );
         refreshGhostCursorShare(persisted.ghostCursor);
-        setStatus(statusElement, 'Saved. Dashboard changes apply live.');
-      } catch {
-        setStatus(statusElement, 'Could not save settings.');
+        if (editorModeOverride !== undefined) {
+          await confirmEditorModeRegistration(persisted.editorMode);
+          setStatus(statusElement, 'Saved. Editor mode is ready for your next dashboard refresh. The current editor is unchanged; finish or save your work before refreshing.');
+        } else {
+          setStatus(statusElement, 'Saved. Other dashboard settings apply live; editor mode changes only on refresh.');
+        }
+      } catch (error) {
+        setStatus(statusElement, error instanceof Error ? error.message : 'Could not save settings.');
       }
     };
 
@@ -534,6 +554,10 @@ async function boot() {
   };
   const shortcutEditor = createShortcutEditor(() => { void save(); });
   shortcutEditor.setSettings(initialShortcuts);
+
+  editorModeInput.addEventListener('change', () => {
+    void save(undefined, normalizeEditorMode(editorModeInput.value));
+  });
 
   for (const key of FEATURE_KEYS) {
     inputs[key].addEventListener('change', () => {
@@ -581,9 +605,10 @@ async function boot() {
       ruleInputs,
       highlightedWordsInput,
       highlightedWordsEnabledInput,
-      ghostCursorInputs
+      ghostCursorInputs,
+      editorModeInput
     );
-    void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance);
+    void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance, DEFAULT_EXTENSION_SETTINGS.editorMode);
   });
 
   manageShortcutsButton.addEventListener('click', () => {

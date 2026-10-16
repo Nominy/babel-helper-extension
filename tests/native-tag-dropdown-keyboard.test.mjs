@@ -17,8 +17,8 @@ class ElementFixture {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   closest(selector) {
-    if ((this.kind === 'editor' && selector === '[data-slate-editor="true"]') ||
-        (this.kind === 'row' && selector === 'section[data-annotation-id]')) return this;
+    if ((this.kind === 'editor' && selector.includes('[data-slate-editor="true"]')) ||
+        (this.kind === 'row' && selector.includes('section[data-annotation-id]'))) return this;
     return this.parentElement?.closest(selector) ?? null;
   }
 }

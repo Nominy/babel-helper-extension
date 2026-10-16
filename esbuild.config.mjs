@@ -1,8 +1,9 @@
 import { watch as watchFileChanges } from 'node:fs';
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, context } from 'esbuild';
+import { buildClassicEditor } from './scripts/build-classic-editor.mjs';
 
 const watch = process.argv.includes('--watch');
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
@@ -11,6 +12,28 @@ const userscriptDeclarationSource = path.join(rootDir, 'src/userscript/babel-mod
 const userscriptDeclarationOutput = path.join(rootDir, 'dist/userscript/babel-mods.d.ts');
 const websiteAppearanceSource = path.join(rootDir, 'src/content/website-appearance.css');
 const websiteAppearanceOutput = path.join(rootDir, 'dist/content/website-appearance.css');
+const classicAssetsSource = path.join(rootDir, 'assets/classic');
+const classicAssetsOutput = path.join(rootDir, 'dist/classic');
+
+await buildClassicEditor();
+
+async function copyClassicAssets() {
+  await cp(classicAssetsSource, classicAssetsOutput, { recursive: true });
+}
+
+function watchClassicAssets() {
+  let pendingCopy = Promise.resolve();
+  const enqueueCopy = () => {
+    const copy = pendingCopy.then(copyClassicAssets);
+    pendingCopy = copy.then(
+      () => console.log('Copied Classic editor assets.'),
+      (error) => console.error('Failed to copy Classic editor assets:', error)
+    );
+    return copy;
+  };
+  watchFileChanges(classicAssetsSource, { recursive: true }, enqueueCopy);
+  return enqueueCopy;
+}
 
 async function copyUserscriptDeclaration() {
   await mkdir(path.dirname(userscriptDeclarationOutput), { recursive: true });
@@ -64,6 +87,16 @@ const tasks = [
     ...shared,
     entryPoints: ['src/content/native-performance-entry.ts'],
     outfile: 'dist/content/native-performance-entry.js'
+  },
+  {
+    ...shared,
+    entryPoints: ['src/content/classic-performance-entry.ts'],
+    outfile: 'dist/content/classic-performance-entry.js'
+  },
+  {
+    ...shared,
+    entryPoints: ['src/background/editor-mode.ts'],
+    outfile: 'dist/background/editor-mode.js'
   },
   {
     ...shared,
@@ -149,9 +182,10 @@ if (watch) {
   const contexts = await Promise.all(tasks.map((options) => context(options)));
   await Promise.all(contexts.map((ctx) => ctx.watch()));
   const enqueueWebsiteAppearanceCopy = watchWebsiteAppearanceStylesheet();
-  await Promise.all([copyUserscriptDeclaration(), enqueueWebsiteAppearanceCopy()]);
-  console.log('Watching extension bundles and website appearance stylesheet...');
+  const enqueueClassicAssetsCopy = watchClassicAssets();
+  await Promise.all([copyUserscriptDeclaration(), enqueueWebsiteAppearanceCopy(), enqueueClassicAssetsCopy()]);
+  console.log('Watching extension bundles, website appearance stylesheet and Classic editor assets...');
 } else {
   await Promise.all(tasks.map((options) => build(options)));
-  await Promise.all([copyUserscriptDeclaration(), copyWebsiteAppearanceStylesheet()]);
+  await Promise.all([copyUserscriptDeclaration(), copyWebsiteAppearanceStylesheet(), copyClassicAssets()]);
 }

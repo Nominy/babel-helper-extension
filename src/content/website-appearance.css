@@ -20,7 +20,7 @@
 /* Text group — native turn text and compact turn controls use separate sizes. */
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-text='enabled']
   :where([data-babel-helper-scope='transcript'])
-  :where([data-slate-editor='true'], [role='textbox'][aria-label='Edit turn text'], section[data-annotation-id] [data-offset]) {
+  :where([data-slate-editor='true'], [role='textbox'][aria-label='Edit turn text'], textarea[data-babel-classic-input='true'], section[data-annotation-id] [data-offset]) {
   font-size: var(--bh-text-size) !important;
   line-height: calc(4 / 3) !important;
 }
@@ -153,13 +153,13 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme=
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where([data-babel-helper-scope='transcript-turns'])
-  :where(section[data-annotation-id]:not(:hover):not(.border-orange-300)) {
+  :where(section[data-annotation-id]:not(:hover):not(.border-orange-300), [data-babel-classic-row='true']:not(:hover):not([data-babel-classic-active='true'])) {
   background-color: var(--bh-surface);
 }
 
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where([data-babel-helper-scope='transcript-turns'])
-  :where(section[data-annotation-id]:hover:not(.border-orange-300)) {
+  :where(section[data-annotation-id]:hover:not(.border-orange-300), [data-babel-classic-row='true']:hover:not([data-babel-classic-active='true'])) {
   background-color: var(--bh-surface-hover);
 }
 
@@ -184,7 +184,7 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme=
 }
 html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-theme='enabled']
   :where([data-babel-helper-scope='transcript-turns'])
-  :where(section[data-annotation-id].border-orange-300) {
+  :where(section[data-annotation-id].border-orange-300, [data-babel-classic-row='true'][data-babel-classic-active='true']) {
   background-color: var(--bh-active-row);
   color: var(--bh-active-row-text);
   --tw-ring-color: var(--bh-border);

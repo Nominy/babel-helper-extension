@@ -52,7 +52,7 @@ class ElementFixture {
   }
   matches(selector) {
     return selector === this.tagName ||
-      (selector === 'section[data-annotation-id]' && this.tagName === 'section' && Boolean(this.dataset.annotationId)) ||
+      (selector.includes('section[data-annotation-id]') && this.tagName === 'section' && Boolean(this.dataset.annotationId)) ||
       (selector.includes('[data-slate-editor') && this.getAttribute('data-slate-editor') === 'true');
   }
   getBoundingClientRect() {

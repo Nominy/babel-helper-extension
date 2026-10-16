@@ -6,6 +6,10 @@ const originalFactoryKey = Symbol.for('babel-helper/original-native-factory');
 export interface NativeRenderPerformanceOptions {
   windowRef?: Window & typeof globalThis;
   onStatus?: (status: { moduleId: number; boundary: string; state: string; reason?: string }) => void;
+  adapterFactory?: (report: (status: { boundary: string; state: string; reason?: string }) => void, nativeRequire: Function) => {
+    adaptImport(namespace: unknown, moduleId?: number | string): unknown;
+    release(): void;
+  };
 }
 
 /**
@@ -13,7 +17,7 @@ export interface NativeRenderPerformanceOptions {
  * editor's own imports receive scoped adapters. No eval or global React patches.
  * Public editor markers locate the factory independently of webpack module IDs.
  */
-export function installNativeRenderPerformance({ windowRef = window, onStatus = () => {} }: NativeRenderPerformanceOptions = {}) {
+export function installNativeRenderPerformance({ windowRef = window, onStatus = () => {}, adapterFactory = createNativeEditorAdapter }: NativeRenderPerformanceOptions = {}) {
   if (windowRef[leaseKey]) throw new Error('Native render performance already owns this document');
   const registrations = [];
   const adapters = new Set();
@@ -53,11 +57,11 @@ export function installNativeRenderPerformance({ windowRef = window, onStatus = 
             report(Number(id), { boundary: 'editor-imports', state: 'unsupported', reason: 'Native module loader is unavailable' });
             return original.call(this, module, exports, webpackRequire);
           }
-          const adapter = createNativeEditorAdapter(status => report(Number(id), status));
+          const adapter = adapterFactory(status => report(Number(id), status), webpackRequire);
           adapters.add(adapter);
           const scopedRequire = new Proxy(webpackRequire, {
             apply(target, receiver, args) {
-              return adapter.adaptImport(Reflect.apply(target, receiver, args));
+              return adapter.adaptImport(Reflect.apply(target, receiver, args), args[0]);
             }
           });
           report(Number(id), { boundary: 'editor-imports', state: 'installed' });

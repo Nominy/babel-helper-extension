@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { BABEL_TRANSCRIPT_ROW_SELECTOR } from '../core/babel-editor-contract';
+import { BABEL_TRANSCRIPT_ROW_SELECTOR, BABEL_ROW_EDITOR_SELECTOR } from '../core/babel-editor-contract';
 import { getEditorControlFromTarget } from '../site/editor-control';
 
 export function registerPlaybackRowTracking(helper: any) {
@@ -53,7 +53,7 @@ export function registerPlaybackRowTracking(helper: any) {
     if (row && row.querySelector(helper.config.rowEditorSelector)) {
       const active = document.activeElement;
       if (event.button === 0 && active instanceof HTMLElement && active.isConnected &&
-          active.matches('[data-slate-editor="true"]') &&
+          active.matches(BABEL_ROW_EDITOR_SELECTOR) &&
           active.closest(BABEL_TRANSCRIPT_ROW_SELECTOR) !== row) {
         // Native onMouseDown activates the next turn before the browser's
         // default blur. Flush the still-mounted Slate editor first.

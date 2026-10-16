@@ -1,8 +1,10 @@
 // @ts-nocheck
-import { findBabelEditorFiber, readBabelTranscriptBindings } from '@nominy/babel-babel-runtime';
+import { findBabelEditorFiber, readBabelTranscriptBindings, readBabelClassicInput, flushBabelClassicInputs } from '@nominy/babel-babel-runtime';
+import { BABEL_TRANSCRIPT_ROW_SELECTOR, BABEL_ROW_EDITOR_SELECTOR } from '../core/babel-editor-contract';
+import { resolveNativeAnnotationTransaction } from './native-annotation-transaction';
 
-export const TRANSCRIPT_ROW_SELECTOR = 'section[data-annotation-id]';
-export const TRANSCRIPT_EDITOR_SELECTOR = '[data-slate-editor="true"], [role="textbox"][aria-label="Edit turn text"]';
+export const TRANSCRIPT_ROW_SELECTOR = BABEL_TRANSCRIPT_ROW_SELECTOR;
+export const TRANSCRIPT_EDITOR_SELECTOR = BABEL_ROW_EDITOR_SELECTOR;
 
 // The exact native factory supplies its own slate-history module. Keep this
 // editor-local so independently emitted MAIN bundles share the same lease.
@@ -138,7 +140,21 @@ export function nativeDomPointOffset(row, node, offset, editor = null) {
 export function readNativeTurn(annotationId, bindings = readBabelTranscriptBindings()) {
   const annotation = bindings?.annotations.find(turn => turn.id === annotationId);
   if (!annotation) return null;
-  const editor = getNativeSlateEditor(annotationId);
+  const classic = readBabelClassicInput(annotationId);
+  if (classic) {
+    const value = classic.input.read();
+    return { annotation, editor: value.editor, classic: classic.input, text: value.text,
+      start: value.start, end: value.end, direction: value.direction,
+      isActive: bindings.transcript.activeIds?.has(annotationId) === true,
+      isEditing: bindings.transcript.editingId === annotationId, readOnly: classic.readOnly };
+  }
+  const host = findNativeDescendant(findNativeTurnFiber(annotationId), fiber => {
+    if (fiber.memoizedProps?.['data-babel-classic-row'] === 'true') return true;
+    const editor = fiber.memoizedProps?.editor;
+    return editor && Array.isArray(editor.children) && typeof editor.apply === 'function' && typeof editor.insertData === 'function';
+  });
+  if (host?.memoizedProps?.['data-babel-classic-row'] === 'true') return null;
+  const editor = host?.memoizedProps?.editor || null;
   const text = editor ? serializeNativeSlate(editor) : annotation.content || '';
   let anchor = editor ? rawOffset(editor, editor.selection?.anchor) : null;
   let focus = editor ? rawOffset(editor, editor.selection?.focus) : null;
@@ -167,6 +183,8 @@ export function replaceNativeTurn(annotationId, text, options = {}) {
       (options.reviewActionId && options.reviewActionId !== bindings.reviewActionId)) return false;
   const state = readNativeTurn(annotationId, bindings);
   if (!state || typeof text !== 'string') return false;
+  if (state.readOnly) return false;
+  if (state.classic) return state.classic.replace(text, options);
   if (state.text === text) return true;
   if (state.editor) {
     const history = state.editor[NATIVE_SLATE_HISTORY];
@@ -194,6 +212,55 @@ export function replaceNativeTurn(annotationId, text, options = {}) {
     const change = bindings.transcript.handlers.onChangeText;
     if (typeof change !== 'function') return false;
     change(annotationId, text);
+  }
+  return true;
+}
+
+/** Classic cross-row edits use one real native command, with no partial local writes. */
+export function replaceClassicTurns(request) {
+  if (!Array.isArray(request.changes) || !request.changes.length) return false;
+  const ids = new Set();
+  let first = null;
+  for (const change of request.changes) {
+    if (!change || typeof change.annotationId !== 'string' || ids.has(change.annotationId) ||
+        typeof change.text !== 'string' || typeof change.before !== 'string') return false;
+    ids.add(change.annotationId);
+    const owned = readBabelClassicInput(change.annotationId);
+    if (!owned || owned.readOnly || owned.input.reviewActionId !== request.reviewActionId ||
+        owned.annotation.type !== 'transcription' ||
+        owned.annotation.processedRecordingId !== change.processedRecordingId ||
+        owned.annotation.startTimeInSeconds !== change.startSeconds || owned.annotation.endTimeInSeconds !== change.endSeconds ||
+        owned.input.read().composing || owned.input.read().text !== change.before) return false;
+    first ||= owned.input;
+  }
+  if (!flushBabelClassicInputs()) return false;
+  const binding = readBabelTranscriptBindings(), root = findBabelEditorFiber();
+  if (!root || !binding || binding.readOnly || binding.reviewActionId !== request.reviewActionId) return false;
+  const before = new Map(), after = new Map(), selections = [];
+  const updatedAt = new Date().toISOString();
+  for (const change of request.changes) {
+    const owned = readBabelClassicInput(change.annotationId);
+    const annotation = binding.annotations.find(turn => turn.id === change.annotationId);
+    if (!owned || owned.readOnly || !annotation || (annotation.content ?? '') !== change.before ||
+        annotation.processedRecordingId !== change.processedRecordingId ||
+        annotation.startTimeInSeconds !== change.startSeconds || annotation.endTimeInSeconds !== change.endSeconds) return false;
+    if (change.text === change.before) continue;
+    before.set(annotation.id, annotation);
+    after.set(annotation.id, { ...annotation, content: change.text, updatedAt,
+      metadata: { ...annotation.metadata, lowConfidenceResolved: true } });
+    selections.push({ input: owned.input, state: owned.input.read(), length: change.text.length });
+  }
+  if (!after.size) return true;
+  const capability = resolveNativeAnnotationTransaction(root, binding);
+  first.batchNative(() => {
+    for (const id of after.keys()) capability.clearSegment(id);
+    capability.execute({
+      do() { capability.writeAnnotations(annotations => annotations.map(annotation => after.get(annotation.id) || annotation)); },
+      undo() { capability.writeAnnotations(annotations => annotations.map(annotation => before.get(annotation.id) || annotation)); }
+    });
+  });
+  for (const { input, state, length } of selections) {
+    input.select(Math.min(state.start, length), Math.min(state.end, length), state.direction);
   }
   return true;
 }

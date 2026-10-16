@@ -4,6 +4,7 @@ import { getCurrentL0TimingIndex } from '../content/l0-timing-listener';
 import { computeL0CompletedWordCharacterOffset } from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import type { TimelineModules } from '../services/timeline-selection-service';
+import { replaceClassicEditorValues } from '../site/editor-control';
 
 export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site' | 'segmentation' | 'selection' | 'edge'>) {
   const CUT_PREVIEW_SMART_SPLIT_ROW_WAIT_MS = 1200;
@@ -369,6 +370,10 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     if (!leftEditor || !rightEditor || leftEditor.readOnly || rightEditor.readOnly) {
       return false;
     }
+    const classic = replaceClassicEditorValues([
+      { control: leftEditor, text: parts.firstText }, { control: rightEditor, text: parts.secondText }
+    ]);
+    if (classic !== null) return classic;
     const wroteLeft = helper.setEditableValue(leftEditor, parts.firstText);
     const wroteRight = helper.setEditableValue(rightEditor, parts.secondText);
     return Boolean(wroteLeft && wroteRight);

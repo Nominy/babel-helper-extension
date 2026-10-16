@@ -18,6 +18,16 @@
 <div class="bui-body">
 <div class="bui-stack">
 <div class="settings-home bui-stack" data-role="settings-home">
+          <section class="bui-card bui-stack" aria-labelledby="editor-title">
+            <h2 id="editor-title" class="bui-title">Editor</h2>
+            <label for="editor-mode" class="bui-label">Transcript interface</label>
+            <select id="editor-mode" data-role="editor-mode" class="bui-select" aria-describedby="editor-mode-help editor-mode-refresh">
+              <option value="native">Current Babel interface (default)</option>
+              <option value="classic">Classic — September 5 table / textarea</option>
+            </select>
+            <p id="editor-mode-help" class="bui-hint">Classic changes only the transcript interface to the September 5 table and textarea layout. Babel's current task logic, audio, saving, validation and backend remain live. Login and project pages are unchanged.</p>
+            <p id="editor-mode-refresh" class="bui-hint">Mode changes apply only when you refresh the dashboard yourself. Your open editor is not switched or reloaded. Finish or save your work before refreshing.</p>
+          </section>
           <h2 id="features-title" class="features-title bui-title">Features</h2>
           <div class="feature-list bui-stack" data-role="feature-list" aria-labelledby="features-title">
 </div>

@@ -1,4 +1,5 @@
 import { type EditorControl, isEditorControl, getEditorControlFromTarget } from '../site/editor-control';
+import { BABEL_TRANSCRIPT_ROW_SELECTOR } from '../core/babel-editor-contract';
 
 type TextSelectionControl = HTMLInputElement | HTMLTextAreaElement | EditorControl;
 
@@ -460,7 +461,11 @@ export function replaceSelectionInTextControl(
   control: TextSelectionControl,
   replacement: string,
   cursorOffset?: number
-) {
+): boolean {
+  if (!isEditorControl(control) && control.closest(BABEL_TRANSCRIPT_ROW_SELECTOR)) {
+    const owned = getEditorControlFromTarget(control);
+    return owned ? replaceSelectionInTextControl(owned, replacement, cursorOffset) : false;
+  }
   if (control.readOnly || (!(isEditorControl(control)) && control.disabled)) return false;
   const start = typeof control.selectionStart === 'number' ? control.selectionStart : null;
   const end = typeof control.selectionEnd === 'number' ? control.selectionEnd : null;
@@ -497,12 +502,13 @@ export function getSelectedTextFromTextControl(control: TextSelectionControl) {
 
 export function autoConvertSelectedNumberText(target?: EventTarget | null) {
   const targetNode = target ?? null;
-  let activeTarget: TextSelectionControl | null = getEditorControlFromTarget(targetNode) || getEditorControlFromTarget(document.activeElement);
-
-  if (isTextControl(targetNode)) {
-    activeTarget = targetNode;
-  } else if (isTextControl(document.activeElement)) {
-    activeTarget = document.activeElement;
+  let activeTarget: TextSelectionControl | null = getEditorControlFromTarget(targetNode);
+  if (!activeTarget && targetNode instanceof Element && targetNode.closest(BABEL_TRANSCRIPT_ROW_SELECTOR)) return false;
+  if (!activeTarget && isTextControl(targetNode)) activeTarget = targetNode;
+  if (!activeTarget) {
+    activeTarget = getEditorControlFromTarget(document.activeElement);
+    if (!activeTarget && isTextControl(document.activeElement) &&
+        !document.activeElement.closest(BABEL_TRANSCRIPT_ROW_SELECTOR)) activeTarget = document.activeElement;
   }
 
   if (activeTarget) {

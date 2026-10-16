@@ -3693,6 +3693,30 @@ export function initLinterBridge() {
     const row = element?.closest(TRANSCRIPT_ROW_SELECTOR);
     const state = row && readNativeTurn(row.getAttribute('data-annotation-id'));
     if (!state || !Array.isArray(entries)) return false;
+    if (state.classic) {
+      const host = element.parentElement;
+      if (!host) return false;
+      if (window.getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      const parentRect = host.getBoundingClientRect();
+      const overlay = document.createElement('div');
+      overlay.setAttribute(HIGHLIGHT_OVERLAY_ATTR, 'true');
+      Object.assign(overlay.style, { left: '0', top: '0', width: '100%', height: '100%', overflow: 'hidden', pointerEvents: 'none' });
+      for (const entry of entries) for (const span of entry.ranges || []) {
+        for (const rect of state.classic.rects(span.start, span.end)) {
+          const mark = document.createElement('mark');
+          mark.setAttribute(HIGHLIGHT_MARK_ATTR, 'true');
+          mark.setAttribute('aria-hidden', 'true');
+          Object.assign(mark.style, { position: 'absolute', backgroundColor: entry.color,
+            left: `${rect.left - parentRect.left + host.scrollLeft}px`,
+            top: `${rect.top - parentRect.top + host.scrollTop}px`, width: `${rect.width}px`,
+            height: `${rect.height}px`, padding: '0' });
+          overlay.appendChild(mark);
+        }
+      }
+      if (!overlay.childNodes.length) return false;
+      host.appendChild(overlay);
+      return true;
+    }
     const segments = [];
     if (state.editor) {
       let start = 0;
