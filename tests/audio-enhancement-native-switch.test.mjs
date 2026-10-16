@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 import { AUDIO_ENHANCEMENT_ACTIVE_REQUEST, AUDIO_ENHANCEMENT_PROTOCOL_VERSION, readAudioEnhancementState } from '@nominy/babel-babel-runtime';
 import { AudioWorkerFixture } from './fixtures/audio-enhancement-worker.mjs';
 import { createNativeSource } from './fixtures/native-source.mjs';
 
-const nativeEditor = createNativeSource(createNativeRenderFactories({}).find(entry => entry.id === 59327).originals[1]);
+const nativeEditor = createNativeSource(nativeFactorySource(59327));
 const createNativeHistory = new Function('aw',
   ['aD', 'aM', 'ow'].map(name => nativeEditor.declaration(name)).join('\n') +
   '; return ow;'

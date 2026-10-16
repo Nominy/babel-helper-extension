@@ -1,30 +1,32 @@
 // @ts-nocheck
-import * as algorithms from './native-render-algorithms';
-import { prepareNativeTranscript } from './native-render-transcript';
-import { createNativeRenderFactories } from './native-render-factories.generated';
-import { bindNativeSlateHistory, useNativeSlateBeforeInput } from './native-transcript';
+import { createNativeEditorAdapter } from './native-render-editor';
 
-const leaseKey = Symbol.for('babel-helper/native-render-performance/oct15');
+const leaseKey = Symbol.for('babel-helper/native-render-performance');
+const originalFactoryKey = Symbol.for('babel-helper/original-native-factory');
 export interface NativeRenderPerformanceOptions {
   windowRef?: Window & typeof globalThis;
-  onStatus?: (status: { moduleId: number; state: string }) => void;
+  onStatus?: (status: { moduleId: number; boundary: string; state: string; reason?: string }) => void;
 }
 
 /**
- * MAIN world, document_start only. Substitutes precompiled, narrowly edited
- * native factories only after byte-for-byte source verification. No eval,
- * injected remote code, patched React globals, playback throttling or polling.
- * Executed factory closures intentionally live for their native task lifetime;
- * stopping this lease restores unexecuted registrations, not a live editor.
+ * MAIN world, document_start only. Native factories run unchanged; only the
+ * editor's own imports receive scoped adapters. No eval or global React patches.
+ * Public editor markers locate the factory independently of webpack module IDs.
  */
 export function installNativeRenderPerformance({ windowRef = window, onStatus = () => {} }: NativeRenderPerformanceOptions = {}) {
   if (windowRef[leaseKey]) throw new Error('Native render performance already owns this document');
-  const factories = createNativeRenderFactories({ ...algorithms, prepareNativeTranscript, bindNativeSlateHistory, useNativeSlateBeforeInput });
-  const contracts = new Map(factories.map(contract => [String(contract.id), contract]));
   const registrations = [];
-  const statuses = new Map(factories.map(contract => [contract.id, 'awaiting-native-factory']));
+  const adapters = new Set();
+  const statuses = new Map();
+  const wrappers = new WeakMap();
+  const inspected = new WeakSet();
   let disposed = false;
-  const report = (id, state) => { statuses.set(id, state); onStatus({ moduleId: id, state }); };
+  const report = (moduleId, status) => {
+    const key = `${moduleId}:${status.boundary}`;
+    if (statuses.get(key) === status.state) return;
+    statuses.set(key, status.state);
+    onStatus({ moduleId, ...status });
+  };
   const chunk = windowRef.webpackChunk_N_E || (windowRef.webpackChunk_N_E = []);
   if (!Array.isArray(chunk)) throw new Error('Native webpackChunk_N_E is not an array');
   const descriptor = Object.getOwnPropertyDescriptor(chunk, 'push');
@@ -35,20 +37,37 @@ export function installNativeRenderPerformance({ windowRef = window, onStatus = 
   const inspect = payload => {
     const modules = payload?.[1];
     if (!modules || typeof modules !== 'object') return;
-    for (const [id, contract] of contracts) {
-      if (!Object.hasOwn(modules, id)) continue;
+    for (const id of Object.keys(modules)) {
       const original = modules[id];
-      if (original === contract.factory || (contract.recoveredFactory && original === contract.recoveredFactory)) continue;
-      const source = typeof original === 'function' ? Function.prototype.toString.call(original) : null;
-      const replacement = source !== null && source === contract.recoveredOriginal ? contract.recoveredFactory :
-        contract.originals.includes(source) ? contract.factory : null;
+      if (typeof original !== 'function' || original[originalFactoryKey]) continue;
+      let replacement = wrappers.get(original);
       if (!replacement) {
-        report(contract.id, 'unsupported-native-factory-source');
-        continue;
+        if (inspected.has(original)) continue;
+        inspected.add(original);
+        const source = Function.prototype.toString.call(original);
+        if (!source.includes('data-turn-issues') || !source.includes('data-annotation-id') ||
+            !source.includes('onDraftTag')) continue;
+        replacement = function(module, exports, webpackRequire) {
+          if (disposed) return original.call(this, module, exports, webpackRequire);
+          if (typeof webpackRequire !== 'function') {
+            report(Number(id), { boundary: 'editor-imports', state: 'unsupported', reason: 'Native module loader is unavailable' });
+            return original.call(this, module, exports, webpackRequire);
+          }
+          const adapter = createNativeEditorAdapter(status => report(Number(id), status));
+          adapters.add(adapter);
+          const scopedRequire = new Proxy(webpackRequire, {
+            apply(target, receiver, args) {
+              return adapter.adaptImport(Reflect.apply(target, receiver, args));
+            }
+          });
+          report(Number(id), { boundary: 'editor-imports', state: 'installed' });
+          return original.call(this, module, exports, scopedRequire);
+        };
+        Object.defineProperty(replacement, originalFactoryKey, { value: original });
+        wrappers.set(original, replacement);
       }
       modules[id] = replacement;
       registrations.push({ modules, id, original, replacement });
-      report(contract.id, 'installed-exact-oct15-factory');
     }
   };
   const wrap = original => function(...payloads) {
@@ -78,7 +97,13 @@ export function installNativeRenderPerformance({ windowRef = window, onStatus = 
       if (registration.modules[registration.id] === registration.replacement) registration.modules[registration.id] = registration.original;
     }
     registrations.length = 0;
+    const failures = [];
+    for (const adapter of adapters) {
+      try { adapter.release(); } catch (error) { failures.push(error); }
+    }
+    adapters.clear();
     if (windowRef[leaseKey] === release) delete windowRef[leaseKey];
+    if (failures.length) throw new AggregateError(failures, 'Native rendering hooks could not all be released');
   };
   release.status = () => Object.fromEntries(statuses);
   windowRef[leaseKey] = release;

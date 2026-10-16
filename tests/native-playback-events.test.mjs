@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 import { createNativeSource } from './fixtures/native-source.mjs';
 
 async function load(entry) {
@@ -311,8 +311,7 @@ test('clock event bursts have a 66ms event-only cadence and ordinary commits pub
   release();
 });
 
-const editorContract = createNativeRenderFactories({}).find(entry => entry.id === 59327);
-const nativeEditorSource = editorContract.originals[1];
+const nativeEditorSource = nativeFactorySource(59327);
 
 function boundedPlaybackFixture(f, source) {
   const native = createNativeSource(source);
@@ -327,17 +326,15 @@ function boundedPlaybackFixture(f, source) {
     k3: { current: null }, g2: { current: false }, h2: { current: false },
     window: f.window, performance: { now: () => f.now }
   };
-  // Execute the actual native callback bodies in their transport closure, both
-  // before and after Helper's factory transformation.
+  // Execute the captured native transport without replacing its implementation.
   for (const name of ['S3', 'j3', 'N2', 'T3', 'I2', 'A2', 'E2', 'D2', 'M2', 'L2', 'P3']) {
     scope[name] = native.callback(name, scope, 'seekAllTracksToTime');
   }
   return { waves, scope, playRegion: scope.M2, seek: scope.N2, toggle: scope.E2, cancel: scope.S3 };
 }
 
-for (const [variant, source] of [['native', nativeEditorSource], ['optimized', editorContract.factory.toString()]]) {
-  test(`${variant} current bounded playback uses rate-aware deadline and removes its listener at end crossing`, t => {
-    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+  test('native bounded playback uses rate-aware deadline and removes its listener at end crossing', t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, nativeEditorSource);
     playback.playRegion(1, 3);
     assert.equal([...f.timers.values()][0].delay, 2000, '2 audio seconds at 2x plus the native one-second grace');
     assert.ok(playback.waves.every(player => !player.paused));
@@ -350,8 +347,8 @@ for (const [variant, source] of [['native', nativeEditorSource], ['optimized', e
     assert.equal(playback.scope.k3.current, null);
   });
 
-  test(`${variant} current bounded playback cancels on external seek, explicit seek and toggle without stale stops`, t => {
-    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+  test('native bounded playback cancels on external seek, explicit seek and toggle without stale stops', t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, nativeEditorSource);
     playback.playRegion(1, 3);
     f.wave.time = 20; f.wave.emit('timeupdate', 20);
     assert.equal(f.timers.size, 0);
@@ -377,8 +374,8 @@ for (const [variant, source] of [['native', nativeEditorSource], ['optimized', e
     assert.equal(f.wave.listenerCount(), 0, 'The native unmount cleanup is idempotent');
   });
 
-  test(`${variant} current bounded playback deadline detects a seek even without a timeupdate`, t => {
-    const f = fixture(t), playback = boundedPlaybackFixture(f, source);
+  test('native bounded playback deadline detects a seek even without a timeupdate', t => {
+    const f = fixture(t), playback = boundedPlaybackFixture(f, nativeEditorSource);
     playback.playRegion(1, 3);
     const deadline = [...f.timers.values()][0];
     f.now = 2000; f.wave.time = 20;
@@ -388,4 +385,3 @@ for (const [variant, source] of [['native', nativeEditorSource], ['optimized', e
     assert.equal(f.timers.size, 0);
     assert.equal(f.wave.listenerCount(), 0);
   });
-}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 
 const bundle = await build({ entryPoints: ['src/content/native-transcript.ts'], bundle: true,
   format: 'esm', platform: 'browser', write: false, logLevel: 'silent' });
@@ -10,8 +10,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[
 const { readNativeTurn, replaceNativeTurn, bindNativeSlateHistory, useNativeSlateBeforeInput } = await import(moduleUrl);
 
 function nativeLeaveTurn(setEditing) {
-  const contract = createNativeRenderFactories({}).find(contract => contract.id === 59327);
-  const source = ts.createSourceFile('native-editor.js', `(${contract.originals[0]})`, ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile('native-editor.js', `(${nativeFactorySource(59327)})`, ts.ScriptTarget.Latest, true);
   const controllers = [];
   function visit(node) {
     if (ts.isObjectLiteralExpression(node)) {

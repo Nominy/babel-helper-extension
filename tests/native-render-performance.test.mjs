@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 
 async function load(entry) {
   const result = await build({ entryPoints: [entry], bundle: true, format: 'esm', platform: 'browser', write: false, logLevel: 'silent' });
@@ -10,8 +10,7 @@ async function load(entry) {
 }
 const algorithms = await load('src/content/native-render-algorithms.ts');
 const { installNativeRenderPerformance } = await load('src/content/native-render-performance.ts');
-const { prepareNativeTranscript } = await load('src/content/native-render-transcript.ts');
-const factories = createNativeRenderFactories({ ...algorithms, prepareNativeTranscript });
+const { createNativeEditorAdapter } = await load('src/content/native-render-editor.ts');
 function emitter() {
   const listeners = new Map();
   return {
@@ -21,11 +20,8 @@ function emitter() {
     listenerCount(name) { return listeners.get(name)?.size || 0; }
   };
 }
-function exportPlugin(id, optimized) {
-  const contract = factories.find(contract => contract.id === id);
-  // Test-only oracle executes checked-in original captured code; deployed code
-  // never constructs functions or needs this test's original factory evaluator.
-  const factory = optimized ? contract.factory : new Function(`return (${contract.originals[0]})`)();
+function exportPlugin(id) {
+  const factory = new Function(`return (${nativeFactorySource(id)})`)();
   const exports = {};
   const require = () => { throw new Error('Unexpected plugin import'); };
   require.d = (target, values) => { for (const key of Object.keys(values)) Object.defineProperty(target, key, { get: values[key] }); };
@@ -63,24 +59,6 @@ test('word subscriptions notify only changed snapshots, including backwards seek
   assert.deepEqual(calls, expected);
 });
 
-test('active regions preserve overlap order, excluded overlays and last-array-element end rule', () => {
-  const plugin = { ...emitter(), regions: [
-    { id: 'first', start: 2, end: 8 }, { id: 'second', start: 0, end: 4 },
-    { id: 'loop', start: 0, end: 100 }, { id: 'overlay-x', start: 0, end: 100 },
-    { id: 'last', start: 4, end: 6 }
-  ] };
-  const native = time => {
-    const eligible = plugin.regions.filter(region => region.id !== 'loop' && !region.id.startsWith('overlay-'));
-    return eligible.find(region => time >= region.start && time < region.end) || eligible.find(region => time >= region.start && time === region.end && region === eligible.at(-1)) || null;
-  };
-  for (const time of [0, 2, 4, 6, 8, 10]) assert.equal(algorithms.activeRegion(plugin, time, 'loop', 'overlay-'), native(time));
-  plugin.regions[0].start = 20;
-  algorithms.invalidateRegion(plugin.regions[0]);
-  for (const time of [2, 4, 6, 8]) assert.equal(algorithms.activeRegion(plugin, time, 'loop', 'overlay-'), native(time));
-  const added = { id: 'new', start: 8, end: 10 };
-  plugin.regions.push(added); plugin.emit('region-created', added);
-  assert.equal(algorithms.activeRegion(plugin, 10, 'loop', 'overlay-'), added);
-});
 
 test('unchanged active highlighting does not rewrite every region style', () => {
   let writes = 0;
@@ -96,35 +74,18 @@ test('unchanged active highlighting does not rewrite every region style', () => 
   assert.equal(writes, 3);
 });
 
-test('real captured region event callback matches optimized enter/exit ordering and marker end rules', () => {
-  const run = optimized => {
-    const Plugin = exportPlugin(94846, optimized);
-    const wave = { ...emitter(), getWrapper: () => ({ appendChild() {} }) };
-    const plugin = Object.assign(Object.create(Plugin.prototype), {
-      listeners: {}, subscriptions: [], wavesurfer: wave, regionsContainer: {}, regions: [
-        { id: 'later-first', start: 1, end: 4 }, { id: 'earlier-second', start: 0, end: 2 }, { id: 'point', start: 3, end: 3 }
-      ]
-    });
-    const events = [];
-    plugin.on('region-in', region => events.push(['in', region.id]));
-    plugin.on('region-out', region => events.push(['out', region.id]));
-    plugin.onInit();
-    for (const time of [0, 1, 2, 2.01, 3, 3.05, 3.051, 4, 4.1, 1]) wave.emit('timeupdate', time);
-    return events;
-  };
-  assert.deepEqual(run(true), run(false));
-});
 
 test('real captured timeline visibility agrees for edge widths and backward scroll', () => {
   const run = optimized => {
-    const Plugin = exportPlugin(60039, optimized);
+    const Plugin = exportPlugin(60039);
     const plugin = Object.create(Plugin.prototype);
     const visible = new Set();
     const container = { appendChild(element) { visible.add(element.id); } };
     plugin.notchElements = new Map(Array.from({ length: 100 }, (_, id) => [{ id, remove() { visible.delete(id); } }, { start: id * 10, width: id % 3 * 3, wasVisible: false }]));
     const snapshots = [];
     for (const [left, right] of [[0, 100], [9, 109], [500, 600], [400, 401], [0, 1000]]) {
-      plugin.updateVisibleNotches(left, right, container);
+      if (optimized) algorithms.updateVisibleNotches(plugin, left, right, container);
+      else plugin.updateVisibleNotches(left, right, container);
       snapshots.push([...visible].sort((a, b) => a - b));
     }
     return snapshots;
@@ -132,30 +93,35 @@ test('real captured timeline visibility agrees for edge widths and backward scro
   assert.deepEqual(run(true), run(false));
 });
 
-test('native registry hook rejects unknown sources, composes with webpack push replacement and restores ownership', () => {
-  const windowRef = { IntersectionObserver() {}, ResizeObserver() {}, webpackChunk_N_E: [] };
-  const notices = [];
-  const release = installNativeRenderPerformance({ windowRef, onStatus: status => notices.push(status) });
-  const contract = factories.find(contract => contract.id === 60039);
-  const original = new Function(`return (${contract.originals[0]})`)();
-  const payload = [[1], { 60039: original }];
+test('native editor execution survives unrelated imports and registry ownership changes', () => {
+  const windowRef = { webpackChunk_N_E: [] };
+  const release = installNativeRenderPerformance({ windowRef });
+  function editor(module, exports, require) {
+    exports.markers = ['data-turn-issues', 'data-annotation-id', 'onDraftTag'];
+    const nativeAction = require('new-native-dependency');
+    require.define(exports, 'run', () => {
+      if (module.readOnly) throw new Error('Native readonly guard');
+      return nativeAction(module);
+    });
+  }
+  const payload = [[1], { 817: editor }];
   const prior = windowRef.webpackChunk_N_E.push.bind(windowRef.webpackChunk_N_E);
-  let nativeCalls = 0;
-  const webpackPush = function(value) { nativeCalls++; return prior(value); };
+  const webpackPush = value => prior(value);
   windowRef.webpackChunk_N_E.push = webpackPush;
-  assert.equal(windowRef.webpackChunk_N_E.push(payload), 1);
-  assert.equal(nativeCalls, 1);
-  assert.notEqual(payload[1][60039], original);
-  assert.equal(release.status()[60039], 'installed-exact-oct15-factory');
-  const unknown = () => {};
-  const unsupported = [[2], { 59327: unknown }];
-  windowRef.webpackChunk_N_E.push(unsupported);
-  assert.equal(unsupported[1][59327], unknown);
-  assert.equal(release.status()[59327], 'unsupported-native-factory-source');
+  windowRef.webpackChunk_N_E.push(payload);
+  const module = { value: 4, readOnly: false }, exports = {};
+  const require = () => target => ++target.value;
+  require.define = (target, key, value) => { target[key] = value; };
+  payload[1][817](module, exports, require);
+  assert.equal(exports.run(), 5);
+  module.readOnly = true;
+  assert.throws(() => exports.run(), /Native readonly guard/);
+  assert.equal(module.value, 5);
+  const newer = () => {};
+  payload[1][817] = newer;
   release();
-  assert.equal(payload[1][60039], original);
+  assert.equal(payload[1][817], newer);
   assert.equal(windowRef.webpackChunk_N_E.push, webpackPush);
-  assert.ok(notices.some(notice => notice.state === 'unsupported-native-factory-source'));
 });
 
 test('region viewport has one scroll subscription and moves only intersecting native elements', async () => {
@@ -188,7 +154,7 @@ test('region viewport has one scroll subscription and moves only intersecting na
 });
 
 test('auto-center uses one clamped write with the captured renderer final position', () => {
-  const original = factories.find(contract => contract.id === 99407).originals[1];
+  const original = nativeFactorySource(99407);
   const source = ts.createSourceFile('renderer.js', `(${original})`, ts.ScriptTarget.Latest, true);
   let method;
   const visit = node => {
@@ -219,18 +185,6 @@ test('auto-center uses one clamped write with the captured renderer final positi
   }
 });
 
-test('all pinned raw and recovered factory sources are admitted without source rewriting at runtime', () => {
-  const windowRef = { webpackChunk_N_E: [] };
-  const release = installNativeRenderPerformance({ windowRef });
-  for (const contract of factories) for (const source of contract.originals) {
-    const original = new Function(`return (${source})`)();
-    const payload = [[], { [contract.id]: original }];
-    windowRef.webpackChunk_N_E.push(payload);
-    assert.notEqual(payload[1][contract.id], original);
-    assert.equal(release.status()[contract.id], 'installed-exact-oct15-factory');
-  }
-  release();
-});
 
 test('late installation fails closed and teardown never overwrites a newer push owner', () => {
   const late = { webpackChunk_N_E: [] };
@@ -245,8 +199,7 @@ test('late installation fails closed and teardown never overwrites a newer push 
 });
 
 function capturedFunctions(optimized, names, bindings) {
-  const contract = factories.find(contract => contract.id === 59327);
-  const source = ts.createSourceFile('editor.js', `(${optimized ? contract.factory.toString() : contract.originals[1]})`, ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile('editor.js', `(${nativeFactorySource(59327)})`, ts.ScriptTarget.Latest, true);
   const declarations = [];
   const visit = node => {
     if (ts.isFunctionDeclaration(node) && names.includes(node.name?.text)) declarations.push(node.getText(source));
@@ -254,7 +207,22 @@ function capturedFunctions(optimized, names, bindings) {
   };
   visit(source);
   assert.equal(declarations.length, names.length);
-  return new Function(...Object.keys(bindings), `${declarations.join('\n')};return {${names.join(',')}};`)(...Object.values(bindings));
+  let scopedJsx = jsx;
+  if (optimized && bindings.i) {
+    const adapter = createNativeEditorAdapter();
+    bindings = { ...bindings, i: adapter.adaptImport(bindings.i), r: adapter.adaptImport(jsx) };
+    scopedJsx = bindings.r;
+  }
+  const functions = new Function(...Object.keys(bindings), `${declarations.join('\n')};return {${names.join(',')}};`)(...Object.values(bindings));
+  if (optimized && bindings.i) {
+    const original = functions[names[0]];
+    functions[names[0]] = props => {
+      let element = scopedJsx.jsx(original, props);
+      if (element.type === 'div' && element.props.className === 'babel-helper-native-turn') element = element.props.children;
+      return element.type(element.props);
+    };
+  }
+  return functions;
 }
 const jsx = { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }) };
 function hookState() {
@@ -268,6 +236,8 @@ function hookState() {
   return {
     begin() { cursor = 0; },
     memo: value => value,
+    forwardRef: render => props => render(props, props.ref),
+    useLayoutEffect: callback => callback(),
     useMemo: memo,
     useCallback: (callback, deps) => memo(() => callback, deps),
     useRef: value => memo(() => ({ current: value }), []),
@@ -279,12 +249,13 @@ function hookState() {
     useSyncExternalStore: (_subscribe, snapshot) => snapshot()
   };
 }
+const transcriptPlayhead = new algorithms.NativeRenderPlayhead();
 function transcriptScenario(optimized) {
   const React = hookState(), NativeTurn = () => {}, NativeGhost = () => {};
   const copy = () => {};
   const { ok: NativeTranscript } = capturedFunctions(optimized, ['ok', 'ow', 'or', 'aM', 'aD', 't2'], {
     i: React, r: jsx, ob: NativeTurn, af: NativeGhost, ag: copy,
-    aw: { xv: { isText: node => typeof node.text === 'string' } }, oy: [], __bhRender: { prepareNativeTranscript }
+    aw: { xv: { isText: node => typeof node.text === 'string' } }, oy: []
   });
   const props = {
     turns: [{ id: 'late', content: 'late \t word', startTimeInSeconds: 3, endTimeInSeconds: 7 }, { id: 'early', content: 'first second', startTimeInSeconds: 0, endTimeInSeconds: 4 }],
@@ -294,7 +265,7 @@ function transcriptScenario(optimized) {
     machineWords: [{ word: 'overlap', start: 3, end: 4 }, { word: 'before', start: 0, end: 1 }, { word: 'last-end', start: 7, end: 7 }],
     lowConfidence: { getLowConfidenceIndices: () => [0, 1], getAcknowledgedIndices: () => [0] },
     readOnly: true, localEdits: true, highlightCjkSpaces: true, diffOtherSide: 'added',
-    renderActions: turn => turn.id, reviewerFor: turn => turn.id, handlers: {}, playhead: {}, lintVersion: 1
+    renderActions: turn => turn.id, reviewerFor: turn => turn.id, handlers: {}, playhead: transcriptPlayhead, lintVersion: 1
   };
   const render = () => {
     React.begin();
@@ -342,28 +313,6 @@ test('native panel keeps rows mounted, current editing props, midpoint boundarie
   assert.equal(remounted.history.restore('early', 'first second'), snapshot);
 });
 
-test('exact instrumented recreation selects its export-preserving factory and rejects altered instrumentation', () => {
-  const contract = factories.find(contract => contract.id === 59327);
-  assert.equal(typeof contract.recoveredOriginal, 'string');
-  assert.equal(typeof contract.recoveredFactory, 'function');
-  const windowRef = { webpackChunk_N_E: [] };
-  const release = installNativeRenderPerformance({ windowRef });
-  const production = [[], { 59327: new Function(`return (${contract.originals[0]})`)() }];
-  const recovered = [[], { 59327: new Function(`return (${contract.recoveredOriginal})`)() }];
-  const originalRecovered = recovered[1][59327];
-  windowRef.webpackChunk_N_E.push(production, recovered);
-  assert.notEqual(recovered[1][59327], originalRecovered);
-  assert.notEqual(recovered[1][59327], production[1][59327]);
-  assert.equal(release.status()[59327], 'installed-exact-oct15-factory');
-  const changedSource = contract.recoveredOriginal.replace('"RecoveredPageController"', '"UnverifiedRecoveryExport"');
-  const changed = new Function(`return (${changedSource})`)();
-  const rejected = [[], { 59327: changed }];
-  windowRef.webpackChunk_N_E.push(rejected);
-  assert.equal(rejected[1][59327], changed);
-  assert.equal(release.status()[59327], 'unsupported-native-factory-source');
-  release();
-  assert.equal(recovered[1][59327], originalRecovered);
-});
 
 function elementOf(tree, type) {
   if (!tree || typeof tree !== 'object') return null;
@@ -382,7 +331,6 @@ test('native row keeps local editing, draft suppression, history and current cal
       i: React, r: jsx, np: { cn: (...values) => values.filter(Boolean).join(' ') },
       on: () => [], aU: new Set(['draft-warning']), a4: () => false,
       oo: 'timestamp', iW: { Z: 'play-icon' }, op: 'status', ry: 'diff', rf: 'text', a6: 'editor', ov: 'issues',
-      __bhRender: algorithms
     });
     const history = { save() {}, restore() {} };
     const props = {
@@ -448,45 +396,32 @@ test('native copy preserves raw tags, partial selections and row boundaries with
   const rows = [{ nodes: nodes.slice(0, 4) }, { nodes: nodes.slice(4) }];
   const range = { startContainer: nodes[0], startOffset: 7, endContainer: nodes[4], endOffset: 6, intersectsNode: () => true };
   const selection = { isCollapsed: false, rangeCount: 1, getRangeAt: () => range };
-  for (const optimized of [false, true]) {
-    const { ag: copyNativeSelection } = capturedFunctions(optimized, ['ag'], {
-      window: { getSelection: () => selection }, Text: TextNode, NodeFilter: { SHOW_TEXT: 4 },
-      document: { createTreeWalker: row => { let index = 0; return { nextNode: () => row.nodes[index++] }; } }
-    });
-    const copied = [];
-    const event = {
-      defaultPrevented: false,
-      currentTarget: { querySelectorAll: () => rows },
-      preventDefault() { this.defaultPrevented = true; },
-      clipboardData: { setData: (...args) => copied.push(args) }
-    };
-    copyNativeSelection(event);
-    assert.deepEqual(copied, [['text/plain', 'hello [laugh] world\nsecond']]);
-    copyNativeSelection(event);
-    assert.equal(copied.length, 1);
-    selection.isCollapsed = true;
-    event.defaultPrevented = false;
-    copyNativeSelection(event);
-    assert.equal(copied.length, 1);
-    assert.equal(event.defaultPrevented, false);
-    selection.isCollapsed = false;
-  }
+  const { ag: copyNativeSelection } = capturedFunctions(false, ['ag'], {
+    window: { getSelection: () => selection }, Text: TextNode, NodeFilter: { SHOW_TEXT: 4 },
+    document: { createTreeWalker: row => { let index = 0; return { nextNode: () => row.nodes[index++] }; } }
+  });
+  const copied = [];
+  const event = {
+    defaultPrevented: false,
+    currentTarget: { querySelectorAll: () => rows },
+    preventDefault() { this.defaultPrevented = true; },
+    clipboardData: { setData: (...args) => copied.push(args) }
+  };
+  copyNativeSelection(event);
+  assert.deepEqual(copied, [['text/plain', 'hello [laugh] world\nsecond']]);
+  copyNativeSelection(event);
+  assert.equal(copied.length, 1);
+  selection.isCollapsed = true;
+  event.defaultPrevented = false;
+  copyNativeSelection(event);
+  assert.equal(copied.length, 1);
+  assert.equal(event.defaultPrevented, false);
 });
 
-test('exact source guard rejects formatting-only edits and current lease rejects a second owner', () => {
+test('an active document rejects another owner and can be reacquired after release', () => {
   const windowRef = { webpackChunk_N_E: [] };
   const release = installNativeRenderPerformance({ windowRef });
   assert.throws(() => installNativeRenderPerformance({ windowRef }), /already owns/);
-  for (const contract of factories) {
-    const source = contract.originals[0];
-    const modified = source.replace('{', '{/* unverified bytes */');
-    const original = new Function(`return (${modified})`)();
-    const payload = [[], { [contract.id]: original }];
-    windowRef.webpackChunk_N_E.push(payload);
-    assert.equal(payload[1][contract.id], original);
-    assert.equal(release.status()[contract.id], 'unsupported-native-factory-source');
-  }
   release();
-  const next = installNativeRenderPerformance({ windowRef });
-  next();
+  installNativeRenderPerformance({ windowRef })();
 });

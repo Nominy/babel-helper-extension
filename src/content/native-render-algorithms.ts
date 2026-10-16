@@ -40,7 +40,7 @@ export class NativeIntervalIndex {
   }
 }
 
-/** Same clock and synchronous notification semantics as Oct15 iu, with row-scoped snapshots. */
+/** Native playhead notification semantics with row-scoped interval snapshots. */
 export class NativeRenderPlayhead {
   time = 0;
   listeners = new Set();
@@ -80,27 +80,29 @@ export class NativeRenderPlayhead {
   }
 }
 
-export function useNativeActiveWord(React, playhead, words) {
-  const index = React.useMemo(() => new NativeIntervalIndex(words, word => word.startTime, word => word.endTime), [words]);
-  const subscribe = React.useCallback(listener => playhead.subscribeWords(words, listener), [playhead, words]);
-  const snapshot = React.useCallback(() => index.first(playhead.getTime())?.order ?? -1, [playhead, index]);
-  return React.useSyncExternalStore(subscribe, snapshot, snapshot);
-}
 
 const regions = new WeakMap();
 const regionOwners = new WeakMap();
 function regionState(plugin) {
   let state = regions.get(plugin);
   if (state) return state;
-  state = { plugin, dirty: true, previous: [], highlighted: new Set(), disposers: [] };
+  state = { plugin, dirty: true, highlighted: new Set(), disposers: [] };
   regions.set(plugin, state);
-  const mark = region => { state.dirty = true; if (region) regionOwners.set(region, state); };
+  const mark = region => {
+    state.dirty = true;
+    if (region) {
+      regionOwners.set(region, state);
+      if (region.element?.style?.filter) state.highlighted.add(region);
+    }
+  };
   for (const region of plugin.regions) regionOwners.set(region, state);
-  for (const name of ['region-created', 'region-update', 'region-updated', 'region-removed']) state.disposers.push(plugin.on(name, mark));
-  state.disposers.push(plugin.on('destroy', () => {
-    for (const release of state.disposers) release();
-    regions.delete(plugin);
+  for (const name of ['region-created', 'region-update', 'region-updated']) state.disposers.push(plugin.on(name, mark));
+  state.disposers.push(plugin.on('region-removed', region => {
+    state.dirty = true;
+    if (regionOwners.get(region) === state) regionOwners.delete(region);
+    state.highlighted.delete(region);
   }));
+  state.disposers.push(plugin.on('destroy', () => releaseNativeRegionState(plugin)));
   return state;
 }
 export function invalidateRegion(region) {
@@ -110,7 +112,7 @@ export function invalidateRegion(region) {
     invalidateRegionView(owner.plugin);
   }
 }
-function readRegions(plugin) {
+export function readNativeRegionState(plugin) {
   const state = regionState(plugin);
   if (state.dirty) {
     state.index = new NativeIntervalIndex(plugin.regions, region => region.start, region => region.end);
@@ -123,27 +125,12 @@ function readRegions(plugin) {
       values.push(region);
     }
     state.dirty = false;
-    state.eligible = null;
   }
   return state;
 }
-export function activeRegion(plugin, time, excludedId, excludedPrefix) {
-  if (!plugin) return null;
-  const state = readRegions(plugin);
-  const allowed = region => region.id !== excludedId && !region.id.startsWith(excludedPrefix);
-  const current = state.index.first(time, allowed)?.value;
-  if (current) return current;
-  if (!state.eligible || state.excludedId !== excludedId || state.excludedPrefix !== excludedPrefix) {
-    state.eligible = plugin.regions.filter(allowed);
-    state.excludedId = excludedId;
-    state.excludedPrefix = excludedPrefix;
-  }
-  const last = state.eligible[state.eligible.length - 1];
-  return last && time >= last.start && time === last.end ? last : null;
-}
 export function highlightRegion(plugin, id) {
   if (!plugin) return;
-  const state = readRegions(plugin);
+  const state = readNativeRegionState(plugin);
   const next = new Set(state.ids.get(id) || []);
   // Establish exclusive visual ownership once; subsequent updates touch only the delta.
   if (!state.initialized) {
@@ -154,13 +141,16 @@ export function highlightRegion(plugin, id) {
   for (const region of next) if (region.element && region.element.style.filter !== 'brightness(0.8)') region.element.style.filter = 'brightness(0.8)';
   state.highlighted = next;
 }
-export function updateRegionEvents(plugin, time) {
-  const state = readRegions(plugin);
-  const next = state.eventIndex.query(time, time, true);
-  const previousSet = new Set(state.previous), nextSet = new Set(next);
-  for (const region of next) if (!previousSet.has(region)) plugin.emit('region-in', region);
-  for (const region of state.previous) if (!nextSet.has(region)) plugin.emit('region-out', region);
-  state.previous = next;
+
+export function releaseNativeRegionState(plugin) {
+  const state = regions.get(plugin);
+  if (!state) return;
+  regions.delete(plugin);
+  for (const release of state.disposers) release();
+  for (const region of plugin.regions) if (regionOwners.get(region) === state) regionOwners.delete(region);
+  for (const entry of state.index?.entries || []) {
+    if (regionOwners.get(entry.value) === state) regionOwners.delete(entry.value);
+  }
 }
 
 const timelines = new WeakMap();
@@ -182,6 +172,10 @@ export function updateVisibleNotches(plugin, left, right, container) {
   for (const entry of state.visible) if (!visible.has(entry)) { entry.notch.wasVisible = false; entry.element.remove(); }
   for (const entry of visible) if (!state.visible.has(entry)) { entry.notch.wasVisible = true; container.appendChild(entry.element); }
   state.visible = visible;
+}
+
+export function invalidateNativeTimeline(plugin) {
+  timelines.delete(plugin);
 }
 
 /** Retain native clamping and dragging rules, but perform at most one scroll write. */
@@ -231,13 +225,9 @@ export function virtualAppendRegion(plugin, region, container, element) {
     state.update = update;
     for (const event of ['scroll', 'zoom', 'resize', 'ready']) state.releases.push(plugin.wavesurfer.on(event, update));
     for (const event of ['region-update', 'region-updated']) state.releases.push(plugin.on(event, () => { state.dirty = true; update(); }));
-    state.releases.push(plugin.on('destroy', () => {
-      for (const release of state.releases) release();
-      for (const entry of state.entries.values()) entry.release();
-      state.entries.clear(); regionViews.delete(plugin);
-    }));
+    state.releases.push(plugin.on('destroy', () => releaseNativeRegionView(plugin)));
   }
-  const entry = { region, element, release: null };
+  const entry = { region, container, element, release: null };
   state.entries.set(region, entry);
   entry.release = region.once('remove', () => { state.entries.delete(region); state.visible.delete(entry); state.dirty = true; });
   state.dirty = true;
@@ -249,6 +239,17 @@ export function virtualAppendRegion(plugin, region, container, element) {
       if (regionViews.get(plugin) === state) state.update();
     });
   }
+}
+
+export function releaseNativeRegionView(plugin) {
+  const state = regionViews.get(plugin);
+  if (!state) return [];
+  regionViews.delete(plugin);
+  for (const release of state.releases) release();
+  const entries = [...state.entries.values()];
+  for (const entry of entries) entry.release();
+  state.entries.clear();
+  return entries;
 }
 export function invalidateRegionView(plugin) {
   const state = regionViews.get(plugin);

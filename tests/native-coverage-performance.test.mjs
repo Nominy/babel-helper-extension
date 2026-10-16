@@ -1,16 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 import { createNativeSource } from './fixtures/native-source.mjs';
 
 // Execute the checked-in current store itself as the oracle, not a second coverage implementation.
-const factories = createNativeRenderFactories({});
-const source = createNativeSource(factories.find(entry => entry.id === 59327).originals[1]);
+const source = createNativeSource(nativeFactorySource(59327));
 const nativeCoverage = ['tF', 'tU', 'tW', 'tG', 'tK', 'tH', 'tV', 'tZ']
   .map(name => source.declaration(name)).join('\n');
-const backendSource = factories.find(entry => entry.id === 99407).originals.find(text => text.includes('class C extends s {'));
-assert.ok(backendSource, 'checked-in current WebAudio backend contract must be available');
+const backendSource = nativeFactorySource(99407);
 const NativeBackend = new Function(
   backendSource.slice(backendSource.indexOf('function r('), backendSource.indexOf('i.d(e,')) +
   backendSource.slice(backendSource.indexOf('class s {'), backendSource.indexOf('let n = { decode:')) +

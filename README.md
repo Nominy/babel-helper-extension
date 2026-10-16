@@ -116,20 +116,6 @@ enabled Review Helper protection.
 
 ## Performance and listening coverage
 
-Helper installs precompiled rendering optimizations at `document_start` for the
-verified October 15 editor `59327` and waveform/region/timeline modules. Factory
-sources must match exactly; a different Babel build keeps its native implementation
-and displays an unsupported-version notification. No runtime source evaluation or
-remote replacement code is used. **Reload the extension and refresh existing Babel
-tabs after updating.** Disabling/removing Helper also requires a page refresh to
-remove already-executed native rendering changes.
-
-The current October 15 refresh targets editor chunk `8022-bab2b789674d6122.js`
-and regions/timeline chunk `6264-da8e30159773903a.js`. It preserves Babel's
-updated button components and project navigation links. The optimized editor
-boundaries and both plugins retain their prior behavior with renamed bindings;
-the regenerated patches still require exact native source matches.
-
 Playback uses indexed region/word lookup, transition-only region styling, shared
 viewport calculations, and cached per-turn word/lint inputs. Transcript rows stay
 mounted and searchable: `content-visibility: auto` skips offscreen layout/painting
@@ -331,8 +317,6 @@ npm run test:e2e:native
 ```
 
 The browser command requires the [shared browser setup](../shared/babel-extension-platform/README.md#browser-checks).
-
-Native split/switch regression tests load the captured editor factory from the shared E2E package's published recreation snapshot. They do not require the private sibling `tools/babel-editor-rebuild` checkout.
 
 ## Package and publish
 

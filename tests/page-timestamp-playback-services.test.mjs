@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createNativeRenderFactories } from '../src/content/native-render-factories.generated.js';
+import { nativeFactorySource } from './fixtures/native-factory-source.mjs';
 import { createNativeSource } from './fixtures/native-source.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -899,7 +899,7 @@ test('native seek preserves the exact partially-playing lane subset while synchr
   const { createServiceRegistry } = await importBundledTs('src/mod-platform/service-registry.ts', 'partial-play-seek-registry');
   const pageWindow = installPageGlobals(createServiceRegistry());
   const model = installNativeTranscriptModel(pageWindow);
-  const native = createNativeSource(createNativeRenderFactories({}).find(entry => entry.id === 59327).originals[1]);
+  const native = createNativeSource(nativeFactorySource(59327));
   const seekCalls = [];
   const waves = [false, true].map((paused, index) => ({
     paused, time: 3.25,
