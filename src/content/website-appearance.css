@@ -407,22 +407,6 @@ html[data-babel-helper-appearance='enabled'][data-babel-helper-appearance-gradie
   }
 }
 
-/* Keep native tags at their compact static width. The existing remove button
- * stays available on hover/focus, but sits at the chip corner outside text flow
- * instead of reserving an invisible flex item. No text or playback changes. */
-:where(section[data-annotation-id] [data-slate-editor='true']
-  span[data-slate-inline='true'][data-slate-void='true'][contenteditable='false']) {
-  position: relative;
-}
-
-:where(section[data-annotation-id] [data-slate-editor='true']
-  span[data-slate-inline='true'][data-slate-void='true'][contenteditable='false'])
-  > button[aria-label^='Remove '][aria-label$=' tag'] {
-  position: absolute;
-  inset-inline-end: -0.25rem;
-  top: -0.25rem;
-}
-
 /* Native text stays searchable; only unfocused rows use layout/paint containment.
  * Focus releases containment synchronously, keeping native editing and caret
  * layout unrestricted without a separate JavaScript focus observer. */

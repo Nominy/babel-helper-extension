@@ -60,11 +60,6 @@ including wrap-around and native keyboard-opened tag menus. Already-visible
 options do not jump; the transcript, page and waveform scroll positions stay
 unchanged. Rapid keys share one post-key frame, with no background polling.
 
-Native tag chips keep their compact static width in both playback and editable
-views. The existing remove button sits at the chip corner outside text flow,
-without covering the tag label or widening the chip on hover. This scoped CSS
-correction works with appearance settings on or off and leaves native tag
-removal, text content and Undo unchanged.
 
 Native WaveSurfer notifications drive playback tracking; there is no independent
 row/cursor polling loop. Clock-only updates are coalesced to 66ms using incoming
