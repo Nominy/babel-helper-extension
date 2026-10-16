@@ -88,8 +88,9 @@ function instrumentRow(source) {
       }
       if (name === 'nD' && ts.isCallExpression(node) && ['(0, r.jsx)', '(0, r.jsxs)'].includes(node.expression.getText(file)) && node.arguments[0]?.getText(file) === '"button"') {
         const props = node.arguments[1], onClick = props.properties.find(property => property.name?.getText(file) === 'onClick');
-        const marker = props.properties.some(property => property.name?.getText(file) === '"aria-label"') ? '"data-turn-issues":true,' : '';
-        const disabled = onClick?.getText(file).includes('w2(') ? '' : 'disabled:e10.readOnly,';
+        const marker = props.properties.some(property => property.name?.getText(file) === '"aria-label"') ? '"data-babel-classic-lint-status":true,' : '';
+        const disabled = marker || onClick?.getText(file).includes('w2(') ? '' : 'disabled:e10.readOnly,';
+        if (marker && onClick) replace(onClick.initializer, `e10.readOnly ? event => event.stopPropagation() : ${onClick.initializer.getText(file)}`);
         edits.push([props.getStart(file) + 1, props.getStart(file) + 1, marker + disabled]);
       }
       if (name === 'nD' && ts.isCallExpression(node) && node.expression.getText(file) === '(0, a.useEffect)') {

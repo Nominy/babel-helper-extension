@@ -11,7 +11,7 @@ export function createHideInlineIssuesFeature(): FeatureModule {
       style.id = STYLE_ID;
       document.head.appendChild(style);
     }
-    style.textContent = ':is(section[data-annotation-id], [data-babel-classic-row="true"][data-annotation-id]) [data-turn-issues] { display: none !important; }';
+    style.textContent = 'section[data-annotation-id] [data-turn-issues] { display: none !important; }';
   };
   const remove = () => document.getElementById(STYLE_ID)?.remove();
   return {
