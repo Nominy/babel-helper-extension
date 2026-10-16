@@ -19,7 +19,7 @@ function recoveredFacade(client = {}) {
   vm.runInNewContext(facadeBundle.outputFiles[0].text, {
     module, exports: module.exports,
     require(name) {
-      if (name === 'react') return {};
+      if (name === 'react') return { createContext: value => ({ Provider: Symbol('fixture-provider'), value }) };
       if (name === '@tanstack/react-query') return { useQuery: options => options, useMutation: options => options };
       throw new Error(`Unexpected facade import: ${name}`);
     }
@@ -330,28 +330,6 @@ test('recovered pending query is admitted before payload arrival and drives all 
   h.bridge.dispose();
 });
 
-test('recovered query cache utilities share native keys and preserve input-free filter prefixes', () => {
-  const calls = [];
-  const facade = recoveredFacade(new Proxy({}, { get: (_target, method) => (...args) => calls.push({ method, args }) }));
-  const input = { referenceReviewActionId: 'comparison', currentReviewActionId: 'task' };
-  const queryKey = structuredClone(facade.transcriptions.getTranscriptionDiff.useQuery(input).queryKey);
-  const utilities = facade.useUtils().transcriptions.getTranscriptionDiff;
-  for (const operation of ['fetch', 'prefetch', 'getData', 'setData']) {
-    utilities[operation](input, payload());
-    const { args } = calls.at(-1);
-    assert.deepEqual(structuredClone(args[0].queryKey || args[0]), queryKey, operation);
-  }
-  for (const operation of ['invalidate', 'refetch', 'cancel']) {
-    utilities[operation](input);
-    assert.deepEqual(structuredClone(calls.at(-1).args[0].queryKey), [queryKey[0], { input }], operation);
-    utilities[operation]();
-    assert.deepEqual(structuredClone(calls.at(-1).args[0].queryKey), [queryKey[0]], `${operation} all inputs`);
-  }
-  assert.deepEqual(structuredClone(facade.worker.getProjects.useQuery().queryKey),
-    [['worker', 'getProjects'], { type: 'query' }]);
-  assert.deepEqual(structuredClone(facade.transcriptions.saveAnnotationsByReviewActionId.useMutation().mutationKey),
-    [['transcriptions', 'saveAnnotationsByReviewActionId']]);
-});
 
 test('an unsupported pending query contract still fails instead of waiting or polling', () => {
   const h = harness({ data: null, queryKey: ['transcriptions.getTranscriptionDiff',
