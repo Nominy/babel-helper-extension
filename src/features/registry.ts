@@ -1,6 +1,7 @@
 import type { FeatureModule } from '../core/types';
 import { formatShortcut, type ShortcutSettings } from '../core/shortcuts';
 import { createAudioEnhancementFeature } from './audio-enhancement-feature';
+import { createBaselineResetFeature } from './baseline-reset-feature';
 import { createCustomLinterFeature } from './custom-linter';
 import { createFocusToggleFeature } from './focus-toggle-feature';
 import { createHotkeysHelpFeature } from './hotkeys-help-feature';
@@ -49,10 +50,21 @@ export const FEATURE_REGISTRATIONS = [
       key: 'audioEnhancement',
       defaultEnabled: true,
       label: 'Audio Enhancement',
-      description: 'Show ZipEnhancer controls. Click Generate for each task to enhance both tracks with Gold Drafting. Choose Automatic or Remote inference in Gold settings. Clicking Generate permits remote processing to upload Original audio to official GPU services first, then the swarm if needed. No enhancement runs until clicked.'
+      description: 'Show ZipEnhancer controls. Generate manually, or enable Auto generate in ZipEnhancer settings (off by default). Uses Gold Drafting’s configured backend; remote processing uploads Original audio to official GPU services first, then the swarm if needed.'
     },
     moduleOrder: 5,
     createModule: createAudioEnhancementFeature
+  }),
+  defineFeature({
+    id: 'baseline-reset',
+    setting: {
+      key: 'baselineReset',
+      defaultEnabled: true,
+      label: 'Reset to L1/L0',
+      description: 'Restore all segments from the highest available L1 or L0 baseline after confirmation. Keeps the current task and supports native Undo; does not save or submit.'
+    },
+    moduleOrder: 6,
+    createModule: createBaselineResetFeature
   }),
   defineFeature({
     id: 'hotkeys-help',

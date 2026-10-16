@@ -328,6 +328,82 @@ test('only explicit Generate dispatches once, retries errors, and resets intent 
   await harness.feature.stop();
 });
 
+function setAutoGenerate(harness, enabled) {
+  harness.context.helper.settings.zipEnhancer = { autoGenerate: enabled };
+  harness.dispatchWindow('babel-mods:controller', { detail: {
+    protocolVersion: 1, generation: 1, revision: 1, settingsRevision: 1,
+    type: 'settings:update', reason: 'storage-change'
+  } });
+}
+
+function sourcePair(taskId = 'task-1', sessionId = 'session-1') {
+  return { source: streamModule.AUDIO_ENHANCEMENT_EVENT_SOURCE, type: 'sources-ready', taskId, sessionId,
+    tracks: ['one', 'two'].map(trackId => ({
+      trackId, speakerKey: trackId, trackLabel: trackId, sourceSha256: 'a'.repeat(64), sampleRate: 48000, frameCount: 2
+    })) };
+}
+
+test('opt-in generation starts once per task session and never retries failures automatically', async t => {
+  const harness = await featureHarness(t);
+  setAutoGenerate(harness, true);
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 0, 'No task has been observed yet');
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  harness.publish(state({ revision: 2, status: 'idle', desiredStrength: 0 }));
+  setAutoGenerate(harness, true);
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 1);
+  harness.deliver(sourcePair());
+  harness.deliver(sourcePair());
+  assert.equal(harness.ports.length, 1);
+  harness.publish(state({ revision: 3, status: 'error', message: 'Inference failed' }));
+  setAutoGenerate(harness, false);
+  setAutoGenerate(harness, true);
+  harness.publish(state({ revision: 4, status: 'idle', desiredStrength: 0 }));
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 1);
+  harness.node('[data-details-button]').dispatch('click');
+  harness.deliver(sourcePair());
+  assert.equal(harness.ports.length, 2, 'An explicit retry still works');
+  harness.publish(state({ revision: 5, taskId: 'task-2', status: 'idle', desiredStrength: 0 }), 'session-2');
+  assert.equal(harness.ports[1].disconnected, true);
+  harness.deliver(sourcePair());
+  assert.equal(harness.ports.length, 2, 'Retired task sources cannot launch another job');
+  harness.deliver(sourcePair('task-2', 'session-2'));
+  assert.equal(harness.ports.length, 3);
+  await harness.feature.stop();
+  const count = harness.posts.filter(post => post.type === 'generate').length;
+  setAutoGenerate(harness, true);
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, count);
+});
+
+test('live auto-generation preference starts an idle task and disabling it only prevents future runs', async t => {
+  const harness = await featureHarness(t);
+  harness.publish(state({ status: 'idle', desiredStrength: 0 }));
+  harness.deliver(sourcePair());
+  assert.equal(harness.ports.length, 0);
+  setAutoGenerate(harness, true);
+  harness.deliver(sourcePair());
+  assert.equal(harness.ports.length, 1);
+  setAutoGenerate(harness, false);
+  assert.notEqual(harness.ports[0].disconnected, true, 'Turning off scheduling does not interrupt a requested run');
+  harness.publish(state({ revision: 2, taskId: 'task-2', status: 'idle', desiredStrength: 0 }), 'session-2');
+  harness.deliver(sourcePair('task-2', 'session-2'));
+  assert.equal(harness.ports.length, 1);
+  harness.context.helper.settings.features.audioEnhancement = false;
+  setAutoGenerate(harness, true);
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 1, 'The parent feature must remain enabled');
+  await harness.feature.stop();
+});
+
+test('auto-generation leaves already processing, ready, and failed sessions alone', async t => {
+  const harness = await featureHarness(t);
+  setAutoGenerate(harness, true);
+  for (const [index, status] of ['processing', 'ready', 'error'].entries()) {
+    harness.publish(state({ revision: index + 1, taskId: `existing-${index}`, status }), `existing-session-${index}`);
+  }
+  assert.equal(harness.posts.filter(post => post.type === 'generate').length, 0);
+  assert.equal(harness.ports.length, 0);
+  await harness.feature.stop();
+});
+
 test('disable cancels broker and removes enhancement surfaces; enabling can activate again', async t => {
   const harness = await featureHarness(t);
   const firstPanel = harness.panel;

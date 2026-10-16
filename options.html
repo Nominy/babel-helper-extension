@@ -113,6 +113,17 @@
             <button class="link-btn bui-button" type="button" data-role="ghost-cursor-import-share-button">Import</button>
           </div>
         </div>
+<section class="bui-stack" data-role="zipenhancer-page" aria-labelledby="zipenhancer-title" hidden>
+          <div class="bui-row" data-align="between">
+            <h2 id="zipenhancer-title" class="bui-title">ZipEnhancer</h2>
+            <button class="bui-button" type="button" data-role="back-from-zipenhancer">Back</button>
+          </div>
+          <label class="bui-label bui-card bui-setting-toggle">
+            <input type="checkbox" class="bui-checkbox" data-role="zipenhancer-auto-generate" aria-describedby="zipenhancer-auto-generate-help">
+            <span>Auto generate</span>
+          </label>
+          <p id="zipenhancer-auto-generate-help" class="bui-hint">Off by default. Automatically generate enhanced audio for the current task and each new task while Audio Enhancement is enabled. Uses Gold Drafting's configured backend; remote processing uploads Original audio. Turning this off prevents new automatic runs without interrupting a run already started.</p>
+        </section>
 <div class="footer bui-row" data-align="between">
           <button class="reset-btn bui-button" type="button" data-role="reset">Reset all settings</button>
           <button class="download-btn bui-button" type="button" data-role="download-logs">Download Logs</button>

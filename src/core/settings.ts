@@ -77,6 +77,7 @@ export interface ExtensionSettings {
   customLinterDefaultsVersion: number;
   disabledCustomLinterRuleIds: string[];
   ghostCursor: GhostCursorSettings;
+  zipEnhancer: { autoGenerate: boolean };
   websiteAppearance: WebsiteAppearanceSettings;
 }
 
@@ -308,6 +309,7 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
   disabledCustomLinterRuleIds: [...DEFAULT_DISABLED_CUSTOM_LINTER_RULE_IDS],
   ghostCursor: { ...DEFAULT_GHOST_CURSOR_SETTINGS },
+  zipEnhancer: { autoGenerate: false },
   websiteAppearance: cloneWebsiteAppearanceSettings(DEFAULT_WEBSITE_APPEARANCE_SETTINGS)
 };
 
@@ -947,6 +949,10 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
     incoming.ghostCursor && typeof incoming.ghostCursor === 'object'
       ? incoming.ghostCursor
       : {};
+  const rawZipEnhancer =
+    incoming.zipEnhancer && typeof incoming.zipEnhancer === 'object'
+      ? incoming.zipEnhancer as Record<string, unknown>
+      : {};
   const rawWebsiteAppearance =
     incoming.websiteAppearance && typeof incoming.websiteAppearance === 'object'
       ? incoming.websiteAppearance
@@ -989,6 +995,7 @@ export function normalizeExtensionSettings(source: unknown): ExtensionSettings {
     customLinterDefaultsVersion: CUSTOM_LINTER_DEFAULTS_VERSION,
     disabledCustomLinterRuleIds,
     ghostCursor: normalizeGhostCursorSettings(rawGhostCursor),
+    zipEnhancer: { autoGenerate: rawZipEnhancer.autoGenerate === true },
     websiteAppearance: normalizeWebsiteAppearanceSettings(rawWebsiteAppearance)
   };
 }

@@ -5,6 +5,7 @@ import {
 } from '../core/babel-editor-contract';
 import { readNativeSessionState } from '../site/editor-control';
 import { createNativeFindReplaceClient } from './native-find-replace-client';
+import { createNativeBaselineResetClient } from './native-baseline-reset-client';
 
 export function registerRecoveredEditorSnapshotService(helper: any) {
   if (!helper || helper.__recoveredEditorSnapshotRegistered) {
@@ -209,6 +210,7 @@ export function registerRecoveredEditorSnapshotService(helper: any) {
   };
 
   Object.assign(helper, createNativeFindReplaceClient(callRecoveredEditorBridge));
+  Object.assign(helper, createNativeBaselineResetClient(callRecoveredEditorBridge));
 
   helper.findRowFromEditorSnapshot = function findRowFromEditorSnapshot(target) {
     const snapshot = helper.getEditorSnapshot();

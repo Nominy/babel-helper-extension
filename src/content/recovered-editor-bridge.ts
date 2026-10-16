@@ -16,6 +16,16 @@ import {
 } from './native-find-replace';
 import { NATIVE_COMPATIBILITY_CHANGE_EVENT, NATIVE_MERGE_GAPS_ATTRIBUTE, NATIVE_FIND_REPLACE_ATTRIBUTE } from '../core/native-compatibility';
 import { showNativeAutomationFailure } from '../ui/native-automation-failure';
+import {
+  prepareBaselineReset, applyBaselineReset, discardBaselineReset,
+  invalidateBaselineReset, reconcileBaselineReset, installBaselineResetTracking
+} from './native-baseline-reset';
+
+const BASELINE_METHODS = {
+  'prepare-baseline-reset': 'prepareBaselineReset',
+  'apply-baseline-reset': 'applyBaselineReset',
+  'discard-baseline-reset': 'discardBaselineReset'
+};
 
 const REPLACEMENT_METHODS = {
   'native-replacement-status': 'getNativeReplacementStatus',
@@ -67,6 +77,7 @@ export function initRecoveredEditorBridge() {
   let mergePolicyFailed = false;
   let replacementTrackingFailed = false;
   let stopNativeCoverage = null;
+  const stopBaselineTracking = installBaselineResetTracking();
 
   function reconcileNativeCoverage(state) {
     const stop = stopNativeCoverage;
@@ -155,6 +166,7 @@ export function initRecoveredEditorBridge() {
     const publication = { href, generation: sessionGeneration, reviewActionId, readOnly, status, error: sessionError };
     const payload = JSON.stringify(publication);
     retireNativeCompatibility();
+    invalidateBaselineReset();
     mergePolicyFailed = false;
     replacementTrackingFailed = false;
     publishedSession = publication;
@@ -166,6 +178,7 @@ export function initRecoveredEditorBridge() {
   }
 
   function publishEditorCommit(committed = false) {
+    reconcileBaselineReset();
     const rows = !sessionError && sessionUnsubscribe ? rowIdentityIndex.reconcile(committed) : null;
     const publication = { href: window.location.href, generation: sessionGeneration,
       reviewActionId: rows?.reviewActionId || '', annotationRevision: rows?.revision ?? null,
@@ -1557,6 +1570,9 @@ export function initRecoveredEditorBridge() {
     runNativeReplacementRules,
     recoverNativeReplacementRules,
     acceptAllNativeWarnings,
+    prepareBaselineReset,
+    applyBaselineReset,
+    discardBaselineReset,
     getTranscriptionDiffToolbarProps,
     findCurrentTranscriptionDiffQueryResult,
     patchTranscriptionDiffPayload,
@@ -1571,6 +1587,9 @@ export function initRecoveredEditorBridge() {
     runNativeReplacementRules,
     recoverNativeReplacementRules,
     acceptAllNativeWarnings,
+    prepareBaselineReset,
+    applyBaselineReset,
+    discardBaselineReset,
     raw: rawImplementation
   };
 
@@ -1616,6 +1635,13 @@ export function initRecoveredEditorBridge() {
     const detail = event.detail || {};
     const id = detail.id;
     if (!id) {
+      return;
+    }
+    if (Object.hasOwn(BASELINE_METHODS, detail.operation)) {
+      Promise.resolve().then(() => invokeService(BASELINE_METHODS[detail.operation], detail.payload)).then(
+        result => respond(id, result),
+        error => respond(id, { ok: false, reason: error instanceof Error ? error.message : String(error) })
+      );
       return;
     }
     if (Object.hasOwn(REPLACEMENT_METHODS, detail.operation)) {
@@ -1666,6 +1692,7 @@ export function initRecoveredEditorBridge() {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    stopBaselineTracking();
     retireNativeCompatibility();
     reconcileNativeCoverage(null);
     sessionGeneration++;
@@ -1722,6 +1749,9 @@ export function initRecoveredEditorBridge() {
     applyExtendedDiffState: (...args) => invokeService('applyExtendedDiffState', ...args),
     clearExtendedDiffState: (...args) => invokeService('clearExtendedDiffState', ...args),
     acceptAllNativeWarnings: (...args) => invokeService('acceptAllNativeWarnings', ...args),
+    prepareBaselineReset: (...args) => invokeService('prepareBaselineReset', ...args),
+    applyBaselineReset: (...args) => invokeService('applyBaselineReset', ...args),
+    discardBaselineReset: (...args) => invokeService('discardBaselineReset', ...args),
     implementation: rawImplementation,
     dispose
   };

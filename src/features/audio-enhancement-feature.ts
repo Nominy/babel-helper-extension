@@ -2,6 +2,7 @@ import { confirmDialog, UI_STYLES, themeRoot } from '@nominy/babel-extension-fro
 import { isAudioEnhancementProgress, isAudioEnhancementStrength, type AudioEnhancementState } from '@nominy/babel-babel-runtime';
 import type { FeatureContext, FeatureModule } from '../core/types';
 import { requestGoldDraftingAiBroker } from '../services/gold-drafting-ai-broker';
+import { BABEL_MOD_CONTROLLER_EVENT, isControllerTransition } from '../mod-platform/protocol';
 import {
   AUDIO_ENHANCEMENT_COMMAND_SOURCE, AUDIO_ENHANCEMENT_EVENT_SOURCE,
   AudioEnhancementStreamAssembler, isAudioEnhancementState, isEnhancementSourceTrack, type EnhancementSourceTrack
@@ -329,6 +330,26 @@ export function createAudioEnhancementFeature(): FeatureModule {
     positionDetails();
   }
 
+  function requestGeneration(automatic = false): void {
+    if (!active || !started || !ctx.helper.settings.features.audioEnhancement ||
+        !currentSession || !currentTask || generationQueued || !state || state.taskId !== currentTask) return;
+    if (automatic) {
+      if (ctx.helper.settings.zipEnhancer?.autoGenerate !== true || generationRequested || state.status !== 'idle') return;
+    } else if (state.status !== 'idle' && state.status !== 'error') return;
+    cancelStream();
+    cancelStrengthSelection();
+    generationRequested = true;
+    generationQueued = true;
+    generationDispatched = false;
+    post('generate', { sessionId: currentSession, taskId: currentTask });
+    render();
+  }
+
+  function handleSettingsChange(event: Event): void {
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (isControllerTransition(detail) && detail.type === 'settings:update') requestGeneration(true);
+  }
+
   function ensurePanel(): void {
     if (panel) { render(); return; }
     panel = document.createElement('span');
@@ -374,17 +395,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const detailsButton = shadow.querySelector<HTMLButtonElement>('[data-details-button]')!;
     detailsButton.addEventListener('keydown', event => event.stopPropagation());
     detailsButton.addEventListener('keyup', event => event.stopPropagation());
-    detailsButton.addEventListener('click', () => {
-      if (!active || !currentSession || !currentTask || generationQueued ||
-          state?.taskId !== currentTask || state.status !== 'idle' && state.status !== 'error') return;
-      cancelStream();
-      cancelStrengthSelection();
-      generationRequested = true;
-      generationQueued = true;
-      generationDispatched = false;
-      post('generate', { sessionId: currentSession, taskId: currentTask });
-      render();
-    });
+    detailsButton.addEventListener('click', () => requestGeneration());
     const slider = shadow.querySelector<HTMLInputElement>('[data-strength]')!;
     slider.addEventListener('pointerdown', event => {
       if (event.button !== 0 || !canSelectStrength() || sliderPointerId !== null ||
@@ -517,6 +528,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
         if (ctx.helper.settings.features.minimap) ctx.services.minimap.bindMinimap();
       }
       render();
+      requestGeneration(true);
       return;
     }
     if (data.type === 'sources-ready' && Array.isArray(data.tracks) &&
@@ -536,6 +548,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     const activation = ++lifecycleRevision;
     active = true;
     window.addEventListener('message', handleMessage);
+    window.addEventListener(BABEL_MOD_CONTROLLER_EVENT, handleSettingsChange);
     window.addEventListener('pagehide', handlePageHide);
     window.addEventListener('popstate', handleSelectionNavigation);
     window.addEventListener('babel-helper-bridge-teardown', handlePageHide);
@@ -589,6 +602,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
     stopElapsed();
     cancelStrengthSelection(true);
     observer?.disconnect(); observer = null;
+    window.removeEventListener(BABEL_MOD_CONTROLLER_EVENT, handleSettingsChange);
     window.removeEventListener('pagehide', handlePageHide);
     window.removeEventListener('popstate', handleSelectionNavigation);
     window.removeEventListener('babel-helper-bridge-teardown', handlePageHide);
@@ -647,6 +661,7 @@ export function createAudioEnhancementFeature(): FeatureModule {
       stopElapsed();
       cancelStrengthSelection(true);
       window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener(BABEL_MOD_CONTROLLER_EVENT, handleSettingsChange);
       window.removeEventListener('popstate', handleSelectionNavigation);
       window.removeEventListener('babel-helper-bridge-teardown', handlePageHide);
       window.removeEventListener('pointerup', handleSliderPointerEnd, true);

@@ -267,7 +267,7 @@ function renderFeatureCards(list: HTMLElement) {
     details.appendChild(title);
     details.appendChild(description);
 
-    if (key === 'customLinter' || key === 'proportionalCursorRestore') {
+    if (key === 'customLinter' || key === 'proportionalCursorRestore' || key === 'audioEnhancement') {
       const actions = document.createElement('div');
       actions.className = 'feature-actions bui-row';
 
@@ -275,8 +275,8 @@ function renderFeatureCards(list: HTMLElement) {
       actionButton.type = 'button';
       actionButton.className = 'link-btn bui-button';
       actionButton.dataset.role =
-        key === 'customLinter' ? 'manage-custom-linter-rules' : 'customize-ghost-cursor';
-      actionButton.textContent = key === 'customLinter' ? 'Manage rules' : 'Customize ghost cursor';
+        key === 'customLinter' ? 'manage-custom-linter-rules' : key === 'audioEnhancement' ? 'manage-zipenhancer' : 'customize-ghost-cursor';
+      actionButton.textContent = key === 'customLinter' ? 'Manage rules' : key === 'audioEnhancement' ? 'ZipEnhancer settings' : 'Customize ghost cursor';
       actions.appendChild(actionButton);
       details.appendChild(actions);
     }
@@ -355,9 +355,11 @@ function applySettingsToInputs(
   highlightedWordsInput: HTMLTextAreaElement | undefined,
   highlightedWordsEnabledInput: HTMLInputElement | undefined,
   ghostCursorInputs: GhostCursorInputMap,
-  editorModeInput: HTMLSelectElement
+  editorModeInput: HTMLSelectElement,
+  autoGenerateInput: HTMLInputElement
 ) {
   editorModeInput.value = settings.editorMode;
+  autoGenerateInput.checked = settings.zipEnhancer.autoGenerate;
   for (const key of FEATURE_KEYS) {
     inputs[key].checked = Boolean(settings.features[key]);
   }
@@ -390,7 +392,8 @@ function readSettingsFromInputs(
   ghostCursorInputs: GhostCursorInputMap,
   websiteAppearance: ExtensionSettings['websiteAppearance'],
   shortcuts: ShortcutSettings,
-  editorMode: EditorMode
+  editorMode: EditorMode,
+  autoGenerate: boolean
 ): ExtensionSettings {
   const features = {} as ExtensionSettings['features'];
   for (const key of FEATURE_KEYS) {
@@ -399,6 +402,7 @@ function readSettingsFromInputs(
 
   return {
     editorMode,
+    zipEnhancer: { autoGenerate },
     features,
     highlightedWordsEnabled: highlightedWordsEnabledInput.checked,
     highlightedWords: normalizeHighlightedWords(highlightedWordsInput.value),
@@ -446,6 +450,9 @@ async function boot() {
   const featureList = requireElement<HTMLElement>('[data-role="feature-list"]');
   const statusElement = requireElement<HTMLElement>('[data-role="status"]');
   const editorModeInput = requireElement<HTMLSelectElement>('[data-role="editor-mode"]');
+  const autoGenerateInput = requireElement<HTMLInputElement>('[data-role="zipenhancer-auto-generate"]');
+  const zipEnhancerPage = requireElement<HTMLElement>('[data-role="zipenhancer-page"]');
+  const backFromZipEnhancerButton = requireElement<HTMLButtonElement>('[data-role="back-from-zipenhancer"]');
   const resetButton = requireElement<HTMLButtonElement>('[data-role="reset"]');
   const downloadButton = requireElement<HTMLButtonElement>('[data-role="download-logs"]');
   const highlightedWordsEnabledInput = requireElement<HTMLInputElement>('[data-role="highlighted-words-enabled"]');
@@ -471,6 +478,7 @@ async function boot() {
 
   renderFeatureCards(featureList);
   const customizeGhostCursorButton = requireElement<HTMLButtonElement>('[data-role="customize-ghost-cursor"]');
+  const manageZipEnhancerButton = requireElement<HTMLButtonElement>('[data-role="manage-zipenhancer"]');
   const inputs = getFeatureInputs();
   const ruleInputs = renderCustomLinterRuleCards(customLinterRuleList);
   const manageRulesButton = requireElement<HTMLButtonElement>('[data-role="manage-custom-linter-rules"]');
@@ -489,7 +497,8 @@ async function boot() {
       highlightedWordsInput,
       highlightedWordsEnabledInput,
       ghostCursorInputs,
-      editorModeInput
+      editorModeInput,
+      autoGenerateInput
     );
     refreshGhostCursorShare(settings.ghostCursor);
     if (!loaded) throw new Error('Could not load settings.');
@@ -502,7 +511,8 @@ async function boot() {
   let saveQueue = Promise.resolve();
   const save = (
     websiteAppearanceOverride?: ExtensionSettings['websiteAppearance'],
-    editorModeOverride?: EditorMode
+    editorModeOverride?: EditorMode,
+    zipEnhancerOverride?: ExtensionSettings['zipEnhancer']
   ) => {
     const formSettings = readSettingsFromInputs(
       inputs,
@@ -512,7 +522,8 @@ async function boot() {
       ghostCursorInputs,
       retainedWebsiteAppearance,
       shortcutEditor.getSettings(),
-      normalizeEditorMode(editorModeInput.value)
+      normalizeEditorMode(editorModeInput.value),
+      autoGenerateInput.checked
     );
     const run = async () => {
       setStatus(statusElement, 'Saving...');
@@ -525,6 +536,7 @@ async function boot() {
         const persisted = await saveExtensionSettings({
           ...formSettings,
           editorMode: editorModeOverride ?? latest.settings.editorMode,
+          zipEnhancer: zipEnhancerOverride ?? latest.settings.zipEnhancer,
           websiteAppearance: retainedWebsiteAppearance
         });
         retainedWebsiteAppearance = persisted.websiteAppearance;
@@ -535,7 +547,8 @@ async function boot() {
           highlightedWordsInput,
           highlightedWordsEnabledInput,
           ghostCursorInputs,
-          editorModeInput
+          editorModeInput,
+          autoGenerateInput
         );
         refreshGhostCursorShare(persisted.ghostCursor);
         if (editorModeOverride !== undefined) {
@@ -557,6 +570,9 @@ async function boot() {
 
   editorModeInput.addEventListener('change', () => {
     void save(undefined, normalizeEditorMode(editorModeInput.value));
+  });
+  autoGenerateInput.addEventListener('change', () => {
+    void save(undefined, undefined, { autoGenerate: autoGenerateInput.checked });
   });
 
   for (const key of FEATURE_KEYS) {
@@ -606,9 +622,10 @@ async function boot() {
       highlightedWordsInput,
       highlightedWordsEnabledInput,
       ghostCursorInputs,
-      editorModeInput
+      editorModeInput,
+      autoGenerateInput
     );
-    void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance, DEFAULT_EXTENSION_SETTINGS.editorMode);
+    void save(DEFAULT_EXTENSION_SETTINGS.websiteAppearance, DEFAULT_EXTENSION_SETTINGS.editorMode, DEFAULT_EXTENSION_SETTINGS.zipEnhancer);
   });
 
   manageShortcutsButton.addEventListener('click', () => {
@@ -643,6 +660,18 @@ async function boot() {
   backFromGhostCursorButton.addEventListener('click', () => {
     ghostCursorPage.hidden = true;
     settingsHome.hidden = false;
+  });
+  manageZipEnhancerButton.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    settingsHome.hidden = true;
+    zipEnhancerPage.hidden = false;
+    autoGenerateInput.focus();
+  });
+  backFromZipEnhancerButton.addEventListener('click', () => {
+    zipEnhancerPage.hidden = true;
+    settingsHome.hidden = false;
+    manageZipEnhancerButton.focus();
   });
 
   copyShareButton.addEventListener('click', async () => {

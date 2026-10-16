@@ -192,15 +192,34 @@ test('options render enhancement immediately and persist changes and reset witho
   const enhancement = () => document.querySelector('input[name="audioEnhancement"]');
   assert.equal(enhancement().checked, false);
   assert.equal(root.all().some(element => element.textContent === 'Audio Enhancement'), true);
+  const autoGenerate = role('zipenhancer-auto-generate');
+  assert.equal(autoGenerate.checked, false);
+  role('manage-zipenhancer').emit('click');
+  assert.equal(role('settings-home').hidden, true);
+  assert.equal(role('zipenhancer-page').hidden, false);
+  autoGenerate.checked = true;
+  autoGenerate.emit('change');
+  await settle();
+  assert.equal(stored.zipEnhancer.autoGenerate, true);
+  role('back-from-zipenhancer').emit('click');
+  assert.equal(role('zipenhancer-page').hidden, true);
+  assert.equal(role('settings-home').hidden, false);
   const minimap = document.querySelector('input[name="minimap"]');
   minimap.checked = false; minimap.emit('change');
   await settle();
   assert.equal(stored.features.minimap, false);
   assert.equal(stored.features.audioEnhancement, false);
+  assert.equal(stored.zipEnhancer.autoGenerate, true, 'Unrelated preferences retain the opt-in');
+  stored.zipEnhancer = { autoGenerate: false };
+  minimap.checked = true; minimap.emit('change');
+  await settle();
+  assert.equal(stored.zipEnhancer.autoGenerate, false, 'A stale options form cannot re-enable automation');
+  assert.equal(autoGenerate.checked, false);
   role('reset').emit('click');
   await settle();
   assert.equal(stored.features.minimap, true);
   assert.equal(stored.features.audioEnhancement, true, 'Reset restores the normal enabled default');
+  assert.equal(stored.zipEnhancer.autoGenerate, false, 'Reset never enables automatic processing');
   assert.equal(enhancement().checked, true);
   enhancement().checked = false; enhancement().emit('change');
   await settle();
@@ -216,4 +235,12 @@ test('options render enhancement immediately and persist changes and reset witho
   window.emit('pagehide');
   assert.equal(enhancement().checked, true);
   assert.ok(writes.length >= 4);
+});
+
+test('automatic enhancement requires an explicit stored boolean opt-in', async () => {
+  const { normalizeExtensionSettings } = await load("export { normalizeExtensionSettings } from './src/core/settings';");
+  for (const value of [undefined, null, {}, { autoGenerate: 'true' }, { autoGenerate: 1 }, true]) {
+    assert.equal(normalizeExtensionSettings({ zipEnhancer: value }).zipEnhancer.autoGenerate, false);
+  }
+  assert.equal(normalizeExtensionSettings({ zipEnhancer: { autoGenerate: true } }).zipEnhancer.autoGenerate, true);
 });
