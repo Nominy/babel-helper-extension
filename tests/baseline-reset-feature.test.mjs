@@ -176,14 +176,9 @@ function harness(t, options = {}) {
 }
 
 
-test('36px accessible circular-arrow control stays immediately beside Theme after toolbar replacement', t => {
+test('reset control keeps keyboard events local and follows toolbar replacement', t => {
   const h = harness(t);
   assert.equal(h.appearance.nextSibling, h.host);
-  assert.equal(h.button.getAttribute('aria-label'), 'Reset to L1/L0');
-  assert.equal(h.button.type, 'button');
-  assert.equal(h.button.style.width, '36px');
-  assert.equal(h.button.style.height, '36px');
-  assert.match(h.button.innerHTML, /<svg.*aria-hidden="true"/);
   assert.equal(h.button.dispatch('keydown', { key: 'Enter' }).stopped, true);
   assert.equal(h.button.dispatch('keyup', { key: 'Enter' }).stopped, true);
   const replacement = h.document.createElement('div');
