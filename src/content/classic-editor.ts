@@ -239,7 +239,7 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     }, [scroll]);
     React.useLayoutEffect(() => { scroll.setPlaying(Boolean(nativeProps.isAnyPlaying)); });
     const previous = panelScope;
-    panelScope = scroll;
+    panelScope = { scroll, playing: Boolean(nativeProps.isAnyPlaying) };
     try { return nativeType(nativeProps); }
     finally { panelScope = previous; }
   }
@@ -280,10 +280,14 @@ export function createClassicEditorAdapter(report, nativeRequire) {
       if (Object.hasOwn(namespace, 'useEffect') && Object.hasOwn(namespace, 'createContext')) {
         result = facade(adapted, {
           useEffect(callback, dependencies) {
-            const scroll = panelScope;
-            return adapted.useEffect(scroll && isClassicNativeFollowEffect(callback, dependencies)
-              ? () => { if (!released) scroll.follow(dependencies[0]); }
-              : callback, dependencies);
+            const scope = panelScope;
+            if (scope && isClassicNativeFollowEffect(callback, dependencies)) {
+              // Resume must reveal the current filtered row even when its ID
+              // did not change while paused.
+              return adapted.useEffect(() => { if (!released) scope.scroll.follow(dependencies[0]); },
+                [dependencies[0], dependencies[1], scope.playing]);
+            }
+            return adapted.useEffect(callback, dependencies);
           }
         });
       }
