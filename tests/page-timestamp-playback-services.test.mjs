@@ -1282,34 +1282,29 @@ async function nativeCutHarness(t, label) {
   return { pageWindow, original, model, bridge, helper, preview, control, calls };
 }
 
-test('S refuses unavailable timing before mutation and an explicit Shift+S retry remains native', async t => {
+test('an invalid smart split plan is rejected before native mutation', async t => {
   const h = await nativeCutHarness(t, 'cut-timing-admission');
   h.control.textParts = null;
   assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
-  assert.equal(h.preview.failureReason, 'timing-boundary-unavailable');
+  assert.equal(h.preview.failureReason, 'invalid-split-plan');
   assert.equal(h.helper.state.cutPreview, h.preview);
   assert.equal(h.helper.state.cutCommitPending, false);
   assert.deepEqual(h.calls, []);
   assert.deepEqual(h.model.state.annotations, [h.original]);
+});
+
+test('Shift+S retains native duplication without requiring smart timing allocation', async t => {
+  const h = await nativeCutHarness(t, 'cut-native-text');
+  h.control.textParts = null;
   assert.equal(await h.helper.commitCutPreview(), true);
   assert.equal(h.helper.state.cutPreview, null);
-  assert.equal(h.calls[0].payload.texts, undefined, 'native mode deliberately duplicates native source text');
+  assert.equal(h.calls[0].payload.texts, undefined);
   assert.deepEqual(h.model.state.annotations.map(turn => turn.content), [h.original.content, h.original.content]);
-  assert.deepEqual(h.model.state.annotations.map(turn => [turn.startTimeInSeconds, turn.endTimeInSeconds]),
-    [[1, 2], [4, 8]]);
+  assert.deepEqual(h.model.state.annotations.map(turn => [turn.startTimeInSeconds, turn.endTimeInSeconds]), [[1, 2], [4, 8]]);
   for (let index = 1; index < h.calls.length; index++) {
     assert.equal(h.calls[index].payload.expectedHistoryRevision, h.calls[index - 1].result.historyRevision);
     assert.equal(h.calls[index].payload.expectedHistoryToken, h.calls[index - 1].result.historyToken);
   }
-});
-
-test('an explicit S retry admits newly available timing without clearing the preview manually', async t => {
-  const h = await nativeCutHarness(t, 'cut-timing-retry');
-  h.control.textParts = null;
-  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), false);
-  h.control.textParts = { firstText: 'alpha ', secondText: 'beta gamma' };
-  assert.equal(await h.helper.commitCutPreview({ smartSplit: true }), true);
-  assert.deepEqual(h.model.state.annotations.map(turn => turn.content), ['alpha ', 'beta gamma']);
 });
 
 test('native cut rolls back the exact owned suffix when either trim fails after mutation', async t => {

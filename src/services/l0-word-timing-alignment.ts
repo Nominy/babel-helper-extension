@@ -341,9 +341,9 @@ export function findL0TimingAnchors(
 
 
 /**
- * Admits a destructive cut only when every maximum exact-word alignment agrees
- * on its adjacent anchors. Unlike playback interpolation, missing words cannot
- * bridge a cut. Adjacent verified words may have an arbitrarily long real pause.
+ * Finds an exact boundary when maximum exact-word alignments agree locally.
+ * Overlaps elsewhere in the segment do not invalidate this boundary. Callers
+ * can use playback interpolation when the local exact evidence is ambiguous.
  */
 export function computeL0CutBoundaryCharacterOffset(
   text: string,
@@ -369,10 +369,9 @@ export function computeL0CutBoundaryCharacterOffset(
     .sort((left, right) => left.startSeconds - right.startSeconds || left.endSeconds - right.endSeconds);
   const n = textWords.length;
   const m = timedWords.length;
-  if (!n || !m || timedWords.some((word, index) =>
+  if (!n || !m || timedWords.some(word =>
     !Number.isFinite(word.startSeconds) || !Number.isFinite(word.endSeconds) ||
-    word.endSeconds <= word.startSeconds ||
-    (index > 0 && timedWords[index - 1].endSeconds > word.startSeconds)
+    word.endSeconds <= word.startSeconds
   )) return null;
 
   const before = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
@@ -409,6 +408,8 @@ export function computeL0CutBoundaryCharacterOffset(
   // the active word belongs on the right, never split its characters.
   const next = timedWords.findIndex((word) => word.endSeconds > cutSeconds);
   const right = next === -1 ? m : next;
+  if (right > 0 && right < m && timedWords[right - 1].endSeconds > timedWords[right].startSeconds) return null;
+  if (right + 1 < m && timedWords[right + 1].startSeconds <= cutSeconds) return null;
   const leftText = right > 0 ? requiredTextAnchor(right - 1) : null;
   const rightText = right < m ? requiredTextAnchor(right) : null;
   if (right === 0) return rightText === 0 ? 0 : null;

@@ -264,20 +264,20 @@ test('S cuts a real region, preserves text once, and native merge restores one r
     .map(annotation => annotation.content))).toEqual(split.slice(0, 2).map(row => row.text));
 });
 
-test('S refuses missing word timing without changing native history and admits an explicit retry', async ({ page, babel }) => {
+test('S estimates missing word timing and preserves every word once through native split and trims', async ({ page, babel }) => {
   await mergedLaneFixture(babel);
   await ready(page, 3);
   await fit(page);
   const before = await annotations(page), historyBefore = await historyDepth(page);
   await preview(page, 2, 3.3);
   await page.keyboard.press('KeyS');
-  await expect(page.locator(`${PREVIEW} [data-babel-helper-cut-label]`)).toContainText('Word timing boundary unavailable');
-  expect(await annotations(page)).toEqual(before);
-  expect(await historyDepth(page)).toBe(historyBefore);
-  await publishFixtureWordTimings(page);
-  await page.keyboard.press('KeyS');
   await expect(page.locator(PREVIEW)).toHaveCount(0);
   await expect(page.locator(TEXT)).toHaveCount(4);
+  const after = await annotations(page);
+  const halves = after.filter(row => row.processedRecordingId === 'speaker-1').sort((a, b) => a.startTimeInSeconds - b.startTimeInSeconds);
+  expect(halves.map(row => row.content).join(' ')).toBe(before.find(row => row.processedRecordingId === 'speaker-1').content);
+  expect(after.filter(row => row.processedRecordingId !== 'speaker-1')).toEqual(before.filter(row => row.processedRecordingId !== 'speaker-1'));
+  expect(await historyDepth(page)).toBeGreaterThan(historyBefore);
 });
 
 test('Shift+S keeps native duplicated text while cutting, and a fully covered region is deleted', async ({ page, babel }) => {

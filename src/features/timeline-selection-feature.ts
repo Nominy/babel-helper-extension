@@ -296,11 +296,9 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
     if (label instanceof HTMLElement) {
       const labelText = preview.failureReason === 'partial-cut'
         ? `Cut may be partially applied (${preview.failureDetails.reason}). Safe rollback stopped (${preview.failureDetails.rollbackReason}); inspect native history before continuing.`
-        : preview.failureReason === 'timing-boundary-unavailable'
-          ? 'Word timing boundary unavailable. Refresh current-task timing or use Shift+S for native text duplication.'
-          : preview.failureReason
-            ? 'Cut unavailable: ' + preview.failureReason + '. Create a new selection.'
-            : Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
+        : preview.failureReason
+          ? 'Cut unavailable: ' + preview.failureReason + '. Create a new selection.'
+          : Number.isFinite(duration) ? duration.toFixed(2) + 's' : '';
       label.textContent = labelText;
       label.style.display = labelText ? 'block' : 'none';
       label.dataset.tone = tooShort ? 'danger' : 'neutral';
@@ -884,14 +882,9 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
   helper.commitCutPreview = async function commitCutPreview(options) {
     const preview = helper.state.cutPreview;
     if (!preview || helper.state.cutCommitPending) return false;
-    if (preview.failureReason && preview.failureReason !== 'timing-boundary-unavailable') return false;
+    if (preview.failureReason) return false;
     if (!preview.isCurrentTask?.() || !isPreviewHostCurrent(preview)) {
       return rejectCutPreview(preview, 'stale-selection-source');
-    }
-    if (preview.failureReason === 'timing-boundary-unavailable') {
-      // An explicit S/Shift+S retry must revalidate the source and conversion.
-      preview.failureReason = '';
-      preview.failureDetails = null;
     }
     helper.stopSelectionLoop();
     if (cancelCutPreviewIfZoomChanged()) return false;
@@ -1003,7 +996,7 @@ export function registerTimelineSelection(helper: any, api: Pick<TimelineModules
       const textParts = plan.splitRequired && options?.smartSplit
         ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
       if (plan.splitRequired && options?.smartSplit && !textParts) {
-        return await fail('timing-boundary-unavailable');
+        return await fail('invalid-split-plan');
       }
       targetOptions = {
         selectionTarget,

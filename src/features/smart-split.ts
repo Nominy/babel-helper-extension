@@ -1,7 +1,7 @@
 // @ts-nocheck
-import { splitAutoSegmentTextAtFloorOffset } from './auto-segmentation/text-allocation';
+import { splitAutoSegmentTextAtFloorOffset, splitAutoSegmentTextByWordRatio } from './auto-segmentation/text-allocation';
 import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
-import { computeL0CutBoundaryCharacterOffset } from '../services/l0-word-timing-alignment';
+import { computeL0CutBoundaryCharacterOffset, computeL0TimedCharacterOffset } from '../services/l0-word-timing-alignment';
 import { buildL0TimingLaneAliases, captureL0TaskGuard, resolveL0TimingTrack } from '../services/l0-timing-identity';
 import type { TimelineModules } from '../services/timeline-selection-service';
 import { replaceClassicEditorValues } from '../site/editor-control';
@@ -14,6 +14,15 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
   helper.state.smartSplitClickDraft = null;
 
   helper.state.smartSplitClickContext = null;
+
+  function captureSplitTaskGuard() {
+    const reviewActionId = helper.state.nativeSessionAdmission?.reviewActionId;
+    const revision = helper.state.sessionLifecycleRevision;
+    const currentAudio = captureL0TaskGuard({ includeAudioVariant: true });
+    return () => Boolean(reviewActionId &&
+      helper.state.nativeSessionAdmission?.reviewActionId === reviewActionId &&
+      helper.state.sessionLifecycleRevision === revision && currentAudio());
+  }
 
 
   function isSmartSplitClickEvent(event) {
@@ -60,6 +69,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
     const sourceText = helper.getRowTextValue(row);
 
     return {
+      isCurrentTask: captureSplitTaskGuard(),
       sourceRow: row,
       sourceRowIndex,
       sourceSpeakerIndex,
@@ -275,6 +285,11 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
   function getSmartSplitTextParts(plan) {
     if (typeof plan?.sourceText !== 'string') return null;
+    if (plan.isCurrentTask && !plan.isCurrentTask()) return null;
+    const range = plan.sourceRange;
+    if (!range || !Number.isFinite(range.startSeconds) || !Number.isFinite(range.endSeconds) ||
+        !Number.isFinite(plan.splitSeconds) || plan.splitSeconds <= range.startSeconds ||
+        plan.splitSeconds >= range.endSeconds) return null;
     if (!plan.sourceText.trim()) {
       return { firstText: '', secondText: '', splitCount: 0, wordCount: 0, source: 'empty' };
     }
@@ -283,7 +298,6 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       timingIndex,
       plan.timingLaneAliases || buildL0TimingLaneAliases({ speakerKey: plan.speakerKey })
     );
-    const range = plan.sourceRange;
     if (
       timingTrack &&
       range &&
@@ -306,8 +320,13 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
           source: 'l0-completed-word'
         };
       }
+      const alignedOffset = computeL0TimedCharacterOffset(plan.sourceText, timingTrack.tokens, range, plan.splitSeconds);
+      if (alignedOffset !== null) {
+        return { ...splitAutoSegmentTextAtFloorOffset(plan.sourceText, alignedOffset), source: 'l0-interpolated' };
+      }
     }
-    return null;
+    return splitAutoSegmentTextByWordRatio(plan.sourceText,
+      (plan.splitSeconds - range.startSeconds) / (range.endSeconds - range.startSeconds));
   }
 
 
@@ -332,7 +351,8 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       return false;
     }
 
-    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    const isCurrentTask = context.isCurrentTask || captureSplitTaskGuard();
+    if (!isCurrentTask()) return false;
     const detected = await waitForDuplicateSplitRows(
       context.rows,
       context.speakerKey,
@@ -385,7 +405,8 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
       return false;
     }
 
-    const isCurrentTask = captureL0TaskGuard({ includeAudioVariant: true });
+    const isCurrentTask = plan.isCurrentTask || captureSplitTaskGuard();
+    if (!isCurrentTask()) return false;
     const rows = await waitForSmartSplitRows(plan.sourceRow, plan.sourceRowIndex, plan.rowCount, {
       speakerKey: plan.speakerKey,
       sourceSpeakerIndex: plan.sourceSpeakerIndex
@@ -486,6 +507,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
 
     return {
+      isCurrentTask: captureSplitTaskGuard(),
       sourceRow,
       sourceRowIndex,
       sourceSpeakerIndex,
@@ -617,6 +639,7 @@ export function registerSmartSplit(helper: any, api: Pick<TimelineModules, 'site
 
     const draft = getSmartSplitClickDraft(event);
     helper.state.smartSplitClickContext = {
+      isCurrentTask: captureSplitTaskGuard(),
       rowCount: helper.getTranscriptRows().length,
       speakerKey:
         (draft && typeof draft.speakerKey === 'string' && draft.speakerKey) ||

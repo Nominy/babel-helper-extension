@@ -1,3 +1,4 @@
+import { tokenizeTranscriptText } from '../custom-linter/linter/text-context';
 import {
   computeL0TimedCharacterOffset,
   type L0WordTimingToken
@@ -164,12 +165,14 @@ function floorWordBoundary(text: string, index: number, minIndex: number, maxInd
   if (clamped >= maxIndex) {
     return maxIndex;
   }
-  for (let cursor = clamped; cursor >= minIndex; cursor -= 1) {
-    if (/\s/u.test(text[cursor] || '')) {
-      return cursor;
-    }
+  let boundary = minIndex;
+  for (const token of tokenizeTranscriptText(text)) {
+    if (token.start > clamped) break;
+    if (token.kind !== 'space') continue;
+    const candidate = Math.min(clamped, token.end - 1);
+    if (candidate >= minIndex) boundary = candidate;
   }
-  return minIndex;
+  return boundary;
 }
 
 export function splitAutoSegmentTextAtFloorOffset(text: string, offset: number) {
@@ -186,6 +189,23 @@ export function splitAutoSegmentTextAtFloorOffset(text: string, offset: number) 
     wordCount: splitCount + (secondText ? secondText.split(/\s+/).length : 0),
     source: 'ghost-cursor-timing'
   };
+}
+
+/** Estimate only when no usable clock exists; keep tag payloads and raw spacing intact. */
+export function splitAutoSegmentTextByWordRatio(text: string, ratio: number) {
+  const source = typeof text === 'string' ? text : '';
+  const starts: number[] = [];
+  let inUnit = false;
+  for (const token of tokenizeTranscriptText(source)) {
+    if (token.kind === 'space') { inUnit = false; continue; }
+    if (!inUnit) starts.push(token.start);
+    inUnit = true;
+  }
+  const fraction = Math.max(0, Math.min(1, Number(ratio) || 0));
+  let count = Math.round(starts.length * fraction);
+  if (fraction > 0 && fraction < 1 && starts.length > 1) count = Math.max(1, Math.min(starts.length - 1, count));
+  const offset = count <= 0 ? 0 : count >= starts.length ? source.length : starts[count];
+  return { ...splitAutoSegmentTextAtFloorOffset(source, offset), source: 'word-ratio' };
 }
 
 export function createL0TimedAutoSegmentTextAllocations(

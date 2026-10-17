@@ -108,6 +108,10 @@ test('cut admission requires consecutive unambiguous exact anchors, not distant 
     'a real long pause between adjacent exact words needs no arbitrary distance limit');
   assert.equal(cut('go go stop', [token('go1', 'go', 0, 1), token('go2', 'go', 10, 11), token('stop', 'stop', 20, 21)]), 5,
     'repeated words are admissible when their ordered matches are unique');
+  assert.equal(cut('one two three four', [
+    token('one', 'one', 0, 1), token('two', 'two', 0.99, 2),
+    token('three', 'three', 3, 4), token('four', 'four', 6, 7)
+  ], 5), 13, 'unrelated 10ms overlap must not discard an exact boundary');
 });
 
 test('cut boundaries preserve whole tags and allow only defensible completed-word edges', () => {
@@ -126,7 +130,7 @@ test('cut boundaries preserve whole tags and allow only defensible completed-wor
   assert.equal(alignment.computeL0CutBoundaryCharacterOffset('one missing', tokens.slice(0, 1), range, 9.5), null);
 });
 
-test('S uses the cut clock, shares only verified pairs, and never guesses from ghost or ratio', t => {
+test('S uses cut-time clocks or a text-preserving estimate, never an unrelated ghost position', t => {
   const source = { version: 2, taskId: 'split-task', status: 'ready', strength: 0,
     desiredStrength: 0, variantKey: '', revision: 1 };
   installSourceDocument(t, source);
@@ -146,18 +150,43 @@ test('S uses the cut clock, shares only verified pairs, and never guesses from g
     sourceRange: { startSeconds: 0, endSeconds: 8 }, splitSeconds: 3, ghostTextOffset: 33, ratio: 0.9 };
   assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
   Object.assign(source, { strength: 50, desiredStrength: 50, variantKey: 'mix-50' });
-  assert.equal(split.getSmartSplitTextParts(plan), null, 'unverified enhancement cannot borrow Original');
+  assert.equal(split.getSmartSplitTextParts(plan).source, 'word-ratio', 'unverified enhancement cannot borrow Original clocks');
   source.pairedVariantKey = 'a'.repeat(64);
   assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
   assert.equal(listener.getCurrentL0TimingIndex(helper.state, helper), null,
     'the shared cut clock must not become selected-source ASR');
   Object.assign(source, { status: 'switching', desiredStrength: 60 });
-  assert.equal(split.getSmartSplitTextParts(plan), null);
+  assert.equal(split.getSmartSplitTextParts(plan).source, 'word-ratio');
   Object.assign(source, { status: 'ready', strength: 60, desiredStrength: 60, variantKey: 'mix-60' });
   assert.equal(split.getSmartSplitTextParts(plan).firstText, 'one two three');
   source.taskId = 'new-task';
-  assert.equal(split.getSmartSplitTextParts(plan), null, 'stale task clocks must not authorize a cut');
+  assert.equal(split.getSmartSplitTextParts(plan).source, 'word-ratio', 'stale task clocks are not reused for estimation');
+  assert.equal(split.getSmartSplitTextParts({ ...plan, isCurrentTask: () => false }), null);
   assert.equal(split.getSmartSplitTextParts({ ...plan, sourceText: '' }).source, 'empty');
+});
+
+test('S interpolates sparse timing at the cut and estimates missing timing without losing text', t => {
+  const source = { version: 2, taskId: 'best-effort', status: 'ready', strength: 0, desiredStrength: 0, variantKey: '', revision: 1 };
+  installSourceDocument(t, source);
+  const helper = { state: {}, getTranscriptRows: () => [] };
+  const split = registerSmartSplit(helper, {});
+  const text = 'one two three four five six seven eight nine ten';
+  const plan = { sourceText: text, sourceRange: { startSeconds: 0, endSeconds: 10 },
+    splitSeconds: 5, speakerKey: 'Speaker 1', ghostTextOffset: text.length - 1, ratio: 0.99 };
+  const estimated = split.getSmartSplitTextParts(plan);
+  assert.equal(estimated.firstText, 'one two three four five');
+  assert.equal(estimated.secondText, 'six seven eight nine ten');
+  helper.state.l0TimingIndex = { taskId: identity.buildCurrentL0TimingTaskId(helper), tracks: [{
+    lane: 'Speaker 1', tokens: [token('one', 'one', 0, 1), token('ten', 'ten', 9, 10)]
+  }] };
+  const aligned = split.getSmartSplitTextParts(plan);
+  assert.equal(aligned.source, 'l0-interpolated');
+  assert.equal(aligned.firstText, 'one two three four five');
+  assert.equal(`${aligned.firstText} ${aligned.secondText}`, text);
+  helper.state.l0TimingIndex = { taskId: identity.buildCurrentL0TimingTaskId(helper), tracks: [{
+    lane: 'Speaker 1', tokens: [token('different', 'different', 0, 10)]
+  }] };
+  assert.equal(split.getSmartSplitTextParts(plan).source, 'word-ratio');
 });
 
 test('character clicks resolve exact and interpolated playback timestamps', () => {

@@ -36,14 +36,18 @@ function harness(t, rows) {
     t.after(() => old ? Object.defineProperty(globalThis, name, old) : delete globalThis[name]);
   }
   const helper = {
-    state: {},
+    state: { nativeSessionAdmission: { reviewActionId: taskId }, sessionLifecycleRevision: 1 },
     getTranscriptRows: () => rows,
     getRowIdentity: row => row?.identity || null,
     getRowSpeakerKey: row => row?.identity.speakerKey || '',
     rowMatchesIdentity: (row, identity) => row.identity.annotationId === identity.annotationId && row.identity.reviewActionId === identity.reviewActionId,
     findRowByIdentity: identity => rows.find(row => row.isConnected && row.identity.annotationId === identity.annotationId && row.identity.reviewActionId === identity.reviewActionId) || null,
     getRowTextValue: () => 'alpha beta gamma',
-    setTask: value => { taskId = value; }
+    setTask: value => {
+      taskId = value;
+      helper.state.nativeSessionAdmission = { reviewActionId: value };
+      helper.state.sessionLifecycleRevision++;
+    }
   };
   return helper;
 }
@@ -82,7 +86,7 @@ test('empty native tasks stay empty without a secondary DOM scan', t => {
   assert.equal(timeline.findRowByTimeRange(1, 2), null);
 });
 
-test('smart split preserves raw native text and refuses unavailable clocks instead of caret guesses', t => {
+test('smart split preserves raw native text and estimates missing clocks without using a stale caret', t => {
   const row = new Section('one', 'track-1', 0, 10);
   const helper = harness(t, [row]);
   const editor = { row, element: {}, value: ' [смех] alpha beta ', selectionStart: 8, readOnly: false };
@@ -95,8 +99,11 @@ test('smart split preserves raw native text and refuses unavailable clocks inste
     segmentation: { AUTO_SEGMENT_SPLIT_EDGE_GUARD_SECONDS: 0.01, getL0TimingLaneAliases: () => ({ stableId: 'track-1' }) }
   });
   const plan = split.buildSmartSplitPlanForRow(row, 5);
-  assert.equal(split.getSmartSplitTextParts(plan), null);
+  assert.equal(split.getSmartSplitTextParts(plan).firstText, '[смех] alpha');
+  assert.equal(split.getSmartSplitTextParts(plan).secondText, 'beta');
   assert.equal(plan.sourceText, editor.value, 'native split precondition retains exact unsaved raw text');
+  helper.setTask('another-task');
+  assert.equal(split.getSmartSplitTextParts(plan), null, 'a retired source plan still cannot mutate another task');
 });
 
 test('transcription refuses readonly native EditorControls before requesting AI', async t => {

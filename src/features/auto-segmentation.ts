@@ -1236,9 +1236,6 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         timingWaitResult && timingWaitResult.ok
           ? timingWaitResult.timingIndex
           : null;
-      if (!timingIndex && helper.getTranscriptRows().some((row) => helper.getRowTextValue(row).trim())) {
-        return { ok: false, reason: 'timing-boundary-unavailable', splitCount: 0 };
-      }
       const useLegacyRedistribution = !timingIndex;
       if (useLegacyRedistribution) {
         updateAutoSegmentProgress({
@@ -1359,7 +1356,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
           ? api.split.buildSmartSplitPlanForRow(row, plan.splitSeconds, plan.speakerKey) : null;
         if (!draft || api.split.getSmartSplitTextParts(draft) === null) {
           return {
-            ok: false, reason: 'timing-boundary-unavailable', splitCount: 0,
+            ok: false, reason: 'invalid-split-plan', splitCount: 0,
             preTrim: preTrimResult, merge: mergeResult
           };
         }
@@ -1400,7 +1397,7 @@ export function registerAutoSegmentation(helper: any, api: Pick<TimelineModules,
         const textParts = smartSplitPlan ? api.split.getSmartSplitTextParts(smartSplitPlan) : null;
         if (!textParts) {
           return {
-            ok: false, reason: 'timing-boundary-unavailable', splitCount,
+            ok: false, reason: 'invalid-split-plan', splitCount,
             preTrim: preTrimResult, merge: mergeResult
           };
         }

@@ -204,3 +204,18 @@ test('split trims only new edges and preserves tabs, line breaks and annotation 
   assert.equal(splitAutoSegmentTextAtFloorOffset(text, text.length).firstText, text.trim());
   assert.equal(splitAutoSegmentTextAtFloorOffset(' \n\t', 2).wordCount, 0);
 });
+
+test('estimated splits preserve raw spacing and treat tag payloads as indivisible units', async () => {
+  const { splitAutoSegmentTextByWordRatio, splitAutoSegmentTextAtFloorOffset } = await loadAllocatorModule();
+  const text = '   alpha\tbeta {СКАЗ: два  слова}\n gamma   delta   ';
+  const parts = splitAutoSegmentTextByWordRatio(text, 0.6);
+  assert.equal(parts.firstText, 'alpha\tbeta {СКАЗ: два  слова}');
+  assert.equal(parts.secondText, 'gamma   delta');
+  const insideTag = splitAutoSegmentTextAtFloorOffset(text, text.indexOf('слова'));
+  assert.equal(insideTag.firstText, 'alpha\tbeta');
+  assert.equal(insideTag.secondText, '{СКАЗ: два  слова}\n gamma   delta');
+  for (const ratio of [0.1, 0.5, 0.9]) {
+    const onlyTag = splitAutoSegmentTextByWordRatio('{СКАЗ: два  слова}', ratio);
+    assert.equal([onlyTag.firstText, onlyTag.secondText].filter(Boolean).join(' '), '{СКАЗ: два  слова}');
+  }
+});
