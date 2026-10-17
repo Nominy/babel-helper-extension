@@ -2,6 +2,7 @@
 import { createNativeEditorAdapter } from './native-render-editor';
 import { createClassicControls } from './classic-controls';
 import { createClassicRuntime, createClassicViewBoundary, classicAutocomplete, classicOrderedRows, assertClassicTranscript } from '../classic/runtime';
+import { createClassicScrollPolicy, isClassicNativeFollowEffect } from './classic-scroll';
 
 const objectLike = value => value !== null && (typeof value === 'object' || typeof value === 'function');
 const emptyIssues = Object.freeze([]);
@@ -36,6 +37,8 @@ export function createClassicEditorAdapter(report, nativeRequire) {
   const native = createNativeEditorAdapter(report), imports = new WeakMap();
   let React, jsx, nativeJsx, ReactDOM, Context, ViewBoundary, controls, runtime, portals, released = false, unsupportedReported = false;
   const workbenches = new WeakMap(), panels = new WeakMap();
+  let panelScope = null;
+  const scrollPolicies = new Set();
   const unsupported = error => {
     if (unsupportedReported) return;
     unsupportedReported = true;
@@ -205,7 +208,7 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     headers.push('Text', 'Linter');
     if (!props.lockSegments || props.turns.length > 1) headers.push('Actions');
     return jsx.jsx(Context.Provider, { value: context, children: jsx.jsx(runtime.view.TooltipProvider, { delayDuration: 0, children:
-      jsx.jsx('div', { 'data-babel-classic-surface': '', 'data-hide-timestamps': props.hideTimestamps ? '' : undefined,
+      jsx.jsx('div', { ref: parent.scroll.setSurface, 'data-babel-classic-surface': '', 'data-hide-timestamps': props.hideTimestamps ? '' : undefined,
         children: jsx.jsxs(table.iA, { noWrapper: true, children: [
           jsx.jsx(table.xD, { className: 'sticky top-0 z-10 bg-white', children: jsx.jsx(table.SC, { className: 'hover:bg-white', children: headers.map((label, index) => jsx.jsx(table.ss, { className: '!px-2 !py-1 text-xs', children: label }, index)) }) }),
           jsx.jsx(table.RM, { children: ordered.length ? ordered.map(row => row.turn
@@ -229,19 +232,35 @@ export function createClassicEditorAdapter(report, nativeRequire) {
     }
     return wrapper;
   }
+  function ClassicNativePanel({ nativeType, scroll, ...nativeProps }) {
+    React.useLayoutEffect(() => {
+      scrollPolicies.add(scroll);
+      return () => { scroll.release(); scrollPolicies.delete(scroll); };
+    }, [scroll]);
+    React.useLayoutEffect(() => { scroll.setPlaying(Boolean(nativeProps.isAnyPlaying)); });
+    const previous = panelScope;
+    panelScope = scroll;
+    try { return nativeType(nativeProps); }
+    finally { panelScope = previous; }
+  }
   function panelFor(type) {
     let wrapper = panels.get(type);
     if (!wrapper) {
       wrapper = function ClassicPanelContext({ nativeType, nativeProps }) {
         ensureContext();
         const parent = React.useContext(Context);
+        const scrollRef = React.useRef(null);
+        if (!scrollRef.current) scrollRef.current = createClassicScrollPolicy();
+        const scroll = scrollRef.current;
         const original = nativeProps.renderTranscript;
         const renderTranscript = React.useCallback((...args) => {
           const element = original(...args);
           return jsx.jsx(ViewBoundary, { children: jsx.jsx(ClassicTranscriptResult, { nativeElement: element }) });
         }, [original]);
-        const value = { ...parent, panelProps: nativeProps };
-        return jsx.jsx(Context.Provider, { value, children: nativeJsx.jsx(nativeType, { ...nativeProps, renderTranscript }) });
+        const value = { ...parent, panelProps: nativeProps, scroll };
+        return jsx.jsx(Context.Provider, { value, children: jsx.jsx(ClassicNativePanel, {
+          ...nativeProps, renderTranscript, nativeType, scroll
+        }) });
       };
       panels.set(type, wrapper);
     }
@@ -258,6 +277,16 @@ export function createClassicEditorAdapter(report, nativeRequire) {
       const adapted = native.adaptImport(namespace, moduleId);
       let result = adapted;
       if (Object.hasOwn(namespace, 'useContext') && Object.hasOwn(namespace, 'createContext') && Object.hasOwn(namespace, 'useMemo')) React = namespace;
+      if (Object.hasOwn(namespace, 'useEffect') && Object.hasOwn(namespace, 'createContext')) {
+        result = facade(adapted, {
+          useEffect(callback, dependencies) {
+            const scroll = panelScope;
+            return adapted.useEffect(scroll && isClassicNativeFollowEffect(callback, dependencies)
+              ? () => { if (!released) scroll.follow(dependencies[0]); }
+              : callback, dependencies);
+          }
+        });
+      }
       if (Object.hasOwn(namespace, 'jsx') && Object.hasOwn(namespace, 'jsxs') && typeof namespace.jsx === 'function' && typeof namespace.jsxs === 'function') {
         jsx = namespace;
         nativeJsx = adapted;
@@ -283,6 +312,8 @@ export function createClassicEditorAdapter(report, nativeRequire) {
       if (released) return;
       released = true;
       controls?.release();
+      for (const scroll of scrollPolicies) scroll.release();
+      scrollPolicies.clear();
       native.release();
       portals?.remove();
     }

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { matchesShortcut } from '../core/shortcuts';
+import { scrollTranscriptTo } from '../services/transcript-scroll';
 import { getCurrentL0PlaybackTimingIndex } from '../content/l0-timing-listener';
 import {
   createL0TimingAlignmentCache,
@@ -81,7 +82,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     };
   }
 
-  function capturePlaybackGuard(): () => boolean {
+  function capturePlaybackGuard({ includeCursor = true } = {}): () => boolean {
     if (activeTaskGuard && !activeTaskGuard()) stopGhostCursor(true);
     refreshPlaybackContext();
     const generation = playbackGeneration;
@@ -90,7 +91,7 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     const taskGuard = captureNativeTaskGuard();
     return () => {
       refreshPlaybackContext();
-      return generation === playbackGeneration && cursor === cursorGeneration &&
+      return generation === playbackGeneration && (!includeCursor || cursor === cursorGeneration) &&
         revision === helper.state.sessionLifecycleRevision && taskGuard() &&
         (!activeTaskGuard || activeTaskGuard()) &&
         (!helper.runtime?.isSessionInteractive || helper.runtime.isSessionInteractive());
@@ -158,6 +159,18 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
     const caret = textarea.getCaretRect(offset);
     if (!caret) return;
     const viewport = scrollParent.getBoundingClientRect();
+    if (row.hasAttribute('data-babel-classic-row')) {
+      const headerHeight = scrollParent.querySelector('thead')?.getBoundingClientRect().height || 0;
+      const top = viewport.top + scrollParent.clientTop + headerHeight + 4;
+      const bottom = viewport.top + scrollParent.clientTop + scrollParent.clientHeight - 4;
+      const centered = scrollParent.scrollTop + caret.top + caret.height / 2 - (top + bottom) / 2;
+      if (centered >= 0) {
+        const target = Math.min(scrollParent.scrollHeight - scrollParent.clientHeight, centered);
+        if (Math.abs(target - scrollParent.scrollTop) >= 1) scrollTranscriptTo(scrollParent, target);
+      } else if (caret.top < top) scrollTranscriptTo(scrollParent, scrollParent.scrollTop + caret.top - top);
+      else if (caret.top + caret.height > bottom) scrollTranscriptTo(scrollParent, scrollParent.scrollTop + caret.top + caret.height - bottom);
+      return;
+    }
     scrollParent.scrollTop += caret.top + caret.height / 2 -
       (viewport.top + scrollParent.clientTop + scrollParent.clientHeight / 2);
   }
@@ -174,9 +187,11 @@ export function registerGhostCursor(helper: any, api: Pick<RowModules, 'time' | 
    * Returns null if the position cannot be computed.
    */
   function computeRestoreOffset(text, timeRange, currentTime, blurTime, baseline) {
-    if (!text || text.length === 0 || !timeRange) { return null; }
+    if (!timeRange) { return null; }
     const duration = timeRange.endSeconds - timeRange.startSeconds;
     if (duration <= 0) { return null; }
+    // A timed blank segment is still a lane-navigation target, with no word offset.
+    if (!text || !/\S/.test(text)) { return { offset: 0, clamped: false }; }
 
     const adjustedTime = Math.max(
       typeof blurTime === 'number' && Number.isFinite(blurTime) ? blurTime : timeRange.startSeconds,

@@ -40,6 +40,8 @@ class ElementFixture {
   remove() { this.parentNode?.removeChild(this); }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  hasAttribute(name) { return this.attributes.has(name); }
+  dispatchEvent() { return true; }
   removeAttribute(name) { this.attributes.delete(name); }
   closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector) {
@@ -51,7 +53,7 @@ class ElementFixture {
     return null;
   }
   matches(selector) {
-    return selector === this.tagName ||
+    return (selector === '[data-transcript-scroll]' && this.hasAttribute('data-transcript-scroll')) || selector === this.tagName ||
       (selector.includes('section[data-annotation-id]') && this.tagName === 'section' && Boolean(this.dataset.annotationId)) ||
       (selector.includes('[data-slate-editor') && this.getAttribute('data-slate-editor') === 'true');
   }
@@ -132,6 +134,7 @@ function createHarness(t) {
     removeEventListener(type, callback) { documentListeners.get(type)?.delete(callback); }
   };
   const window = {
+    matchMedia: () => ({ matches: true }),
     location: { pathname: '/transcription/shared', search: '', href: 'https://babel.test/transcription/shared' },
     devicePixelRatio: 1,
     getComputedStyle: () => ({ lineHeight: '24px', overflowY: 'visible' }),
@@ -140,6 +143,7 @@ function createHarness(t) {
     setTimeout(callback) { const id = ++nextTimerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); }
   };
+  document.defaultView = window;
   install('document', document);
   install('window', window);
   install('location', window.location);
@@ -188,6 +192,7 @@ function createHarness(t) {
     rowMatchesIdentity: (row, identity) => row.identity.annotationId === identity.annotationId,
     findRowByIdentity: (identity) => rows.find((row) => row.isConnected && row.identity.annotationId === identity.annotationId) ?? null,
     getRowEditor: (row) => row?.editor ?? null,
+    getRowTextValue: (row) => row?.editor.value ?? '',
     getActiveRowEditor: () => harness.focusedEditor ?? null,
     setCurrentRow(row) { this.state.currentRow = row; this.state.currentRowIdentity = row?.identity ?? null; },
     getCurrentRow() { return this.findRowByIdentity(this.state.currentRowIdentity ?? {}) ?? null; },
@@ -781,6 +786,72 @@ test('Escape teardown preserves valid same-task lane projections for focused Tab
   assert.equal(h.sourceListeners.size, 0);
 });
 
+for (const [label, text] of [['empty', ''], ['whitespace-only', ' \t\n ']]) {
+  for (const timed of [false, true]) {
+    test(`Tab selects the time-matched ${label} segment at caret zero${timed ? ' with word timing' : ''}`, async t => {
+      const h = createHarness(t);
+      const previous = h.rows[1];
+      previous.identity.endSeconds = 5;
+      previous.identity.endText = '0:05';
+      const blank = new RowFixture('blank-segment', 2);
+      blank.identity.startSeconds = 5;
+      blank.identity.startText = '0:05';
+      blank.editor.value = text;
+      h.rows.push(blank);
+      h.body.appendChild(blank);
+      if (timed) h.installTiming([
+        { lane: 'stable-1', tokens: words([0, 6, 12, 18]) },
+        { lane: 'stable-2', tokens: words([0, 2, 4, 6]) }
+      ]);
+      await h.start();
+      assert.equal(h.helper.state.ghostCursorLaneProjections['stable-2'].row, previous);
+      h.playback.currentTime = 8;
+      await h.tick();
+      const primaryOffset = h.helper.getGhostCursorTarget().offset;
+      assert.ok(primaryOffset > 0, 'the nonempty lane retains its word/proportional offset');
+      assert.equal(h.helper.toggleGhostCursorLane(), true);
+      assert.deepEqual(h.helper.getGhostCursorTarget(), { row: blank, offset: 0 },
+        'the blank matching playback replaces the previous segment projection');
+      assert.equal(h.helper.state.ghostCursorProjectionSource, 'manual');
+      await h.tick();
+      assert.equal(h.helper.state.currentRow, blank, 'playback preserves the manual lane choice');
+      assert.equal(h.helper.state.ghostCursorOffset, 0);
+
+      h.helper.state.blurRestorePending = true;
+      assert.equal(h.helper.toggleEditorFocus(), true);
+      assert.equal(h.helper.getActiveRowEditor(), blank.editor);
+      assert.equal(blank.editor.selectionStart, 0);
+      assert.equal(blank.editor.selectionEnd, 0);
+      assert.equal(h.helper.toggleGhostCursorLane(), true);
+      assert.equal(h.helper.getActiveRowEditor(), h.rows[0].editor);
+      assert.equal(h.rows[0].editor.selectionStart, primaryOffset);
+      assert.equal(h.helper.toggleGhostCursorLane(), true);
+      assert.equal(h.helper.getActiveRowEditor(), blank.editor);
+      assert.equal(blank.editor.selectionStart, 0);
+      assert.equal(blank.editor.selectionEnd, 0);
+    });
+  }
+}
+
+test('blank lane navigation retains source and task ownership guards', async t => {
+  const h = createHarness(t);
+  h.rows[1].editor.value = '';
+  await h.start();
+  h.publish({ status: 'switching', desiredStrength: 100 });
+  assert.equal(h.helper.toggleGhostCursorLane(), true, 'only the pending manual lane choice changes');
+  assert.equal(h.helper.state.ghostCursorProjectionSpeakerKey, 'stable-2');
+  assert.equal(h.helper.state.ghostCursorElement.style.display, 'none');
+  assert.equal(h.helper.state.currentRow, h.rows[0]);
+  assert.equal(h.helper.getActiveRowEditor(), null);
+  h.publish({ status: 'ready', strength: 100, variantKey: 'enhanced-a' });
+  await h.tick();
+  assert.deepEqual(h.helper.getGhostCursorTarget(), { row: h.rows[1], offset: 0 });
+  h.nativeTaskId = 'replacement-task';
+  assert.equal(h.helper.toggleGhostCursorLane(), false);
+  assert.equal(h.helper.getGhostCursorTarget(), null);
+  assert.deepEqual(h.helper.state.ghostCursorLaneProjections, {});
+});
+
 test('native speaker filtering with equal row counts/ranges rebuilds the lane cache instead of retaining detached rows', async (t) => {
   const h = createHarness(t);
   h.rows[1].remove();
@@ -834,6 +905,78 @@ test('an Escape playback query cannot restore focus or resume audio in a replace
   assert.equal(h.focusedEditor, undefined);
   assert.equal(h.helper.state.ghostCursorElement, null);
 });
+
+test('Classic caret restoration centers when reachable and preserves visible content near the start', t => {
+  const h = createHarness(t);
+  const row = h.rows[0];
+  row.setAttribute('data-babel-classic-row', 'true');
+  h.body.setAttribute('data-transcript-scroll', '');
+  h.body.clientTop = 0;
+  h.body.clientHeight = 200;
+  h.body.scrollTop = 0;
+  h.body.scrollHeight = 1000;
+  h.body.getBoundingClientRect = () => ({ top: 100, bottom: 300, height: 200 });
+  const header = h.body.appendChild(new ElementFixture('thead'));
+  header.getBoundingClientRect = () => ({ height: 20 });
+  let caretTop = 150;
+  row.editor.getCaretRect = () => ({ top: caretTop, height: 16 });
+  h.api.cursor.scrollToCaret(row, 6);
+  assert.equal(h.body.scrollTop, 0, 'not enough content above: keep the visible caret in place');
+  h.body.scrollTop = 200;
+  h.api.cursor.scrollToCaret(row, 6);
+  assert.equal(h.body.scrollTop, 148, 'center a visible caret when the position is reachable');
+  caretTop = 202;
+  h.api.cursor.scrollToCaret(row, 6);
+  assert.equal(h.body.scrollTop, 148, 'already centered must remain stable');
+  h.body.scrollTop = 790;
+  caretTop = 290;
+  h.api.cursor.scrollToCaret(row, 6);
+  assert.equal(h.body.scrollTop, 800, 'centering clamps at the bottom');
+});
+
+test('Escape waits for pause and restores the captured ghost after pause removes it', async t => {
+  const h = createHarness(t);
+  h.playback.currentTime = 8;
+  await h.start();
+  h.helper.state.blurRestorePending = true;
+  const target = h.api.cursor.getGhostCursorTarget();
+  const paused = Promise.withResolvers();
+  h.helper.setPlaybackPaused = () => paused.promise;
+  h.helper.handleEscapeWorkflow();
+  await flush();
+  assert.equal(h.focusedEditor, undefined, 'pending pause must not focus or scroll the transcript');
+  h.playback.paused = true;
+  await h.tick();
+  assert.equal(h.api.cursor.getGhostCursorTarget(), null);
+  paused.resolve({ ok: true, paused: true });
+  await flush();
+  assert.equal(h.focusedEditor, target.row.editor);
+  assert.equal(h.focusedEditor.selectionStart, target.offset);
+  assert.equal(h.focusedEditor.selectionEnd, target.offset);
+});
+
+for (const change of ['task', 'source', 'focus', 'text', 'detached', 'pause-failure']) {
+  test(`Escape does not restore a captured caret after ${change} during pause`, async t => {
+    const h = createHarness(t);
+    h.playback.currentTime = 8;
+    await h.start();
+    h.helper.state.blurRestorePending = true;
+    const target = h.api.cursor.getGhostCursorTarget();
+    const paused = Promise.withResolvers();
+    h.helper.setPlaybackPaused = () => paused.promise;
+    h.helper.handleEscapeWorkflow();
+    await flush();
+    if (change === 'task') h.root.setAttribute('data-babel-review-action-id', 'replacement-task');
+    if (change === 'source') h.publish({ variantKey: 'replacement-audio', strength: 1 });
+    if (change === 'focus') document.activeElement = h.rows[1].editor.element;
+    if (change === 'text') target.row.editor.value = 'edited while waiting';
+    if (change === 'detached') target.row.remove();
+    paused.resolve({ ok: change !== 'pause-failure', paused: true });
+    await flush();
+    assert.equal(h.focusedEditor, undefined);
+    assert.equal(h.helper.state.blurRestorePending, true);
+  });
+}
 
 test('ghost lane switching uses native track IDs and includes a third custom-labeled speaker', async (t) => {
   const h = createHarness(t);

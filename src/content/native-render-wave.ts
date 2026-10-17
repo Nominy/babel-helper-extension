@@ -50,6 +50,9 @@ function timelineContract(callback) {
   const [, left, right, container, notch, element, visible] = match;
   return text === `updateVisibleNotches(${left},${right},${container}){this.notchElements.forEach((${notch},${element})=>{let${visible}=${notch}.start>=${left}&&${notch}.start+${notch}.width<${right};${visible}!==${notch}.wasVisible&&(${notch}.wasVisible=${visible},${visible}?${container}.appendChild(${element}):${element}.remove())})}`;
 }
+function signalSetContract(callback) {
+  return new RegExp(`^set\\((${identifier})\\)\\{Object\\.is\\((${identifier}),\\1\\)\\|\\|\\(\\2=\\1,(${identifier})\\.forEach\\((${identifier})=>\\4\\(\\2\\)\\)\\)\\}$`).test(source(callback));
+}
 function scrollContract(callback) {
   const text = source(callback);
   const match = text.match(new RegExp(`^scrollIntoView\\((${identifier}),(${identifier})=(?:!1|false)\\)\\{let\\{scrollLeft:(${identifier}),scrollWidth:(${identifier}),clientWidth:(${identifier})\\}=this\\.scrollContainer,(${identifier})=\\1\\*\\4,(${identifier})=\\3\\+\\5,(${identifier})=\\5/2;`));
@@ -229,9 +232,31 @@ export function createNativeWaveAdapters(report) {
     state.releases.push(restore, restoreInit, () => invalidateNativeTimeline(plugin));
     notify('wave-timeline', 'installed');
   }
+  function bindPauseClock(wave, state) {
+    const playing = wave.isPlayingSignal, clock = wave.currentTimeSignal;
+    if (!methods(playing, ['set', 'subscribe']) || !methods(clock, ['set', 'subscribe']) ||
+        typeof playing.value !== 'boolean' || typeof clock.value !== 'number' ||
+        wave.wavesurferState?.isPlaying !== playing || wave.wavesurferState?.currentTime !== clock ||
+        !signalSetContract(playing.set) || !signalSetContract(clock.set) ||
+        !methods(wave, ['getCurrentTime']) || source(wave.getCurrentTime) !== 'getCurrentTime(){returnthis.media.currentTime}') {
+      unsupported('wave-pause-clock', 'Native reactive playback clock contract changed'); return;
+    }
+    const original = playing.set;
+    const restore = ownMethod(playing, 'set', function(value) {
+      if (!released && state.live && this === playing && value === false && playing.value === true) {
+        // Native RAF ticks emit live time without updating this signal. Refresh it
+        // before pause effects read the cached clock, including direct media pauses.
+        clock.set(wave.getCurrentTime());
+      }
+      return Reflect.apply(original, this, arguments);
+    });
+    if (restore) { state.releases.push(restore); notify('wave-pause-clock', 'installed'); }
+    else unsupported('wave-pause-clock', 'Native playback signal is not locally writable');
+  }
   function bindWave(wave) {
     if (instances.has(wave)) return;
     const state = record(wave), renderer = wave.renderer;
+    bindPauseClock(wave, state);
     if (!renderer || !methods(renderer, ['scrollIntoView']) || !scrollContract(renderer.scrollIntoView) || !renderer.scrollContainer || !renderer.options) {
       unsupported('wave-scroll', 'Native renderer scroll method changed'); return;
     }

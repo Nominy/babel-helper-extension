@@ -148,9 +148,10 @@ export function createBaselineResetFeature(): FeatureModule {
       button.setAttribute('data-baseline-reset-button', '');
       button.setAttribute('aria-label', 'Reset to L1/L0');
       button.title = 'Reset to L1/L0';
-      applyComponent(button, 'icon-button', { variant: 'soft' });
-      Object.assign(button.style, { width: '36px', height: '36px', minWidth: '36px', minHeight: '36px', padding: '0' });
-      button.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 11a9 9 0 1 1 2.7 7.4M3 4v7h7"/></svg>';
+      applyComponent(button, 'icon-button', { variant: 'soft', accent: '#15803d' });
+      button.style.setProperty('--bui-accent-soft', 'var(--bui-success-soft)');
+      Object.assign(button.style, { width: '36px', height: '36px', minWidth: '36px', minHeight: '36px', padding: '0', fontSize: '20px' });
+      button.innerHTML = '<span aria-hidden="true">♻️</span>';
       button.addEventListener('keydown', stopKeyPropagation);
       button.addEventListener('keyup', stopKeyPropagation);
       button.addEventListener('click', () => { void reset(); });

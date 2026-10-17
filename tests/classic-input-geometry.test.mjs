@@ -404,3 +404,92 @@ test('Classic controls release textarea replacement, row unmount and controller 
   nextHooks.unmount();
   assert.equal(f.mirrors().length, 0, 'row unmount releases geometry even while the controller stays mounted');
 });
+
+test('Classic enter-edit focus is commit-owned, preventScroll and canceled by another focused input', t => {
+  const f = fixture(t), react = hooks(), row = f.doc.createElement('tr');
+  f.doc.body.appendChild(row);
+  const binding = { annotation: { id: 'turn', content: 'sample' }, text: 'sample', readOnly: false,
+    rootRef: { current: row }, inputRef: { current: null }, cancel() {} };
+  const context = { reviewActionId: 'task', flushSync: callback => callback(), transcriptProps: { handlers: {} } };
+  const controls = api.createClassicControls(react.React, () => context);
+  f.cleanups.push(() => { react.unmount(); controls.release(); });
+  let control;
+  react.render(() => { control = controls.useRow(binding); });
+  control.requestFocus();
+  const input = f.input('sample'), focused = [];
+  input.focus = options => { focused.push(options); f.doc.activeElement = input; };
+  row.appendChild(input); binding.inputRef.current = input;
+  react.render(() => { control = controls.useRow(binding); });
+  assert.deepEqual(focused, [{ preventScroll: true }], 'low-confidence click focuses the newly mounted textarea');
+  binding.inputRef.current = null;
+  control.requestFocus();
+  f.doc.activeElement = f.input('other');
+  binding.inputRef.current = input;
+  react.render(() => { control = controls.useRow(binding); });
+  assert.equal(focused.length, 1, 'a later focus owner is not stolen back');
+  controls.release(); control.requestFocus();
+  assert.equal(focused.length, 1, 'released controls cannot request focus');
+});
+
+test('Classic does not replay a completed selection over later navigation or an input replacement', t => {
+  const f = fixture(t), react = hooks(), input = f.input('sample'), row = f.doc.createElement('tr');
+  f.doc.body.appendChild(row); row.appendChild(input);
+  const binding = { annotation: { id: 'turn', content: 'sample' }, text: 'sample', readOnly: false,
+    rootRef: { current: row }, inputRef: { current: input }, cancel() {} };
+  const context = { reviewActionId: 'task', flushSync: callback => callback(), transcriptProps: { handlers: {} } };
+  const controls = api.createClassicControls(react.React, () => context);
+  f.cleanups.push(() => { react.unmount(); controls.release(); });
+  const render = () => react.render(() => controls.useRow(binding));
+  render();
+  const lease = globalThis.classicGeometryLeases.get(row);
+  assert.equal(lease.select(5, 5), true);
+  assert.equal(input.selectionStart, 5);
+  input.setSelectionRange(4, 4, 'none'); // A native ArrowLeft after the Helper command.
+  render();
+  assert.equal(input.selectionStart, 4, 'an unrelated commit must not undo arrow navigation');
+
+  lease.select(5, 5);
+  input.value = binding.text = 'sample!';
+  render();
+  input.value = binding.text = 'sample';
+  input.setSelectionRange(2, 2, 'none');
+  render();
+  assert.equal(input.selectionStart, 2, 'returning to matching text must not revive an old caret');
+
+  lease.select(5, 5);
+  const replacement = f.input('sample');
+  replacement.setSelectionRange(1, 3, 'backward');
+  row.appendChild(replacement); binding.inputRef.current = replacement;
+  render();
+  assert.deepEqual([replacement.selectionStart, replacement.selectionEnd, replacement.selectionDirection], [1, 3, 'backward']);
+});
+
+test('empty-segment Backspace excludes repeated, composing, readonly, locked and non-editor input', t => {
+  const f = fixture(t), react = hooks(), input = f.input(''), row = f.doc.createElement('tr');
+  f.doc.body.appendChild(row); row.appendChild(input); f.doc.activeElement = input;
+  input.setSelectionRange(0, 0, 'none');
+  const binding = { annotation: { id: 'turn', content: '' }, text: '', readOnly: false,
+    rootRef: { current: row }, inputRef: { current: input }, cancel() {} };
+  const deleted = [];
+  const context = { reviewActionId: 'task', flushSync: callback => callback(),
+    transcriptProps: { handlers: { onDelete: id => deleted.push(id) } } };
+  const controls = api.createClassicControls(react.React, () => context);
+  f.cleanups.push(() => { react.unmount(); controls.release(); });
+  react.render(() => controls.useRow(binding));
+  const press = overrides => {
+    const event = { key: 'Backspace', target: input, preventDefault() {}, stopPropagation() {}, ...overrides };
+    for (const handler of row.listeners.get('keydown')) handler(event);
+  };
+  press({ repeat: true });
+  press({ isComposing: true });
+  press({ defaultPrevented: true });
+  binding.readOnly = true; press(); binding.readOnly = false;
+  context.transcriptProps.lockSegments = true; press(); context.transcriptProps.lockSegments = false;
+  input.value = binding.text = ' '; press();
+  binding.text = ''; input.value = 'not yet committed'; press();
+  input.value = '';
+  press({ target: f.doc.createElement('input') });
+  assert.deepEqual(deleted, []);
+  press();
+  assert.deepEqual(deleted, ['turn']);
+});

@@ -9,7 +9,6 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
   const AUTO_INSERT_SEGMENT_MERGE_WINDOW_SECONDS = 1;
 
-  const AUTO_INSERT_SEGMENT_SETTLE_MS = api.segmentation.AUTO_SEGMENT_SPLIT_SETTLE_MS;
 
   helper.state.autoInsertSegmentHotkeyHandledAt = 0;
 
@@ -137,18 +136,17 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
     const endText = verification && typeof verification.endText === 'string' ? verification.endText : '';
     const lookupSpeakerKeys = speakerKeys.length ? speakerKeys : [''];
 
-    if (annotationId && typeof helper.findRowByIdentity === 'function') {
-      for (const speakerKey of lookupSpeakerKeys) {
-        const byIdentity = helper.findRowByIdentity({
+    if (annotationId) {
+      // A native create receipt identifies the committed row exactly. Never
+      // substitute a neighboring row with matching labels if it is unavailable.
+      const byIdentity = typeof helper.findRowByIdentity === 'function'
+        ? helper.findRowByIdentity({
           annotationId,
-          speakerKey,
-          startText,
-          endText
-        });
-        if (byIdentity instanceof HTMLElement) {
-          return byIdentity;
-        }
-      }
+          reviewActionId: verification.reviewActionId,
+          processedRecordingId: verification.processedRecordingId || target?.trackId
+        })
+        : null;
+      return byIdentity instanceof HTMLElement && byIdentity.isConnected ? byIdentity : null;
     }
 
     if (startText && endText) {
@@ -216,30 +214,6 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
   }
 
 
-  async function waitForAutoInsertTrimTarget(target, createResult, islandResult) {
-    const isReady = (candidate) => {
-      if (!candidate) {
-        return false;
-      }
-
-      if (!(candidate.container instanceof HTMLElement) || !candidate.container.isConnected) {
-        return true;
-      }
-
-      return Boolean(api.site.findRegionEntryForRow(candidate.row, candidate.container));
-    };
-
-    const initial = buildAutoInsertTrimTarget(target, createResult, islandResult);
-    if (isReady(initial) || typeof helper.waitFor !== 'function') {
-      return initial;
-    }
-
-    const settled = await helper.waitFor(() => {
-      const candidate = buildAutoInsertTrimTarget(target, createResult, islandResult);
-      return isReady(candidate) ? candidate : null;
-    }, AUTO_INSERT_SEGMENT_SETTLE_MS, 40);
-    return settled || initial;
-  }
 
 
   function findAutoInsertAdjacentMergePlan(row, direction) {
@@ -480,7 +454,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
 
     const caretOffset = getAutoInsertCaretOffset(row, mergeResult);
     const focused = helper.focusRow(row, {
-      activateRow: false,
+      activateRow: true,
       selectionStart: caretOffset,
       selectionEnd: caretOffset
     });
@@ -645,7 +619,7 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
         }
 
         createCount += 1;
-        const trimTarget = await waitForAutoInsertTrimTarget(target, createResult, islandResult);
+        const trimTarget = buildAutoInsertTrimTarget(target, createResult, islandResult);
         if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
         const trimOptions = {
           progressLabel: 'Trimming inserted segment',
@@ -660,10 +634,12 @@ export function registerAutoInsertSegment(helper: any, api: Pick<TimelineModules
             ? await mergeAutoInsertAdjacentRows(trimTarget.row)
             : null;
         if (!isCurrentTask()) return { ok: false, reason: 'stale-task', createCount };
-        const focusResult =
-          trimTarget && trimResult && trimResult.ok
-            ? focusAutoInsertResultRow(trimTarget.row, mergeResult)
-            : null;
+        // Creation has already committed even when optional trimming fails.
+        // Resolve again after mutations: React may have replaced the row.
+        const focusResult = focusAutoInsertResultRow(
+          findAutoInsertCreatedRow(target, createResult, islandResult),
+          mergeResult
+        );
         if (trimResult && trimResult.ok) {
           trimCount += 1;
         }

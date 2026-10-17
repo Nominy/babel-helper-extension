@@ -27,6 +27,7 @@ const timeSource = nativeNode(59327, (node, text) => ts.isArrowFunction(node) &&
 const styleSource = nativeNode(59327, (node, text) => ts.isArrowFunction(node) && text.includes('getRegions') && text.includes('brightness(0.8)'));
 const scrollSource = nativeNode(99407, node => ts.isMethodDeclaration(node) && node.name.getText() === 'scrollIntoView');
 const nativeScroll = new Function(`return ({${scrollSource}}).scrollIntoView`)();
+const nativeSignal = evaluate(nativeNode(99407, node => ts.isFunctionDeclaration(node) && node.name?.text === 'h'), {});
 function evaluate(source, scope) { return new Function(...Object.keys(scope), `return (${source})`)(...Object.values(scope)); }
 
 class Emitter {
@@ -95,10 +96,10 @@ class WaveHarness extends Emitter {
   getWrapper() { return this.wrapper; }
   destroy() { for (const plugin of this.options.plugins) plugin.destroy?.(); this.emit('destroy'); }
 }
-function editorFixture(adapter, timeOverride) {
+function editorFixture(adapter, timeOverride, Wave = WaveHarness) {
   const Regions = nativeClass(94846), Timeline = nativeClass(60039), tracks = { current: {} }, effects = [];
   const scope = { e11: tracks, n11: updater => effects.push(['state', typeof updater]),
-    t6: adapter.adaptImport({ Z: Regions }), t7: adapter.adaptImport({ Z: Timeline }), t4: adapter.adaptImport({ Z: WaveHarness }),
+    t6: adapter.adaptImport({ Z: Regions }), t7: adapter.adaptImport({ Z: Timeline }), t4: adapter.adaptImport({ Z: Wave }),
     ne: { Z: { create: () => ({}) } }, t8: { Z: { create: () => ({}) } }, t9: { Z: { create: () => ({}) } },
     y: () => () => {}, nt: () => ({}), nn: track => ({ id: track.id }) };
   const nativeCreate = evaluate(createSource, scope), create = adapter.adaptCallback(nativeCreate);
@@ -114,6 +115,133 @@ function editorFixture(adapter, timeOverride) {
   return { result, plugin: result.plugins.regions, wave: result.wavesurfer, create, nativeCreate, handlers, nativeTime,
     style: adapter.adaptCallback(nativeStyle), nativeStyle, effects, excluded, tracks };
 }
+
+function clockMedia() {
+  const media = new Emitter();
+  return Object.assign(media, {
+    currentTime: 0, duration: 100, volume: 1, muted: false, playbackRate: 1, paused: true, ended: false,
+    pauseCalls: 0, playCalls: 0,
+    addEventListener: media.on, removeEventListener(name, callback) { this.listeners.get(name)?.delete(callback); },
+    play() { this.playCalls++; this.paused = false; this.emit('play'); return Promise.resolve(); },
+    pause() { this.pauseCalls++; if (!this.paused) { this.paused = true; this.emit('pause'); } }
+  });
+}
+function clockWave(options = { plugins: [] }) {
+  const NativeWave = nativeClass(99407), Player = Object.getPrototypeOf(NativeWave);
+  const wave = new Player({ media: clockMedia() }), wrapper = new Element();
+  // Keep the captured player, signals, reactive effects and event methods intact;
+  // only isolate DOM rendering and the browser's RAF scheduling.
+  Object.setPrototypeOf(wave, NativeWave.prototype);
+  Object.assign(wave, {
+    options, plugins: [], subscriptions: [], mediaSubscriptions: [], reactiveCleanups: [],
+    decodedData: null, stopAtPosition: null,
+    renderer: Object.assign(new Emitter(), {
+      options, scrollContainer: { scrollLeft: 0, clientWidth: 100, scrollWidth: 1000 }, isDragging: false,
+      scrollIntoView: nativeScroll, renderProgress() {}, getWrapper: () => wrapper,
+      getWidth: () => 100, getScroll: () => 0, destroy() {}
+    }),
+    timer: Object.assign(new Emitter(), { start() {}, stop() {}, destroy() {} }),
+    wavesurferState: {
+      currentTime: wave.currentTimeSignal, isPlaying: wave.isPlayingSignal, isSeeking: wave.seekingSignal,
+      duration: wave.durationSignal, isReady: nativeSignal(false), zoom: nativeSignal(0)
+    }
+  });
+  wave.initPlayerEvents(); wave.initTimerEvents(); wave.initReactiveState();
+  for (const plugin of options.plugins) if (plugin.getRegions) wave.registerPlugin(plugin);
+  return wave;
+}
+class ClockWaveHarness extends WaveHarness {
+  static create(options) { return clockWave(options); }
+}
+
+test('native pause refreshes the reactive clock before editor and pause consumers can rewind', async () => {
+  const notices = [], adapter = createNativeWaveAdapters(value => notices.push(value));
+  const fixture = editorFixture(adapter, undefined, ClockWaveHarness);
+  const { wave, plugin, effects } = fixture, media = wave.getMediaElement();
+  addRegion(plugin, 'initial', 0, 1); addRegion(plugin, 'paused', 1, 2);
+  const times = [], pauseTimes = [];
+  wave.on('timeupdate', time => times.push(time));
+  wave.on('pause', () => pauseTimes.push(wave.currentTimeSignal.value));
+  const updateProgress = Object.getPrototypeOf(wave).updateProgress, pause = Object.getPrototypeOf(wave).pause;
+  for (const time of [1.53, 1.75]) {
+    const previous = wave.currentTimeSignal.value;
+    await wave.play();
+    media.currentTime = time; wave.timer.emit('tick');
+    assert.equal(wave.currentTimeSignal.value, previous, 'Captured RAF emits live time but leaves its signal stale');
+    assert.equal(times.at(-1), time);
+    assert.deepEqual(effects.findLast(value => value[0] === 'active'), ['active', 'track', 'paused']);
+    times.length = 0; pauseTimes.length = 0; effects.length = 0;
+    wave.pause();
+    assert.equal(wave.currentTimeSignal.value, time);
+    assert.deepEqual(times, [time, time], 'Signal refresh and native pause both publish only the stopped clock');
+    assert.ok(pauseTimes.length > 0);
+    assert.ok(pauseTimes.every(value => value === time));
+    assert.ok(effects.filter(value => value[0] === 'active').every(value => value[2] === 'paused'));
+    assert.ok(effects.filter(value => value[0] === 'clock').every(value => value[1] === time));
+  }
+  assert.equal(media.pauseCalls, 2);
+  assert.equal(media.playCalls, 2);
+  assert.equal(wave.updateProgress, updateProgress, 'No per-frame hook');
+  assert.equal(wave.pause, pause, 'No replacement or duplicate playback command');
+  assert.ok(notice(notices, 'wave-pause-clock', 'installed'));
+  adapter.release(); await defer(); wave.destroy();
+});
+
+test('pause clock correction follows direct media stops and replacement, and releases with its instance', async () => {
+  const adapter = createNativeWaveAdapters(() => {}), wave = clockWave(), originalSet = wave.isPlayingSignal.set;
+  class Wave extends ClockWaveHarness { static create() { return wave; } }
+  adapter.adaptImport({ Wave }).Wave.create();
+  assert.notEqual(wave.isPlayingSignal.set, originalSet);
+  await wave.media.play(); wave.media.currentTime = 3.25; wave.media.pause();
+  assert.equal(wave.currentTimeSignal.value, 3.25, 'Direct media pause bypasses wave.pause');
+  const replacement = clockMedia();
+  wave.setMediaElement(replacement);
+  await replacement.play(); replacement.currentTime = 100; replacement.paused = true; replacement.ended = true;
+  const times = [];
+  wave.on('timeupdate', time => times.push(time));
+  replacement.emit('ended');
+  assert.equal(wave.currentTimeSignal.value, 100);
+  assert.ok(times.length > 0 && times.every(time => time === 100));
+  assert.equal(replacement.pauseCalls, 0, 'Ended does not issue a pause or seek command');
+  wave.destroy();
+  assert.equal(wave.isPlayingSignal.set, originalSet);
+  adapter.release();
+
+  const released = createNativeWaveAdapters(() => {}), live = clockWave(), liveSet = live.isPlayingSignal.set;
+  class Live extends ClockWaveHarness { static create() { return live; } }
+  released.adaptImport({ Live }).Live.create();
+  released.release();
+  assert.equal(live.isPlayingSignal.set, liveSet);
+  await live.media.play(); live.media.currentTime = 8; live.media.pause();
+  assert.equal(live.currentTimeSignal.value, 0, 'Release restores native signal behavior');
+  live.destroy();
+});
+
+test('pause clock contracts decline changed or locked setters and preserve newer owners on release', () => {
+  for (const mode of ['changed', 'locked', 'newer']) {
+    const notices = [], adapter = createNativeWaveAdapters(value => notices.push(value)), wave = clockWave();
+    const nativeSet = wave.isPlayingSignal.set;
+    if (mode === 'changed') wave.isPlayingSignal.set = function(value) { return nativeSet.call(this, value); };
+    if (mode === 'locked') Object.defineProperty(wave.isPlayingSignal, 'set', { configurable: false, writable: false });
+    const before = wave.isPlayingSignal.set;
+    class Wave extends ClockWaveHarness { static create() { return wave; } }
+    adapter.adaptImport({ Wave }).Wave.create();
+    if (mode === 'newer') {
+      let reads = 0;
+      const newer = () => { reads++; return nativeSet; };
+      Object.defineProperty(wave.isPlayingSignal, 'set', { configurable: true, get: newer });
+      adapter.release();
+      assert.equal(reads, 0);
+      assert.equal(Object.getOwnPropertyDescriptor(wave.isPlayingSignal, 'set').get, newer);
+    } else {
+      assert.equal(wave.isPlayingSignal.set, before);
+      assert.ok(notice(notices, 'wave-pause-clock', 'unsupported'));
+      assert.ok(notice(notices, 'wave-scroll', 'installed'), 'Only the changed boundary is disabled');
+      adapter.release();
+    }
+    wave.destroy();
+  }
+});
 
 test('factory-local native class facades preserve constructors, initialization and unrelated exports', async () => {
   const notices = [], adapter = createNativeWaveAdapters(value => notices.push(value));

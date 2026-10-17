@@ -327,15 +327,11 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
   };
 
 
-  function focusCurrentEditorForEscape() {
-    if (helper.state.blurRestorePending && helper.toggleEditorFocus()) {
+  function focusCurrentEditorForEscape(ghostTarget) {
+    if (!ghostTarget && helper.state.blurRestorePending && helper.toggleEditorFocus()) {
       return true;
     }
 
-    const ghostTarget = api.cursor.getGhostCursorTarget();
-    // toggleEditorFocus either was not called (blurRestorePending was false)
-    // or failed before reaching its own stopGhostCursor. Tear down the ghost
-    // now so its native subscription and DOM element are cleaned up.
     api.cursor.stopGhostCursor();
 
     if (ghostTarget) {
@@ -521,16 +517,14 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
       }
 
       if (!focused && isPlaying) {
-        // State 2: unfocused + playing -> restore focus + pause
-        // NOTE: do NOT call stopGhostCursor() here. The restore path
-        // inside toggleEditorFocus (called via focusCurrentEditorForEscape)
-        // snapshots the ghost target *before* tearing it down (line 2065-2068).
-        // Stopping the ghost prematurely nulls ghostCursorOffset so
-        // getGhostCursorTarget() returns null, causing the restore to fall
-        // through to cursor:'start' (position 0) instead of the live ghost
-        // position.
-        helper.state.restorePlaybackTime =
-          playback && typeof playback.currentTime === 'number' ? playback.currentTime : null;
+        // Preserve the displayed caret before pause notifications tear down the
+        // ghost. Restore only after playback has stopped and still owns this task.
+        const ghostTarget = api.cursor.getGhostCursorTarget();
+        const activeElement = document.activeElement;
+        const targetText = ghostTarget ? helper.getRowTextValue(ghostTarget.row) : null;
+        helper.state.restorePlaybackTime = currentTime;
+        // A successful pause retires the ghost, but must not retire this restore.
+        const isCurrentRestore = api.cursor.capturePlaybackGuard({ includeCursor: false });
 
         if (helper.analytics) {
           const rowId = helper.state.lastBlur?.row
@@ -547,9 +541,11 @@ export function registerFocusToggle(helper: any, api: Pick<RowModules, 'cursor' 
           });
         }
 
-        focusCurrentEditorForEscape();
         if (!(await helper.setPlaybackPaused(true))?.ok) return;
-        if (!isCurrentSession()) return;
+        if (!isCurrentSession() || !isCurrentRestore() || document.activeElement !== activeElement) return;
+        if (ghostTarget && (!ghostTarget.row.isConnected ||
+            helper.getRowTextValue(ghostTarget.row) !== targetText)) return;
+        focusCurrentEditorForEscape(ghostTarget);
         if (helper.analytics) {
           helper.analytics.record('playback:pause', { via: 'esc-state2', playbackTime: currentTime });
         }

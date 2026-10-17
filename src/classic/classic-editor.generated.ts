@@ -195,7 +195,7 @@ function nL(e10) {
         return document.addEventListener("mousedown", e11), window.addEventListener("scroll", n7, true), () => {
             document.removeEventListener("mousedown", e11), window.removeEventListener("scroll", n7, true);
         };
-    }, [t10.isOpen, o2]), t10.isOpen && t10.position && 0 !== t10.suggestions.length) ? (0, r.jsx)("ul", { ref: s2, role: "listbox", className: "fixed z-[9999] max-h-[140px] min-w-[180px] overflow-y-auto rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-lg", style: { top: t10.position.top, left: t10.position.left }, children: t10.suggestions.map((e11, a2) => "group" === e11.type ? (0, r.jsx)("li", { role: "presentation", className: "select-none bg-muted px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground", children: e11.label }, "group-".concat(e11.label)) : (0, r.jsx)("li", { role: "option", "aria-selected": a2 === t10.highlightedIndex, className: (0, e7.cn)("cursor-pointer select-none px-3 py-1.5 text-xs", a2 === t10.highlightedIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"), onMouseDown: (e12) => {
+    }, [t10.isOpen, o2]), t10.isOpen && t10.position && 0 !== t10.suggestions.length) ? (0, r.jsx)("ul", { ref: s2, role: "listbox", className: "fixed z-[9999] max-h-[140px] min-w-[180px] overflow-y-auto rounded-md border border-border bg-popover py-1 text-popover-foreground shadow-lg", style: { top: t10.position.top, left: t10.position.left }, children: t10.suggestions.map((e11, a2) => "group" === e11.type ? (0, r.jsx)("li", { hidden: e11.label === "Tags", role: "presentation", className: "select-none bg-muted px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground", children: e11.label }, "group-".concat(e11.label)) : (0, r.jsx)("li", { role: "option", "aria-selected": a2 === t10.highlightedIndex, className: (0, e7.cn)("cursor-pointer select-none px-3 py-1.5 text-xs", a2 === t10.highlightedIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"), onMouseDown: (e12) => {
                 e12.preventDefault(), n6(a2);
             }, onMouseEnter: () => {
                 l2 && i2 && i2(a2);
@@ -763,12 +763,7 @@ function nX(e10) {
         return null !== (t11 = e11.highlights) && void 0 !== t11 ? t11 : [];
     }), [p2, f2, F2, V2]), eI2 = (0, a.useRef)(ev2), eC2 = (0, a.useRef)(v2);
     eC2.current !== v2 && (eC2.current = v2, eI2.current = ev2);
-    let eA2 = eI2.current === eu2, eE2 = ea2 && !!(null == el2 ? void 0 : el2.length) && !!es2, eR2 = eT2.length > 0 && eA2 && !G2 && !eN2 && !eE2, eD2 = (0, a.useCallback)(() => {
-        eg2(true), X2 || setTimeout(() => {
-            var e11;
-            null === (e11 = ec2.current) || void 0 === e11 || e11.focus();
-        }, 0);
-    }, [X2]), ez2 = (0, a.useCallback)((e11) => {
+    let eA2 = eI2.current === eu2, eE2 = ea2 && !!(null == el2 ? void 0 : el2.length) && !!es2, eR2 = eT2.length > 0 && eA2 && !G2 && !eN2 && !eE2, eD2 = (0, a.useCallback)(() => { classicRowControl.requestFocus(); eg2(true); }, [X2]), ez2 = (0, a.useCallback)((e11) => {
         null == q2 || q2(g2.id, e11);
     }, [g2.id, q2]), eL2 = (0, a.useCallback)((e11) => {
         em2(e11), ex2(g2.id, e11), null == $2 || $2(g2.id);

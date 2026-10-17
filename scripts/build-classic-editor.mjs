@@ -67,10 +67,14 @@ function select(source, roots, exportNames) {
 function instrumentRow(source) {
   const { file, names } = parse(source), edits = [];
   const replace = (node, value) => edits.push([node.getStart(file), node.end, value]);
-  for (const name of ['nX', 'nZ', 'nS', 'nN', 'nD', 'nj', 'tf', 'nq', 'nY']) {
+  for (const name of ['nX', 'nZ', 'nS', 'nN', 'nD', 'nj', 'tf', 'nq', 'nY', 'nL']) {
     const fn = names.get(name);
     if (!fn) throw new Error(`Captured view ${name} is unavailable`);
     walk(fn.body, node => {
+      if (name === 'nL' && ts.isPropertyAssignment(node) && node.name.getText(file) === 'role' && node.initializer.getText(file) === '"presentation"') {
+        // Keep the group slot so native highlightedIndex still addresses DOM children.
+        edits.push([node.parent.getStart(file) + 1, node.parent.getStart(file) + 1, 'hidden:e11.label==="Tags",']);
+      }
       if (name === 'nX' && ts.isCallExpression(node) && node.expression.getText(file) === 'nq') edits.push([node.end - 1, node.end - 1, ',e11.foreignOptions']);
       if (name === 'nY' && ts.isPropertyAccessExpression(node) && node.getText(file) === 'L.v') replace(node, 'arguments[4]');
       if (name === 'nq' && ts.isPropertyAccessExpression(node) && node.getText(file) === 'L.v') replace(node, 'classicForeignOptions');
@@ -81,6 +85,9 @@ function instrumentRow(source) {
       if (name === 'nZ' && ts.isVariableDeclaration(node) && node.name.getText(file) === 'x2') replace(node.initializer, 'n.classic.useAutocomplete()');
       if ((name === 'nS' || name === 'nN') && ts.isPropertyAssignment(node) && node.name.getText(file) === 'onDoubleClick') replace(node.initializer, `e10.readOnly ? undefined : ${node.initializer.getText(file)}`);
       if (name === 'nX' && ts.isCallExpression(node) && node.expression.getText(file) === 'T2' && node.arguments.map(argument => argument.getText(file)).join(',') === 'e11,t11') replace(node, 'classicRowControl.canCommitDraft() && T2(e11,t11)');
+      if (name === 'nX' && ts.isVariableDeclaration(node) && node.name.getText(file) === 'eD2') {
+        replace(node.initializer, '(0,a.useCallback)(()=>{classicRowControl.requestFocus();eg2(true);},[X2])');
+      }
       if (name === 'nX' && ts.isCallExpression(node) && node.expression.getText(file) === 'em2' && node.arguments[0]?.getText(file) === 'ev2') replace(node, 'classicRowControl.canSyncModelText() && em2(ev2)');
       if (name === 'nS' && ts.isCallExpression(node) && node.arguments[0]?.getText(file) === 'tp.pj') {
         const props = node.arguments[1];

@@ -50,6 +50,7 @@ export function createClassicControls(React, useContext) {
     const committed = React.useRef({ binding, context });
     const leaseRef = React.useRef(null);
     const conflict = React.useRef(false);
+    const pendingFocus = React.useRef(null);
     React.useLayoutEffect(() => {
       const previous = committed.current.binding;
       const source = previous.annotation, next = binding.annotation;
@@ -69,7 +70,7 @@ export function createClassicControls(React, useContext) {
       if (!row || !context?.reviewActionId || typeof context.flushSync !== 'function') {
         throw new Error('classic-input-native-context-unavailable');
       }
-      let composing = false, disposed = false, pendingSelection = null, geometryInput = null;
+      let composing = false, disposed = false, geometryInput = null;
       const id = binding.annotation.id;
       row.setAttribute('data-babel-classic-row', 'true');
       row.setAttribute('data-annotation-id', id);
@@ -111,8 +112,9 @@ export function createClassicControls(React, useContext) {
           rich.transforms.select(rich.editor, { anchor, focus: focusPoint });
         } else if (input) {
           if (focus) input.focus({ preventScroll: true });
+          // The native commit above is synchronous. Later renders must preserve
+          // subsequent browser navigation, not replay this completed command.
           input.setSelectionRange(start, end, direction);
-          pendingSelection = { start, end, direction, text: value };
         } else return false;
         return true;
       }
@@ -260,6 +262,7 @@ export function createClassicControls(React, useContext) {
           row.removeEventListener('compositionend', onCompositionEnd, true);
           row.removeEventListener('focusin', onNativeFocus, true);
           row.removeEventListener('focusout', onNativeBlur, true);
+          row.removeEventListener('keydown', onEmptyBackspace, true);
           leases.delete(lease);
         }
       };
@@ -279,12 +282,31 @@ export function createClassicControls(React, useContext) {
         if (!element || !(event.target === element || element.contains(event.target)) || !authorize(true)) return;
         if (lease.flush()) committed.current.context.transcriptProps.handlers.onDeactivate(id);
       };
+      const onEmptyBackspace = event => {
+        if (event.key !== 'Backspace' || event.defaultPrevented || event.isComposing || !authorize(true)) return;
+        const element = lease.element;
+        if (!element || !element.contains(event.target) || !element.contains(row.ownerDocument.activeElement)) return;
+        const state = lease.read();
+        if (state.composing || state.text.length !== 0 || state.start !== 0 || state.end !== 0) return;
+        if (textarea() && element.value !== '') return;
+        const current = committed.current.context.transcriptProps;
+        if (typeof current.handlers.onDelete !== 'function') return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        if (current.lockSegments) { current.handlers.onSegmentsLocked?.(); return; }
+        // Match native delete-empty: discard the empty draft, then remove once.
+        // Do not add a separate empty-text command to native Undo history.
+        committed.current.binding.cancel();
+        sync(() => current.handlers.onDelete(id));
+      };
       row.addEventListener('compositionstart', onCompositionStart, true);
       row.addEventListener('compositionend', onCompositionEnd, true);
       row.addEventListener('focusin', onNativeFocus, true);
       row.addEventListener('focusout', onNativeBlur, true);
+      row.addEventListener('keydown', onEmptyBackspace, true);
       const unregister = registerBabelClassicInput(row, lease);
-      leaseRef.current = { lease, committed, ownGeometry, get pendingSelection() { return pendingSelection; }, clearSelection() { pendingSelection = null; } };
+      leaseRef.current = { lease, committed, ownGeometry };
       leases.add(lease);
       return () => { lease.dispose(); leaseRef.current = null; };
     }, [context.reviewActionId, binding.annotation.id]);
@@ -292,13 +314,35 @@ export function createClassicControls(React, useContext) {
       const input = binding.inputRef.current;
       leaseRef.current?.ownGeometry(input);
       if (input && input.getAttribute('data-babel-classic-input') !== 'true') input.setAttribute('data-babel-classic-input', 'true');
-      const pending = leaseRef.current?.pendingSelection;
-      if (pending && input && input.value === pending.text) {
-        input.setSelectionRange(pending.start, pending.end, pending.direction);
-        leaseRef.current.clearSelection();
+      const focus = pendingFocus.current;
+      if (focus) {
+        pendingFocus.current = null;
+        const lease = leaseRef.current?.lease;
+        const owned = readBabelClassicInput(binding.annotation.id, binding.rootRef.current?.ownerDocument);
+        if (!released && !binding.readOnly && !conflict.current && owned?.input === lease &&
+            input?.isConnected && focus.reviewActionId === context.reviewActionId &&
+            focus.annotationId === binding.annotation.id &&
+            (input.ownerDocument.activeElement === focus.activeElement || input.ownerDocument.activeElement === input)) {
+          input.focus({ preventScroll: true });
+        }
       }
     });
     return {
+      requestFocus() {
+        const state = committed.current;
+        const lease = leaseRef.current?.lease;
+        const owned = readBabelClassicInput(state.binding.annotation.id, state.binding.rootRef.current?.ownerDocument);
+        if (released || !lease || owned?.input !== lease || state.binding.readOnly || conflict.current) return;
+        pendingFocus.current = { reviewActionId: state.context.reviewActionId,
+          annotationId: state.binding.annotation.id, activeElement: state.binding.rootRef.current?.ownerDocument.activeElement };
+        // Already-mounted inputs need no deferred work. A newly exposed
+        // low-confidence editor is focused by the next layout commit instead.
+        const input = state.binding.inputRef.current;
+        if (input?.isConnected) {
+          pendingFocus.current = null;
+          input.focus({ preventScroll: true });
+        }
+      },
       canCommitDraft() {
         const lease = leaseRef.current?.lease;
         if (!lease || conflict.current) return false;
